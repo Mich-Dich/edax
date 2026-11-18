@@ -106,7 +106,8 @@ bool diverges_block(const BlockExpr& b) {
         case StmtKind::discard:
             if (diverges(*s->as<DiscardStmt>().value)) return true;
             break;
-        case StmtKind::assign: break;
+        case StmtKind::assign:
+        case StmtKind::check: break;
         }
     }
     return b.tail && diverges(*b.tail);
@@ -170,7 +171,11 @@ struct FunctionState {
     bool                has_this    = false;
     bool                this_mut    = false;
     bool                is_compile_time = false;
+    bool                generic = false;   // the generic check of a template (parameters unknown)
+    bool                deducing = false;  // a lambda without '->', or a `deduce` function: result from `return`
+    const Type*         deduced  = nullptr;
     std::string         name;
+    const FunctionDecl* decl = nullptr;   // the function being checked (not for lambdas)
 };
 
 /// Where an expression's value lives, for assignment and `mut` checks.
@@ -191,12 +196,120 @@ public:
         : program_(program), diags_(diags), tc_(*program.types), instantiator_(instantiator) {}
 
     void run() {
+        setup_mode();
         for (auto& [name, m] : program_.modules) {
             module_ = m.get();
             if (m->header) check_file(m->header->ast);
             if (m->source) check_file(m->source->ast);
         }
         if (program_.entry) check_main(*program_.entry);
+    }
+
+    /// build.rifts (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
+    /// calls of the graph's methods fill in program_.build_graph.
+    void run_build() {
+        Module* m = program_.entry;
+        if (!m) return;
+        auto it = m->items.find("build");
+        const Symbol* fn = it == m->items.end() ? nullptr : it->second.front();
+        const FunctionDecl* f = fn ? fn->function() : nullptr;
+        const Symbol* graph = nullptr;
+        if (auto bm = program_.modules.find("std::build"); bm != program_.modules.end()) {
+            if (auto g = bm->second->items.find("graph"); g != bm->second->items.end()) graph = g->second.front();
+        }
+        Span where = m->source ? Span{m->source->id, 0, 0} : Span{};
+        if (!f || !f->is_compile_time || f->params.size() != 1 || !graph) {
+            note(error(DiagCode::E4216, fn ? fn->span : where, "build.rifts defines no 'build' function", "no build function"),
+                 "write 'compile_time void build(mut std::build::graph& g) { ... }' (spec 25)");
+            return;
+        }
+        ct::Value g;
+        g.kind = ct::Value::Kind::aggregate;
+        g.type = tc_.user(graph);
+        evaluator().call(fn, {g}, fn->span);
+    }
+
+    /// `if compile_time (c) { checks }` as a statement of a function's entry, or null.
+    static IfExpr* entry_gate(Stmt& st) {
+        if (st.kind != StmtKind::expression) return nullptr;
+        Expr& e = *st.as<ExprStmt>().expr;
+        if (e.kind != ExprKind::if_) return nullptr;
+        auto& i = e.as<IfExpr>();
+        if (!i.is_compile_time || i.else_branch || i.then_block->tail || i.then_block->statements.empty()) return nullptr;
+        for (StmtPtr& inner : i.then_block->statements) {
+            if (inner->kind != StmtKind::check) return nullptr;
+        }
+        return &i;
+    }
+
+    /// The class of the build mode and the values of its settings (spec 24): the interpreter
+    /// runs the mode's methods once. A mode that removes guards safe code relies on must also
+    /// return true from `allow_undefined_behavior()` (E4215).
+    void setup_mode() {
+        if (!program_.build_mode_class) {
+            for (const char* module : {"std::build::mode", "build"}) {
+                auto m = program_.modules.find(module);
+                if (m == program_.modules.end()) continue;
+                auto it = m->second->items.find(program_.build_mode);
+                if (it != m->second->items.end() && it->second.front()->kind == SymbolKind::class_) {
+                    program_.build_mode_class = it->second.front();
+                    break;
+                }
+            }
+        }
+        if (!program_.build_mode_class) {   // an unknown mode (the driver says so): checked as debug
+            if (auto m = program_.modules.find("std::build::mode"); m != program_.modules.end()) {
+                if (auto it = m->second->items.find("debug"); it != m->second->items.end()) program_.build_mode_class = it->second.front();
+            }
+        }
+        const Symbol* mode = program_.build_mode_class;
+        if (!mode) return;
+        for (const char* name : {"optimization", "debug_info", "overflow", "shifts", "bounds", "run_time_checks", "panic",
+                                 "link_time_optimization", "allow_undefined_behavior"}) {
+            std::shared_ptr<const ct::Value> v = evaluator().mode_setting(mode, name);
+            if (!v) continue;
+            program_.mode_settings[name] = v->kind == ct::Value::Kind::boolean ? (v->boolean ? "true" : "false")
+                                         : v->symbol                          ? v->symbol->name
+                                                                              : ct::to_string(*v);
+        }
+        auto& ms = program_.mode_settings;
+        bool unsafe_mode = ms["bounds"] == "unchecked" || (ms["run_time_checks"] != "all" && !ms["run_time_checks"].empty());
+        if (unsafe_mode && ms["allow_undefined_behavior"] != "true") {
+            Diagnostic& d = error(DiagCode::E4215, mode->span,
+                                  std::format("the mode '{}' turns off {} but does not allow undefined behaviour", mode->name,
+                                              ms["bounds"] == "unchecked" ? "bounds checks" : "run_time checks"),
+                                  "unsafe mode");
+            note(d, "override 'bool allow_undefined_behavior() override { return true; }' to say so (spec 24)");
+        }
+    }
+
+    /// A template value argument written in a type (`box<N + 1>`), with `subst` for the
+    /// template parameters in scope there.
+    const Type* value_arg_for(const Symbol* templ, std::size_t index, Expr& value,
+                              const std::map<const Symbol*, const Type*>* subst) {
+        if (subst) subst_ = *subst;
+        for (const auto& [p, t] : subst_) {
+            if (t->is_unknown()) return tc_.error();   // the generic check of a template
+        }
+        if (templ->module) module_ = templ->module;
+        return evaluate_value_arg(templ, index, value);
+    }
+
+    /// The count of a `std::raw::array<T, N>`: a compile-time usize.
+    const Type* count_for(Expr& value, const std::map<const Symbol*, const Type*>* subst) {
+        if (subst) subst_ = *subst;
+        for (const auto& [p, t] : subst_) {
+            if (t->is_unknown()) return tc_.error();
+        }
+        if (program_.std_module) module_ = program_.std_module;
+        const Type*  want   = tc_.builtin("usize");
+        std::size_t  errors = diags_.error_count();
+        infer(value);
+        coerce(value, want);
+        if (diags_.error_count() != errors) return tc_.error();
+        std::shared_ptr<const ct::Value> v = evaluate(value, "the size of a std::raw::array must be known at compile time");
+        if (!v) return tc_.error();
+        return tc_.value_arg(v->integer, want);
     }
 
     /// Checks one function on demand (a compile_time function that compile-time code calls
@@ -227,10 +340,39 @@ public:
             return;
         }
         if (copy.kind == DeclKind::function) {
-            check_decl(copy, nullptr);
+            check_decl(copy, inst->kind == SymbolKind::method ? inst->parent : nullptr);
             return;
         }
-        for (DeclPtr& m : copy.as<TypeDecl>().members) check_decl(*m, inst);
+        for (DeclPtr& m : copy.as<TypeDecl>().members) {
+            bool lazy = m->kind == DeclKind::function && !m->as<FunctionDecl>().is_destructor &&
+                        !m->as<FunctionDecl>().is_virtual && !m->as<FunctionDecl>().is_override;
+            std::size_t mark = diags_.size();
+            check_decl(*m, inst);
+            if (!lazy || diags_.size() == mark) continue;
+            std::vector<Diagnostic> found = diags_.take_since(mark);
+            bool errors = std::any_of(found.begin(), found.end(), [](const Diagnostic& d) { return d.severity == Severity::error; });
+            if (errors) {
+                program_.deferred_errors[m.get()] = std::move(found);   // reported if the method is used
+            } else {
+                for (Diagnostic& d : found) diags_.add(std::move(d));
+            }
+        }
+    }
+
+    /// A method of a template instance is used (called, or an operator): its deferred errors
+    /// are reported now, at the use.
+    void use_method(const Symbol* s, Span at) {
+        if (!s || !s->decl) return;
+        auto it = program_.deferred_errors.find(s->decl);
+        if (it == program_.deferred_errors.end()) return;
+        std::vector<Diagnostic> found = std::move(it->second);
+        program_.deferred_errors.erase(it);
+        std::string owner = s->parent ? types::to_string(tc_.user(s->parent)) + "::" : "";
+        Diagnostic& d = error(DiagCode::E4214, at, std::format("'{}{}' does not compile for this instance", owner, s->name),
+                              "used here");
+        for (const Diagnostic& e : found) {
+            if (e.severity == Severity::error) d.notes.push_back(Note{e.message, e.span});
+        }
     }
 
 private:
@@ -305,7 +447,8 @@ private:
         switch (s->kind) {
         case SymbolKind::local: {
             auto it = local_types_.find(s);
-            return it == local_types_.end() ? tc_.error() : it->second;
+            if (it != local_types_.end()) return it->second;
+            return s->type ? s->type : tc_.error();   // a local of code checked by another checker
         }
         case SymbolKind::global: return lower(*s->decl->as<VariableDecl>().type);
         case SymbolKind::field: return lower_owned(s, *s->decl->as<VariableDecl>().type);
@@ -333,6 +476,8 @@ private:
         if (f == t || f->is(Kind::never)) return 0;
         if (f->is(Kind::external) && t->is(Kind::external)) return 0;
         if (f->is(Kind::static_str) && t->is(Kind::external)) return 0;
+        if (is_std_string(f) && t->is(Kind::external) && t->name == "std::str" && !to_ref) return 0;   // a borrow (spec 19)
+        if (f->is(Kind::static_str) && is_std_string(t) && !to_ref) return 0;   // allocates, with a warning
         if (f->is(Kind::nullptr_) && t->is(Kind::pointer)) return 0;
         if (f->is(Kind::pointer) && t->is(Kind::pointer)) {
             if (!f->is_mut && t->is_mut) return -1;
@@ -341,7 +486,43 @@ private:
             return -1;
         }
         if (f->is(Kind::user) && t->is(Kind::user) && to_ref && is_ancestor(f->symbol, t->symbol)) return 1;
+        if (smart_upcast(f, t)) return 1;
+        if (lambda_fits(f, t) && !to_ref) return 0;
         return -1;
+    }
+
+    /// Whether `t` is `std::string`: the library's class, or the name before std is imported.
+    bool is_std_string(const Type* t) const {
+        if (!t) return false;
+        if (t->is(Kind::user)) return t->symbol == std_item("string");
+        return t->is(Kind::external) && t->name == "std::string";
+    }
+
+    /// A lambda converts to `std::function<R(A...)>` with the same signature, and to
+    /// `std::fn_ptr<R(A...)>` when it captures nothing (spec 18).
+    bool lambda_fits(const Type* f, const Type* t) const {
+        if (!f || !t || !f->is(Kind::closure) || !(t->is(Kind::function) || t->is(Kind::fn_ptr))) return false;
+        if (f->args != t->args) return false;
+        if (t->is(Kind::fn_ptr)) {
+            const ast::LambdaExpr* l = tc_.lambda_of(f);
+            if (!l || !l->captures.empty()) return false;
+        }
+        return true;
+    }
+
+    /// `std::unique_ptr<circle>` → `std::unique_ptr<shape>` (and shared_ptr, weak_ptr): an
+    /// implicit upcast, like `circle&` → `shape&` (spec 07, 13).
+    bool smart_upcast(const Type* f, const Type* t) const {
+        if (!f || !t || !f->is(Kind::user) || !t->is(Kind::user) || f == t) return false;
+        for (const char* name : {"unique_ptr", "shared_ptr", "weak_ptr"}) {
+            const Symbol* templ = std_item(name);
+            if (!templ || f->symbol->template_of != templ || t->symbol->template_of != templ) continue;
+            if (f->symbol->template_args.size() != 1 || t->symbol->template_args.size() != 1) return false;
+            const Type* fa = f->symbol->template_args[0];
+            const Type* ta = t->symbol->template_args[0];
+            return fa->is(Kind::user) && ta->is(Kind::user) && is_ancestor(fa->symbol, ta->symbol);
+        }
+        return false;
     }
 
     void mismatch(Span span, const Type* found, const Type* expected, std::string_view what = "") {
@@ -358,6 +539,7 @@ private:
         std::string found_text = found == tc_.untyped_int()     ? "an integer literal"
                                : found == tc_.untyped_float()   ? "a float literal"
                                : found == tc_.untyped_default() ? "'default'"
+                               : found->is(Kind::reference) && !expected->is(Kind::reference) ? quoted(f)   // a reference reads the value
                                                                 : quoted(found);
         Diagnostic& e = error(DiagCode::E4010, span,
                               std::format("expected {}{}, found {}", quoted(expected), what, found_text),
@@ -386,6 +568,12 @@ private:
         if (!m) return nullptr;
         auto it = m->items.find(std::string(name));
         return it == m->items.end() ? nullptr : it->second.front();
+    }
+
+    /// `std::ordering`, the result of `<=>` (spec 16).
+    const Type* ordering_type() {
+        if (const Symbol* o = std_item("ordering")) return tc_.user(o);
+        return tc_.external("std::ordering");
     }
 
     /// Whether `t` (references removed) is an instance of the std template `name`: `std::option<u32>`.
@@ -438,6 +626,12 @@ private:
     const Type* infer_std_method(CallExpr& c, const Type* t, const std::string& name, std::vector<Expr*>& args) {
         c.callee->type     = tc_.error();
         const Type* value  = t->symbol->template_args[0];
+        if (types::is_std_query_method(name)) {   // `o.is_some()`: a bool, the value stays
+            if (!args.empty()) {
+                error(DiagCode::E4030, c.span, std::format("'{}' takes no arguments", name), "wrong number of arguments");
+            }
+            return set(c, tc_.bool_());
+        }
         if (args.size() != 1) {
             error(DiagCode::E4030, c.span, std::format("'{}' takes 1 argument, but {} {} given", name, args.size(),
                                                        args.size() == 1 ? "is" : "are"),
@@ -473,7 +667,24 @@ private:
             const Symbol* result = std_item("result");
             return set(c, result ? tc_.instance(result, {value, e}) : tc_.error());
         }
-        return set(c, tc_.error());   // map_error: the new error type comes from a function value (not typed yet)
+        // map_error(f): a lambda from the error type to the new error type.
+        const Type* f = types::strip_ref(a.type);
+        if (f->is(Kind::closure)) {
+            const Type* old_error = t->symbol->template_args[1];
+            if (f->args.size() != 2 || (types::strip_ref(f->args[0]) != old_error && !f->args[0]->is_unknown())) {
+                error(DiagCode::E4010, a.span, std::format("'map_error' needs a lambda that takes the error {}", quoted(old_error)),
+                      "wrong lambda");
+                return set(c, tc_.error());
+            }
+            const Symbol* result = std_item("result");
+            const Type*   e2     = types::strip_ref(f->args.back());
+            if (!result || e2->is_unknown() || e2->is(Kind::void_)) return set(c, tc_.error());
+            return set(c, tc_.instance(result, {value, e2}));
+        }
+        if (!f->is_unknown()) {
+            error(DiagCode::E4010, a.span, std::format("'map_error' takes a lambda, not {}", quoted(a.type)), "not a lambda");
+        }
+        return set(c, tc_.error());
     }
 
     /// `std::some`, `std::none`, `std::ok`, `std::error` written without template arguments: the
@@ -686,6 +897,7 @@ private:
             }
         }
         const Type* t = types::strip_ref(target);
+        if (some_reference(e, t)) return;
         if (e.type->is(Kind::void_) && !t->is(Kind::void_) && !t->is_unknown()) {
             Span end = Span{e.span.file, e.span.end > 0 ? e.span.end - 1 : 0, e.span.end};
             error(DiagCode::E4010, e.kind == ExprKind::block ? end : e.span,
@@ -697,11 +909,62 @@ private:
             mismatch(e.span, e.type, target);
             return;
         }
-        if (e.type->is(Kind::static_str) && t->is(Kind::external) && t->name == "std::string") {
+        if (e.type->is(Kind::static_str) && is_std_string(t) && !target->is(Kind::reference)) {
             note(error(DiagCode::W4002, e.span, "implicit allocation of a std::string from a string literal",
                        "allocates"),
                  "write 'std::string::from(\"...\")' to make the allocation visible");
+            if (t->is(Kind::user)) e.conversion = Expr::Conversion::literal_to_string;
         }
+        if (lambda_fits(types::strip_ref(e.type), t) && !target->is(Kind::reference)) {
+            e.conversion   = Expr::Conversion::to_callable;
+            e.converted_to = t;
+            const ast::LambdaExpr* l = tc_.lambda_of(types::strip_ref(e.type));
+            for (std::size_t ci = 0; l && ci < l->captures.size(); ++ci) {
+                const ast::Capture& c = l->captures[ci];
+                if (t->is(Kind::function) && (c.kind == ast::CaptureKind::ref || c.kind == ast::CaptureKind::mut_ref)) {
+                    note(error(DiagCode::E5015, c.span, "a std::function cannot hold a lambda with reference captures",
+                               "a reference capture"),
+                         "a std::function is stored, and a reference could outlive what it refers to (spec 18); capture by value or 'move'");
+                    break;
+                }
+            }
+        }
+        if (smart_upcast(types::strip_ref(e.type), t) && !target->is(Kind::reference)) {
+            e.conversion   = Expr::Conversion::pointer_upcast;
+            e.converted_to = t;
+        }
+        if (is_std_string(types::strip_ref(e.type)) && t->is(Kind::external) && t->name == "std::str" &&
+            !target->is(Kind::reference)) {
+            e.conversion = Expr::Conversion::string_to_str;
+        }
+    }
+
+    /// `std::some(x)` where a `std::option<T&>` is expected: the option refers to the place x
+    /// (spec 11, 20: `a.get(i)`). True when `e` was such a call and is now typed `t`.
+    bool some_reference(Expr& e, const Type* t) {
+        if (e.kind != ExprKind::call || !is_std_instance(t, "option") || t->symbol->template_args.size() != 1) return false;
+        const Type* want = t->symbol->template_args[0];
+        if (!want->is(Kind::reference)) return false;
+        auto& c = e.as<CallExpr>();
+        if (c.callee->kind != ExprKind::path || c.args.size() != 1) return false;
+        auto& pe = c.callee->as<PathExpr>();
+        if (!pe.symbol || pe.symbol->kind != SymbolKind::alternative || pe.symbol->name != "some") return false;
+        const Type* have = types::strip_ref(e.type);
+        if (!is_std_instance(have, "option") || have->symbol->template_args.size() != 1 ||
+            have->symbol->template_args[0] != types::strip_ref(want)) {
+            return false;
+        }
+        Expr& arg = *c.args[0];
+        Place p   = place_of(arg);
+        if (!p.is_place || p.is_temporary) {
+            error(DiagCode::E4010, arg.span, std::format("{} needs a place to refer to", quoted(t)), "a temporary");
+        } else if (want->is_mut) {
+            require_mutable(p, arg, "refer mutably to");
+        }
+        auto it = t->symbol->members.find("some");
+        if (it != t->symbol->members.end()) pe.symbol = it->second.front();
+        e.type = t;
+        return true;
     }
 
     /// An untyped value in a place without any context (`auto x = 5;`, `if (3 < 4)`).
@@ -759,6 +1022,14 @@ private:
     void check_decl(Decl& d, Symbol* self) {
         switch (d.kind) {
         case DeclKind::import: return;
+        case DeclKind::check: {
+            Check& c = d.as<CheckDecl>().check;
+            check_check(c, self ? Where::type_body : Where::file_scope, d.span);
+            if (c.is_compile_time && c.compile_active && !c.is_run_time) {
+                run_check_now(c, d.span, self);
+            }
+            return;
+        }
         case DeclKind::function: check_function(d.as<FunctionDecl>(), self); return;
         case DeclKind::variable:
         case DeclKind::field: {
@@ -835,15 +1106,32 @@ private:
         fn_                   = FunctionState{};
         fn_.in_function       = true;
         fn_.result            = fn.result ? lower(*fn.result) : tc_.void_();
-        if (fn.result && fn.result->kind == TypeKind::deduce) fn_.result = nullptr;
+        if (fn.result && fn.result->kind == TypeKind::deduce) {
+            fn_.result   = nullptr;
+            fn_.deducing = true;
+        }
         fn_.self            = self;
         fn_.has_this        = self && !fn.is_static;
         fn_.this_mut        = fn.is_mut || fn.is_destructor;
         fn_.is_compile_time = fn.is_compile_time;
+        fn_.decl            = &fn;
         fn_.name            = fn.name;
+        fn_.generic         = (fn.is_template && subst_.empty()) ||
+                      (self && self->decl && self->decl->is_template && !self->template_of);
         if (fn.is_unsafe) ++unsafe_depth_;
         for (Param& p : fn.params) {
             if (p.symbol) set_local(p.symbol, lower(*p.type));
+        }
+        // The entry: the checks at the very start of the body (spec 23), also those inside an
+        // `if compile_time` that holds only checks (the library's index checks follow the mode).
+        for (StmtPtr& st : fn.body->statements) {
+            if (st->kind == StmtKind::check) {
+                st->as<CheckStmt>().check.is_entry = true;
+                continue;
+            }
+            IfExpr* gate = entry_gate(*st);
+            if (!gate) break;
+            for (StmtPtr& inner : gate->then_block->statements) inner->as<CheckStmt>().check.is_entry = true;
         }
         infer_block(*fn.body);
 
@@ -862,6 +1150,7 @@ private:
                 note(e, "declared here", fn.name_span);
             }
         }
+        if (fn_.deducing) fn.deduced_result = fn_.deduced ? fn_.deduced : tc_.void_();
         unsafe_depth_ = unsafe0;
         fn_           = saved;
         end_check(&fn);
@@ -931,9 +1220,67 @@ private:
 
     /// Evaluates a checked expression at compile time; null when it cannot be (reported, or it
     /// depends on a template parameter, see `evaluator().unknown()`).
+    /// A call of a compile_time-only function in run-time code runs at compile time: its
+    /// result is a constant (spec 15). So does a settings method called on the build mode
+    /// (`std::build::current_mode().optimization()`, spec 24).
+    void fold_compile_time_call(CallExpr& c) {
+        if (c.constant || fn_.is_compile_time || fn_.generic || !c.type || c.type->is_unknown()) return;
+        const Symbol* s = nullptr;
+        bool on_constant = false;
+        if (c.callee->kind == ExprKind::path) s = c.callee->as<PathExpr>().symbol;
+        if (c.callee->kind == ExprKind::member) {
+            s           = c.callee->as<MemberExpr>().symbol;
+            on_constant = c.callee->as<MemberExpr>().object->constant != nullptr;
+        }
+        const FunctionDecl* f = s ? s->function() : nullptr;
+        if (!f) return;
+        bool mode_method = on_constant && s->parent && s->parent->module &&
+                           (s->parent->module->name == "std::build::mode");
+        if (!mode_method) {
+            for (const Symbol* k = s->parent; k && k->kind == SymbolKind::class_ && !mode_method; k = k->base_class()) {
+                mode_method = on_constant && k->module && k->module->name == "std::build::mode";
+            }
+        }
+        if (!(f->is_compile_time && !f->is_run_time) && !mode_method) return;
+        for (const ExprPtr& a : c.args) {
+            if (!a->type || a->type->is_unknown()) return;
+        }
+        c.constant = evaluate(c, "a compile_time function called from run-time code runs at compile time");
+    }
+
     std::shared_ptr<const ct::Value> evaluate(Expr& e, std::string_view why) {
         if (!e.type || e.type->is_unknown()) return nullptr;
         return evaluator().evaluate(e, why);
+    }
+
+    /// The compile-time value a template value argument stands for.
+    ct::Value value_of_arg(const Type* arg) const {
+        const Type* of = arg->inner;
+        if (of->is(Kind::bool_)) return ct::Value::of_bool(tc_.value_bits(arg) != 0, of);
+        return ct::Value::of_integer(tc_.value_bits(arg), of);
+    }
+
+    /// Evaluates a template value argument for the parameter `index` of `templ` (spec 14).
+    const Type* evaluate_value_arg(const Symbol* templ, std::size_t index, Expr& value) {
+        if (!templ->decl || index >= templ->decl->template_params.size() || templ->decl->template_params[index].is_type ||
+            !templ->decl->template_params[index].value_type) {
+            error(DiagCode::E4180, value.span, std::format("'{}' takes a type here, not a value", templ->name), "a value");
+            return tc_.error();
+        }
+        const Type* want = lower(*templ->decl->template_params[index].value_type);
+        std::size_t errors = diags_.error_count();
+        infer(value);
+        coerce(value, want);
+        if (diags_.error_count() != errors) return tc_.error();
+        if (!want->is_integer() && !want->is(Kind::bool_)) {
+            error(DiagCode::E4180, value.span, std::format("template value parameters of type {} are not supported yet", quoted(want)),
+                  "use an integer or bool");
+            return tc_.error();
+        }
+        std::shared_ptr<const ct::Value> v =
+            evaluate(value, std::format("a template argument of '{}' must be known at compile time", templ->name));
+        if (!v) return tc_.error();
+        return tc_.value_arg(v->kind == ct::Value::Kind::boolean ? u128{v->boolean} : v->integer, want);
     }
 
     /// The type a type value denotes, when the expression is one (`u32`, `point`, `T`).
@@ -941,6 +1288,182 @@ private:
         if (!e.constant || e.constant->kind != ct::Value::Kind::type) return nullptr;
         return e.constant->type_value;
     }
+
+    // --- checks (spec 23) -----------------------------------------------------------------
+
+    enum class Where { file_scope, type_body, entry, body };
+
+    /// Whether a check's mode list includes the mode being built (spec 23, 24). Built-in modes
+    /// only, until build.rifts can define more.
+    bool mode_active(const std::vector<std::string>& modes, Span span) {
+        if (modes.empty()) return true;
+        const std::string& m      = program_.build_mode;
+        bool               active = false;
+        constexpr std::string_view prefix = "std::build::mode::";
+        for (const std::string& path : modes) {
+            if (path.starts_with("build::")) {   // a mode class of build.rifts (spec 24, open question 31)
+                const Symbol* cls = nullptr;
+                if (auto bm = program_.modules.find("build"); bm != program_.modules.end()) {
+                    if (auto it = bm->second->items.find(path.substr(7)); it != bm->second->items.end()) cls = it->second.front();
+                }
+                if (!cls || cls->kind != SymbolKind::class_) {
+                    note(error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode"),
+                         "build.rifts does not define this mode class");
+                    continue;
+                }
+                for (const Symbol* c = program_.build_mode_class; c; c = c->base_class()) active = active || c == cls;
+                continue;
+            }
+            std::string name = path.starts_with(prefix) ? path.substr(prefix.size()) : std::string();
+            if (name != "debug" && name != "release" && name != "release_with_debug_info") {
+                Diagnostic& d = error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode");
+                if (path == "debug" || path == "release" || path == "release_with_debug_info") {
+                    note(d, std::format("write 'std::build::mode::{}': std names are written in full", path));
+                } else {
+                    note(d, "the built-in modes are std::build::mode::debug, ::release and ::release_with_debug_info "
+                            "(user modes need build.rifts)");
+                }
+                continue;
+            }
+            if (program_.build_mode_class) {   // the mode is (or derives from) that class
+                for (const Symbol* c = program_.build_mode_class; c; c = c->base_class()) active = active || c->name == name;
+            } else if (name == m || (name == "release" && m == "release_with_debug_info")) {
+                active = true;
+            }
+        }
+        return active;
+    }
+
+    void check_check(Check& c, Where where, Span span) {
+        if ((where == Where::file_scope || where == Where::type_body) && c.is_run_time) {
+            note(error(DiagCode::E4211, span,
+                       std::format("a run_time check needs a function body; {} only has compile_time checks",
+                                   where == Where::file_scope ? "file scope" : "a type body"),
+                       "not allowed here"),
+                 "write 'compile_time check', or move the check into a function");
+        }
+        if (where == Where::body && c.is_compile_time) {
+            note(error(DiagCode::E4211, span, "a compile_time check must be at the entry of a function, at file scope or in a type body",
+                       "not at the entry"),
+                 "the entry is the run of checks at the very start of the body; write 'run_time check' for an assert here");
+        }
+        if (where == Where::entry && c.is_compile_time && fn_.decl &&
+            (fn_.decl->is_virtual || fn_.decl->is_override || fn_.decl->is_abstract)) {
+            note(error(DiagCode::E4211, span, "a virtual, override or abstract method may only have run_time entry checks",
+                       "compile_time check"),
+                 "the method a dynamic call reaches is not known at compile time (spec 23); write 'run_time check'");
+        }
+        c.compile_active = c.is_compile_time && mode_active(c.compile_modes, c.compile_modes_span);
+        c.run_active     = c.is_run_time && mode_active(c.run_modes, c.run_modes_span);
+        // The mode's run_time_checks() (spec 24): `none` drops the program's run_time checks,
+        // `gated_only` keeps those with a mode list. The library's own checks follow bounds().
+        const std::string& rtc = program_.mode_settings["run_time_checks"];
+        bool in_std = module_ && (module_->name == "std" || module_->name.starts_with("std::"));
+        if (!in_std && (rtc == "none" || (rtc == "gated_only" && c.run_modes.empty()))) c.run_active = false;
+        bool saved       = fn_.is_compile_time;
+        // Compile-time-only code may only call compile_time functions (spec 15).
+        if (c.is_compile_time && !c.is_run_time) fn_.is_compile_time = true;
+        if (c.block) {
+            infer_block(*c.block);
+        } else {
+            const Type* t = types::strip_ref(infer(*c.condition));
+            if (t->is_untyped()) settle(*c.condition, tc_.bool_());
+            else if (!t->is(Kind::bool_) && !t->is_unknown()) mismatch(c.condition->span, c.condition->type, tc_.bool_(), " (the condition)");
+            const Type* m = types::strip_ref(infer(*c.message));
+            if (m->is_untyped()) {
+                mismatch(c.message->span, c.message->type, tc_.static_str(), " (the message)");
+                settle(*c.message, tc_.error());
+            } else if (!m->is_unknown() && !m->is(Kind::static_str) &&
+                       !(m->is(Kind::external) && (m->name == "std::str" || m->name == "std::format_args"))) {
+                mismatch(c.message->span, c.message->type, tc_.static_str(), " (the message)");
+            }
+        }
+        fn_.is_compile_time = saved;
+    }
+
+    /// A file-scope or type-body compile_time check: evaluated once (per instance for templates).
+    void run_check_now(Check& c, Span span, Symbol* self) {
+        if (self && self->decl && self->decl->is_template && !self->template_of) return;   // the generic template
+        if (c.block) {
+            evaluator().evaluate(*c.block, "");
+            return;
+        }
+        std::shared_ptr<const ct::Value> v = evaluate(*c.condition, "the condition of a compile_time check must be known at compile time");
+        if (!v || v->kind != ct::Value::Kind::boolean || v->boolean) return;
+        std::shared_ptr<const ct::Value> m = evaluate(*c.message, "");
+        bool        at_use = self && self->template_of && instance_site_;   // reported where the instance is written (spec 23)
+        Diagnostic& d = error(DiagCode::E4210, at_use ? *instance_site_ : c.condition->span,
+                              m && m->kind == ct::Value::Kind::string ? m->string : "check failed", "check failed");
+        if (self && self->template_of) note(d, std::format("in the instance {}", quoted(tc_.user(self))));
+        if (at_use) note(d, "the check is here", c.condition->span);
+        (void)span;
+    }
+
+    /// The entry checks of `callee` for one call (spec 23): compile_time checks are evaluated with
+    /// the call's arguments, which must then be compile-time values; `compile_time run_time`
+    /// checks are evaluated when the arguments happen to be known.
+    void run_entry_checks(const Symbol* callee, CallExpr& c, const std::vector<Expr*>& args) {
+        if (fn_.is_compile_time) return;   // compile-time code: the evaluator runs them when it calls
+        const Decl* d = callee->definition ? callee->definition : callee->decl;
+        if (!d || d->kind != DeclKind::function) return;
+        const auto& f = d->as<FunctionDecl>();
+        if (!f.body || f.body->statements.empty() || f.body->statements.front()->kind != StmtKind::check) return;
+        if (!ensure_function(callee)) return;
+        for (const StmtPtr& st : f.body->statements) {
+            if (st->kind != StmtKind::check) break;
+            const Check& k = st->as<CheckStmt>().check;
+            if (!k.is_compile_time || !k.compile_active) continue;
+            bool quiet = k.is_run_time;
+            LineCol at = sources_line(st->span);
+            ct::Evaluator::Context ctx;
+            ctx.function  = callee;
+            ctx.quiet     = quiet;
+            ctx.site      = c.span;
+            ctx.parameter = [&](const Symbol* p) -> std::shared_ptr<const ct::Value> {
+                for (std::size_t i = 0; i < f.params.size() && i < args.size(); ++i) {
+                    if (f.params[i].symbol != p) continue;
+                    Expr& arg = *args[i];
+                    if (quiet) {
+                        ct::Evaluator::Context q;
+                        q.quiet = true;
+                        return evaluator().evaluate_in(arg, "", q);
+                    }
+                    return evaluator().evaluate(arg, std::format("'{}' must be known at compile time: the compile_time check "
+                                                                 "at line {} of '{}' reads it",
+                                                                 p->name, at.line, callee->name));
+                }
+                return nullptr;
+            };
+            ctx.parameter_known = [&](const Symbol* p) {
+                for (std::size_t i = 0; i < f.params.size() && i < args.size(); ++i) {
+                    if (f.params[i].symbol != p) continue;
+                    ct::Evaluator::Context q;
+                    q.quiet = true;
+                    return evaluator().evaluate_in(*args[i], "", q) != nullptr;
+                }
+                return false;
+            };
+            ctx.parameter_site = [&](const Symbol* p) -> std::optional<Span> {
+                for (std::size_t i = 0; i < f.params.size() && i < args.size(); ++i) {
+                    if (f.params[i].symbol == p) return args[i]->span;
+                }
+                return std::nullopt;
+            };
+            if (k.block) {
+                evaluator().evaluate_in(*k.block, "", ctx);
+                continue;
+            }
+            std::shared_ptr<const ct::Value> v = evaluator().evaluate_in(*k.condition, "", ctx);
+            if (!v || v->kind != ct::Value::Kind::boolean || v->boolean) continue;
+            ctx.quiet = true;   // the arguments are known now
+            std::shared_ptr<const ct::Value> m = evaluator().evaluate_in(*k.message, "", ctx);
+            Diagnostic& e = error(DiagCode::E4210, c.span, m && m->kind == ct::Value::Kind::string ? m->string : "check failed",
+                                  "this call fails the check");
+            note(e, std::format("the check of '{}' is here", callee->name), k.condition->span);
+        }
+    }
+
+    LineCol sources_line(Span span) const;
 
     void check_main(Module& m) {
         if (!m.source) return;
@@ -959,7 +1482,9 @@ private:
             bool ok_params = fn.params.empty();
             if (fn.params.size() == 1) {
                 const Type* p = lower(*fn.params[0].type);
-                ok_params     = p->is_unknown() || (p->is(Kind::external) && p->name == "std::span<std::str>");
+                ok_params     = p->is_unknown() || (p->is(Kind::external) && p->name == "std::span<std::str>") ||
+                            (p->is(Kind::user) && p->symbol->template_of == std_item("span") && p->symbol->template_args.size() == 1 &&
+                             p->symbol->template_args[0]->is(Kind::external) && p->symbol->template_args[0]->name == "std::str");
             }
             if (!ok_params) {
                 note(error(DiagCode::E4111, fn.name_span, "invalid parameters for main", "parameters"),
@@ -1023,6 +1548,11 @@ private:
             return;
         }
         case StmtKind::assign: check_assign(s.as<AssignStmt>()); return;
+        case StmtKind::check: {
+            Check& c = s.as<CheckStmt>().check;
+            check_check(c, c.is_entry ? Where::entry : Where::body, s.span);
+            return;
+        }
         case StmtKind::discard: {
             Expr& v = *s.as<DiscardStmt>().value;
             if (infer(v)->is(Kind::pending)) no_context(v, "here ('_ =' needs a value whose type is known)");
@@ -1048,6 +1578,18 @@ private:
 
     void check_assign(AssignStmt& a) {
         const Type* target = infer(*a.target);
+        if (a.target->kind == ExprKind::index && a.target->as<IndexExpr>().op_symbol) {
+            // Assigning through `v[i]` uses `mut T& operator[](usize) mut` (spec 16).
+            auto&       ix  = a.target->as<IndexExpr>();
+            const Type* obj = types::strip_ref(ix.object->type);
+            if (Symbol* m = index_operator(obj, true); m && m->function()->is_mut) {
+                ix.op_symbol    = m;
+                use_method(m, ix.span);
+                target          = m->function()->result ? lower_owned(m, *m->function()->result) : target;
+                a.target->type  = target;
+                require_mutable(place_of(*ix.object), *ix.object, "change an element of");
+            }
+        }
         const Type* value  = infer(*a.value);
         Place       p      = place_of(*a.target);
         require_mutable(p, *a.target, "assign to");
@@ -1067,7 +1609,14 @@ private:
             check_shift_count(*a.value, t);
             return;
         }
-        if (t->is(Kind::user) && find_operator(token_kind_spelling(op), t, types::strip_ref(value))) return;
+        if (t->is(Kind::user)) {   // `operator+=`, else `a = a + b` with `operator+` (spec 16)
+            std::string compound(token_kind_spelling(a.op));
+            if (find_operator(compound, t, types::strip_ref(value), &a.op_symbol) ||
+                find_operator(token_kind_spelling(op), t, types::strip_ref(value), &a.op_symbol)) {
+                settle_operands(a.op_symbol, nullptr, *a.value);
+                return;
+            }
+        }
         check_operator_type(op, t, a.span);
         coerce(*a.value, t);
     }
@@ -1122,7 +1671,7 @@ private:
             if (m.arrow) {
                 const Type* pt = types::strip_ref(objt);
                 p.is_place     = true;
-                p.is_mutable   = !pt->is(Kind::pointer) || pt->is_mut;
+                p.is_mutable   = m.deref_symbol ? m.deref_symbol->function()->is_mut : !pt->is(Kind::pointer) || pt->is_mut;
                 p.name         = ast::to_string(m.name);
                 return p;
             }
@@ -1225,6 +1774,7 @@ private:
             for (FormatPart& part : lit.format_parts) {
                 if (part.expr) check_format_hole(part);
             }
+            if (lit.token_kind == TokenKind::c_string_literal) return set(e, tc_.pointer(tc_.builtin("u8"), false));
             return set(e, lit.token_kind == TokenKind::format_string_literal ? tc_.external("std::format_args")
                                                                               : tc_.static_str());
         }
@@ -1250,7 +1800,11 @@ private:
             }
             return set(e, tc_.range(el));
         }
-        case ExprKind::call: return infer_call(e.as<CallExpr>());
+        case ExprKind::call: {
+            const Type* t = infer_call(e.as<CallExpr>());
+            fold_compile_time_call(e.as<CallExpr>());
+            return t;
+        }
         case ExprKind::index: {
             auto& i = e.as<IndexExpr>();
             return set(e, infer_index(i));
@@ -1282,6 +1836,24 @@ private:
 
     void check_return(ReturnExpr& r) {
         if (r.value) infer(*r.value);
+        if (!fn_.result && fn_.deducing) {   // the first `return` decides the result type (spec 15, 18)
+            if (fn_.generic) return;   // decided per instance
+            if (!r.value) {
+                if (!fn_.deduced) fn_.deduced = tc_.void_();
+                return;
+            }
+            if (!fn_.deduced) {
+                const Type* t = types::strip_ref(r.value->type);
+                if (t->is_untyped()) {
+                    no_context(*r.value, "(the return type is taken from the first 'return'; give the value a type)");
+                    t = tc_.error();
+                }
+                fn_.deduced = t->is(Kind::never) ? nullptr : t;
+                return;
+            }
+            coerce(*r.value, fn_.deduced);
+            return;
+        }
         const Type* result = fn_.result;
         if (!result) return;   // lambda without '->', or deduce
         if (result->is(Kind::void_)) {
@@ -1330,6 +1902,13 @@ private:
             return set(pe, tc_.error());
         }
         if (s->kind == SymbolKind::global) check_static_mut_access(*s, pe.span);
+        if (s->kind == SymbolKind::value_param) {   // `N` of `template<usize N>` (spec 14)
+            const Type* t = s->value_type ? lower(*s->value_type) : tc_.error();
+            if (auto it = subst_.find(s); it != subst_.end() && it->second->is(Kind::value_arg)) {
+                pe.constant = std::make_shared<const ct::Value>(value_of_arg(it->second));
+            }
+            return set(pe, t);
+        }
         if (s->is_type()) {   // a type used as a value: `point`, `T`, `box<u32>` (spec 26)
             pe.constant = evaluate(pe, "");
             return set(pe, tc_.type_value());
@@ -1430,19 +2009,57 @@ private:
     }
 
     /// A user-defined operator for `l op r`: a method `operator op` on `l` or a free function.
-    const Type* find_operator(std::string_view op, const Type* l, const Type* r) {
-        auto try_fn = [&](const Symbol* s, bool is_method) -> const Type* {
+    /// `found` (if given) receives the operator's symbol.
+    const Type* find_operator(std::string_view op, const Type* l, const Type* r, Symbol** found = nullptr) {
+        auto try_fn = [&](Symbol* s, bool is_method) -> const Type* {
+            const Type* t = match_operator(s, is_method, op, l, r);
+            if (t) use_method(s, s->span);
+            if (t && found) *found = s;
+            return t;
+        };
+        return search_operator(op, l, try_fn);
+    }
+
+    const Type* match_operator(const Symbol* s, bool is_method, std::string_view op, const Type* l, const Type* r) {
+        {
             const FunctionDecl* f = s->function();
             if (!f || !f->is_operator || f->name != op) return nullptr;
-            std::size_t want = is_method ? 1 : 2;
+            std::size_t want = (r ? 2u : 1u) - (is_method ? 1u : 0u);   // r is null for unary operators
             if (f->params.size() != want) return nullptr;
             const Type* first = is_method ? l : lower_owned(s, *f->params[0].type);
-            const Type* second = lower_owned(s, *f->params[want - 1].type);
-            if (!is_method && assign_cost(l, first) < 0) return nullptr;
-            if (r && assign_cost(r, second) < 0) return nullptr;
+            const Type* second = r ? lower_owned(s, *f->params[want - 1].type) : nullptr;
+            if (!is_method && !operand_fits(l, first)) return nullptr;
+            if (r && !operand_fits(r, second)) return nullptr;
             if (f->is_defaulted && op == "==") return tc_.bool_();
             return f->result ? lower_owned(s, *f->result) : tc_.void_();
-        };
+        }
+    }
+
+    /// Whether an operand of type `from` can be passed for an operator parameter of type `to`;
+    /// an untyped literal takes the parameter's type (spec 02).
+    bool operand_fits(const Type* from, const Type* to) {
+        const Type* t = types::strip_ref(to);
+        switch (from->kind) {
+        case Kind::untyped_int: return t->is_unknown() || t->is_numeric();
+        case Kind::untyped_float: return t->is_unknown() || t->is_float();
+        case Kind::untyped_default: return true;
+        default: return assign_cost(from, to) >= 0;
+        }
+    }
+
+    /// Gives the untyped literal operands of the operator call the types of its parameters.
+    void settle_operands(const Symbol* s, Expr* lhs, Expr& rhs) {
+        const FunctionDecl* f = s->function();
+        if (!f) return;
+        bool method = f->params.size() == 1;
+        if (lhs && !method && lhs->type && lhs->type->is_untyped()) settle(*lhs, types::strip_ref(lower_owned(s, *f->params[0].type)));
+        if (rhs.type && rhs.type->is_untyped() && !f->params.empty()) {
+            settle(rhs, types::strip_ref(lower_owned(s, *f->params.back().type)));
+        }
+    }
+
+    template <typename F>
+    const Type* search_operator(std::string_view op, const Type* l, F&& try_fn) {
         if (l->is(Kind::user)) {
             if (auto it = l->symbol->members.find(std::string(op)); it != l->symbol->members.end()) {
                 for (Symbol* m : it->second) {
@@ -1480,8 +2097,24 @@ private:
         const Type* r = types::strip_ref(infer(*b.rhs));
 
         if (op == TokenKind::spaceship) {
-            unify_operands(*b.lhs, *b.rhs, l, r, b.span, "operands of '<=>'");
-            return set(b, tc_.external("std::ordering"));
+            if (l->is(Kind::user) || r->is(Kind::user)) {
+                if (const Type* res = find_operator("<=>", l, r, &b.op_symbol)) {
+                    settle_operands(b.op_symbol, b.lhs.get(), *b.rhs);
+                    return set(b, res);
+                }
+                error(DiagCode::E4013, b.span, std::format("operator '<=>' is not defined for {}", quoted(l->is(Kind::user) ? l : r)),
+                      "no such operator");
+                return set(b, ordering_type());
+            }
+            if (l->is_untyped() && r->is_untyped()) {
+                no_context(*b.lhs, "(both sides of '<=>' are untyped literals)");
+                return set(b, ordering_type());
+            }
+            const Type* t = unify_operands(*b.lhs, *b.rhs, l, r, b.span, "operands of '<=>'");
+            if (!t->is_numeric() && !t->is(Kind::char_) && !t->is_unknown() && !t->is_untyped()) {
+                error(DiagCode::E4013, b.span, std::format("{} values cannot be ordered", quoted(t)), "not ordered");
+            }
+            return set(b, ordering_type());
         }
         // User-defined operators.
         if (l->is(Kind::user) || r->is(Kind::user)) {
@@ -1489,8 +2122,8 @@ private:
             bool is_eq = op == TokenKind::eq_eq || op == TokenKind::bang_eq;
             if (is_eq) spelling = "==";
             if (is_comparison(op)) spelling = "<=>";
-            if (const Type* res = find_operator(spelling, l, r)) {
-                if (r->is_untyped()) settle(*b.rhs, l);
+            if (const Type* res = find_operator(spelling, l, r, &b.op_symbol)) {
+                settle_operands(b.op_symbol, b.lhs.get(), *b.rhs);
                 return set(b, is_eq || is_comparison(op) ? tc_.bool_() : res);
             }
             if (is_eq && l == r && l->is_user(SymbolKind::enum_) && !enum_has_payload(l->symbol)) {
@@ -1533,6 +2166,9 @@ private:
                 return set(b, tc_.bool_());
             }
             if ((l->is(Kind::pointer) && r->is(Kind::nullptr_)) || (l->is(Kind::nullptr_) && r->is(Kind::pointer))) {
+                return set(b, tc_.bool_());
+            }
+            if (l->is(Kind::pointer) && r->is(Kind::pointer) && l->inner == r->inner) {   // `mut` does not matter
                 return set(b, tc_.bool_());
             }
             const Type* t = unify_operands(*b.lhs, *b.rhs, l, r, b.span, "the compared values");
@@ -1588,6 +2224,18 @@ private:
         const Type* t         = infer(*u.operand);
         negated_literal_      = false;
         const Type* s = types::strip_ref(t);
+        if (s->is(Kind::user) && u.op == UnaryOp::deref) {   // `*p` on a smart pointer: its `operator*`
+            if (const Type* target = smart_target(*u.operand, s, u.op_symbol)) {
+                return set(u, tc_.reference(target, u.op_symbol->function()->is_mut));
+            }
+        }
+        if (s->is(Kind::user) && (u.op == UnaryOp::negate || u.op == UnaryOp::bit_not)) {   // spec 16
+            std::string_view spelling = u.op == UnaryOp::negate ? "-" : "~";
+            if (const Type* res = find_operator(spelling, s, nullptr, &u.op_symbol)) return set(u, res);
+            error(DiagCode::E4013, u.span, std::format("operator '{}' is not defined for {}", spelling, quoted(s)),
+                  "no such operator");
+            return set(u, tc_.error());
+        }
         switch (u.op) {
         case UnaryOp::negate:
             if (s->is_untyped()) return set(u, s);
@@ -1680,8 +2328,13 @@ private:
             if (t->is(Kind::pointer)) {
                 require_unsafe(m.span, "dereferencing a raw pointer with '->'");
                 t = t->inner;
+            } else if (const Type* target = smart_target(*m.object, t, m.deref_symbol)) {
+                t = target;   // `p->x` is `(*p).x` (spec 16)
             } else {
-                return set(m, tc_.error());   // smart pointers are library types
+                if (!t->is_unknown() && !t->is(Kind::external)) {
+                    error(DiagCode::E4074, m.span, std::format("'->' needs a pointer, but this is {}", quoted(t)), "not a pointer");
+                }
+                return set(m, tc_.error());
             }
         } else if (t->is(Kind::meta)) {
             return infer_meta_member(m, t, name);
@@ -1725,6 +2378,8 @@ private:
     /// `std::is_integer<T>()`, `std::size_of<T>()`, `std::meta::fields<T>()`, ...: compile-time
     /// functions of the compiler. Their value is computed here, so run-time code gets a constant.
     const Type* infer_builtin(CallExpr& c, const std::string& name) {
+        if (name.starts_with("compile_")) return infer_diagnostic(c, name);
+        if (name == "is_compile_time" || name == "location_of") return infer_parameter_query(c, name);
         auto&       seg   = c.callee->as<PathExpr>().path.segments.back();
         std::size_t wants = name == "is_same" ? 2 : 1;
         if (seg.template_args.size() != wants || !c.args.empty()) {
@@ -1745,6 +2400,155 @@ private:
         set(c, t);
         c.constant = evaluate(c, "");
         return t;
+    }
+
+    /// `std::raw::allocate<T>(n)`, `reallocate(p, n)`, `free(p)`, `read(p)`, `write(p, v)`,
+    /// `drop(p)` and `copy(to, from, n)`: the memory operations the library is written with
+    /// (spec 13). All of them require `unsafe`.
+    const Type* infer_raw(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
+        require_unsafe(c.span, std::format("'std::raw::{}'", name));
+        auto& seg = c.callee->as<PathExpr>().path.segments.back();
+        std::size_t want = name == "allocate" || name == "free" || name == "read" || name == "drop" ? 1
+                         : name == "copy"                                                         ? 3
+                                                                                                  : 2;   // reallocate, write, str_from
+        bool templ = name == "allocate";
+        if (args.size() != want || seg.template_args.size() != (templ ? 1u : 0u)) {
+            error(DiagCode::E4030, c.span,
+                  std::format("'std::raw::{}' takes {}", name,
+                              name == "allocate"     ? "a type and a count: 'std::raw::allocate<T>(n)'"
+                              : name == "reallocate" ? "a pointer and a count"
+                              : name == "write"      ? "a pointer and a value"
+                              : name == "copy"       ? "a destination, a source and a count"
+                              : name == "str_from"   ? "a 'std::raw_ptr<u8>' and a length"
+                                                     : "a pointer"),
+                  "wrong arguments");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        auto count = [&](Expr& e) { coerce(e, tc_.builtin("usize")); };
+        auto pointer = [&](Expr& e, bool want_mut) -> const Type* {
+            const Type* t = types::strip_ref(e.type);
+            if (t->is_unknown()) return nullptr;
+            if (!t->is(Kind::pointer) || (want_mut && !t->is_mut)) {
+                error(DiagCode::E4010, e.span,
+                      std::format("expected a {}raw pointer, found {}", want_mut ? "mutable " : "", quoted(t)),
+                      want_mut ? "not a 'std::raw_ptr<mut T>'" : "not a 'std::raw_ptr'");
+                return nullptr;
+            }
+            return t;
+        };
+        if (name == "allocate") {
+            const Type* t = seg.template_args[0].type ? lower(*seg.template_args[0].type) : tc_.error();
+            count(*args[0]);
+            return set(c, tc_.pointer(t, true));
+        }
+        if (name == "reallocate") {
+            const Type* p = pointer(*args[0], true);
+            count(*args[1]);
+            return set(c, p ? p : tc_.error());
+        }
+        if (name == "free" || name == "drop") {
+            pointer(*args[0], true);
+            return set(c, tc_.void_());
+        }
+        if (name == "read") {
+            const Type* p = pointer(*args[0], false);
+            return set(c, p ? p->inner : tc_.error());
+        }
+        if (name == "write") {
+            if (const Type* p = pointer(*args[0], true)) coerce(*args[1], p->inner);
+            return set(c, tc_.void_());
+        }
+        if (name == "str_from") {   // UTF-8 bytes as a std::str (the caller vouches for them)
+            const Type* p = pointer(*args[0], false);
+            if (p && p->inner != tc_.builtin("u8")) mismatch(args[0]->span, p, tc_.pointer(tc_.builtin("u8"), false));
+            count(*args[1]);
+            return set(c, tc_.external("std::str"));
+        }
+        const Type* to   = pointer(*args[0], true);   // copy
+        const Type* from = pointer(*args[1], false);
+        if (to && from && to->inner != from->inner) mismatch(args[1]->span, from, tc_.pointer(to->inner, false));
+        count(*args[2]);
+        return set(c, tc_.void_());
+    }
+
+    /// `std::is_compile_time(param)` and `std::location_of(param)` (spec 23): about the argument
+    /// a call gives a parameter, so only in a function's compile-time code.
+    const Type* infer_parameter_query(CallExpr& c, const std::string& name) {
+        const Symbol* loc_sym = std_item("source_location");
+        const Type*   result  = name == "is_compile_time" ? tc_.bool_() : loc_sym ? tc_.user(loc_sym) : tc_.error();
+        const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
+        bool is_param = p && p->kind == SymbolKind::local &&
+                        (p->local_kind == sema::LocalKind::value_param || p->local_kind == sema::LocalKind::ref_param);
+        if (!is_param) {
+            error(DiagCode::E4030, c.args.empty() ? c.span : c.args[0]->span,
+                  std::format("'std::{}' takes a parameter of the function: 'std::{}(path)'", name, name), "not a parameter");
+            for (ExprPtr& a : c.args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+        } else if (!fn_.is_compile_time) {
+            error(DiagCode::E4120, c.span, std::format("'std::{}' is only meaningful in a compile_time check", name),
+                  "run-time code");
+        }
+        return set(c, result);
+    }
+
+    /// std::compile_error([id,] msg), std::compile_warning(id, msg), std::compile_note(msg) (spec 23).
+    /// In compile-time code they run when that code runs; elsewhere (a taken `if compile_time`
+    /// branch) when the code is checked.
+    const Type* infer_diagnostic(CallExpr& c, const std::string& name) {
+        std::size_t first = 0;   // an optional std::source_location: where to report (spec 23)
+        if (!c.args.empty()) {
+            const Type* t0 = types::strip_ref(c.args[0]->type);
+            if (t0 && t0->is(Kind::user) && t0->symbol == std_item("source_location")) first = 1;
+        }
+        std::size_t lo = (name == "compile_warning" ? 2 : 1) + first;
+        std::size_t hi = (name == "compile_note" ? 1 : 2) + first;
+        const Type* result = name == "compile_error" ? tc_.never() : tc_.void_();
+        if (c.args.size() < lo || c.args.size() > hi) {
+            error(DiagCode::E4030, c.span,
+                  name == "compile_warning" ? std::string("'std::compile_warning' takes an id and a message")
+                  : name == "compile_note"  ? std::string("'std::compile_note' takes a message")
+                                            : std::string("'std::compile_error' takes a message, or an id and a message"),
+                  "wrong arguments");
+            return set(c, result);
+        }
+        for (std::size_t i = first; i < c.args.size(); ++i) {
+            Expr&       a  = *c.args[i];
+            const Type* t  = types::strip_ref(a.type);
+            bool is_id     = c.args.size() - first == 2 && i == first;
+            if (is_id) {
+                check_diagnostic_id(a);
+                continue;
+            }
+            bool ok        = t->is_unknown() || t->is(Kind::static_str) ||
+                      (!is_id && t->is(Kind::external) && (t->name == "std::str" || t->name == "std::format_args"));
+            if (!ok) {
+                mismatch(a.span, a.type, tc_.static_str(), is_id ? " (the id)" : " (the message)");
+                if (t->is_untyped()) settle(a, tc_.error());
+            }
+        }
+        set(c, result);
+        if (!fn_.is_compile_time && !fn_.generic) evaluate(c, "");
+        return result;
+    }
+
+    /// The id of a warning or error is the name of a declared `compile_time std::diagnostic`
+    /// (spec 23): `std::compile_warning(gfx::deprecated, ...)`, never a string.
+    void check_diagnostic_id(Expr& a) {
+        const Symbol* diag = std_item("diagnostic");
+        const Type*   t    = types::strip_ref(a.type);
+        if (t->is_unknown()) return;
+        const Symbol* s = a.kind == ExprKind::path ? a.as<PathExpr>().symbol : nullptr;
+        bool          named = s && s->kind == SymbolKind::global && s->decl &&
+                     s->decl->as<VariableDecl>().storage == ast::Storage::compile_time;
+        if (named && diag && t->is(Kind::user) && t->symbol == diag) return;
+        Diagnostic& d = error(DiagCode::E4213, a.span, "the id of a diagnostic is a declared 'std::diagnostic'",
+                              t->is(Kind::static_str) ? "a string, not a name" : "not a diagnostic id");
+        note(d, "declare it once, with a doc comment that explains it: 'compile_time std::diagnostic deprecated = default;'");
+        if (a.type && a.type->is_untyped()) settle(a, tc_.error());
     }
 
     /// `std::span<T>` of compile-time data: the result of `std::meta::fields<T>()`.
@@ -1862,6 +2666,11 @@ private:
             }
             if (t.kind != TypeKind::named) return;
             const auto& nt = t.as<NamedType>();
+            for (const PathSegment& seg : nt.path.segments) {   // `std::darray<T>&`: T inside the arguments
+                for (const TemplateArg& a : seg.template_args) {
+                    if (a.type) scan(*a.type);
+                }
+            }
             if (nt.symbol && nt.symbol->kind == SymbolKind::type_param) {
                 for (std::size_t i = 0; i < f.template_params.size(); ++i) {
                     if (f.template_params[i].name == nt.symbol->name && !out[i]) out[i] = nt.symbol;
@@ -1882,20 +2691,63 @@ private:
         return out;
     }
 
+    /// Deduces template parameters by matching a parameter's type against an argument's type:
+    /// `std::darray<T>&` against `std::darray<u32>` gives T = u32 (spec 14).
+    static void unify(const TypeExpr& pattern, const Type* at, std::map<const Symbol*, const Type*>& subst) {
+        if (!at) return;
+        if (pattern.kind == TypeKind::reference) {
+            unify(*pattern.as<ReferenceType>().inner, types::strip_ref(at), subst);
+            return;
+        }
+        if (pattern.kind != TypeKind::named) return;
+        const auto&   nt  = pattern.as<NamedType>();
+        const Symbol* sym = nt.symbol;
+        if (!sym) return;
+        if (sym->kind == SymbolKind::type_param) {
+            if (!subst.count(sym)) subst[sym] = at;
+            return;
+        }
+        if (!at->is(Kind::user) || at->symbol->template_of != sym || nt.path.segments.empty()) return;
+        const auto& targs = nt.path.segments.back().template_args;
+        const auto& given = at->symbol->template_args;
+        for (std::size_t i = 0; i < targs.size() && i < given.size(); ++i) {
+            if (targs[i].type) {
+                unify(*targs[i].type, given[i], subst);
+            } else if (targs[i].value && targs[i].value->kind == ExprKind::path) {   // a value parameter: `N`
+                const Symbol* v = targs[i].value->as<PathExpr>().symbol;
+                if (v && v->kind == SymbolKind::type_param && !subst.count(v)) subst[v] = given[i];
+            }
+        }
+    }
+
     Candidate make_candidate(Symbol* s, const std::vector<Expr*>& args, const PathSegment* explicit_args) {
         Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}};
         const FunctionDecl& f = *c.decl;
         if (f.is_template) {
+            // A method template of a class template instance also uses the class's arguments.
+            if (const auto* outer = s->parent ? substitution_of(s->parent) : nullptr) c.subst = *outer;
             std::vector<const Symbol*> syms = template_symbols(f);
             if (explicit_args) {
                 for (std::size_t i = 0; i < explicit_args->template_args.size() && i < syms.size(); ++i) {
                     const TemplateArg& a = explicit_args->template_args[i];
                     if (syms[i] && a.type) c.subst[syms[i]] = lower(*a.type);
+                    if (syms[i] && a.value) {
+                        if (!a.evaluated) {
+                            const Type* v = evaluate_value_arg(s, i, *a.value);
+                            if (!v->is_unknown()) a.evaluated = v;
+                        }
+                        c.subst[syms[i]] = a.evaluated ? a.evaluated : tc_.error();
+                    }
                 }
             }
             for (std::size_t i = 0; i < f.params.size() && i < args.size(); ++i) {
                 const Symbol* tp = param_template_symbol(*f.params[i].type);
-                if (!tp || c.subst.count(tp)) continue;
+                if (!tp) {   // `std::darray<T>&`, `either<L, R>`: deduced from the argument's instance
+                    const Type* at = types::strip_ref(args[i]->type);
+                    if (at && !at->is_untyped() && !at->is_unknown()) unify(*f.params[i].type, at, c.subst);
+                    continue;
+                }
+                if (c.subst.count(tp)) continue;
                 const Type* at = types::strip_ref(args[i]->type);
                 if (at->is_untyped()) {
                     c.undeducible    = true;
@@ -1965,6 +2817,8 @@ private:
         for (const Type* a : args) {
             if (a->is_unknown()) return chosen.symbol;
         }
+        if (!check_constraints(syms, args, span, display)) return nullptr;
+        if (chosen.symbol->kind == SymbolKind::method) return instantiate_method(chosen.symbol, args);
         return instantiate_function(chosen.symbol, args);
     }
 
@@ -2066,6 +2920,11 @@ private:
         if (!fn_.is_compile_time || !callee) return;
         const FunctionDecl* f = callee->function();
         if (!f || f->is_compile_time) return;
+        // The settings of a build mode are read at compile time (spec 24).
+        if (callee->parent && callee->parent->module && callee->parent->module->name == "std::build::mode") return;
+        for (const Symbol* c = callee->parent; c && c->kind == SymbolKind::class_; c = c->base_class()) {
+            if (c->module && c->module->name == "std::build::mode") return;
+        }
         Diagnostic& d = error(DiagCode::E4120, span,
                               std::format("compile-time code calls '{}', which is not a compile_time function", callee->name),
                               "run-time function");
@@ -2075,10 +2934,13 @@ private:
     void check_unsafe_call(const Symbol* callee, Span span) {
         if (!callee || unsafe_depth_ > 0) return;
         const FunctionDecl* f = callee->function();
-        if (!f || (!f->is_unsafe && !f->is_extern)) return;
+        if (!f) return;
+        // An extern(c) function written in Rift (one with a body) is safe to call from Rift.
+        bool foreign = f->is_extern && !f->body && !(callee->definition && callee->definition->as<FunctionDecl>().body);
+        if (!f->is_unsafe && !foreign) return;
         note(error(DiagCode::E4101, span,
                    std::format("'{}' is {} and can only be called inside 'unsafe'", callee->name,
-                               f->is_extern ? "an extern function" : "an unsafe function"),
+                               foreign ? "an extern function" : "an unsafe function"),
                    "needs 'unsafe'"),
              "wrap the call in 'unsafe { ... }'");
     }
@@ -2095,7 +2957,9 @@ private:
         if (callee.kind == ExprKind::path) {
             auto&   pe = callee.as<PathExpr>();
             Symbol* s  = pe.symbol;
+            if (Symbol* member = instance_member(pe, s)) s = pe.symbol = member;   // `box<u32>::make(...)`
             if (std::string b = ct::builtin_name(c); !b.empty()) return infer_builtin(c, b);
+            if (std::string r = ct::raw_intrinsic(c); !r.empty()) return infer_raw(c, r, args);
             if (s && s->is_type()) {
                 Diagnostic& d = error(DiagCode::E3022, callee.span,
                                       std::format("'{}' is a {}, not a function", ast::to_string(pe.path), sema::to_string(s->kind)),
@@ -2109,6 +2973,12 @@ private:
                 if (!pe.path.segments.empty() && pe.path.segments[0].name == "std" &&
                     pe.path.segments.back().name == "panic") {
                     return set(c, tc_.never());
+                }
+                if (pe.path.segments.size() == 2 && pe.path.segments[0].name == "std" && is_arith_builtin(pe.path.segments[1].name)) {
+                    return infer_arith(c, pe.path.segments[1].name, args);
+                }
+                if (pe.path.segments.size() == 2 && pe.path.segments[0].name == "std" && pe.path.segments[1].name == "format") {
+                    if (const Symbol* str = std_item("string")) return set(c, tc_.user(str));   // allocates (spec 19)
                 }
                 for (Expr* a : args) {
                     if (a->type && a->type->is_untyped() && a->type != tc_.untyped_default()) settle(*a, tc_.error());
@@ -2162,13 +3032,22 @@ private:
                 Symbol* target = call_target(*chosen, c.span, ast::to_string(pe.path));
                 if (!target) return set(c, tc_.error());
                 pe.symbol   = target;
+                use_method(target, callee.span);
                 callee.type = nullptr;   // functions are not values
                 check_compile_time_call(target, c.span);
                 check_unsafe_call(target, c.span);
-                return set(c, chosen->result);
+                const Type* result = chosen->result;
+                if (const FunctionDecl* tf = target->function(); tf && tf->result && tf->result->kind == TypeKind::deduce) {
+                    if (!tf->deduced_result) ensure_function(target);
+                    result = tf->deduced_result ? tf->deduced_result : tc_.error();   // set when its body was checked
+                }
+                set(c, result);
+                run_entry_checks(target, c, args);
+                return result;
             }
             if (s->kind == SymbolKind::local || s->kind == SymbolKind::global) {
-                infer(callee);
+                const Type* ct = types::strip_ref(infer(callee));
+                if (ct->is(Kind::closure) || ct->is(Kind::function) || ct->is(Kind::fn_ptr)) return infer_closure_call(c, ct, args);
                 for (Expr* a : args) {
                     if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
                 }
@@ -2192,17 +3071,37 @@ private:
             }
             if (types::is_std_builtin_method(t, name)) return infer_std_method(c, t, name, args);
             if (t->is(Kind::meta)) return infer_meta_method(c, me, t, name, args);
-            if (t->is(Kind::pointer) && !me.arrow) {
-                if (name == "offset") require_unsafe(c.span, "pointer arithmetic");
-                for (Expr* a : args) {
-                    if (a->type && a->type->is_untyped()) settle(*a, tc_.builtin("isize"));
-                }
+            if (t->is(Kind::pointer) && !me.arrow) {   // spec 13: `p.offset(n)` is the only method
                 callee.type = tc_.error();
-                return set(c, name == "offset" ? t : tc_.error());
+                if (name != "offset") {
+                    error(DiagCode::E4070, me.name.span, std::format("{} has no method '{}'", quoted(t), name), "unknown method");
+                    return set(c, tc_.error());
+                }
+                require_unsafe(c.span, "pointer arithmetic");
+                if (args.size() != 1) {
+                    error(DiagCode::E4030, c.span, std::format("'offset' takes 1 argument, found {}", args.size()), "wrong number of arguments");
+                    return set(c, t);
+                }
+                const Type* n = types::strip_ref(args[0]->type);
+                if (n->is_untyped()) settle(*args[0], tc_.builtin("isize"));
+                else if (!n->is_integer() && !n->is_unknown()) {
+                    error(DiagCode::E4010, args[0]->span, std::format("expected an integer offset, found {}", quoted(n)), "not an integer");
+                }
+                return set(c, t);
             }
             if (me.arrow && t->is(Kind::pointer)) {
                 require_unsafe(c.span, "calling a method through a raw pointer");
                 t = t->inner;
+            } else if (me.arrow && t->is(Kind::user)) {
+                const Type* target = smart_target(*me.object, t, me.deref_symbol);
+                if (!target) {
+                    error(DiagCode::E4074, me.span, std::format("'->' needs a pointer, but this is {}", quoted(t)), "not a pointer");
+                    return set(c, tc_.error());
+                }
+                t = target;
+            }
+            if (t->is(Kind::type_param)) {
+                if (const Type* r = infer_constrained_call(c, me, t, name, args)) return r;
             }
             if (!t->is(Kind::user)) {
                 callee.type = tc_.error();
@@ -2224,13 +3123,23 @@ private:
                         }
                     }
                 }
+                if (t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) {
+                    if (const Type* r = infer_str_method(c, me, name, args)) return r;
+                }
                 for (Expr* a : args) {
                     if (a->type && a->type->is_untyped() && a->type != tc_.untyped_default()) settle(*a, tc_.error());
                 }
                 // A few string methods are known before the library exists (the backend implements them).
+                // Built-in copy types are cloneable too (std::cloneable, spec 14): the copy.
+                if (args.empty() && name == "clone" &&
+                    (t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::pointer) ||
+                     t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str"))) {
+                    return set(c, t);
+                }
                 if (args.empty() && (t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str"))) {
                     if (name == "len") return set(c, tc_.builtin("usize"));
                     if (name == "is_empty") return set(c, tc_.bool_());
+                    if (name == "as_ptr") return set(c, tc_.pointer(tc_.builtin("u8"), false));   // spec 13: for C
                 }
                 // Lists of compile-time data (`std::meta::fields<T>().len()`).
                 if (args.empty() && t->is(Kind::external) && t->external_base() == "std::span" && compile_time_only(t)) {
@@ -2257,6 +3166,14 @@ private:
             if (methods.empty()) {
                 bool    opaque = false;
                 Symbol* other  = find_member(t->symbol, name, opaque);
+                if (other && other->kind == SymbolKind::field && !other->is_static) {   // a stored callable: `this.on_done(x)`
+                    const Type* ft = lower_owned(other, *other->decl->as<VariableDecl>().type);
+                    if (ft->is(Kind::function) || ft->is(Kind::fn_ptr)) {
+                        me.symbol      = other;
+                        callee.type    = ft;
+                        return infer_closure_call(c, ft, args);
+                    }
+                }
                 if (other) {
                     error(DiagCode::E4033, me.name.span, std::format("'{}' is a field, not a method", name), "not callable");
                 } else if (!opaque) {
@@ -2273,6 +3190,12 @@ private:
             const Candidate* chosen = resolve_overload(cands, args, c.span, t->symbol->name + "::" + name);
             if (!chosen) return set(c, tc_.error());
             me.symbol = chosen->symbol;
+            use_method(chosen->symbol, me.name.span);
+            if (chosen->decl->is_template) {   // a method template (spec 14): its instance
+                Symbol* target = call_target(*chosen, c.span, t->symbol->name + "::" + name);
+                if (!target) return set(c, tc_.error());
+                me.symbol = target;
+            }
             if (!member_visible(chosen->symbol)) {
                 note(error(DiagCode::E4071, me.name.span,
                            std::format("'{}::{}' is private to module '{}'", t->symbol->name, name,
@@ -2300,7 +3223,9 @@ private:
             }
             check_compile_time_call(chosen->symbol, c.span);
             check_unsafe_call(chosen->symbol, c.span);
-            return set(c, chosen->result);
+            set(c, chosen->result);
+            run_entry_checks(chosen->symbol, c, args);
+            return chosen->result;
         }
 
         infer(callee);
@@ -2328,8 +3253,35 @@ private:
         if (v == "checked") {
             const Symbol* option = std_item("option");
             set(c, option ? tc_.instance(option, {to}) : tc_.external("std::option<" + types::to_string(to) + ">"));
-        } else if (v == "dynamic") {
-            set(c, tc_.external("std::option<" + types::to_string(to) + ">"));
+        } else if (v == "dynamic") {   // base reference -> derived reference, checked at run time (spec 07, 17)
+            const Symbol* option = std_item("option");
+            set(c, option ? tc_.instance(option, {to}) : tc_.external("std::option<" + types::to_string(to) + ">"));
+            const Type* target = types::strip_ref(to);
+            if (from->is_unknown() || target->is_unknown()) return c.type;
+            if (from->is(Kind::user) && from->symbol->kind == SymbolKind::interface) {   // interface → its implementer
+                if (!to->is(Kind::reference) || !target->is(Kind::user) ||
+                    (target->symbol->kind != SymbolKind::class_ && target->symbol->kind != SymbolKind::struct_) ||
+                    !is_ancestor(target->symbol, from->symbol)) {
+                    error(DiagCode::E4091, c.span, std::format("cast::dynamic cannot convert {} to {}", quoted(from), quoted(to)),
+                          "the target does not implement it");
+                }
+                if (to->is_mut) require_mutable(place_of(*c.operand), *c.operand, "cast to a mutable reference");
+                return c.type;
+            }
+            if (!to->is(Kind::reference) || !target->is(Kind::user) || !from->is(Kind::user) ||
+                target->symbol->kind != SymbolKind::class_ || !is_ancestor(target->symbol, from->symbol)) {
+                error(DiagCode::E4091, c.span,
+                      std::format("cast::dynamic cannot convert {} to {}", quoted(from), quoted(to)), "not a downcast");
+                return c.type;
+            }
+            const Symbol* root = from->symbol;
+            while (root->base_class()) root = root->base_class();
+            if (!root->is_open()) {
+                error(DiagCode::E4091, c.span, std::format("cast::dynamic needs an open class hierarchy; {} is not one", quoted(from)),
+                      "not polymorphic");
+            }
+            if (to->is_mut) require_mutable(place_of(*c.operand), *c.operand, "cast to a mutable reference");
+            return c.type;
         } else if (!v.empty() && v != "truncate" && v != "saturate" && v != "round") {
             error(DiagCode::E4092, c.span, std::format("unknown cast 'cast::{}'", v), "unknown cast")
                 ;
@@ -2369,14 +3321,20 @@ private:
                 }
                 return c.type;
             }
+            if (from->is(Kind::char_)) {   // a scalar value is at most 0x10FFFF: 21 bits
+                if (!to->is_integer() || (!to->is_size && to->bits < 32)) invalid("a char needs a 32-bit integer or wider");
+                return c.type;
+            }
             if ((from->is(Kind::reference) || from->is(Kind::user)) && assign_cost(from, to) >= 0) return c.type;
-            invalid("cast<T> converts numbers, bools and simple enums");
+            invalid("cast<T> converts numbers, bools, chars and simple enums");
             return c.type;
         }
         if (v == "truncate" && !(from->is_integer() && to->is_integer())) invalid("truncate converts integers to integers");
         if (v == "saturate" && !(from->is_numeric() && to->is_integer())) invalid("saturate converts numbers to integers");
         if (v == "round" && !(from->is_numeric() && to->is_float())) invalid("round converts numbers to floats");
-        if (v == "checked" && !(from->is_numeric() && to->is_numeric())) invalid("checked converts numbers to numbers");
+        if (v == "checked" && !(from->is_numeric() && to->is_numeric()) && !(from->is_integer() && to->is(Kind::char_))) {
+            invalid("checked converts numbers to numbers, and integers to chars");
+        }
         return c.type;
     }
 
@@ -2449,6 +3407,8 @@ private:
     const Type* infer_lambda(LambdaExpr& l) {
         FunctionState saved = fn_;
         fn_.result          = l.result ? lower(*l.result) : nullptr;
+        fn_.deducing        = !l.result;
+        fn_.deduced         = nullptr;
         fn_.in_function     = true;
         fn_.name            = "lambda";
         for (Capture& cap : l.captures) {
@@ -2470,12 +3430,29 @@ private:
                                                : types::strip_ref(outer));
             }
         }
+        std::vector<const Type*> params;
         for (Param& p : l.params) {
-            if (p.symbol) set_local(p.symbol, lower(*p.type));
+            params.push_back(lower(*p.type));
+            if (p.symbol) set_local(p.symbol, params.back());
         }
         infer_block(*l.body);
+        const Type* result = l.result ? fn_.result : fn_.deduced ? fn_.deduced : tc_.void_();
         fn_ = saved;
-        return set(l, tc_.error());   // lambda types cannot be named
+        const Type* t = tc_.closure(&l);
+        tc_.set_closure_signature(t, std::move(params), result);
+        return set(l, t);   // a type of its own (spec 18)
+    }
+
+    /// `f(args)` where `f` holds a lambda.
+    const Type* infer_closure_call(CallExpr& c, const Type* closure, std::vector<Expr*>& args) {
+        std::size_t n = closure->args.size() - 1;
+        if (args.size() != n) {
+            error(DiagCode::E4030, c.span, std::format("this lambda takes {} argument{}, but {} {} given", n, n == 1 ? "" : "s",
+                                                       args.size(), args.size() == 1 ? "is" : "are"),
+                  "wrong number of arguments");
+        }
+        for (std::size_t i = 0; i < args.size() && i < n; ++i) check_argument(*args[i], closure->args[i]);
+        return set(c, closure->args.back());
     }
 
     const Type* unify_branches(std::vector<Expr*> branches) {
@@ -2582,9 +3559,38 @@ private:
 
     /// `c[i]` on the std containers: sequences take a 'usize' index, maps their key type.
     /// Everything else is a library type the checker does not know (unknown, never an error).
+    /// `operator[]` of a user type: the `mut` overload when `want_mut`, if there is one (spec 16).
+    Symbol* index_operator(const Type* obj, bool want_mut) {
+        auto it = obj->symbol->members.find("[]");
+        if (it == obj->symbol->members.end()) return nullptr;
+        Symbol* first = nullptr;
+        for (Symbol* m : it->second) {
+            const FunctionDecl* f = m->function();
+            if (!f || f->params.size() != 1) continue;
+            if (!first) first = m;
+            if (f->is_mut == want_mut) return m;
+        }
+        return first;
+    }
+
     const Type* infer_index(IndexExpr& i) {
         const Type* obj = types::strip_ref(infer(*i.object));
         const Type* idx = infer(*i.index);
+        if (obj->is(Kind::user)) {
+            Symbol* op = index_operator(obj, false);
+            if (!op) {
+                error(DiagCode::E4013, i.span, std::format("{} has no 'operator[]'", quoted(obj)), "cannot index");
+                if (idx->is_untyped()) settle(*i.index, tc_.error());
+                return tc_.error();
+            }
+            i.op_symbol = op;
+            use_method(op, i.span);
+            const FunctionDecl* f  = op->function();
+            const Type*         pt = lower_owned(op, *f->params[0].type);
+            if (idx->is_untyped() || operand_fits(idx, pt)) coerce(*i.index, pt);
+            else if (!idx->is_unknown()) mismatch(i.index->span, idx, pt, " (the index)");
+            return f->result ? lower_owned(op, *f->result) : tc_.void_();
+        }
         const Type* key = nullptr;
         const Type* el  = tc_.error();
         if (obj->is(Kind::external)) {
@@ -2632,9 +3638,269 @@ private:
                 error(DiagCode::E4010, f.type->span, "range elements are values, not references",
                       std::format("write '{}'", types::to_string(types::strip_ref(var))));
             }
+        } else if (sit->is(Kind::user)) {
+            infer_for_over(f, sit, var);
+        } else if (!sit->is_unknown() && !sit->is(Kind::external)) {
+            error(DiagCode::E4013, f.iterable->span, std::format("cannot iterate over {}", quoted(sit)), "not iterable");
         }
         infer_block(*f.body);
         return set(f, tc_.void_());
+    }
+
+    static bool is_arith_builtin(const std::string& n) {
+        return n == "checked_add" || n == "checked_sub" || n == "checked_mul" || n == "saturating_add" ||
+               n == "saturating_sub" || n == "saturating_mul";
+    }
+
+    /// `std::checked_add(a, b)` (a `std::option`: `none` on overflow) and `std::saturating_add(a, b)`
+    /// (clamped), and the same for sub and mul (spec 16). Both operands have one integer type.
+    const Type* infer_arith(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
+        bool checked = name.starts_with("checked");
+        if (args.size() != 2) {
+            error(DiagCode::E4030, c.span, std::format("'std::{}' takes two integers", name), "wrong number of arguments");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        const Type* l = types::strip_ref(args[0]->type);
+        const Type* r = types::strip_ref(args[1]->type);
+        if (l->is_untyped() && r->is_untyped()) {
+            no_context(*args[0], std::format("(both arguments of 'std::{}' are untyped literals)", name));
+            settle(*args[1], tc_.error());
+            return set(c, tc_.error());
+        }
+        const Type* t = unify_operands(*args[0], *args[1], l, r, c.span, "the arguments");
+        if (!t->is_integer() && !t->is_unknown()) {
+            error(DiagCode::E4013, c.span, std::format("'std::{}' needs integers, not {}", name, quoted(t)), "not an integer");
+            return set(c, tc_.error());
+        }
+        if (!checked || t->is_unknown()) return set(c, t);
+        const Symbol* option = std_item("option");
+        return set(c, option ? tc_.instance(option, {t}) : tc_.external("std::option<" + types::to_string(t) + ">"));
+    }
+
+    /// `text.split(',')`, `text.parse<u32>()`, ...: the methods of `std::str` are functions of
+    /// the library, `str_split(std::str text, char separator)`, called with the text first.
+    /// Null when the library has no such function.
+    const Type* infer_str_method(CallExpr& c, MemberExpr& me, const std::string& name, const std::vector<Expr*>& args) {
+        const Module* m = program_.std_module;
+        if (!m) return nullptr;
+        auto it = m->items.find("str_" + name);
+        if (it == m->items.end()) return nullptr;
+        std::vector<Expr*> all{me.object.get()};
+        all.insert(all.end(), args.begin(), args.end());
+        std::vector<Candidate> cands;
+        for (Symbol* f : it->second) {
+            if (f->kind == SymbolKind::function) cands.push_back(make_candidate(f, all, &me.name.segments.back()));
+        }
+        if (cands.empty()) return nullptr;
+        std::string display = "std::str::" + name;
+        const Candidate* chosen = resolve_overload(cands, all, c.span, display);
+        if (!chosen) return set(c, tc_.error());
+        Symbol* target = call_target(*chosen, c.span, display);
+        if (!target) return set(c, tc_.error());
+        me.symbol   = target;
+        c.callee->type = nullptr;
+        return set(c, chosen->result);
+    }
+
+    /// `operator*` of a user type (a smart pointer, spec 13 and 16): the `mut` one when `object` is a
+    /// mutable place. Sets `op` and returns the target type, or null when there is none.
+    const Type* smart_target(Expr& object, const Type* t, SymbolRef& op) {
+        if (!t->is(Kind::user)) return nullptr;
+        auto it = t->symbol->members.find("*");
+        if (it == t->symbol->members.end()) return nullptr;
+        Place p          = place_of(object);
+        bool  want_mut   = p.is_place && (p.is_mutable || p.is_temporary);
+        const Symbol* chosen = nullptr;
+        for (const Symbol* m : it->second) {
+            const FunctionDecl* f = m->function();
+            if (!f || !f->params.empty() || !f->is_operator) continue;
+            if (!chosen || f->is_mut == want_mut) chosen = m;
+        }
+        if (!chosen || !chosen->function()->result) return nullptr;
+        op = const_cast<Symbol*>(chosen);
+        use_method(chosen, object.span);
+        return types::strip_ref(lower_owned(chosen, *chosen->function()->result));
+    }
+
+    /// `std::unique_ptr<circle>::make(...)`: the resolver names the template's member; the call
+    /// uses the member of the instance the path spells. Null when the path names no instance.
+    Symbol* instance_member(PathExpr& pe, Symbol* s) {
+        if (!s || !s->parent || !s->parent->decl || !s->parent->decl->is_template || s->parent->template_of) return nullptr;
+        auto& segs = pe.path.segments;
+        if (segs.size() < 2 || !segs[segs.size() - 2].has_template_args) return nullptr;
+        std::vector<const Type*> args;
+        for (const TemplateArg& a : segs[segs.size() - 2].template_args) {
+            if (!a.type) return nullptr;
+            const Type* t = lower(*a.type);
+            if (t->is_unknown() || t->is(Kind::type_param)) return nullptr;
+            args.push_back(t);
+        }
+        const Type* inst = tc_.instance(s->parent, args);
+        if (!inst->is(Kind::user)) return nullptr;
+        auto it = inst->symbol->members.find(s->name);
+        if (it == inst->symbol->members.end()) return nullptr;
+        const FunctionDecl* f = s->function();
+        auto sig = [](const FunctionDecl* fd) {
+            std::string out;
+            for (const Param& p : fd->params) out += ast::to_string(*p.type) + ",";
+            return out + (fd->is_mut ? "mut" : "");
+        };
+        for (Symbol* m : it->second) {
+            const FunctionDecl* mf = m->function();
+            if (f && mf && sig(f) == sig(mf) && mf->is_static == f->is_static) return m;
+        }
+        return nullptr;
+    }
+
+    // --- template constraints (spec 14) -----------------------------------------------------
+
+    /// The constraints of the template parameter `p`, lowered: interfaces, or std's
+    /// `comparable`, `cloneable`, `formattable` (externals).
+    std::vector<const Type*> constraints_of(const Symbol* p) {
+        std::vector<const Type*> out;
+        if (!p || !p->template_param) return out;
+        for (const TypePtr& c : p->template_param->constraints) out.push_back(tc_.lower(*c, nullptr));
+        return out;
+    }
+
+    /// Whether `t` satisfies the constraint `c`; `why` says what is missing.
+    bool satisfies(const Type* t, const Type* c, std::string& why) {
+        t = types::strip_ref(t);
+        if (t->is_unknown() || c->is_unknown()) return true;
+        if (c->is(Kind::user) && c->symbol->kind == SymbolKind::interface) {
+            if (t->is(Kind::user) && (t->symbol == c->symbol || is_ancestor(t->symbol, c->symbol))) return true;
+            why = std::format("{} does not implement {}", quoted(t), quoted(c));
+            return false;
+        }
+        if (!c->is(Kind::external)) return true;
+        std::string_view name = c->name;
+        if (name == "std::comparable") {
+            if (t->is_numeric() || t->is(Kind::char_) || t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) return true;
+            if (t->is(Kind::user) && find_operator("<=>", t, t)) return true;
+            why = std::format("{} has no 'operator<=>'", quoted(t));
+            return false;
+        }
+        if (name == "std::cloneable") {
+            if (!t->is(Kind::user) || t->symbol->kind != SymbolKind::class_ || t->symbol->members.count("clone")) return true;
+            why = std::format("class {} has no 'clone()'", quoted(t));
+            return false;
+        }
+        if (name == "std::formattable") {
+            if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || is_std_string(t) ||
+                (t->is(Kind::external) && t->name == "std::str") || (t->is_user(SymbolKind::enum_) && !enum_has_payload(t->symbol))) {
+                return true;
+            }
+            why = std::format("{} cannot be formatted", quoted(t));
+            return false;
+        }
+        return true;
+    }
+
+    /// Checks the arguments of a template against the constraints of its parameters (E4161).
+    bool check_constraints(const std::vector<const Symbol*>& params, const std::vector<const Type*>& args, Span span,
+                           std::string_view display) {
+        bool ok = true;
+        for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) {
+            for (const Type* c : constraints_of(params[i])) {
+                std::string why;
+                if (satisfies(args[i], c, why)) continue;
+                Diagnostic& d = error(DiagCode::E4161, span, why, std::format("'{}' needs {} for '{}'", display, quoted(c), params[i]->name));
+                note(d, "the constraint is here", params[i]->template_param->span);
+                ok = false;
+            }
+        }
+        return ok;
+    }
+
+    /// A method call on a value of a constrained template parameter: only the methods of the
+    /// constraining interfaces exist (spec 14). Null when `t` is not constrained by an interface.
+    const Type* infer_constrained_call(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name,
+                                       std::vector<Expr*>& args) {
+        std::vector<const Type*> cs = constraints_of(t->symbol);
+        std::vector<Symbol*> methods;
+        bool any_interface = false;
+        for (const Type* k : cs) {
+            if (!k->is(Kind::user) || k->symbol->kind != SymbolKind::interface) continue;
+            any_interface = true;
+            for (Symbol* m : find_methods(k->symbol, name)) methods.push_back(m);
+        }
+        if (!any_interface) return nullptr;
+        if (methods.empty()) {
+            note(error(DiagCode::E4162, me.name.span,
+                       std::format("'{}' is constrained to {}, which has no method '{}'", t->symbol->name, quoted(cs.front()), name),
+                       "not in the constraints"),
+                 "a constrained template may only use what its constraints provide");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        std::vector<Candidate> cands;
+        for (Symbol* m : methods) cands.push_back(make_candidate(m, args, nullptr));
+        const Candidate* chosen = resolve_overload(cands, args, c.span, t->symbol->name + "::" + name);
+        c.callee->type = nullptr;
+        return set(c, chosen ? chosen->result : tc_.error());
+    }
+
+    /// A method of `t` named `name` that takes no arguments, or null.
+    Symbol* nullary_method(const Type* t, const std::string& name) {
+        for (Symbol* m : find_methods(t->symbol, name)) {
+            if (m->function() && m->function()->params.empty() && !m->function()->is_template) return m;
+        }
+        return nullptr;
+    }
+
+    /// `for (T& x : c)` over a user type (spec 10): a container has `len()` and `operator[]`
+    /// (the loop visits every index); a stream has `next() mut` returning a `std::option` (the
+    /// loop runs until `none`).
+    void infer_for_over(ForExpr& f, const Type* t, const Type* var) {
+        bool want_mut = var->is(Kind::reference) && var->is_mut;
+        Symbol* len   = nullary_method(t, "len");
+        Symbol* at    = index_operator(t, want_mut);
+        if (len && at) {
+            f.len_symbol   = len;
+            f.index_symbol = at;
+            use_method(len, f.iterable->span);
+            use_method(at, f.iterable->span);
+            const FunctionDecl* af = at->function();
+            const Type* el = af->result ? types::strip_ref(lower_owned(at, *af->result)) : tc_.error();
+            if (!var->is_unknown() && !el->is_unknown() && types::strip_ref(var) != el) {
+                mismatch(f.type->span, var, el, " (the container's elements)");
+            }
+            if (want_mut) {
+                if (!af->is_mut) {
+                    error(DiagCode::E4022, f.type->span, std::format("{} has no 'mut operator[]' to change its elements", quoted(t)),
+                          "cannot change elements");
+                } else {
+                    require_mutable(place_of(*f.iterable), *f.iterable, "iterate mutably over");
+                }
+            }
+            return;
+        }
+        Symbol* next = nullary_method(t, "next");
+        const FunctionDecl* nf = next ? next->function() : nullptr;
+        const Type* produced = nf && nf->result ? types::strip_ref(lower_owned(next, *nf->result)) : nullptr;
+        if (produced && is_std_instance(produced, "option") && !produced->symbol->template_args.empty()) {
+            f.next_symbol  = next;
+            use_method(next, f.iterable->span);
+            const Type* el = produced->symbol->template_args[0];
+            if (var->is(Kind::reference)) {
+                error(DiagCode::E4010, f.type->span, "a stream's elements are values, not references",
+                      std::format("write '{}'", types::to_string(el)));
+            } else if (!var->is_unknown() && !el->is_unknown() && var != el) {
+                mismatch(f.type->span, var, el, " (the stream's elements)");
+            }
+            if (nf->is_mut) {
+                Place p = place_of(*f.iterable);
+                if (p.is_place && !p.is_temporary) require_mutable(p, *f.iterable, "read from");
+            }
+            return;
+        }
+        Diagnostic& d = error(DiagCode::E4013, f.iterable->span, std::format("cannot iterate over {}", quoted(t)), "not iterable");
+        note(d, "a 'for' loop needs 'len()' and 'operator[]' (a container), or 'next()' returning a std::option (a stream)");
     }
 
     /// `for compile_time` (spec 26): the body is copied once per element and each copy is
@@ -2839,6 +4105,51 @@ private:
         return !a.guard && (a.pattern->kind == PatternKind::wildcard || a.pattern->kind == PatternKind::binding);
     }
 
+    /// Whether the patterns together match every value of `t` (spec 10): nested enum patterns
+    /// count, so `std::error(io_error::full)` and `std::error(io_error::closed)` cover `std::error`.
+    bool covers(const std::vector<const Pattern*>& pats, const Type* t) {
+        for (const Pattern* p : pats) {
+            if (irrefutable(*p)) return true;
+        }
+        t = types::strip_ref(t);
+        if (t->is_user(SymbolKind::enum_)) {
+            for (const Symbol* a : t->symbol->member_order) {
+                if (a->alternative && !alternative_covered(pats, t->symbol, a->name)) return false;
+            }
+            return true;
+        }
+        if (t->is(Kind::bool_)) {
+            bool yes = false, no = false;
+            for (const Pattern* p : pats) {
+                if (p->kind != PatternKind::literal) continue;
+                const Expr& lit = *p->as<LiteralPattern>().literal;
+                if (lit.kind == ExprKind::bool_literal) (lit.as<LiteralExpr>().bool_value ? yes : no) = true;
+            }
+            return yes && no;
+        }
+        return false;
+    }
+
+    /// Whether the patterns cover the alternative `name` of the enum `e`, payload included.
+    bool alternative_covered(const std::vector<const Pattern*>& pats, const Symbol* e, const std::string& name) {
+        std::vector<const Pattern*> payloads;
+        for (const Pattern* p : pats) {
+            if (irrefutable(*p)) return true;
+            if (p->kind != PatternKind::enum_alternative) continue;
+            const auto& ep = p->as<EnumPattern>();
+            if (ep.path.segments.back().name != name) continue;
+            if (!ep.payload || irrefutable(*ep.payload)) return true;
+            payloads.push_back(ep.payload.get());
+        }
+        if (payloads.empty()) return false;
+        for (const Symbol* a : e->member_order) {
+            if (a->name == name && a->alternative && a->alternative->payload) {
+                return covers(payloads, lower_owned(a, *a->alternative->payload));
+            }
+        }
+        return false;
+    }
+
     void check_exhaustive(MatchExpr& m, const Type* s) {
         // Unreachable arms after a catch-all.
         bool covered = false;
@@ -2871,13 +4182,20 @@ private:
         }
 
         std::set<std::string> seen;
+        std::vector<const Pattern*> unguarded;
+        for (const MatchArm& arm : m.arms) {
+            if (!arm.guard) unguarded.push_back(arm.pattern.get());
+        }
         for (const MatchArm& arm : m.arms) {
             if (arm.guard) continue;
             const Pattern& p = *arm.pattern;
             if (p.kind == PatternKind::enum_alternative) {
                 const auto& ep = p.as<EnumPattern>();
-                bool full_payload = !ep.payload || irrefutable(*ep.payload);
-                if (full_payload) seen.insert(ep.path.segments.back().name);
+                std::string name = ep.path.segments.back().name;
+                if (s->is_user(SymbolKind::enum_) ? alternative_covered(unguarded, s->symbol, name)
+                                                  : (!ep.payload || irrefutable(*ep.payload))) {
+                    seen.insert(name);
+                }
             } else if (p.kind == PatternKind::literal && s->is(Kind::bool_)) {
                 const Expr& lit = *p.as<LiteralPattern>().literal;
                 if (lit.kind == ExprKind::bool_literal) seen.insert(lit.as<LiteralExpr>().bool_value ? "true" : "false");
@@ -2917,7 +4235,14 @@ private:
     std::map<const Symbol*, const Type*>                subst_;   // template parameters of the instance being checked
     Instantiator*                                       instantiator_ = nullptr;   // makes function instances
     std::unique_ptr<ct::Evaluator>                      evaluator_;   // compile-time evaluation (spec 15, 26)
-    std::set<const Symbol*>                             unknown_values_;   // compile-time values that depend on a template parameter
+    std::set<const Symbol*>                             unknown_values_;
+public:
+    std::optional<Span>                                 instance_site_;   // where the instance being checked was written
+    bool constraints_hold(const std::vector<const Symbol*>& params, const std::vector<const Type*>& args, Span span,
+                          std::string_view display) {
+        return check_constraints(params, args, span, display);
+    }
+private:   // compile-time values that depend on a template parameter
 
     // On-demand checking for compile-time code; defined after Instantiator, which keeps the state.
     bool begin_check(const Decl* d);
@@ -2927,6 +4252,7 @@ private:
 
     /// The instance of the function template `templ` for `args` (spec 14), defined after Instantiator.
     Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args);
+    Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args);
 };
 
 /// Makes the instances of template types (spec 14). An instance is a copy of the template's
@@ -2954,7 +4280,13 @@ public:
         memo_[key]    = t;
         program_.instances.push_back(inst);
         program_.instance_copies.push_back(copy);
-        Checker(program_, diags_, this).check_instance(inst, *copy);
+        Checker checker(program_, diags_, this);
+        checker.instance_site_ = program_.types->instantiation_site();
+        if (checker.instance_site_ && templ->decl) {   // constraints of a type template (spec 14), where it is written
+            std::vector<const Symbol*> declared(templ->decl->template_param_symbols.begin(), templ->decl->template_param_symbols.end());
+            checker.constraints_hold(declared, args, *checker.instance_site_, templ->name);
+        }
+        checker.check_instance(inst, *copy);
         return t;
     }
 
@@ -2978,12 +4310,56 @@ public:
         return inst;
     }
 
+    /// The instance of the method template `templ` for `args` (spec 14). The resolved method is
+    /// copied (its body refers to the class's parameters, which the class instance substitutes);
+    /// the copy's own parameters are replaced by `args`.
+    Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args) {
+        auto key = std::make_pair(templ, args);
+        if (auto it = fn_memo_.find(key); it != fn_memo_.end()) return it->second;
+        const Decl* src = templ->definition ? templ->definition : templ->decl;
+        if (!src || src->kind != DeclKind::function) return nullptr;
+        const auto& f = src->as<FunctionDecl>();
+        if (f.template_param_symbols.size() != args.size() || !f.body) return nullptr;
+        Module* home = templ->module;
+        ast::Cloner cloner([home](const Symbol& original) {
+            Symbol* copy  = home->make(original.kind, original.name, original.span);
+            Module* owner = copy->module;
+            *copy         = original;
+            copy->module  = owner;
+            copy->type    = nullptr;
+            copy->ct_value.reset();
+            return copy;
+        });
+        std::unique_ptr<FunctionDecl> copy = cloner.function(f);
+        Symbol* inst         = home->make(SymbolKind::method, f.name, f.name_span);
+        inst->decl           = copy.get();
+        inst->parent         = templ->parent;
+        inst->access         = templ->access;
+        inst->template_of    = templ;
+        inst->instance_index = ++count_[templ];
+        if (const auto* outer = sema::substitution_of(templ)) inst->template_subst = *outer;
+        for (std::size_t i = 0; i < args.size(); ++i) inst->template_subst[f.template_param_symbols[i]] = args[i];
+        inst->template_args = args;
+        Decl* raw = copy.get();
+        program_.cloned_decls.push_back(std::move(copy));
+        fn_memo_[key] = inst;
+        program_.instances.push_back(inst);
+        program_.instance_copies.push_back(raw);
+        Checker(program_, diags_, this).check_instance(inst, *raw);
+        return inst;
+    }
+
 private:
     /// A fresh copy of the template's declaration, re-parsed from its source text, so that the
     /// instance has an AST of its own. It lives as long as the program: symbols refer to it.
     /// Null when the source does not hold exactly one declaration.
     Decl* copy_of(const Symbol& templ) {
-        const Decl& src           = templ.definition ? *templ.definition : *templ.decl;
+        Decl* copy = reparse(templ.definition ? *templ.definition : *templ.decl);
+        if (copy && templ.source_block) merge_source_block(*copy, reparse(*templ.source_block));
+        return copy;
+    }
+
+    Decl* reparse(const Decl& src) {
         const SourceFile& file    = sources_.file(src.span.file);
         std::vector<Token> tokens = tokenize_range(file, src.span.file, diags_, src.span.begin, src.span.end);
         program_.instance_files.push_back(parse(file, src.span.file, tokens, diags_));
@@ -2992,7 +4368,36 @@ private:
         return parsed.decls.front().get();
     }
 
+    /// A class template split into a header and a source block (spec 09) becomes one declaration
+    /// for the instance: the method bodies of the source go into the header's declarations, and
+    /// the private members are added. The resolver checked already that the two match.
+    static void merge_source_block(Decl& header, Decl* source) {
+        if (!source || (header.kind != DeclKind::class_ && header.kind != DeclKind::struct_) || source->kind != header.kind) return;
+        auto& into = header.as<TypeDecl>().members;
+        auto  sig  = [](const FunctionDecl& f) {
+            std::string s = f.name + "(";
+            for (const Param& p : f.params) s += ast::to_string(*p.type) + ",";
+            return s + (f.is_mut ? ") mut" : ")");
+        };
+        for (DeclPtr& mem : source->as<TypeDecl>().members) {
+            if (mem->kind == DeclKind::check) continue;
+            if (mem->kind == DeclKind::function) {
+                auto& fn    = mem->as<FunctionDecl>();
+                auto  match = std::find_if(into.begin(), into.end(), [&](const DeclPtr& d) {
+                    return d->kind == DeclKind::function && !d->as<FunctionDecl>().body && sig(d->as<FunctionDecl>()) == sig(fn);
+                });
+                if (match != into.end()) {
+                    (*match)->as<FunctionDecl>().body = std::move(fn.body);
+                    continue;
+                }
+            }
+            into.push_back(std::move(mem));
+        }
+    }
+
 public:
+    LineCol line_col(Span span) const { return sources_.file(span.file).line_col(span.begin); }
+
     /// Which declarations are being checked or are done (functions and compile_time constants
     /// can be checked early, on demand, when compile-time code needs them).
     enum class State { checking, done };
@@ -3006,6 +4411,8 @@ private:
     std::map<std::pair<const Symbol*, std::vector<const Type*>>, Symbol*>     fn_memo_;
     std::map<const Symbol*, unsigned>                                     count_;
 };
+
+LineCol Checker::sources_line(Span span) const { return instantiator_ ? instantiator_->line_col(span) : LineCol{}; }
 
 bool Checker::begin_check(const Decl* d) {
     if (!instantiator_) return true;
@@ -3036,6 +4443,10 @@ std::shared_ptr<const ct::Value> Checker::ensure_constant(const Symbol* g) {
 }
 
 // Null only when the template's source did not parse (already reported) or no instantiator is set.
+Symbol* Checker::instantiate_method(const Symbol* templ, const std::vector<const Type*>& args) {
+    return instantiator_ ? instantiator_->instantiate_method(templ, args) : nullptr;
+}
+
 Symbol* Checker::instantiate_function(const Symbol* templ, const std::vector<const Type*>& args) {
     return instantiator_ ? instantiator_->instantiate_function(templ, args) : nullptr;
 }
@@ -3047,6 +4458,14 @@ void check_types(sema::Program& program, const SourceManager& sources, Diagnosti
     Instantiator instantiator(program, sources, diags);
     program.types->set_instantiator(
         [&](const Symbol* templ, const std::vector<const Type*>& args) { return instantiator.instantiate(templ, args); });
+    // Template value arguments (`box<4>`, spec 14): checked and evaluated by a checker for the
+    // parameters in scope where the type is written.
+    program.types->set_value_arg_resolver([&](const Symbol* templ, std::size_t index, const Expr& value,
+                                              const std::map<const Symbol*, const Type*>* subst) -> const Type* {
+        Checker c(program, diags, &instantiator);
+        if (!templ) return c.count_for(const_cast<Expr&>(value), subst);   // `std::raw::array<T, N>`
+        return c.value_arg_for(templ, index, const_cast<Expr&>(value), subst);
+    });
     // A compile_time `type` constant used as a type (spec 26): evaluated on demand while checking.
     program.types->set_type_value_resolver([&](const Symbol* s) -> const Type* {
         if (!s->ct_value && s->kind == SymbolKind::global && s->decl && !instantiator.states.count(s->decl)) {
@@ -3056,6 +4475,7 @@ void check_types(sema::Program& program, const SourceManager& sources, Diagnosti
         return s->ct_value->type_value;
     });
     Checker(program, diags, &instantiator).run();
+    if (program.build_graph && !diags.has_errors()) Checker(program, diags, &instantiator).run_build();
     // Instances are only made while checking. Later phases see the ones that exist.
     program.types->set_instantiator(nullptr);
     program.types->set_type_value_resolver([](const Symbol* s) -> const Type* {

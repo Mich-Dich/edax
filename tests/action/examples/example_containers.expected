@@ -1,0 +1,20 @@
+exit: 0
+--- stdout
+-- darray: a growable array
+len 3, removed d, [1] = b
+index 10: none
+-- array and bitset: fixed size, no heap
+fib: 1 1 2 3 5, size 20 bytes
+17 primes below 60, the last is 59
+sum of all: 440, bitset<60> takes 8 bytes
+-- hash_map: word counts
+11 distinct words; 'the' x4; 'cat' x0
+-- tree_map: the same counts, sorted by word
+  dog    2
+  fox    2
+  the    4
+-- strings and text
+numbers add up to 67; not a number: 'x'
+starts with 'the': true, has 'fox': true, 'lazy' at 35
+'Rift ✓' is 8 bytes
+--- stderr

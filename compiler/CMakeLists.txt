@@ -21,14 +21,31 @@ add_library(rift STATIC
 target_include_directories(rift PUBLIC include)
 
 # The standard library's Rift source is compiled into riftc. CMake re-runs when it changes.
-set(RIFT_STD_HEADER ${PROJECT_SOURCE_DIR}/library/std/std.rifth)
-file(READ ${RIFT_STD_HEADER} RIFT_STD_HEADER_TEXT)
+# Each module is a .rifth and a .rifts in library/std: `std` is std.*, `std::filesystem` is
+# filesystem.*. The first one is the core module.
+set(RIFT_STD_MODULES std filesystem env build build/mode)
+set(RIFT_STD_ENTRIES "")
+foreach(module ${RIFT_STD_MODULES})
+    set(header ${PROJECT_SOURCE_DIR}/library/std/${module}.rifth)
+    set(source ${PROJECT_SOURCE_DIR}/library/std/${module}.rifts)
+    file(READ ${header} header_text)
+    file(READ ${source} source_text)
+    if (module STREQUAL "std")
+        set(name "std")
+    else()
+        string(REPLACE "/" "::" name "std::${module}")
+    endif()
+    string(APPEND RIFT_STD_ENTRIES "    {\"${name}\", \"<std>/${module}.rifth\", R\"rift_std(${header_text})rift_std\",\n"
+                                   "     \"<std>/${module}.rifts\", R\"rift_std(${source_text})rift_std\"},\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${header} ${source})
+endforeach()
 configure_file(src/std_library.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RIFT_STD_HEADER})
 target_compile_definitions(rift PRIVATE RIFT_VERSION="${PROJECT_VERSION}")
 
 # LLVM (the backend). Only the backend touches LLVM headers; the front end does not.
-find_package(LLVM REQUIRED CONFIG)
+# Asking for 18.1 (every LLVM 18 release) skips other LLVM installs on the search path (e.g. the Vulkan SDK ships
+# DirectXShaderCompiler's LLVM fork with a CMake package that does not even load).
+find_package(LLVM 18.1 REQUIRED CONFIG HINTS /usr/lib/llvm-18/lib/cmake/llvm /usr/lib/llvm-18)
 if (NOT LLVM_VERSION_MAJOR EQUAL 18)
     message(FATAL_ERROR "riftc needs LLVM 18 (found ${LLVM_PACKAGE_VERSION} in ${LLVM_DIR})")
 endif()

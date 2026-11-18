@@ -1,0 +1,16 @@
+exit: 0
+--- stdout
+Carol                 45   98000.25
+Alice                 34   72000.50
+Dave                  30   61000.00
+--- stderr
+warning[W4002]: implicit allocation of a std::string from a string literal
+  --> tests/action/run/employees_run.rifts:10:26
+   |
+10 |     std::string name   = "";
+   |                          ^^ allocates
+   = note: write 'std::string::from("...")' to make the allocation visible
+
+0 errors, 1 warning
+skipping bad line: broken line
+skipping bad line: Eve,51,abc

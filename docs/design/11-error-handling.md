@@ -17,6 +17,7 @@
 | `r.map_error(f)` | Convert the error with a function or lambda |
 | `r.value_or(x)` | `ok` value, or `x` |
 | `r.expect(f"...")` | `ok` value, or **panic** with the message |
+| `r.is_ok()`, `r.is_error()` (`o.is_some()`, `o.is_none()` on an option) | `bool`; looks without taking the value |
 
 `?` requires the **error types to be identical**. There is no hidden conversion; convert with `.or_error` or `.map_error`:
 ```rift

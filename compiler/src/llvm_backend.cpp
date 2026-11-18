@@ -6,9 +6,13 @@
 
 #include <functional>
 
+#include <filesystem>
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DIBuilder.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Intrinsics.h"
@@ -18,6 +22,8 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
@@ -104,6 +110,77 @@ public:
         : program_(program), tc_(*program.types), sources_(sources), diags_(diags), options_(options), ctx_(ctx),
           mod_(std::make_unique<llvm::Module>("rift", ctx)), b_(ctx) {
         mod_->setDataLayout(host_data_layout());
+        if (options_.debug_info) {
+            dib_ = std::make_unique<llvm::DIBuilder>(*mod_);
+            mod_->addModuleFlag(llvm::Module::Warning, "Debug Info Version", llvm::DEBUG_METADATA_VERSION);
+            mod_->addModuleFlag(llvm::Module::Warning, "Dwarf Version", 5);
+        }
+    }
+
+    // --- debug info (spec 24: the mode's debug_info()) -----------------------------------------
+
+    std::unique_ptr<llvm::DIBuilder>     dib_;
+    llvm::DICompileUnit*                 unit_ = nullptr;
+    std::map<FileId, llvm::DIFile*>      di_files_;
+
+    llvm::DIFile* di_file(FileId id) {
+        if (auto it = di_files_.find(id); it != di_files_.end()) return it->second;
+        std::filesystem::path p(sources_.file(id).path());
+        std::error_code ec;
+        std::filesystem::path abs = p.is_absolute() || p.string().starts_with("<") ? p : std::filesystem::absolute(p, ec);
+        llvm::DIFile* f = dib_->createFile(abs.filename().string(), abs.parent_path().string());
+        if (!unit_) {
+            unit_ = dib_->createCompileUnit(llvm::dwarf::DW_LANG_C_plus_plus, f, "riftc " RIFT_VERSION, false, "", 0);
+        }
+        di_files_[id] = f;
+        return f;
+    }
+
+    /// A DISubprogram for `fn`, written at `span`.
+    void debug_function(llvm::Function* fn, Span span, const std::string& name) {
+        if (!dib_ || !fn) return;
+        llvm::DIFile* file = di_file(span.file);
+        unsigned      line = sources_.file(span.file).line_col(span.begin).line;
+        llvm::DISubroutineType* type = dib_->createSubroutineType(dib_->getOrCreateTypeArray({}));
+        llvm::DISubprogram* sp = dib_->createFunction(file, name, fn->getName(), file, line, type, line,
+                                                      llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
+        fn->setSubprogram(sp);
+        b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, line, 0, sp));
+    }
+
+    /// The debug location of the code generated next: `span` in the current function.
+    void debug_at(Span span) {
+        if (!dib_) return;
+        llvm::DISubprogram* sp = cur_fn_ ? cur_fn_->getSubprogram() : nullptr;
+        if (!sp || span.file != di_file_of(sp)) {
+            if (!sp) b_.SetCurrentDebugLocation(llvm::DebugLoc());
+            return;
+        }
+        LineCol lc = sources_.file(span.file).line_col(span.begin);
+        b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, lc.line, lc.column, sp));
+    }
+
+    FileId di_file_of(const llvm::DISubprogram* sp) {
+        for (const auto& [id, f] : di_files_) {
+            if (f == sp->getFile()) return id;
+        }
+        return static_cast<FileId>(-1);
+    }
+
+    /// Code made for one function while another was being generated can carry the other's
+    /// locations; functions without a subprogram carry none, and calls need one.
+    void fix_debug_locations() {
+        for (llvm::Function& fn : *mod_) {
+            llvm::DISubprogram* sp = fn.getSubprogram();
+            for (llvm::Instruction& inst : llvm::instructions(fn)) {
+                const llvm::DebugLoc& loc = inst.getDebugLoc();
+                if (!sp) {
+                    if (loc) inst.setDebugLoc(llvm::DebugLoc());
+                    continue;
+                }
+                if (!loc || loc->getScope()->getSubprogram() != sp) inst.setDebugLoc(llvm::DILocation::get(ctx_, sp->getLine(), 0, sp));
+            }
+        }
     }
 
     std::unique_ptr<llvm::Module> run() {
@@ -120,14 +197,35 @@ private:
         if (!main && !options_.all_functions) return nullptr;
         declare_runtime();
         if (main) rift_main_ = function_of(main);
+        // Rift functions exported to C exist even when no Rift code calls them: C may (spec 13).
+        for (auto& [name, m] : program_.modules) {
+            for (Symbol* s : m->item_order) {
+                if (s->kind != SymbolKind::function) continue;
+                const FunctionDecl* f = body_decl(s);
+                if (f && f->is_extern && f->body && !f->is_template) function_of(s);
+            }
+        }
         if (options_.all_functions) {
             for (auto& [name, m] : program_.modules) {
                 for (Symbol* s : m->item_order) {
-                    if (s->kind == SymbolKind::function && !s->function()->is_template) function_of(s);
+                    if (s->kind != SymbolKind::function || s->function()->is_template) continue;
+                    if (s->function()->is_compile_time && !s->function()->is_run_time) continue;   // never runs
+                    function_of(s);
                 }
             }
         }
-        while (!queue_.empty() || !global_queue_.empty() || !drop_queue_.empty()) {
+        while (!queue_.empty() || !global_queue_.empty() || !drop_queue_.empty() || !lambda_queue_.empty() ||
+               !clone_queue_.empty()) {
+            while (!clone_queue_.empty()) {
+                const Symbol* d = clone_queue_.front();
+                clone_queue_.pop_front();
+                gen_clone(d);
+            }
+            while (!lambda_queue_.empty()) {
+                const LambdaExpr* l = lambda_queue_.front();
+                lambda_queue_.pop_front();
+                gen_lambda(*l);
+            }
             while (!drop_queue_.empty()) {
                 const Symbol* d = drop_queue_.front();
                 drop_queue_.pop_front();
@@ -154,6 +252,10 @@ private:
             b_.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
         }
         if (diags_.has_errors()) return nullptr;
+        if (dib_) {
+            fix_debug_locations();
+            dib_->finalize();
+        }
         return std::move(mod_);
     }
 
@@ -187,7 +289,7 @@ private:
         if (it == program_.entry->items.end()) return nullptr;
         for (Symbol* s : it->second) {
             const FunctionDecl* f = s->kind == SymbolKind::function ? body_decl(s) : nullptr;
-            if (f && f->params.empty()) return s;
+            if (f && f->params.size() <= 1) return s;
         }
         return nullptr;
     }
@@ -199,9 +301,7 @@ private:
                 for (Symbol* s : it->second) {
                     if (s->kind == SymbolKind::function) {
                         const FunctionDecl* f = body_decl(s);
-                        if (f && !f->params.empty()) {
-                            unsupported(f->params.front().span, "parameters of 'main'");
-                        }
+                        if (f && f->params.size() > 1) unsupported(f->params[1].span, "more than one parameter of 'main'");
                         return s;
                     }
                 }
@@ -225,9 +325,11 @@ private:
         parts.push_back(s->name == "~" + (s->parent ? s->parent->name : "") ? "drop" : s->name);
         if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
         std::string name = "r_" + mangle_parts(parts);
-        const auto& table = s->parent ? s->parent->members : s->module->items;
+        const auto&   table = s->parent ? s->parent->members : s->module->items;
+        const Symbol* entry = s;   // an instance is named after its template's overload
+        while (entry->template_of && entry->template_of->kind == entry->kind) entry = entry->template_of;
         if (auto it = table.find(s->name); it != table.end() && it->second.size() > 1) {
-            auto pos = std::find(it->second.begin(), it->second.end(), s);
+            auto pos = std::find(it->second.begin(), it->second.end(), entry);
             name += std::format("_{}", pos - it->second.begin());
         }
         return name;
@@ -239,10 +341,21 @@ private:
         const FunctionDecl* f = body_decl(s);
         if (!f) unsupported(s->span, "this kind of function");
         if (f->is_template && !s->template_of) unsupported(s->span, "calling templates");
-        if (f->is_extern) unsupported(s->span, "extern functions");
+        if (f->is_extern && f->abi == "cpp") unsupported(s->span, "'extern(std::build::language::cpp)' (C++ linkage)");
+        if (f->is_extern && !f->body) return extern_function(s, *f);   // a C function: imported
         if (!f->body) unsupported(s->span, "functions without a body");
-        if (f->result && f->result->kind == TypeKind::deduce) unsupported(f->result->span, "'deduce' return types");
-        const auto* subst = sema::substitution_of(s);
+        auto* fn = llvm::Function::Create(function_type(s), llvm::Function::ExternalLinkage, function_name(s), mod_.get());
+        fns_[s] = fn;
+        queue_.push_back(s);
+        if (f->is_extern) export_function(s, *f, fn);   // a Rift function that C can call
+        return fn;
+    }
+
+    /// The LLVM type of the Rift function `s` (methods take `self` first). Also for abstract and
+    /// interface methods, which have no body: dynamic calls use it.
+    llvm::FunctionType* function_type(const Symbol* s) {
+        const FunctionDecl*      f     = body_decl(s);
+        const auto*              subst = sema::substitution_of(s);
         std::vector<llvm::Type*> params;
         if (has_self(s)) params.push_back(llvm::PointerType::get(ctx_, 0));
         for (const Param& p : f->params) {
@@ -250,12 +363,213 @@ private:
             params.push_back(lower_type(tc_.lower(*p.type, subst)));
         }
         cur_ = s->span;
-        llvm::Type* ret = f->result ? lower_type(tc_.lower(*f->result, subst)) : llvm::Type::getVoidTy(ctx_);
-        auto* fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::ExternalLinkage,
-                                          function_name(s), mod_.get());
+        llvm::Type* ret = f->result ? lower_type(result_type(*f, subst)) : llvm::Type::getVoidTy(ctx_);
+        return llvm::FunctionType::get(ret, params, false);
+    }
+
+    /// `extern(c)` with a body (spec 13): C calls it under its own name. The exported symbol is a
+    /// wrapper that converts C's byte-sized `bool` and calls the Rift function.
+    void export_function(const Symbol* s, const FunctionDecl& f, llvm::Function* target) {
+        if (has_self(s)) unsupported(s->span, "exporting methods to C");
+        llvm::Function*                  decl     = extern_function_type(s, f, f.name + ".export");
+        llvm::Function*                  wrapper  = llvm::Function::Create(decl->getFunctionType(), llvm::Function::ExternalLinkage,
+                                                                           f.name, mod_.get());
+        wrapper->copyAttributesFrom(decl);
+        decl->eraseFromParent();
+        llvm::IRBuilderBase::InsertPoint saved = b_.saveIP();
+        b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", wrapper));
+        std::vector<llvm::Value*> args;
+        for (unsigned i = 0; i < wrapper->arg_size(); ++i) {
+            llvm::Value* a = wrapper->getArg(i);
+            llvm::Type*  want = target->getFunctionType()->getParamType(i);
+            args.push_back(want->isIntegerTy(1) ? b_.CreateICmpNE(a, llvm::ConstantInt::get(a->getType(), 0)) : a);
+        }
+        llvm::Value* r = b_.CreateCall(target, args);
+        if (wrapper->getReturnType()->isVoidTy()) {
+            b_.CreateRetVoid();
+        } else {
+            b_.CreateRet(r->getType()->isIntegerTy(1) ? b_.CreateZExt(r, wrapper->getReturnType()) : r);
+        }
+        b_.restoreIP(saved);
+    }
+
+    /// An `extern(c)` function (spec 13): declared under its own name with the C calling
+    /// convention. Small integers are widened as C does; structs are passed by pointer only.
+    llvm::Function* extern_function(const Symbol* s, const FunctionDecl& f) {
+        llvm::Function* fn = mod_->getFunction(f.name);
+        if (!fn) fn = extern_function_type(s, f, f.name);
         fns_[s] = fn;
-        queue_.push_back(s);
         return fn;
+    }
+
+    /// A declaration with C's types for `f` (bool as a byte, small integers widened).
+    llvm::Function* extern_function_type(const Symbol* s, const FunctionDecl& f, const std::string& name) {
+        (void)s;
+        auto c_type = [&](const types::Type* t, Span span) -> llvm::Type* {
+            cur_ = span;
+            if (t->is(Kind::bool_)) return llvm::Type::getInt8Ty(ctx_);
+            if (t->is(Kind::user) && t->symbol->kind != SymbolKind::enum_) {
+                unsupported(span, "passing structs by value to extern functions (pass a std::raw_ptr)");
+            }
+            if (t->is(Kind::reference)) unsupported(span, "references in extern functions (use std::raw_ptr)");
+            return lower_type(t);
+        };
+        std::vector<llvm::Type*>        params;
+        std::vector<const types::Type*> types;
+        for (const Param& p : f.params) {
+            const types::Type* t = tc_.lower(*p.type, nullptr);
+            types.push_back(t);
+            params.push_back(c_type(t, p.span));
+        }
+        const types::Type* rt  = f.result ? tc_.lower(*f.result, nullptr) : nullptr;
+        llvm::Type*        ret = is_void(rt) ? llvm::Type::getVoidTy(ctx_) : c_type(rt, f.result->span);
+        llvm::Function* fn = nullptr;
+        {
+            fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::ExternalLinkage,
+                                        name, mod_.get());
+            auto extend = [&](const types::Type* t) -> llvm::Attribute::AttrKind {
+                if (t->is(Kind::bool_)) return llvm::Attribute::ZExt;
+                if (t->is_integer() && t->bits < 32) return t->is_signed ? llvm::Attribute::SExt : llvm::Attribute::ZExt;
+                return llvm::Attribute::None;
+            };
+            for (unsigned i = 0; i < types.size(); ++i) {
+                if (auto k = extend(types[i]); k != llvm::Attribute::None) fn->addParamAttr(i, k);
+            }
+            if (rt && !is_void(rt)) {
+                if (auto k = extend(rt); k != llvm::Attribute::None) fn->addRetAttr(k);
+            }
+        }
+        return fn;
+    }
+
+    /// A function's result type; `deduce` uses the type the checker found (spec 15).
+    const types::Type* result_type(const FunctionDecl& f, const std::map<const Symbol*, const types::Type*>* subst) {
+        if (f.result->kind == TypeKind::deduce) {
+            if (!f.deduced_result) unsupported(f.result->span, "this 'deduce' function");
+            return f.deduced_result;
+        }
+        return tc_.lower(*f.result, subst);
+    }
+
+    // --- lambdas (spec 18) ----------------------------------------------------------------
+
+    /// A lambda's value: its captures, in the order written. A value capture holds the value, a
+    /// reference capture the address; a lambda without captures holds one unused byte.
+    llvm::StructType* closure_type(const types::Type* t) {
+        if (auto it = closure_types_.find(t); it != closure_types_.end()) return it->second;
+        const LambdaExpr* l = tc_.lambda_of(t);
+        std::vector<llvm::Type*> fields;
+        for (const Capture& c : l->captures) {
+            const types::Type* ct = c.symbol ? c.symbol->type : nullptr;
+            if (!ct) unsupported(c.span, "this capture");
+            fields.push_back(ct->is(Kind::reference) ? ptr_type() : lower_type(ct));
+        }
+        if (fields.empty()) fields.push_back(llvm::Type::getInt8Ty(ctx_));
+        auto* st = llvm::StructType::create(ctx_, fields, "closure");
+        return closure_types_[t] = st;
+    }
+
+    /// The address of a local's object (through a reference local, what it refers to).
+    llvm::Value* local_address(const Symbol* s, Span span) {
+        auto it = locals_.find(s);
+        if (it == locals_.end()) unsupported(span, "capturing this name");
+        if (s->type && s->type->is(Kind::reference)) return b_.CreateLoad(ptr_type(), it->second);
+        return it->second;
+    }
+
+    /// `[captures](params) { body }`: builds the closure value; the body becomes a function of its own.
+    llvm::Value* lambda_value(LambdaExpr& l) {
+        const types::Type* t  = static_cast<Expr&>(l).type;
+        llvm::StructType*  st = closure_type(t);
+        llvm::AllocaInst*  slot = entry_alloca(st, "closure");
+        b_.CreateStore(llvm::Constant::getNullValue(st), slot);
+        for (std::size_t i = 0; i < l.captures.size(); ++i) {
+            Capture&     c = l.captures[i];
+            llvm::Value* v = nullptr;
+            if (c.kind == CaptureKind::init) {
+                v = gen_expr(*c.init);
+                moved_out(*c.init);
+            } else if (c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref) {
+                v = local_address(c.captured, c.span);
+            } else {
+                v = b_.CreateLoad(lower_type(c.symbol->type), local_address(c.captured, c.span));
+                if (c.kind == CaptureKind::move) {
+                    if (auto it = owned_.find(c.captured); it != owned_.end()) b_.CreateStore(llvm::ConstantInt::getFalse(ctx_), it->second.flag);
+                }
+            }
+            b_.CreateStore(v, b_.CreateStructGEP(st, slot, static_cast<unsigned>(i)));
+        }
+        lambda_function(l);
+        return b_.CreateLoad(st, slot);
+    }
+
+    llvm::Function* lambda_function(const LambdaExpr& l) {
+        if (auto it = lambda_fns_.find(&l); it != lambda_fns_.end()) return it->second;
+        const types::Type* t = static_cast<const Expr&>(l).type;
+        std::vector<llvm::Type*> params{ptr_type()};
+        for (std::size_t i = 0; i + 1 < t->args.size(); ++i) params.push_back(lower_type(t->args[i]));
+        llvm::Type* ret = is_void(t->args.back()) ? llvm::Type::getVoidTy(ctx_) : lower_type(t->args.back());
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::InternalLinkage,
+                                          "rl_" + std::to_string(lambda_fns_.size()), mod_.get());
+        lambda_fns_[&l] = fn;
+        lambda_queue_.push_back(&l);
+        return fn;
+    }
+
+    void gen_lambda(const LambdaExpr& l) {
+        llvm::Function*    fn = lambda_fns_[&l];
+        const types::Type* t  = static_cast<const Expr&>(l).type;
+        cur_                  = l.span;
+        try {
+            cur_fn_ = fn;
+            debug_function(fn, l.span, "lambda");
+            locals_.clear();
+            loops_.clear();
+            scopes_.clear();
+            owned_.clear();
+            self_   = nullptr;
+            result_ = t->args.back();
+            b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", fn));
+            open_scope();
+            llvm::Value*      env = fn->getArg(0);
+            llvm::StructType* st  = closure_type(t);
+            for (std::size_t i = 0; i < l.captures.size(); ++i) {
+                if (l.captures[i].symbol) locals_[l.captures[i].symbol] = b_.CreateStructGEP(st, env, static_cast<unsigned>(i));
+            }
+            for (std::size_t i = 0; i < l.params.size(); ++i) {
+                llvm::Argument*   a    = fn->getArg(static_cast<unsigned>(i) + 1);
+                llvm::AllocaInst* slot = entry_alloca(a->getType(), l.params[i].name);
+                b_.CreateStore(a, slot);
+                if (l.params[i].symbol) locals_[l.params[i].symbol] = slot;
+            }
+            llvm::Value* v = gen_block(*l.body);
+            if (!terminated()) {
+                destroy_from(0);
+                if (fn->getReturnType()->isVoidTy()) b_.CreateRetVoid();
+                else if (v) b_.CreateRet(v);
+                else b_.CreateUnreachable();
+            }
+            scopes_.clear();
+        } catch (const Unsupported&) {
+        }
+    }
+
+    /// Calls the lambda held by `callee` (its type says which lambda it is).
+    llvm::Value* closure_call(Expr& callee, const types::Type* t, std::vector<Expr*> args) {
+        const LambdaExpr* l   = tc_.lambda_of(t);
+        llvm::Value*      env = object_address(callee);
+        std::vector<llvm::Value*> values{env};
+        for (std::size_t i = 0; i < args.size() && i + 1 < t->args.size(); ++i) {
+            if (t->args[i]->is(Kind::reference)) {
+                values.push_back(object_address(*args[i]));
+            } else {
+                values.push_back(gen_expr(*args[i]));
+                moved_out(*args[i]);
+            }
+        }
+        llvm::Value* r = b_.CreateCall(lambda_function(*l), values);
+        if (t->args.back()->is(Kind::reference)) return b_.CreateLoad(lower_type(types::strip_ref(t->args.back())), r);
+        return r;
     }
 
     // --- types ------------------------------------------------------------------------------
@@ -272,11 +586,20 @@ private:
         case Kind::void_:
         case Kind::never: return llvm::Type::getVoidTy(ctx_);
         case Kind::reference:
-        case Kind::pointer: return llvm::PointerType::get(ctx_, 0);
+            if (is_interface(t->inner)) return llvm::StructType::get(ctx_, {ptr_type(), ptr_type()});   // { object, table }
+            return llvm::PointerType::get(ctx_, 0);
+        case Kind::pointer:
+            if (is_interface(t->inner)) return llvm::StructType::get(ctx_, {ptr_type(), ptr_type()});   // { object, table }
+            return llvm::PointerType::get(ctx_, 0);
         case Kind::user: return user_type(t->symbol);
         case Kind::static_str: return str_type();
+        case Kind::closure: return closure_type(t);
+        case Kind::function: return llvm::StructType::get(ctx_, {ptr_type(), ptr_type(), ptr_type()});   // { captures, code, drop }
+        case Kind::fn_ptr: return ptr_type();
+        case Kind::array: return llvm::ArrayType::get(lower_type(t->inner), tc_.array_count(t));
         case Kind::external:
             if (t->name == "std::str") return str_type();
+            if (t->name == "std::ordering") return llvm::Type::getInt8Ty(ctx_);
             break;
         default: break;
         }
@@ -295,12 +618,13 @@ private:
         cur_                   = s->span;
         try {
             cur_fn_ = fn;
+            debug_function(fn, s->span, s->name);
             locals_.clear();
             loops_.clear();
             scopes_.clear();
             self_ = nullptr;
             const auto* subst = sema::substitution_of(s);
-            result_           = f->result ? tc_.lower(*f->result, subst) : nullptr;
+            result_           = f->result ? result_type(*f, subst) : nullptr;
             llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx_, "entry", fn);
             b_.SetInsertPoint(entry);
             open_scope();
@@ -342,6 +666,12 @@ private:
 
     bool terminated() const { return b_.GetInsertBlock()->getTerminator() != nullptr; }
 
+    /// A setting of the build mode (spec 24), "" without the standard library.
+    std::string mode_setting(const char* name) const {
+        auto it = program_.mode_settings.find(name);
+        return it == program_.mode_settings.end() ? std::string() : it->second;
+    }
+
     /// After a `return`, `break` or `continue`: following code goes into a block nothing jumps to.
     void open_dead_block() { b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "dead", cur_fn_)); }
 
@@ -354,6 +684,36 @@ private:
         b_.CreateCall(rift_panic_str_, {loc_global(span), message_bytes(message), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), message.size())});
         b_.CreateUnreachable();
         b_.SetInsertPoint(good);
+    }
+
+    /// Where the current call of a function with run_time entry checks was made (null: unknown,
+    /// e.g. through a function pointer). Set by the caller around the call (spec 23).
+    llvm::GlobalVariable* call_site_global() {
+        if (auto* g = mod_->getNamedGlobal("rift_call_site")) return g;
+        return new llvm::GlobalVariable(*mod_, ptr_type(), false, llvm::GlobalValue::InternalLinkage,
+                                        llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), "rift_call_site");
+    }
+
+    /// Whether `s` starts with run_time checks that are compiled in.
+    bool has_run_time_entry_checks(const Symbol* s) {
+        const FunctionDecl* f = body_decl(s);
+        if (!f || !f->body) return false;
+        for (const StmtPtr& st : f->body->statements) {
+            if (st->kind == StmtKind::check) {
+                const Check& k = st->as<CheckStmt>().check;
+                if (k.is_run_time && k.run_active && k.condition) return true;
+                continue;
+            }
+            if (st->kind != StmtKind::expression || st->as<ExprStmt>().expr->kind != ExprKind::if_) break;
+            const auto& gate = st->as<ExprStmt>().expr->as<IfExpr>();   // `if compile_time` around checks
+            if (!gate.is_compile_time || gate.taken != 0) break;
+            for (const StmtPtr& inner : gate.then_block->statements) {
+                if (inner->kind != StmtKind::check) return false;
+                const Check& k = inner->as<CheckStmt>().check;
+                if (k.is_run_time && k.run_active && k.condition && k.is_entry) return true;
+            }
+        }
+        return false;
     }
 
     /// The source location `rift_loc` global for `span`: `{ file, line, column }`.
@@ -381,7 +741,8 @@ private:
         for (StmtPtr& st : blk.statements) gen_stmt(*st);
         llvm::Value* v = nullptr;
         if (blk.tail) {
-            v = as_address ? object_address(*blk.tail) : gen_expr(*blk.tail);
+            bool address = as_address && !is_void(types::strip_ref(blk.tail->type));
+            v = address ? object_address(*blk.tail) : gen_expr(*blk.tail);
             if (!terminated()) moved_out(*blk.tail);
         }
         close_scope();
@@ -399,11 +760,13 @@ private:
 
     void gen_stmt_inner(Stmt& s) {
         cur_ = s.span;
+        debug_at(s.span);
         switch (s.kind) {
         case StmtKind::variable: return variable_stmt(s.as<VariableStmt>());
         case StmtKind::assign: return assign_stmt(s.as<AssignStmt>());
         case StmtKind::discard: discard(*s.as<DiscardStmt>().value); return;
         case StmtKind::expression: discard(*s.as<ExprStmt>().expr); return;
+        case StmtKind::check: return run_time_check(s.as<CheckStmt>().check, s.span);
         }
     }
 
@@ -414,7 +777,12 @@ private:
         if (!v.symbol || !v.symbol->type) unsupported(v.name_span, "variables of an unknown type");
         // The initializer first: if it is unsupported, that is the error to show (not its type).
         llvm::Value* init = nullptr;
-        if (v.init) init = v.symbol->type->is(Kind::reference) ? object_address(*v.init) : gen_expr(*v.init);
+        if (v.init) {
+            const types::Type* vt = v.symbol->type;
+            init = vt->is(Kind::reference) && is_interface(vt->inner) ? interface_reference(*v.init, vt->inner->symbol)
+                 : vt->is(Kind::reference)                           ? object_address(*v.init)
+                                                                      : gen_expr(*v.init);
+        }
         if (v.init && !v.symbol->type->is(Kind::reference)) moved_out(*v.init);
         llvm::AllocaInst* slot = entry_alloca(lower_type(v.symbol->type), v.name);
         locals_[v.symbol]      = slot;
@@ -441,6 +809,22 @@ private:
                 b_.CreateCall(drop_function(dt), {addr});
                 b_.CreateStore(nv, addr);
             }
+            return;
+        }
+        if (a.op != TokenKind::eq && a.op_symbol) {   // spec 16: `operator+=`, or `a = a + b`
+            const FunctionDecl* f = body_decl(a.op_symbol);
+            bool compound = f->name != token_kind_spelling(compound_operator(a.op));
+            llvm::Value* addr = place(*a.target);
+            if (compound) {
+                if (has_self(a.op_symbol)) call_symbol(a.op_symbol, addr, {a.value.get()}, a.span);
+                else unsupported(a.span, "a free 'operator" + f->name + "'");
+                return;
+            }
+            llvm::Value* nv = has_self(a.op_symbol) ? call_symbol(a.op_symbol, addr, {a.value.get()}, a.span)
+                                                    : call_symbol(a.op_symbol, nullptr, {a.target.get(), a.value.get()}, a.span);
+            const types::Type* tt = types::strip_ref(a.target->type);
+            if (needs_drop(tt)) b_.CreateCall(drop_function(tt), {addr});
+            b_.CreateStore(nv, addr);
             return;
         }
         llvm::Value*       addr = place(*a.target);
@@ -481,6 +865,12 @@ private:
 
     /// The value of `e`, or null for an expression of type void or never.
     llvm::Value* gen_expr(Expr& e) {
+        if (e.conversion != Expr::Conversion::none && !converting_.count(&e)) {
+            converting_.insert(&e);
+            llvm::Value* v = implicit_conversion(e);
+            converting_.erase(&e);
+            return v;
+        }
         cur_ = e.span;
         if (e.constant) {   // computed at compile time (spec 15, 26)
             if (llvm::Value* c = materialize(*e.constant, e.span)) return c;
@@ -501,17 +891,19 @@ private:
         case ExprKind::member:
         case ExprKind::this_: return value_of_place(e);
         case ExprKind::struct_literal: return struct_literal(e.as<StructLiteralExpr>());
-        case ExprKind::lambda: unsupported(e.span, "lambdas");
+        case ExprKind::lambda: return lambda_value(e.as<LambdaExpr>());
         case ExprKind::match: return match_value(e.as<MatchExpr>(), e.type);
         case ExprKind::bit: return bit_value(e.as<BitExpr>(), e.type);
         case ExprKind::for_: return for_loop(e.as<ForExpr>());
         case ExprKind::cast: return cast_value(e.as<CastExpr>());
         case ExprKind::try_: return try_value(e.as<TryExpr>());
+        case ExprKind::nullptr_literal: return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
         case ExprKind::string_literal: {
             auto& lit = e.as<LiteralExpr>();
             if (lit.token_kind == TokenKind::format_string_literal) {
                 unsupported(e.span, "f-strings outside 'std::print', 'std::println', 'std::eprintln' and 'std::panic'");
             }
+            if (lit.token_kind == TokenKind::c_string_literal) return message_bytes(lit.value + std::string(1, '\0'));
             return str_constant(lit.value);
         }
         case ExprKind::default_: return default_value(types::strip_ref(e.type), e.span);
@@ -519,6 +911,9 @@ private:
             if (e.as<UnaryExpr>().op == UnaryOp::deref) return value_of_place(e);
             return unary_value(e.as<UnaryExpr>(), e.type);
         case ExprKind::binary: return binary_value(e.as<BinaryExpr>());
+        case ExprKind::index:
+            if (e.as<IndexExpr>().op_symbol) return value_of_place(e);
+            unsupported(e.span, "indexing");
         case ExprKind::call: return call_value(e.as<CallExpr>());
         case ExprKind::block: return gen_block(e.as<BlockExpr>());
         case ExprKind::if_: return if_value(e.as<IfExpr>(), e.type);
@@ -572,6 +967,10 @@ private:
     }
 
     llvm::Value* unary_value(UnaryExpr& u, const types::Type* t) {
+        if (u.op_symbol) {   // a user-defined `-` or `~` (spec 16)
+            if (has_self(u.op_symbol)) return call_symbol(u.op_symbol, object_address(*u.operand), {}, u.span);
+            return call_symbol(u.op_symbol, nullptr, {u.operand.get()}, u.span);
+        }
         if (u.op == UnaryOp::negate) {
             if (u.operand->kind == ExprKind::int_literal) {
                 // `-128i8`: the literal is negated as a constant, so the minimum does not overflow.
@@ -585,23 +984,46 @@ private:
             check(b_.CreateICmpNE(a, minimum), u.span, std::format("integer overflow in '-' ({})", t->name));
             return b_.CreateSub(llvm::ConstantInt::get(a->getType(), 0), a);
         }
-        if (u.op == UnaryOp::logical_not || u.op == UnaryOp::bit_not) return b_.CreateNot(gen_expr(*u.operand));
+        if (u.op == UnaryOp::logical_not) return b_.CreateNot(truth(*u.operand));
+        if (u.op == UnaryOp::bit_not) return b_.CreateNot(gen_expr(*u.operand));
+        if (u.op == UnaryOp::address_of || u.op == UnaryOp::address_of_mut) {   // spec 13
+            return is_place(*u.operand) ? place(*u.operand) : object_address(*u.operand);
+        }
+        if (u.op == UnaryOp::deref) return b_.CreateLoad(lower_type(t), gen_expr(*u.operand));
         if (u.op == UnaryOp::move || u.op == UnaryOp::mut_marker) return gen_expr(*u.operand);
         unsupported(u.span, "this unary operator");
     }
 
+    /// A condition: a `bool`, or a raw pointer, which is true when it is not null (spec 02, 13).
+    llvm::Value* truth(Expr& e) {
+        llvm::Value* v = gen_expr(e);
+        if (v->getType()->isPointerTy()) return b_.CreateICmpNE(v, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)));
+        if (v->getType()->isIntegerTy() && !v->getType()->isIntegerTy(1)) {   // an integer in a condition: != 0 (spec 02)
+            return b_.CreateICmpNE(v, llvm::ConstantInt::get(v->getType(), 0));
+        }
+        return v;
+    }
+
     llvm::Value* binary_value(BinaryExpr& bx) {
         if (bx.op == TokenKind::amp_amp || bx.op == TokenKind::pipe_pipe) return short_circuit(bx);
+        if (bx.op_symbol) return user_operator(bx);
         const types::Type* lt = types::strip_ref(bx.lhs->type);
         llvm::Value*       a  = gen_expr(*bx.lhs);
         llvm::Value*       b  = gen_expr(*bx.rhs);
         switch (bx.op) {
+        case TokenKind::spaceship: {   // std::ordering: -1, 0 or 1
+            llvm::Type* i8   = llvm::Type::getInt8Ty(ctx_);
+            llvm::Value* lo  = compare_op(TokenKind::less, a, b, lt, bx.span);
+            llvm::Value* hi  = compare_op(TokenKind::greater, a, b, lt, bx.span);
+            return b_.CreateSelect(lo, llvm::ConstantInt::getSigned(i8, -1),
+                                   b_.CreateSelect(hi, llvm::ConstantInt::get(i8, 1), llvm::ConstantInt::get(i8, 0)));
+        }
         case TokenKind::eq_eq:
         case TokenKind::bang_eq: {
             bool eq = bx.op == TokenKind::eq_eq;
             if (lt && lt->is_float()) return eq ? b_.CreateFCmpOEQ(a, b) : b_.CreateFCmpUNE(a, b);
             if (is_str(lt)) return str_equal(a, b, eq);
-            if (a->getType()->isIntegerTy()) return eq ? b_.CreateICmpEQ(a, b) : b_.CreateICmpNE(a, b);
+            if (a->getType()->isIntegerTy() || a->getType()->isPointerTy()) return eq ? b_.CreateICmpEQ(a, b) : b_.CreateICmpNE(a, b);
             unsupported(bx.span, "comparing these values");
         }
         case TokenKind::less:
@@ -629,17 +1051,84 @@ private:
         }
     }
 
+    /// A binary operator the program defines (spec 16). `!=` is the negated `==`, and `<`, `<=`,
+    /// `>`, `>=` compare the `std::ordering` from `<=>` with zero.
+    llvm::Value* user_operator(BinaryExpr& bx) {
+        const Symbol*       s = bx.op_symbol;
+        const FunctionDecl* f = body_decl(s);
+        llvm::Value*        r = nullptr;
+        if (f && f->is_defaulted) {
+            r = values_equal(types::strip_ref(bx.lhs->type), object_address(*bx.lhs), object_address(*bx.rhs), bx.span);
+        } else if (has_self(s)) {
+            r = call_symbol(s, object_address(*bx.lhs), {bx.rhs.get()}, bx.span);
+        } else {
+            r = call_symbol(s, nullptr, {bx.lhs.get(), bx.rhs.get()}, bx.span);
+        }
+        switch (bx.op) {
+        case TokenKind::bang_eq: return b_.CreateNot(r);
+        case TokenKind::less:
+        case TokenKind::less_eq:
+        case TokenKind::greater:
+        case TokenKind::greater_eq: {
+            llvm::Value* zero = llvm::ConstantInt::get(r->getType(), 0);
+            switch (bx.op) {
+            case TokenKind::less: return b_.CreateICmpSLT(r, zero);
+            case TokenKind::less_eq: return b_.CreateICmpSLE(r, zero);
+            case TokenKind::greater: return b_.CreateICmpSGT(r, zero);
+            default: return b_.CreateICmpSGE(r, zero);
+            }
+        }
+        default: return r;
+        }
+    }
+
+    /// A user-defined `operator==` for `t`, or null.
+    static const Symbol* equality_operator(const types::Type* t) {
+        if (!t || !t->is(Kind::user)) return nullptr;
+        auto it = t->symbol->members.find("==");
+        if (it == t->symbol->members.end()) return nullptr;
+        for (const Symbol* m : it->second) {
+            if (m->function() && m->function()->is_operator) return m;
+        }
+        return nullptr;
+    }
+
+    /// Whether the objects at `pa` and `pb` (both of type `t`) are equal: what a defaulted
+    /// `operator==` does, field by field (spec 16).
+    llvm::Value* values_equal(const types::Type* t, llvm::Value* pa, llvm::Value* pb, Span span) {
+        if (t && t->is(Kind::user) && t->symbol->kind != SymbolKind::enum_) {
+            if (const Symbol* op = equality_operator(t); op && !body_decl(op)->is_defaulted) {
+                return b_.CreateCall(function_of(op), {pa, pb});
+            }
+            llvm::StructType* st  = llvm::cast<llvm::StructType>(user_type(t->symbol));
+            llvm::Value*      all = llvm::ConstantInt::getTrue(ctx_);
+            for (const Symbol* f : fields_of(t->symbol)) {
+                unsigned i = field_index(f);
+                llvm::Value* e = values_equal(field_type(f), b_.CreateStructGEP(st, pa, i), b_.CreateStructGEP(st, pb, i), span);
+                all = b_.CreateAnd(all, e);
+            }
+            return all;
+        }
+        llvm::Type*  lt = lower_type(t);
+        llvm::Value* a  = b_.CreateLoad(lt, pa);
+        llvm::Value* b  = b_.CreateLoad(lt, pb);
+        if (is_str(t)) return str_equal(a, b, true);
+        if (lt->isFloatingPointTy()) return b_.CreateFCmpOEQ(a, b);
+        if (lt->isIntegerTy()) return b_.CreateICmpEQ(a, b);
+        unsupported(span, std::format("comparing values of type '{}'", types::to_string(t)));
+    }
+
     /// `&&` and `||`: the right operand is evaluated only when needed.
     llvm::Value* short_circuit(BinaryExpr& bx) {
         bool and_op = bx.op == TokenKind::amp_amp;
-        llvm::Value* a = gen_expr(*bx.lhs);
+        llvm::Value* a = truth(*bx.lhs);
         llvm::BasicBlock* from   = b_.GetInsertBlock();
         llvm::BasicBlock* rhs_bb = llvm::BasicBlock::Create(ctx_, "sc.rhs", cur_fn_);
         llvm::BasicBlock* end_bb = llvm::BasicBlock::Create(ctx_, "sc.end", cur_fn_);
         if (and_op) b_.CreateCondBr(a, rhs_bb, end_bb);
         else b_.CreateCondBr(a, end_bb, rhs_bb);
         b_.SetInsertPoint(rhs_bb);
-        llvm::Value*      r        = gen_expr(*bx.rhs);
+        llvm::Value*      r        = truth(*bx.rhs);
         llvm::BasicBlock* rhs_done = b_.GetInsertBlock();
         b_.CreateBr(end_bb);
         b_.SetInsertPoint(end_bb);
@@ -680,6 +1169,11 @@ private:
         case TokenKind::star_percent: return b_.CreateMul(a, b);
         default: break;
         }
+        if (mode_setting("overflow") == "wrap") {   // a mode that wraps (spec 24)
+            if (op == TokenKind::plus) return b_.CreateAdd(a, b);
+            if (op == TokenKind::minus) return b_.CreateSub(a, b);
+            if (op == TokenKind::star) return b_.CreateMul(a, b);
+        }
         switch (op) {
         case TokenKind::plus: return checked(llvm::Intrinsic::sadd_with_overflow, llvm::Intrinsic::uadd_with_overflow, s, a, b, span,
                                              std::format("integer overflow in '+' ({})", name));
@@ -714,6 +1208,12 @@ private:
         case TokenKind::shl:
         case TokenKind::shr: {
             // The count is compared as a 128-bit value, so a negative count is out of range too.
+            if (mode_setting("shifts") == "mask") {   // the count & (width - 1) (spec 24)
+                llvm::Value* amount = b_.CreateAnd(b_.CreateZExtOrTrunc(b, a->getType()),
+                                                   llvm::ConstantInt::get(a->getType(), static_cast<std::uint64_t>(t->bits - 1)));
+                if (op == TokenKind::shl) return b_.CreateShl(a, amount);
+                return s ? b_.CreateAShr(a, amount) : b_.CreateLShr(a, amount);
+            }
             llvm::Value* count = rt && rt->is_signed ? b_.CreateSExtOrTrunc(b, llvm::Type::getInt128Ty(ctx_))
                                                      : b_.CreateZExtOrTrunc(b, llvm::Type::getInt128Ty(ctx_));
             check(b_.CreateICmpULT(count, llvm::ConstantInt::get(count->getType(), static_cast<std::uint64_t>(t->bits))),
@@ -743,7 +1243,7 @@ private:
             if (i.taken == 2) return nullptr;
             unsupported(i.span, "'if compile_time' with a condition that is not known");
         }
-        llvm::Value*      cond     = gen_expr(*i.condition);
+        llvm::Value*      cond     = truth(*i.condition);
         bool              has_value = !is_void(t);
         llvm::AllocaInst* slot      = has_value ? entry_alloca(lower_type(types::strip_ref(t)), "if.value") : nullptr;
         llvm::BasicBlock* then_bb   = llvm::BasicBlock::Create(ctx_, "then", cur_fn_);
@@ -774,7 +1274,7 @@ private:
         llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(ctx_, "while.end", cur_fn_);
         b_.CreateBr(cond_bb);
         b_.SetInsertPoint(cond_bb);
-        b_.CreateCondBr(gen_expr(*w.condition), body_bb, exit_bb);
+        b_.CreateCondBr(truth(*w.condition), body_bb, exit_bb);
         b_.SetInsertPoint(body_bb);
         loops_.push_back(Loop{exit_bb, cond_bb});
         open_scope(true);
@@ -790,7 +1290,9 @@ private:
         llvm::Type* rt = cur_fn_->getReturnType();
         llvm::Value* v = nullptr;
         if (r.value) {
-            v = result_ && result_->is(Kind::reference) ? object_address(*r.value) : gen_expr(*r.value);
+            v = result_ && result_->is(Kind::reference) && is_interface(result_->inner) ? interface_reference(*r.value, result_->inner->symbol)
+              : result_ && result_->is(Kind::reference)                              ? object_address(*r.value)
+                                                                                       : gen_expr(*r.value);
             moved_out(*r.value);
         }
         destroy_from(0);
@@ -800,19 +1302,163 @@ private:
         return nullptr;
     }
 
+    /// A method or static function of a std type, by name (`string::as_str`, `string::from`).
+    const Symbol* std_member(const types::Type* t, const std::string& name) {
+        if (!t || !t->is(Kind::user)) return nullptr;
+        auto it = t->symbol->members.find(name);
+        return it == t->symbol->members.end() ? nullptr : it->second.front();
+    }
+
+    /// The implicit conversions of spec 19. A temporary `std::string` that is read as a
+    /// `std::str` lives until the end of the enclosing block.
+    llvm::Value* implicit_conversion(Expr& e) {
+        cur_ = e.span;
+        if (e.conversion == Expr::Conversion::string_to_str) {
+            const types::Type* st   = types::strip_ref(e.type);
+            const Symbol*      view = std_member(st, "as_str");
+            if (!view) unsupported(e.span, "this std::string");
+            llvm::Value* addr = object_address(e);   // a temporary lives until the end of the block
+            return b_.CreateCall(function_of(view), {addr});
+        }
+        if (e.conversion == Expr::Conversion::to_callable) return callable_from_lambda(e, e.converted_to);
+        if (e.conversion == Expr::Conversion::pointer_upcast) {   // the same pointer, seen as its base (spec 07)
+            return upcast_value(gen_expr(e), types::strip_ref(e.type), e.converted_to, e.span);
+        }
+        // literal_to_string: `std::string::from(literal)`
+        const types::Type* target = nullptr;
+        if (const Symbol* sym = program_.std_module ? program_.std_module->items.find("string")->second.front() : nullptr) {
+            target = tc_.user(sym);
+        }
+        const Symbol* from = std_member(target, "from");
+        if (!from) unsupported(e.span, "this std::string");
+        return b_.CreateCall(function_of(from), {gen_expr(e)});
+    }
+
+    /// A pointer (or a smart pointer holding one) seen as a pointer to a base class or an
+    /// interface: the same address, plus the interface's table when the target is an interface.
+    llvm::Value* upcast_value(llvm::Value* v, const types::Type* from, const types::Type* to, Span span) {
+        if (from == to) return v;
+        if (from->is(Kind::pointer) && to->is(Kind::pointer)) {
+            if (!is_interface(to->inner)) return v;
+            if (is_interface(from->inner)) return convert_interface(v, from->inner->symbol, to->inner->symbol, span);
+            auto*        fat = llvm::StructType::get(ctx_, {ptr_type(), ptr_type()});
+            llvm::Value* out = b_.CreateInsertValue(llvm::UndefValue::get(fat), v, 0);
+            return b_.CreateInsertValue(out, itable_of(from->inner->symbol, to->inner->symbol), 1);
+        }
+        if (from->is(Kind::user) && to->is(Kind::user)) {   // std::unique_ptr<circle> → std::unique_ptr<shape>: field by field
+            std::vector<const Symbol*> ff = all_fields(from->symbol);
+            std::vector<const Symbol*> tf = all_fields(to->symbol);
+            if (ff.size() != tf.size()) unsupported(span, "this conversion");
+            llvm::Value* out = llvm::UndefValue::get(lower_type(to));
+            for (std::size_t i = 0; i < ff.size(); ++i) {
+                llvm::Value* field = b_.CreateExtractValue(v, {field_index(ff[i])});
+                out = b_.CreateInsertValue(out, upcast_value(field, field_type(ff[i]), field_type(tf[i]), span), {field_index(tf[i])});
+            }
+            return out;
+        }
+        return v;
+    }
+
+    /// A C library function the `std::raw` intrinsics call.
+    llvm::FunctionCallee libc(const char* name, llvm::Type* result, std::vector<llvm::Type*> params) {
+        return mod_->getOrInsertFunction(name, llvm::FunctionType::get(result, params, false));
+    }
+
+    /// The bytes `n` elements of `t` take; panics on overflow.
+    llvm::Value* byte_count(const types::Type* t, llvm::Value* n, Span span) {
+        auto*        i64  = llvm::Type::getInt64Ty(ctx_);
+        std::uint64_t size = mod_->getDataLayout().getTypeAllocSize(lower_type(t));
+        llvm::Value* r    = b_.CreateBinaryIntrinsic(llvm::Intrinsic::umul_with_overflow, b_.CreateZExtOrTrunc(n, i64),
+                                                     llvm::ConstantInt::get(i64, size));
+        check(b_.CreateNot(b_.CreateExtractValue(r, 1)), span, "allocation size overflows");
+        return b_.CreateExtractValue(r, 0);
+    }
+
+    /// The `std::raw` memory intrinsics (spec 13).
+    llvm::Value* raw_call(CallExpr& c, const std::string& name) {
+        auto* ptr = ptr_type();
+        auto* i64 = llvm::Type::getInt64Ty(ctx_);
+        const types::Type* pt = types::strip_ref(c.type);
+        if (name == "allocate" || name == "reallocate") {
+            llvm::Value* old   = name == "reallocate" ? gen_expr(*c.args[0]) : nullptr;
+            llvm::Value* bytes = byte_count(pt->inner, gen_expr(*c.args.back()), c.span);
+            bytes = b_.CreateSelect(b_.CreateICmpEQ(bytes, llvm::ConstantInt::get(i64, 0)), llvm::ConstantInt::get(i64, 1), bytes);
+            llvm::Value* p = old ? b_.CreateCall(libc("realloc", ptr, {ptr, i64}), {old, bytes})
+                                 : b_.CreateCall(libc("malloc", ptr, {i64}), {bytes});
+            check(b_.CreateICmpNE(p, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))), c.span, "out of memory");
+            return p;
+        }
+        if (name == "free") {
+            llvm::Value* p = gen_expr(*c.args[0]);
+            if (p->getType()->isStructTy()) p = b_.CreateExtractValue(p, 0);   // a pointer to an interface
+            b_.CreateCall(libc("free", llvm::Type::getVoidTy(ctx_), {ptr}), {p});
+            return nullptr;
+        }
+        if (name == "str_from") {
+            llvm::Value* p = gen_expr(*c.args[0]);
+            llvm::Value* n = b_.CreateZExtOrTrunc(gen_expr(*c.args[1]), i64);
+            llvm::Value* v = llvm::UndefValue::get(str_type());
+            return b_.CreateInsertValue(b_.CreateInsertValue(v, p, 0), n, 1);
+        }
+        const types::Type* target = types::strip_ref(c.args[0]->type);
+        if (name == "read") return b_.CreateLoad(lower_type(target->inner), gen_expr(*c.args[0]));
+        if (name == "write") {
+            llvm::Value* p = gen_expr(*c.args[0]);
+            llvm::Value* v = gen_expr(*c.args[1]);
+            moved_out(*c.args[1]);
+            b_.CreateStore(v, p);
+            return nullptr;
+        }
+        if (name == "drop") {
+            llvm::Value* p = gen_expr(*c.args[0]);
+            const types::Type* t = target->inner;
+            if (is_interface(t)) {   // the table's first entry destroys the object (null: nothing to do)
+                llvm::Value* object = b_.CreateExtractValue(p, 0);
+                llvm::Value* drop   = b_.CreateLoad(ptr_type(), b_.CreateExtractValue(p, 1));
+                auto* yes  = llvm::BasicBlock::Create(ctx_, "idrop", cur_fn_);
+                auto* done = llvm::BasicBlock::Create(ctx_, "idrop.done", cur_fn_);
+                b_.CreateCondBr(b_.CreateIsNotNull(drop), yes, done);
+                b_.SetInsertPoint(yes);
+                b_.CreateCall(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false), drop, {object});
+                b_.CreateBr(done);
+                b_.SetInsertPoint(done);
+            } else if (t->is(Kind::user) && has_vtable(t->symbol)) {   // the object's own class decides (a virtual destructor)
+                llvm::Value* vtable = b_.CreateLoad(ptr_type(), p);
+                llvm::Value* drop   = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), vtable, 1));
+                b_.CreateCall(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false), drop, {p});
+            } else if (needs_drop(t)) {
+                b_.CreateCall(drop_function(t), {p});
+            }
+            return nullptr;
+        }
+        // copy(to, from, n): memmove, so the ranges may overlap
+        llvm::Value* to    = gen_expr(*c.args[0]);
+        llvm::Value* from  = gen_expr(*c.args[1]);
+        llvm::Value* bytes = byte_count(target->inner, gen_expr(*c.args[2]), c.span);
+        b_.CreateMemMove(to, llvm::MaybeAlign(), from, llvm::MaybeAlign(), bytes);
+        return nullptr;
+    }
+
     llvm::Value* call_value(CallExpr& c) {
         if (is_std_output(c)) {
             std_output(c);
             return nullptr;
         }
+        if (std_name(c) == "format") return std_format(c);
+        if (std::string n = std_name(c); n.starts_with("checked_") || n.starts_with("saturating_")) return arith_builtin(c, n);
         Expr& callee = *c.callee;
         if (callee.kind == ExprKind::path) {
             const auto&   pe = callee.as<PathExpr>();
             const Symbol* s  = pe.symbol;
-            if (!s) unsupported(callee.span, std::format("'{}'", to_string(pe.path)), no_std);
+            if (!s) {
+                if (std::string r = ct::raw_intrinsic(c); !r.empty()) return raw_call(c, r);
+                unsupported(callee.span, std::format("'{}'", to_string(pe.path)), no_std);
+            }
             if (s->kind == SymbolKind::alternative) {
                 if (c.args.size() != 1 || !s->alternative->payload) return alternative_value(s, nullptr);
-                llvm::Value* payload = gen_expr(*c.args[0]);
+                const types::Type* pt = payload_of(s);
+                llvm::Value* payload = pt->is(Kind::reference) ? object_address(*c.args[0])   // `std::option<T&>`
+                                                               : gen_expr(*c.args[0]);
                 moved_out(*c.args[0]);
                 return alternative_value(s, payload);
             }
@@ -824,7 +1470,18 @@ private:
                 }
                 return call_function(s, receiver, c);
             }
-            unsupported(c.span, "calling lambdas and function values");
+            const types::Type* ct = types::strip_ref(callee.type);
+            if (ct && (ct->is(Kind::function) || ct->is(Kind::fn_ptr))) {
+                std::vector<Expr*> args;
+                for (ExprPtr& a : c.args) args.push_back(a.get());
+                return callable_call(callee, ct, args);
+            }
+            if (ct && ct->is(Kind::closure)) {
+                std::vector<Expr*> args;
+                for (ExprPtr& a : c.args) args.push_back(a.get());
+                return closure_call(callee, ct, args);
+            }
+            unsupported(c.span, "calling function values");
         }
         if (callee.kind == ExprKind::member) {
             auto&                 me   = callee.as<MemberExpr>();
@@ -835,41 +1492,130 @@ private:
                                         me.object->constant->kind == ct::Value::Kind::alternative)) {
                 return meta_call(c, *me.object->constant, name);
             }
+            if (s && s->kind == SymbolKind::field) {   // a stored std::function / std::fn_ptr
+                std::vector<Expr*> args;
+                for (ExprPtr& a : c.args) args.push_back(a.get());
+                return callable_call(callee, types::strip_ref(callee.type), args);
+            }
+            if (obj && obj->is(Kind::pointer) && !me.arrow && name == "offset") {   // spec 13
+                const types::Type* nt = types::strip_ref(c.args.at(0)->type);
+                llvm::Value* base = gen_expr(*me.object);
+                llvm::Value* n    = gen_expr(*c.args[0]);
+                n = nt && nt->is_integer() && !nt->is_signed ? b_.CreateZExtOrTrunc(n, llvm::Type::getInt64Ty(ctx_))
+                                                             : b_.CreateSExtOrTrunc(n, llvm::Type::getInt64Ty(ctx_));
+                return b_.CreateGEP(lower_type(obj->inner), base, n);
+            }
+            if (s && s->kind == SymbolKind::function) {   // a std::str method: a library function, text first
+                std::vector<Expr*> args{me.object.get()};
+                for (ExprPtr& a : c.args) args.push_back(a.get());
+                return call_symbol(s, nullptr, args, c.span);
+            }
+            const types::Type* dispatched = !me.arrow ? obj
+                                          : me.deref_symbol ? types::strip_ref(tc_.lower(*body_decl(me.deref_symbol)->result,
+                                                                                         sema::substitution_of(me.deref_symbol)))
+                                          : obj && obj->is(Kind::pointer) ? obj->inner : nullptr;
+            if (s && s->kind == SymbolKind::method && is_interface(dispatched)) {   // through a fat pointer
+                int slot = interface_slot(dispatched->symbol, s);
+                if (slot < 0) unsupported(c.span, "this interface call");
+                llvm::Value* fat    = !me.arrow       ? interface_reference(*me.object, dispatched->symbol)
+                                    : me.deref_symbol ? member_object(me)
+                                                      : gen_expr(*me.object);
+                llvm::Value* table  = b_.CreateExtractValue(fat, 1);
+                llvm::Value* target = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, itable_header + static_cast<unsigned>(slot)));
+                std::vector<Expr*> args;
+                for (ExprPtr& a : c.args) args.push_back(a.get());
+                return call_symbol(s, b_.CreateExtractValue(fat, 0), args, c.span, false, target);
+            }
+            const types::Type* target = me.deref_symbol ? types::strip_ref(tc_.lower(*body_decl(me.deref_symbol)->result,
+                                                                                      sema::substitution_of(me.deref_symbol)))
+                                                        : obj;
+            if (s && s->kind == SymbolKind::method && (!me.arrow || me.deref_symbol) && me.name.segments.size() == 1 && target &&
+                target->is(Kind::user) && has_vtable(target->symbol) && has_self(s)) {
+                int slot = vtable_slot(target->symbol, s);   // a virtual method: the object's own implementation
+                if (slot >= 0) {
+                    llvm::Value* object = member_object(me);
+                    std::vector<Expr*> args;
+                    for (ExprPtr& a : c.args) args.push_back(a.get());
+                    return call_symbol(s, object, args, c.span, false, virtual_function(object, slot));
+                }
+            }
             if (s && s->kind == SymbolKind::method) {
-                if (me.arrow) unsupported(c.span, "method calls through raw pointers");
+                if (me.deref_symbol) return call_function(s, has_self(s) ? member_object(me) : nullptr, c);
+                if (me.arrow) return call_function(s, has_self(s) ? gen_expr(*me.object) : nullptr, c);
                 return call_function(s, has_self(s) ? object_address(*me.object) : nullptr, c);
             }
-            if (!s && types::is_std_builtin_method(obj, name)) return std_method(c, me, obj, name);
-            if (name == "clone" && c.args.empty() && obj && obj->is(Kind::user)) return gen_expr(*me.object);
+            if (!s && types::is_std_builtin_method(obj, name)) {
+                llvm::Value* v = std_method(c, me, obj, name);
+                // `std::option<T&>`: value_or/expect give the reference; the value is read through it
+                if (v && v->getType()->isPointerTy() && c.type && c.type->is(Kind::reference) &&
+                    !is_interface(c.type->inner)) {
+                    return b_.CreateLoad(lower_type(types::strip_ref(c.type)), v);
+                }
+                return v;
+            }
+            if (name == "clone" && c.args.empty() && obj && !s) return clone_value(obj, object_address(*me.object));
             if (name == "len" && c.args.empty() && is_str(obj)) return b_.CreateExtractValue(gen_expr(*me.object), 1);
+            if (name == "as_ptr" && c.args.empty() && is_str(obj)) return b_.CreateExtractValue(gen_expr(*me.object), 0);
             if (name == "is_empty" && c.args.empty() && is_str(obj)) {
                 return b_.CreateICmpEQ(b_.CreateExtractValue(gen_expr(*me.object), 1), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0));
             }
             unsupported(c.span, std::format("the method '{}' on '{}'", name, obj ? types::to_string(obj) : "an unknown type"));
         }
+        // Any other place holding a callable: `handlers[i](x)`, `this.table.on_done(x)`. (A temporary
+        // std::function, `make()(x)`, would need dropping after the call: not yet.)
+        if (const types::Type* ct = types::strip_ref(callee.type);
+            ct && (ct->is(Kind::fn_ptr) || (ct->is(Kind::function) && is_place(callee)))) {
+            std::vector<Expr*> args;
+            for (ExprPtr& a : c.args) args.push_back(a.get());
+            return callable_call(callee, ct, args);
+        }
         unsupported(c.span, "calling this expression");
     }
 
     llvm::Value* call_function(const Symbol* s, llvm::Value* receiver, CallExpr& c) {
+        std::vector<Expr*> args;
+        for (const ExprPtr& a : c.args) args.push_back(a.get());
+        return call_symbol(s, receiver, args, c.span);
+    }
+
+    /// Calls the function `s` with `in` as its arguments (after the receiver, for a method). A
+    /// reference result is read through unless `want_address`, which returns the address itself.
+    llvm::Value* call_symbol(const Symbol* s, llvm::Value* receiver, const std::vector<Expr*>& in, Span span,
+                             bool want_address = false, llvm::Value* indirect = nullptr) {
         const FunctionDecl* f = body_decl(s);
-        if (!f) unsupported(c.span, "this function");
+        if (!f) unsupported(span, "this function");
         if ((f->is_template && !s->template_of) || (s->parent && s->parent->decl && s->parent->decl->is_template && !s->parent->template_of)) {
-            unsupported(c.span, "calling templates");
+            unsupported(span, "calling templates");
         }
-        if (f->is_virtual || f->is_abstract) unsupported(c.span, "virtual calls");
+        if (f->is_abstract && !indirect) unsupported(span, "calling an abstract method directly");
         std::vector<llvm::Value*> args;
         if (receiver) args.push_back(receiver);
-        for (std::size_t i = 0; i < c.args.size() && i < f->params.size(); ++i) {
+        for (std::size_t i = 0; i < in.size() && i < f->params.size(); ++i) {
             const types::Type* pt = tc_.lower(*f->params[i].type, sema::substitution_of(s));
-            if (pt->is(Kind::reference)) {
-                args.push_back(object_address(*c.args[i]));
+            if (pt->is(Kind::reference) && is_interface(pt->inner)) {
+                args.push_back(interface_reference(*in[i], pt->inner->symbol));
+            } else if (pt->is(Kind::reference)) {
+                args.push_back(object_address(*in[i]));
             } else {
-                args.push_back(gen_expr(*c.args[i]));
-                moved_out(*c.args[i]);
+                args.push_back(gen_expr(*in[i]));
+                moved_out(*in[i]);
             }
         }
-        llvm::Value* call = b_.CreateCall(function_of(s), args);
+        bool            imported = f->is_extern && !f->body;
+        if (imported) {   // C's bool is a byte
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                if (args[i]->getType()->isIntegerTy(1)) args[i] = b_.CreateZExt(args[i], llvm::Type::getInt8Ty(ctx_));
+            }
+        }
+        bool tracked = !indirect && has_run_time_entry_checks(s);
+        if (tracked) b_.CreateStore(loc_global(span), call_site_global());
+        llvm::Value* call = indirect ? b_.CreateCall(function_type(s), indirect, args)   // a virtual or interface call
+                                     : b_.CreateCall(function_of(s), args);
+        if (tracked) b_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), call_site_global());
         const types::Type* result = f->result ? tc_.lower(*f->result, sema::substitution_of(s)) : nullptr;
+        if (imported && result && result->is(Kind::bool_)) return b_.CreateICmpNE(call, llvm::ConstantInt::get(call->getType(), 0));
+        if (want_address) return call;
+        if (result && result->is(Kind::reference) && is_interface(result->inner)) return call;   // the fat pointer
         if (result && result->is(Kind::reference)) return b_.CreateLoad(lower_type(types::strip_ref(result)), call);
         return call;
     }
@@ -900,12 +1646,25 @@ private:
     void emit_entry(const Symbol* main) {
         const FunctionDecl* f      = body_decl(main);
         auto*               i32    = llvm::Type::getInt32Ty(ctx_);
-        llvm::Function*     entry  = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        auto*               ptr    = llvm::PointerType::get(ctx_, 0);
+        llvm::Function*     entry  = llvm::Function::Create(llvm::FunctionType::get(i32, {i32, ptr}, false),
                                                             llvm::Function::ExternalLinkage, "main", mod_.get());
         llvm::BasicBlock*   block  = llvm::BasicBlock::Create(ctx_, "entry", entry);
         llvm::IRBuilder<>   b(block);
+        // The arguments as std::str (checked to be UTF-8); raw for std::env::raw_args (spec 04).
+        llvm::FunctionCallee main_args = mod_->getOrInsertFunction("rift_main_args", llvm::FunctionType::get(ptr, {i32, ptr}, false));
+        llvm::Value*        array  = b.CreateCall(main_args, {entry->getArg(0), entry->getArg(1)});
         b.CreateCall(emit_init_globals());
-        llvm::CallInst*     call   = b.CreateCall(rift_main_, {});
+        std::vector<llvm::Value*> main_in;
+        if (!f->params.empty()) {   // main(std::span<std::str> args): { data, count }
+            llvm::Type*  span = lower_type(tc_.lower(*f->params[0].type, nullptr));
+            llvm::Value* v    = llvm::UndefValue::get(span);
+            v = b.CreateInsertValue(v, array, 0);
+            v = b.CreateInsertValue(v, b.CreateSExt(entry->getArg(0), llvm::Type::getInt64Ty(ctx_)), 1);
+            main_in.push_back(v);
+        }
+        llvm::CallInst*     call   = b.CreateCall(rift_main_, main_in);
+        b.CreateCall(mod_->getOrInsertFunction("free", llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr}, false)), {array});
         const types::Type*  result = f->result ? tc_.lower(*f->result, sema::substitution_of(main)) : nullptr;
         if (result && result->is_integer()) {
             llvm::Value* wide = result->is_signed ? b.CreateSExt(call, llvm::Type::getInt128Ty(ctx_))
@@ -940,6 +1699,311 @@ private:
         return out;
     }
 
+    /// Every field of an object, the base's first (spec 07).
+    static std::vector<const Symbol*> all_fields(const Symbol* s) {
+        std::vector<const Symbol*> out;
+        if (const Symbol* base = s->base_class()) out = all_fields(base);
+        for (const Symbol* f : fields_of(s)) out.push_back(f);
+        return out;
+    }
+
+    // --- dynamic dispatch (spec 07) -----------------------------------------------------------
+    //
+    // A class hierarchy whose root is `open` has a vtable pointer at offset 0. A class's vtable is
+    // { parent vtable (null at the root), drop function, the virtual methods... }; the slots of the
+    // methods are those of the base, then the ones the class introduces with `virtual`. An
+    // interface reference is a fat pointer { object, table }: the table lists the implementations
+    // of the interface's methods for the object's type (spec 07: the object's layout is unchanged).
+
+    static constexpr unsigned vtable_header = 2;   // parent vtable, drop
+
+    static bool has_vtable(const Symbol* s) {
+        for (; s; s = s->base_class()) {
+            if (s->has_vtable_pointer()) return true;
+        }
+        return false;
+    }
+
+    /// Whether two methods have the same parameter types (an override of a slot).
+    bool same_signature(const Symbol* a, const Symbol* b) {
+        const FunctionDecl* fa = body_decl(a);
+        const FunctionDecl* fb = body_decl(b);
+        if (!fa || !fb || a->name != b->name || fa->params.size() != fb->params.size()) return false;
+        for (std::size_t i = 0; i < fa->params.size(); ++i) {
+            if (tc_.lower(*fa->params[i].type, sema::substitution_of(a)) != tc_.lower(*fb->params[i].type, sema::substitution_of(b))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static std::vector<const Symbol*> methods_of(const Symbol* s) {
+        std::vector<const Symbol*> out;
+        for (const Symbol* m : s->member_order) {
+            if (m->kind == SymbolKind::method && m->function() && !m->function()->is_destructor) out.push_back(m);
+        }
+        return out;
+    }
+
+    /// The virtual slots of a class: the methods that introduced them, root first.
+    std::vector<const Symbol*> vtable_slots(const Symbol* s) {
+        std::vector<const Symbol*> out;
+        if (const Symbol* base = s->base_class()) out = vtable_slots(base);
+        for (const Symbol* m : methods_of(s)) {
+            const FunctionDecl* f = m->function();
+            bool introduces = f->is_virtual || f->is_abstract;
+            // In a class hierarchy with a vtable, implementing an interface method makes it
+            // dispatched dynamically too: a derived class may override it again (spec 07).
+            if (!introduces && f->is_override && has_vtable(s)) {
+                introduces = true;
+                for (const Symbol* slot : out) introduces = introduces && !same_signature(slot, m);
+            }
+            if (introduces) out.push_back(m);
+        }
+        // The methods of the interfaces it implements that it leaves to derived classes: they are
+        // abstract here, and `this.sound()` in the class dispatches through the vtable.
+        if (has_vtable(s)) {
+            for (const Symbol* b : s->bases) {
+                if (b->kind != SymbolKind::interface) continue;
+                for (const Symbol* m : interface_methods(b)) {
+                    bool covered = false;
+                    for (const Symbol* slot : out) covered = covered || same_signature(slot, m);
+                    if (!covered) out.push_back(m);
+                }
+            }
+        }
+        return out;
+    }
+
+    /// The slot of `method` in the hierarchy of `s`, or -1.
+    int vtable_slot(const Symbol* s, const Symbol* method) {
+        std::vector<const Symbol*> slots = vtable_slots(s);
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            if (same_signature(slots[i], method)) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    /// The implementation of `method` (by signature) for objects of class `s`: the most derived one.
+    const Symbol* implementation(const Symbol* s, const Symbol* method) {
+        for (; s; s = s->base_class()) {
+            for (const Symbol* m : methods_of(s)) {
+                const FunctionDecl* f = body_decl(m);
+                if (same_signature(m, method) && f && f->body) return m;
+            }
+        }
+        return nullptr;
+    }
+
+    llvm::Constant* function_constant(const Symbol* m) {
+        return m ? static_cast<llvm::Constant*>(function_of(m)) : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+    }
+
+    std::map<const Symbol*, llvm::GlobalVariable*> vtables_;
+
+    /// The vtable of class `s`.
+    llvm::Constant* vtable_of(const Symbol* s) {
+        if (auto it = vtables_.find(s); it != vtables_.end()) return it->second;
+        std::vector<const Symbol*> slots = vtable_slots(s);
+        auto* array_type = llvm::ArrayType::get(ptr_type(), vtable_header + slots.size());
+        std::vector<std::string> parts = split_module(s->module ? s->module->name : "");
+        parts.push_back(s->name);
+        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        auto* g = new llvm::GlobalVariable(*mod_, array_type, true, llvm::GlobalValue::InternalLinkage, nullptr,
+                                           "rv_" + mangle_parts(parts));
+        vtables_[s] = g;   // before the entries: a class's methods may need its own vtable
+        std::vector<llvm::Constant*> entries;
+        const Symbol* base = s->base_class();
+        entries.push_back(base ? vtable_of(base) : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)));
+        entries.push_back(drop_function(tc_.user(s)));
+        for (const Symbol* slot : slots) entries.push_back(function_constant(implementation(s, slot)));
+        g->setInitializer(llvm::ConstantArray::get(array_type, entries));
+        return g;
+    }
+
+    /// A virtual call: the function in `slot` of the object's vtable.
+    llvm::Value* virtual_function(llvm::Value* object, int slot) {
+        llvm::Value* vtable = b_.CreateLoad(ptr_type(), object);
+        llvm::Value* entry  = b_.CreateConstGEP1_32(ptr_type(), vtable, vtable_header + static_cast<unsigned>(slot));
+        return b_.CreateLoad(ptr_type(), entry);
+    }
+
+    /// The methods of an interface, those of the interfaces it extends first.
+    static std::vector<const Symbol*> interface_methods(const Symbol* i) {
+        std::vector<const Symbol*> out;
+        for (const Symbol* b : i->bases) {
+            if (b->kind == SymbolKind::interface) {
+                for (const Symbol* m : interface_methods(b)) out.push_back(m);
+            }
+        }
+        for (const Symbol* m : methods_of(i)) out.push_back(m);
+        return out;
+    }
+
+    int interface_slot(const Symbol* iface, const Symbol* method) {
+        std::vector<const Symbol*> ms = interface_methods(iface);
+        for (std::size_t i = 0; i < ms.size(); ++i) {
+            if (same_signature(ms[i], method)) return static_cast<int>(i);
+        }
+        return -1;
+    }
+
+    /// An interface table: { drop, type id, methods..., tables of the extended interfaces... }.
+    static constexpr unsigned itable_header = 2;
+
+    std::map<const Symbol*, llvm::GlobalVariable*> type_ids_;
+
+    /// A global whose address stands for type `s` (cast::dynamic from an interface).
+    llvm::Constant* type_id(const Symbol* s) {
+        if (auto it = type_ids_.find(s); it != type_ids_.end()) return it->second;
+        std::vector<std::string> parts = split_module(s->module ? s->module->name : "");
+        parts.push_back(s->name);
+        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        auto* g = new llvm::GlobalVariable(*mod_, llvm::Type::getInt8Ty(ctx_), true, llvm::GlobalValue::InternalLinkage,
+                                           llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), "rt_" + mangle_parts(parts));
+        type_ids_[s] = g;
+        return g;
+    }
+
+    std::map<std::pair<const Symbol*, int>, llvm::Function*> thunks_;
+
+    /// An interface table entry for a class with a vtable: calls the object's own override.
+    llvm::Function* virtual_thunk(const Symbol* impl, int slot) {
+        auto key = std::make_pair(impl, slot);
+        if (auto it = thunks_.find(key); it != thunks_.end()) return it->second;
+        llvm::FunctionType* type = function_type(impl);
+        auto* fn = llvm::Function::Create(type, llvm::Function::InternalLinkage,
+                                          std::string(function_of(impl)->getName()) + ".dispatch", mod_.get());
+        thunks_[key] = fn;
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", fn));
+        llvm::Value* object = fn->getArg(0);
+        llvm::Value* vtable = b.CreateLoad(ptr_type(), object);
+        llvm::Value* target = b.CreateLoad(ptr_type(), b.CreateConstGEP1_32(ptr_type(), vtable, vtable_header + static_cast<unsigned>(slot)));
+        std::vector<llvm::Value*> args;
+        for (llvm::Argument& a : fn->args()) args.push_back(&a);
+        llvm::CallInst* call = b.CreateCall(type, target, args);
+        if (type->getReturnType()->isVoidTy()) b.CreateRetVoid();
+        else b.CreateRet(call);
+        return fn;
+    }
+
+    std::map<std::pair<const Symbol*, const Symbol*>, llvm::GlobalVariable*> itables_;
+
+    /// The table of interface `iface` for objects of type `s`.
+    llvm::Constant* itable_of(const Symbol* s, const Symbol* iface) {
+        auto key = std::make_pair(s, iface);
+        if (auto it = itables_.find(key); it != itables_.end()) return it->second;
+        std::vector<const Symbol*> ms = interface_methods(iface);
+        std::vector<const Symbol*> extended = interface_bases(iface);
+        auto* array_type = llvm::ArrayType::get(ptr_type(), itable_header + ms.size() + extended.size());
+        std::vector<std::string> parts = split_module(s->module ? s->module->name : "");
+        parts.push_back(s->name);
+        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        parts.push_back(iface->name);
+        auto* g = new llvm::GlobalVariable(*mod_, array_type, true, llvm::GlobalValue::InternalLinkage, nullptr,
+                                           "ri_" + mangle_parts(parts));
+        itables_[key] = g;
+        std::vector<llvm::Constant*> entries;
+        entries.push_back(drop_function(tc_.user(s)));   // what a std::unique_ptr<iface> destroys with
+        // The type, for cast::dynamic: null when the object has a vtable (that says its class).
+        entries.push_back(has_vtable(s) ? static_cast<llvm::Constant*>(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)))
+                                        : type_id(s));
+        for (const Symbol* m : ms) {
+            const Symbol* impl = implementation(s, m);
+            if (!impl) unsupported(s->span, std::format("'{}' without an implementation of '{}'", s->name, m->name));
+            int slot = has_vtable(s) ? vtable_slot(s, m) : -1;
+            entries.push_back(slot >= 0 ? virtual_thunk(impl, slot) : function_constant(impl));
+        }
+        for (const Symbol* b : extended) entries.push_back(itable_of(s, b));
+        g->setInitializer(llvm::ConstantArray::get(array_type, entries));
+        return g;
+    }
+
+    static bool is_interface(const types::Type* t) { return t && t->is(Kind::user) && t->symbol->kind == SymbolKind::interface; }
+
+    /// The interfaces `i` extends directly.
+    static std::vector<const Symbol*> interface_bases(const Symbol* i) {
+        std::vector<const Symbol*> out;
+        for (const Symbol* b : i->bases) {
+            if (b->kind == SymbolKind::interface) out.push_back(b);
+        }
+        return out;
+    }
+
+    /// The path of extended interfaces from `from` to `to` (empty when `to` is not one of them).
+    static bool interface_path(const Symbol* from, const Symbol* to, std::vector<std::size_t>& path) {
+        if (from == to) return true;
+        std::vector<const Symbol*> bases = interface_bases(from);
+        for (std::size_t k = 0; k < bases.size(); ++k) {
+            path.push_back(k);
+            if (interface_path(bases[k], to, path)) return true;
+            path.pop_back();
+        }
+        return false;
+    }
+
+    /// `{ object, table of from }` as `{ object, table of to }`: each extended interface's table
+    /// is stored after the methods (spec 07).
+    llvm::Value* convert_interface(llvm::Value* fat, const Symbol* from, const Symbol* to, Span span) {
+        if (from == to) return fat;
+        std::vector<std::size_t> path;
+        if (!interface_path(from, to, path)) unsupported(span, "converting between unrelated interfaces");
+        llvm::Value* table = b_.CreateExtractValue(fat, 1);
+        const Symbol* at = from;
+        for (std::size_t k : path) {
+            unsigned index = static_cast<unsigned>(itable_header + interface_methods(at).size() + k);
+            table = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, index));
+            at = interface_bases(at)[k];
+        }
+        return b_.CreateInsertValue(fat, table, 1);
+    }
+
+    /// The fat pointer `{ object, table }` of an expression whose type is an interface (or a
+    /// reference to one): what an interface place's "address" is.
+    llvm::Value* interface_fat(Expr& e) {
+        auto* fat = llvm::StructType::get(ctx_, {ptr_type(), ptr_type()});
+        switch (e.kind) {
+        case ExprKind::unary: {
+            auto& u = e.as<UnaryExpr>();
+            if (u.op == UnaryOp::mut_marker || u.op == UnaryOp::move) return interface_fat(*u.operand);
+            if (u.op == UnaryOp::deref) {
+                if (u.op_symbol) return call_symbol(u.op_symbol, object_address(*u.operand), {}, e.span, true);
+                return gen_expr(*u.operand);   // a `std::raw_ptr<iface>` is the fat pointer itself
+            }
+            break;
+        }
+        case ExprKind::path: {
+            const Symbol* sym = e.as<PathExpr>().symbol;
+            auto it = sym ? locals_.find(sym) : locals_.end();
+            if (it != locals_.end()) return b_.CreateLoad(fat, it->second);
+            break;
+        }
+        case ExprKind::member: {
+            auto& m = e.as<MemberExpr>();
+            const Symbol* f = m.symbol;
+            if (f && f->kind == SymbolKind::field && !f->is_static) {
+                return b_.CreateLoad(fat, b_.CreateStructGEP(user_type(f->parent), member_object(m), field_index(f)));
+            }
+            break;
+        }
+        case ExprKind::block: return gen_block(e.as<BlockExpr>(), true);
+        default: return gen_expr(e);   // a call returning `iface&` returns the fat pointer
+        }
+        unsupported(e.span, "this interface reference");
+    }
+
+    /// An interface reference `{ object, table }` for `e`, used as `iface&` (spec 07).
+    llvm::Value* interface_reference(Expr& e, const Symbol* iface) {
+        auto*              fat = llvm::StructType::get(ctx_, {ptr_type(), ptr_type()});
+        const types::Type* t   = types::strip_ref(e.type);
+        if (is_interface(t)) return convert_interface(interface_fat(e), t->symbol, iface, e.span);
+        if (!t || !t->is(Kind::user)) unsupported(e.span, "this interface reference");
+        llvm::Value* object = object_address(e);
+        llvm::Value* v      = llvm::UndefValue::get(fat);
+        v = b_.CreateInsertValue(v, object, 0);
+        return b_.CreateInsertValue(v, itable_of(t->symbol, iface), 1);
+    }
+
     static bool has_payloads(const Symbol* e) {
         for (const Symbol* a : e->member_order) {
             if (a->alternative && a->alternative->payload) return true;
@@ -955,7 +2019,7 @@ private:
         std::vector<const Symbol*> fields = fields_of(f->parent);
         auto                       it     = std::find(fields.begin(), fields.end(), f);
         if (it == fields.end()) unsupported(f->span, "this field");
-        return static_cast<unsigned>(it - fields.begin());
+        return static_cast<unsigned>(it - fields.begin()) + f->parent->layout_prefix();
     }
 
     /// The LLVM type of a struct, class or enum. Structs keep the C layout of their fields (in
@@ -967,11 +2031,11 @@ private:
         if (auto it = user_types_.find(s); it != user_types_.end()) return it->second;
         if (s->kind == SymbolKind::enum_) return enum_type(s);
         if (!is_struct_symbol(s)) unsupported(s->span, "values of this type");
-        const auto& decl = s->decl->as<TypeDecl>();
-        if (!decl.bases.empty() || s->has_opaque_base) unsupported(s->span, "inheritance and interfaces");
         auto* st       = llvm::StructType::create(ctx_, s->name);
         user_types_[s] = st;
         std::vector<llvm::Type*> elems;
+        if (const Symbol* base = s->base_class()) elems.push_back(user_type(base));   // the base object first (spec 07)
+        else if (s->has_vtable_pointer()) elems.push_back(ptr_type());               // the vtable
         for (const Symbol* f : fields_of(s)) {
             cur_ = f->span;
             elems.push_back(lower_type(field_type(f)));
@@ -1058,7 +2122,7 @@ private:
     llvm::Value* build_struct(const Symbol* s, const std::map<std::string, llvm::Value*>& given) {
         llvm::Type*       st   = user_type(s);
         llvm::AllocaInst* slot = entry_alloca(st, "value");
-        for (const Symbol* f : fields_of(s)) {
+        for (const Symbol* f : all_fields(s)) {   // the base's fields too: `circle{ .name = ..., .radius = ... }`
             cur_ = f->span;
             llvm::Value* v = nullptr;
             if (auto it = given.find(f->name); it != given.end()) {
@@ -1067,8 +2131,9 @@ private:
                 const auto& d = f->decl->as<VariableDecl>();
                 v             = d.init ? gen_expr(*d.init) : default_value(field_type(f), f->span);
             }
-            b_.CreateStore(v, b_.CreateStructGEP(st, slot, field_index(f)));
+            b_.CreateStore(v, b_.CreateStructGEP(user_type(f->parent), slot, field_index(f)));   // a base is at offset 0
         }
+        if (has_vtable(s)) b_.CreateStore(vtable_of(s), slot);   // the vtable pointer is at offset 0
         return b_.CreateLoad(st, slot);
     }
 
@@ -1080,6 +2145,15 @@ private:
         // The given fields are evaluated in the order written, then the rest.
         std::map<std::string, llvm::Value*> given;
         for (FieldInit& fi : sl.fields) {
+            const Symbol* f = nullptr;
+            for (const Symbol* candidate : all_fields(t->symbol)) {
+                if (candidate->name == fi.name) f = candidate;
+            }
+            const types::Type* ft = f ? field_type(f) : nullptr;
+            if (ft && ft->is(Kind::reference)) {   // a reference field binds to the place (spec 12)
+                given[fi.name] = is_interface(ft->inner) ? interface_reference(*fi.value, ft->inner->symbol) : object_address(*fi.value);
+                continue;
+            }
             given[fi.name] = gen_expr(*fi.value);
             moved_out(*fi.value);
         }
@@ -1089,6 +2163,18 @@ private:
     llvm::Value* default_value(const types::Type* t, Span where) {
         if (t && t->is(Kind::user) && is_struct_symbol(t->symbol)) return build_struct(t->symbol, {});
         if (types::is_std_instance(t, "option")) return alternative_value(alternative(t->symbol, "none"), nullptr);
+        if (t && t->is(Kind::array)) {   // every element's default
+            llvm::Value* element = default_value(t->inner, where);
+            if (auto* c = llvm::dyn_cast<llvm::Constant>(element)) {
+                return llvm::ConstantArray::get(llvm::cast<llvm::ArrayType>(lower_type(t)),
+                                                std::vector<llvm::Constant*>(tc_.array_count(t), c));
+            }
+            llvm::Value* v = llvm::UndefValue::get(lower_type(t));
+            for (std::uint64_t i = 0; i < tc_.array_count(t); ++i) {
+                v = b_.CreateInsertValue(v, i == 0 ? element : default_value(t->inner, where), {static_cast<unsigned>(i)});
+            }
+            return v;
+        }
         if (t && (t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::pointer))) {
             return llvm::Constant::getNullValue(lower_type(t));
         }
@@ -1103,6 +2189,7 @@ private:
         }
         case ExprKind::this_:
         case ExprKind::member: return true;
+        case ExprKind::index: return e.as<IndexExpr>().op_symbol != nullptr;
         case ExprKind::unary: return e.as<UnaryExpr>().op == UnaryOp::deref;
         case ExprKind::call: {   // `f.get(value)` (spec 26)
             const auto& c = e.as<CallExpr>();
@@ -1134,11 +2221,22 @@ private:
             auto&         m = e.as<MemberExpr>();
             const Symbol* f = m.symbol;
             if (!f || f->kind != SymbolKind::field || f->is_static) unsupported(e.span, "this member access");
-            return b_.CreateStructGEP(user_type(f->parent), object_address(*m.object), field_index(f));
+            llvm::Value* at = b_.CreateStructGEP(user_type(f->parent), member_object(m), field_index(f));
+            const types::Type* ft = field_type(f);
+            if (ft && ft->is(Kind::reference)) return b_.CreateLoad(ptr_type(), at);   // a reference field holds the address
+            return at;
         }
-        case ExprKind::unary:
-            if (e.as<UnaryExpr>().op == UnaryOp::deref) return gen_expr(*e.as<UnaryExpr>().operand);
-            break;
+        case ExprKind::unary: {
+            auto& u = e.as<UnaryExpr>();
+            if (u.op != UnaryOp::deref) break;
+            if (u.op_symbol) return call_symbol(u.op_symbol, object_address(*u.operand), {}, e.span, true);   // `*p`: operator*
+            return gen_expr(*u.operand);
+        }
+        case ExprKind::index: {   // `operator[]` returns a reference: the element's address (spec 16)
+            auto& i = e.as<IndexExpr>();
+            if (!i.op_symbol) break;
+            return call_symbol(i.op_symbol, object_address(*i.object), {i.index.get()}, e.span, true);
+        }
         case ExprKind::call: {   // `f.get(value)`: the field (spec 26)
             auto& c = e.as<CallExpr>();
             if (c.callee->kind == ExprKind::member) {
@@ -1154,6 +2252,12 @@ private:
         unsupported(e.span, "this place");
     }
 
+    /// The object a member access reads from: `p->x` on a smart pointer goes through its `operator*`.
+    llvm::Value* member_object(MemberExpr& m) {
+        if (m.deref_symbol) return call_symbol(m.deref_symbol, object_address(*m.object), {}, m.span, true);
+        return object_address(*m.object);
+    }
+
     /// The address of the object `e` denotes: a place, a pointer or reference value, or a temporary.
     llvm::Value* object_address(Expr& e) {
         if (e.kind == ExprKind::unary) {
@@ -1161,12 +2265,31 @@ private:
             if (op == UnaryOp::mut_marker || op == UnaryOp::move) return object_address(*e.as<UnaryExpr>().operand);
         }
         if (e.type && e.type->is(Kind::pointer)) return gen_expr(e);
+        if (is_interface(types::strip_ref(e.type))) return interface_fat(e);
+        if (e.kind == ExprKind::block) return gen_block(e.as<BlockExpr>(), true);   // `unsafe { *p }`
         if (e.type && e.type->is(Kind::reference)) return place(e);
         if (is_place(e)) return place(e);
         llvm::Value*      v    = gen_expr(e);
         llvm::AllocaInst* slot = entry_alloca(v->getType(), "temporary");
         b_.CreateStore(v, slot);
+        // A temporary that owns something lives until the end of the enclosing block.
+        const types::Type* t = types::strip_ref(e.type);
+        if (needs_drop(t) && !scopes_.empty() && !owned_path(e)) {
+            llvm::AllocaInst* flag = entry_alloca(llvm::Type::getInt1Ty(ctx_), "df_temporary");
+            b_.CreateStore(llvm::ConstantInt::getTrue(ctx_), flag);
+            scopes_.back().locals.push_back(OwnedLocal{slot, flag, drop_function(t)});
+            temporaries_[slot] = flag;
+        }
         return slot;
+    }
+
+    /// The drop flags of owned temporaries, by their slot: whoever takes a temporary over (a
+    /// match, a loop) clears its flag.
+    std::map<const llvm::Value*, llvm::AllocaInst*> temporaries_;
+
+    /// Hands the temporary at `slot` (if it is one) to a new owner.
+    void release_temporary(const llvm::Value* slot) {
+        if (auto it = temporaries_.find(slot); it != temporaries_.end()) b_.CreateStore(llvm::ConstantInt::getFalse(ctx_), it->second);
     }
 
     /// The value of a place expression (a reference is read through).
@@ -1251,16 +2374,7 @@ private:
         auto* i1  = llvm::Type::getInt1Ty(ctx_);
         auto* loc = llvm::PointerType::get(ctx_, 0);
         if (arg.kind == ExprKind::string_literal && arg.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
-            llvm::AllocaInst* buf = entry_alloca(buffer_type(), "buffer");
-            b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), buf);
-            for (FormatPart& part : arg.as<LiteralExpr>().format_parts) {
-                if (part.expr) {
-                    format_hole(buf, part);
-                } else {
-                    b_.CreateCall(runtime("rift_buf_put", llvm::Type::getVoidTy(ctx_), {loc, loc, i64}),
-                                  {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
-                }
-            }
+            llvm::AllocaInst* buf = format_into_buffer(arg.as<LiteralExpr>());
             if (panic) {
                 b_.CreateCall(runtime("rift_panic_buf", llvm::Type::getVoidTy(ctx_), {loc, loc}), {loc_global(c.span), buf});
                 b_.CreateUnreachable();
@@ -1272,8 +2386,10 @@ private:
             return;
         }
         const types::Type* t = types::strip_ref(arg.type);
-        if (!is_str(t)) unsupported(arg.span, std::format("'std::{}' with a value of type '{}'", name, t ? types::to_string(t) : "unknown"));
-        llvm::Value* v = gen_expr(arg);
+        if (!is_str(t) && !is_string(t)) {
+            unsupported(arg.span, std::format("'std::{}' with a value of type '{}'", name, t ? types::to_string(t) : "unknown"));
+        }
+        llvm::Value* v = text_value(arg);
         llvm::Value* data = b_.CreateExtractValue(v, 0);
         llvm::Value* len  = b_.CreateExtractValue(v, 1);
         if (panic) {
@@ -1286,6 +2402,104 @@ private:
         }
     }
 
+    /// The runtime buffer with the text of the f-string `lit`. Its bytes are on the heap.
+    llvm::AllocaInst* format_into_buffer(LiteralExpr& lit) {
+        auto*             i64 = llvm::Type::getInt64Ty(ctx_);
+        auto*             p   = ptr_type();
+        llvm::AllocaInst* buf = entry_alloca(buffer_type(), "buffer");
+        b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), buf);
+        for (FormatPart& part : lit.format_parts) {
+            if (part.expr) {
+                format_hole(buf, part);
+            } else {
+                b_.CreateCall(runtime("rift_buf_put", llvm::Type::getVoidTy(ctx_), {p, p, i64}),
+                              {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
+            }
+        }
+        return buf;
+    }
+
+    /// `std::checked_add` and `std::saturating_add` and their sub/mul forms (spec 16).
+    llvm::Value* arith_builtin(CallExpr& c, const std::string& name) {
+        const types::Type* t = types::strip_ref(c.args.at(0)->type);
+        if (!t || !t->is_integer()) unsupported(c.span, std::format("'std::{}' on this type", name));
+        llvm::Value* a  = gen_expr(*c.args[0]);
+        llvm::Value* b  = gen_expr(*c.args[1]);
+        bool         s  = t->is_signed;
+        std::string  op = name.substr(name.find('_') + 1);
+        if (name.starts_with("saturating")) {
+            if (op == "add") return b_.CreateBinaryIntrinsic(s ? llvm::Intrinsic::sadd_sat : llvm::Intrinsic::uadd_sat, a, b);
+            if (op == "sub") return b_.CreateBinaryIntrinsic(s ? llvm::Intrinsic::ssub_sat : llvm::Intrinsic::usub_sat, a, b);
+            // mul: the exact product, or the bound on the side of its sign
+            llvm::Value* r   = b_.CreateBinaryIntrinsic(s ? llvm::Intrinsic::smul_with_overflow : llvm::Intrinsic::umul_with_overflow, a, b);
+            llvm::Value* ovf = b_.CreateExtractValue(r, 1);
+            unsigned     w   = a->getType()->getIntegerBitWidth();
+            llvm::Value* bound;
+            if (s) {
+                llvm::Value* neg = b_.CreateXor(b_.CreateICmpSLT(a, llvm::ConstantInt::get(a->getType(), 0)),
+                                                b_.CreateICmpSLT(b, llvm::ConstantInt::get(b->getType(), 0)));
+                bound = b_.CreateSelect(neg, llvm::ConstantInt::get(ctx_, llvm::APInt::getSignedMinValue(w)),
+                                        llvm::ConstantInt::get(ctx_, llvm::APInt::getSignedMaxValue(w)));
+            } else {
+                bound = llvm::ConstantInt::get(ctx_, llvm::APInt::getMaxValue(w));
+            }
+            return b_.CreateSelect(ovf, bound, b_.CreateExtractValue(r, 0));
+        }
+        llvm::Intrinsic::ID id = op == "add" ? (s ? llvm::Intrinsic::sadd_with_overflow : llvm::Intrinsic::uadd_with_overflow)
+                               : op == "sub" ? (s ? llvm::Intrinsic::ssub_with_overflow : llvm::Intrinsic::usub_with_overflow)
+                                             : (s ? llvm::Intrinsic::smul_with_overflow : llvm::Intrinsic::umul_with_overflow);
+        llvm::Value* r = b_.CreateBinaryIntrinsic(id, a, b);
+        return option_of(types::strip_ref(c.type), b_.CreateExtractValue(r, 0), b_.CreateNot(b_.CreateExtractValue(r, 1)));
+    }
+
+    /// `std::format(f"...")`: the text as a new `std::string` (spec 19).
+    llvm::Value* std_format(CallExpr& c) {
+        if (c.args.size() != 1 || c.args[0]->kind != ExprKind::string_literal ||
+            c.args[0]->as<LiteralExpr>().token_kind != TokenKind::format_string_literal) {
+            unsupported(c.span, "'std::format' without an f-string");
+        }
+        const Symbol* sym = program_.std_module ? program_.std_module->items.find("string")->second.front() : nullptr;
+        const Symbol* from = sym ? std_member(tc_.user(sym), "from") : nullptr;
+        if (!from) unsupported(c.span, "'std::format' without the standard library");
+        llvm::AllocaInst* buf  = format_into_buffer(c.args[0]->as<LiteralExpr>());
+        llvm::Value*      data = b_.CreateLoad(ptr_type(), b_.CreateStructGEP(buffer_type(), buf, 0));
+        llvm::Value*      len  = b_.CreateLoad(llvm::Type::getInt64Ty(ctx_), b_.CreateStructGEP(buffer_type(), buf, 1));
+        llvm::Value*      text = b_.CreateInsertValue(b_.CreateInsertValue(llvm::UndefValue::get(str_type()), data, 0), len, 1);
+        llvm::Value*      out  = b_.CreateCall(function_of(from), {text});
+        b_.CreateCall(libc("free", llvm::Type::getVoidTy(ctx_), {ptr_type()}), {data});
+        return out;
+    }
+
+    /// Whether `t` is the library's `std::string` class.
+    bool is_string(const types::Type* t) const {
+        if (!t || !t->is(Kind::user) || !program_.std_module) return false;
+        auto it = program_.std_module->items.find("string");
+        return it != program_.std_module->items.end() && it->second.front() == t->symbol;
+    }
+
+    /// The name of the alternative of the simple enum `e` whose tag is `tag`: a simple enum prints
+    /// as its alternative's name (spec 19).
+    llvm::Value* enum_name(const Symbol* e, llvm::Value* tag) {
+        auto*        i64  = llvm::Type::getInt64Ty(ctx_);
+        llvm::Value* text = llvm::ConstantAggregateZero::get(str_type());
+        for (const Symbol* a : e->member_order) {
+            if (!a->alternative) continue;
+            llvm::Value* name = llvm::ConstantStruct::get(str_type(), {message_bytes(a->name), llvm::ConstantInt::get(i64, a->name.size())});
+            text = b_.CreateSelect(b_.CreateICmpEQ(tag, tag_constant(a)), name, text);
+        }
+        return text;
+    }
+
+    /// The text of a `std::str` or `std::string` expression, as a `std::str`.
+    llvm::Value* text_value(Expr& e) {
+        const types::Type* t = types::strip_ref(e.type);
+        if (!is_string(t) || e.conversion == Expr::Conversion::string_to_str) return gen_expr(e);
+        e.conversion = Expr::Conversion::string_to_str;   // the same borrow as an implicit conversion
+        llvm::Value* v = gen_expr(e);
+        e.conversion = Expr::Conversion::none;
+        return v;
+    }
+
     /// One `{expr:spec}` hole of an f-string, formatted into `buf`.
     void format_hole(llvm::Value* buf, FormatPart& part) {
         Expr&                e    = *part.expr;
@@ -1293,10 +2507,13 @@ private:
         llvm::Constant*      spec = part.spec.present
                                         ? spec_constant(part.spec.align, part.spec.plus, part.spec.width, part.spec.precision, part.spec.radix)
                                         : plain_spec();
-        if (!t || !(t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_) || is_str(t))) {
+        bool simple_enum = t && t->is_user(SymbolKind::enum_) && !has_payloads(t->symbol);
+        if (!t || !(t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_) || is_str(t) || is_string(t) ||
+                    simple_enum)) {
             unsupported(e.span, std::format("formatting values of type '{}'", t ? types::to_string(t) : "unknown"));
         }
-        llvm::Value*         v    = gen_expr(e);
+        llvm::Value*         v    = simple_enum ? enum_name(t->symbol, gen_expr(e)) : text_value(e);
+        if (simple_enum) t = tc_.external("std::str");
         auto*                i1   = llvm::Type::getInt1Ty(ctx_);
         auto*                i128 = llvm::Type::getInt128Ty(ctx_);
         auto*                vd   = llvm::Type::getVoidTy(ctx_);
@@ -1317,7 +2534,7 @@ private:
             b_.CreateCall(runtime("rift_fmt_bool", vd, {p, i1, p}), {buf, v, spec});
         } else if (t && t->is(Kind::char_)) {
             b_.CreateCall(runtime("rift_fmt_char", vd, {p, llvm::Type::getInt32Ty(ctx_), p}), {buf, v, spec});
-        } else if (is_str(t)) {
+        } else if (is_str(t) || is_string(t)) {
             b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, llvm::Type::getInt64Ty(ctx_), p}),
                           {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
         } else {
@@ -1361,12 +2578,7 @@ private:
         case PatternKind::wildcard: return;
         case PatternKind::binding: {
             const Symbol* s = p.as<BindingPattern>().symbol;
-            if (!s) return;
-            if (needs_drop(t)) unsupported(p.span, "binding a value that needs a destructor in a pattern");
-            llvm::Type*       lt   = lower_type(t);
-            llvm::AllocaInst* slot = entry_alloca(lt, s->name);
-            b_.CreateStore(b_.CreateLoad(lt, addr), slot);
-            locals_[s] = slot;
+            if (s) pending_bindings_.push_back(PendingBinding{s, addr, t, p.span});   // bound once every test passed
             return;
         }
         case PatternKind::literal: {
@@ -1421,39 +2633,92 @@ private:
     /// value. If none matches, the program panics (spec 07).
     llvm::Value* match_value(MatchExpr& m, const types::Type* t) {
         Expr* scrutinee = m.scrutinee.get();
+        bool  borrow_mut = false;   // `match (mut x)`: the bindings are the parts of x (spec 10)
         if (scrutinee->kind == ExprKind::unary && scrutinee->as<UnaryExpr>().op == UnaryOp::mut_marker) {
-            unsupported(scrutinee->span, "'match (mut x)'");
+            scrutinee  = scrutinee->as<UnaryExpr>().operand.get();
+            borrow_mut = true;
         }
         const types::Type* st   = types::strip_ref(scrutinee->type);
-        if (needs_drop(st) && !owned_path(*scrutinee)) {
-            unsupported(scrutinee->span, "matching on a value that needs a destructor", "store it in a local first");
+        // A temporary (or `move x`) is owned by the match: its bindings take their parts, and what
+        // no binding took is destroyed at the end. A place is borrowed: bindings name its parts.
+        bool owning = needs_drop(st) && !is_place(*scrutinee) && !(scrutinee->type && scrutinee->type->is(Kind::reference));
+        open_scope();
+        llvm::Value*      addr       = object_address(*scrutinee);
+        llvm::AllocaInst* owned_flag = nullptr;
+        if (owning) {
+            moved_out(*scrutinee);
+            release_temporary(addr);
+            if (!llvm::isa<llvm::AllocaInst>(addr)) unsupported(scrutinee->span, "matching on this value");
+            owned_flag = entry_alloca(llvm::Type::getInt1Ty(ctx_), "df_scrutinee");
+            b_.CreateStore(llvm::ConstantInt::getTrue(ctx_), owned_flag);
+            scopes_.back().locals.push_back(OwnedLocal{llvm::cast<llvm::AllocaInst>(addr), owned_flag, drop_function(st)});
         }
-        llvm::Value*       addr = object_address(*scrutinee);
         bool               has_value = !is_void(t) && !(t && t->is_unknown());
         llvm::AllocaInst*  slot      = has_value ? entry_alloca(lower_type(types::strip_ref(t)), "match.value") : nullptr;
         llvm::BasicBlock*  end_bb    = llvm::BasicBlock::Create(ctx_, "match.end", cur_fn_);
         for (MatchArm& arm : m.arms) {
             llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx_, "arm.next", cur_fn_);
             llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_, "arm.body", cur_fn_);
+            pending_bindings_.clear();
             match_pattern(*arm.pattern, addr, st, next);
+            std::vector<PendingBinding> binds = std::move(pending_bindings_);
+            pending_bindings_.clear();
+            open_scope();
+            bool took = false;
+            for (const PendingBinding& pb : binds) {
+                if (borrow_mut) {
+                    locals_[pb.symbol] = pb.addr;   // writes go to the matched value
+                } else if (!needs_drop(pb.type)) {   // a copy
+                    llvm::Type*       lt = lower_type(pb.type);
+                    llvm::AllocaInst* v  = entry_alloca(lt, pb.symbol->name);
+                    b_.CreateStore(b_.CreateLoad(lt, pb.addr), v);
+                    locals_[pb.symbol] = v;
+                } else if (!owning) {
+                    locals_[pb.symbol] = pb.addr;   // names the part of the borrowed value
+                } else {
+                    if (arm.guard) unsupported(pb.span, "a guard on an arm that takes a value with a destructor");
+                    if (arm.pattern->kind == PatternKind::struct_) {
+                        unsupported(pb.span, "taking a part of a struct with a destructor in a pattern");
+                    }
+                    llvm::Type*       lt = lower_type(pb.type);
+                    llvm::AllocaInst* v  = entry_alloca(lt, pb.symbol->name);
+                    b_.CreateStore(b_.CreateLoad(lt, pb.addr), v);
+                    locals_[pb.symbol] = v;
+                    own(pb.symbol, v, pb.type, true);
+                    took = true;
+                }
+            }
+            if (took) b_.CreateStore(llvm::ConstantInt::getFalse(ctx_), owned_flag);
             if (arm.guard) {
-                b_.CreateCondBr(gen_expr(*arm.guard), body, next);
+                b_.CreateCondBr(truth(*arm.guard), body, next);
             } else {
                 b_.CreateBr(body);
             }
             b_.SetInsertPoint(body);
             llvm::Value* v = gen_expr(*arm.body);
-            if (!terminated()) {
-                if (slot && v) b_.CreateStore(v, slot);
-                b_.CreateBr(end_bb);
+            if (!terminated() && slot && v) {
+                b_.CreateStore(v, slot);
+                moved_out(*arm.body);   // `std::ok(list) => move list`: the value leaves the arm
             }
+            close_scope();
+            if (!terminated()) b_.CreateBr(end_bb);
             b_.SetInsertPoint(next);
         }
         check(llvm::ConstantInt::getFalse(ctx_), m.span, "no match arm matched");
         b_.CreateBr(end_bb);
         b_.SetInsertPoint(end_bb);
-        return slot ? b_.CreateLoad(lower_type(types::strip_ref(t)), slot) : nullptr;
+        llvm::Value* result = slot ? b_.CreateLoad(lower_type(types::strip_ref(t)), slot) : nullptr;
+        close_scope();
+        return result;
     }
+
+    struct PendingBinding {
+        const Symbol*      symbol;
+        llvm::Value*       addr;
+        const types::Type* type;
+        Span               span;
+    };
+    std::vector<PendingBinding> pending_bindings_;
 
     /// `a op b` for the ordering and equality operators on integers, chars, bools, enums and floats.
     llvm::Value* compare_op(TokenKind op, llvm::Value* a, llvm::Value* b, const types::Type* t, Span span) {
@@ -1485,6 +2750,10 @@ private:
         llvm::Value* n   = b_.CreateSExtOrTrunc(gen_expr(*b.operand), llvm::Type::getInt128Ty(ctx_));
         llvm::Value* in  = b_.CreateAnd(b_.CreateICmpSGE(n, llvm::ConstantInt::get(n->getType(), 0)),
                                         b_.CreateICmpSLT(n, llvm::ConstantInt::get(n->getType(), static_cast<std::uint64_t>(t->bits))));
+        if (mode_setting("shifts") == "mask") {
+            return b_.CreateShl(llvm::ConstantInt::get(lt, 1),
+                                b_.CreateAnd(b_.CreateTrunc(n, lt), llvm::ConstantInt::get(lt, static_cast<std::uint64_t>(t->bits - 1))));
+        }
         check(in, b.span, std::format("bit index out of range for {}", t->name));
         return b_.CreateShl(llvm::ConstantInt::get(lt, 1), b_.CreateTrunc(n, lt));
     }
@@ -1509,6 +2778,7 @@ private:
             return nullptr;
         }
         if (f.is_compile_time) unsupported(f.span, "'for compile_time' over elements that are not known");
+        if (f.len_symbol || f.next_symbol) return for_each(f);
         Expr* it = f.iterable.get();
         if (it->kind != ExprKind::range) unsupported(it->span, "'for' over anything but a range 'a..b'");
         auto&              r  = it->as<RangeExpr>();
@@ -1554,6 +2824,75 @@ private:
         }
         b_.CreateBr(cond_bb);
         b_.SetInsertPoint(exit_bb);
+        return nullptr;
+    }
+
+    /// `for (x : c)` over a container (`len()` and `operator[]`) or a stream (`next()`), spec 10.
+    /// A temporary iterable lives until the loop ends.
+    llvm::Value* for_each(ForExpr& f) {
+        auto*              i64 = llvm::Type::getInt64Ty(ctx_);
+        const types::Type* ct  = types::strip_ref(f.iterable->type);
+        open_scope();
+        llvm::Value* obj = object_address(*f.iterable);   // a temporary iterable lives until the loop ends
+        (void)ct;
+        const types::Type* vt = f.symbol ? f.symbol->type : nullptr;
+        llvm::BasicBlock* cond_bb = llvm::BasicBlock::Create(ctx_, "each.cond", cur_fn_);
+        llvm::BasicBlock* body_bb = llvm::BasicBlock::Create(ctx_, "each.body", cur_fn_);
+        llvm::BasicBlock* cont_bb = llvm::BasicBlock::Create(ctx_, "each.next", cur_fn_);
+        llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(ctx_, "each.end", cur_fn_);
+        llvm::AllocaInst* iv      = entry_alloca(i64, "each.i");
+        llvm::Value*      len     = nullptr;
+        llvm::AllocaInst* opt     = nullptr;
+        const Symbol*     some    = nullptr;
+        if (f.len_symbol) {
+            len = b_.CreateCall(function_of(f.len_symbol), {obj});
+            b_.CreateStore(llvm::ConstantInt::get(i64, 0), iv);
+        } else {
+            const FunctionDecl* nf = body_decl(f.next_symbol);
+            const types::Type*  rt = tc_.lower(*nf->result, sema::substitution_of(f.next_symbol));
+            opt  = entry_alloca(lower_type(rt), "each.option");
+            for (const Symbol* a : rt->symbol->member_order) {
+                if (a->name == "some") some = a;
+            }
+        }
+        b_.CreateBr(cond_bb);
+        b_.SetInsertPoint(cond_bb);
+        llvm::Value* element = nullptr;   // the element's address
+        if (len) {
+            b_.CreateCondBr(b_.CreateICmpULT(b_.CreateLoad(i64, iv), len), body_bb, exit_bb);
+            b_.SetInsertPoint(body_bb);
+            element = b_.CreateCall(function_of(f.index_symbol), {obj, b_.CreateLoad(i64, iv)});
+        } else {
+            b_.CreateStore(b_.CreateCall(function_of(f.next_symbol), {obj}), opt);
+            llvm::Type*  ot  = opt->getAllocatedType();
+            llvm::Value* tag = b_.CreateLoad(enum_tag_type(some->parent), b_.CreateStructGEP(ot, opt, 0));
+            b_.CreateCondBr(b_.CreateICmpEQ(tag, tag_constant(some)), body_bb, exit_bb);
+            b_.SetInsertPoint(body_bb);
+            element = b_.CreateStructGEP(ot, opt, 1);
+        }
+        loops_.push_back(Loop{exit_bb, cont_bb});
+        open_scope(true);
+        if (f.symbol && vt) {
+            if (vt->is(Kind::reference)) {
+                llvm::AllocaInst* var = entry_alloca(ptr_type(), f.symbol->name);
+                b_.CreateStore(element, var);
+                locals_[f.symbol] = var;
+            } else {
+                llvm::AllocaInst* var = entry_alloca(lower_type(vt), f.symbol->name);
+                b_.CreateStore(b_.CreateLoad(lower_type(vt), element), var);
+                locals_[f.symbol] = var;
+                if (f.next_symbol && needs_drop(vt)) own(f.symbol, var, vt, true);   // each element is owned
+            }
+        }
+        gen_block(*f.body);
+        close_scope();
+        loops_.pop_back();
+        if (!terminated()) b_.CreateBr(cont_bb);
+        b_.SetInsertPoint(cont_bb);
+        if (len) b_.CreateStore(b_.CreateAdd(b_.CreateLoad(i64, iv), llvm::ConstantInt::get(i64, 1)), iv);
+        b_.CreateBr(cond_bb);
+        b_.SetInsertPoint(exit_bb);
+        close_scope();
         return nullptr;
     }
 
@@ -1630,6 +2969,7 @@ private:
         const types::Type* from = types::strip_ref(c.operand->type);
         const std::string& variant = c.variant;
         if (variant == "checked" && types::is_std_instance(to, "option")) return checked_cast(c, from, to);
+        if (variant == "dynamic") return dynamic_cast_value(c, types::strip_ref(to->symbol->template_args[0]), to);
         if (variant == "checked" || variant == "dynamic") {
             unsupported(c.span, std::format("'cast::{}' (it returns std::option)", variant));
         }
@@ -1644,6 +2984,34 @@ private:
         }
         // cast<T> (lossless), cast::truncate (keeps the low bits) and cast::round are conversions.
         return convert(v, from, to);
+    }
+
+    // --- checks (spec 23) -----------------------------------------------------------------
+
+    /// `run_time check (c) else msg;` (and the run-time part of `compile_time run_time`): panics
+    /// with the message at the check when the condition is false. Compile-time checks and checks
+    /// of other build modes generate nothing.
+    void run_time_check(Check& c, Span span) {
+        if (!c.run_active || !c.condition) return;
+        llvm::Value*      ok   = truth(*c.condition);
+        llvm::BasicBlock* fail = llvm::BasicBlock::Create(ctx_, "check.failed", cur_fn_);
+        llvm::BasicBlock* pass = llvm::BasicBlock::Create(ctx_, "check.ok", cur_fn_);
+        b_.CreateCondBr(ok, pass, fail);
+        b_.SetInsertPoint(fail);
+        if (c.is_entry) {   // an entry check names the caller's line, then the check (spec 23)
+            llvm::Value* site  = b_.CreateLoad(ptr_type(), call_site_global());
+            llvm::Value* check = loc_global(c.condition->span);
+            llvm::Value* at    = b_.CreateSelect(b_.CreateIsNotNull(site), site, check);
+            const SourceFile& file = sources_.file(c.condition->span.file);
+            LineCol lc = file.line_col(c.condition->span.begin);
+            bool in_std = file.path().starts_with("<std>");   // the library's checks: the caller's line is enough
+            panic_with(*c.message, c.condition->span, at,
+                       in_std ? std::string() : std::format("\nnote: the check is at {}:{}:{}", file.path(), lc.line, lc.column));
+        } else {
+            panic_with(*c.message, c.condition->span);
+        }
+        b_.SetInsertPoint(pass);
+        (void)span;
     }
 
     // --- compile-time values (spec 15, 26) ---------------------------------------------------
@@ -1789,8 +3157,31 @@ private:
     /// value_or, expect and or_error (map_error needs function values). The receiver is consumed;
     /// a part that is not used is destroyed (spec 11, 12).
     llvm::Value* std_method(CallExpr& c, MemberExpr& me, const types::Type* t, const std::string& name) {
-        if (name == "map_error") unsupported(c.span, "'map_error' (it needs function values)");
         const Symbol*      e     = t->symbol;
+        if (types::is_std_query_method(name)) {   // the tag, read in place
+            llvm::Value* addr = object_address(*me.object);
+            llvm::Value* tag  = b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(user_type(e), addr, 0));
+            llvm::Value* good = b_.CreateICmpEQ(tag, tag_constant(good_alternative(e)));
+            return name == "is_some" || name == "is_ok" ? good : b_.CreateNot(good);
+        }
+        if (name == "map_error") {   // ok stays ok; the error goes through the lambda (spec 11)
+            auto [slot, good]       = unpack(*me.object, e);
+            const Symbol*      ok   = good_alternative(e);
+            const Symbol*      err  = alternative(e, "error");
+            const types::Type* rt   = types::strip_ref(static_cast<Expr&>(c).type);
+            const types::Type* ft   = types::strip_ref(c.args[0]->type);
+            llvm::AllocaInst*  fslot = entry_alloca(lower_type(ft), "map_error.f");
+            b_.CreateStore(gen_expr(*c.args[0]), fslot);
+            moved_out(*c.args[0]);
+            return branch_value(good, rt, [&] {
+                return alternative_value(alternative(rt->symbol, "ok"), payload_at(slot, ok));
+            }, [&] {
+                llvm::Value* arg = ft->args[0]->is(Kind::reference) ? b_.CreateStructGEP(user_type(e), slot, 1)
+                                                                    : payload_at(slot, err);
+                llvm::Value* e2  = b_.CreateCall(lambda_function(*tc_.lambda_of(ft)), {fslot, arg});
+                return alternative_value(alternative(rt->symbol, "error"), e2);
+            });
+        }
         auto [slot, good]        = unpack(*me.object, e);
         const Symbol*      ok    = good_alternative(e);
         const types::Type* value = payload_of(ok);
@@ -1806,6 +3197,10 @@ private:
             });
         }
         // value_or and or_error: the argument is evaluated first, whichever way it goes.
+        if (name == "value_or" && value->is(Kind::reference)) {   // `std::option<T&>`: the default is a place too
+            llvm::Value* fallback = object_address(arg);
+            return branch_value(good, value, [&] { return payload_at(slot, ok); }, [&] { return fallback; });
+        }
         const types::Type* at = types::strip_ref(arg.type);
         llvm::AllocaInst*  a  = entry_alloca(lower_type(at), "argument");
         b_.CreateStore(gen_expr(arg), a);
@@ -1830,10 +3225,30 @@ private:
     }
 
     /// Panics with `message` (a string or an f-string) at `where`.
-    void panic_with(Expr& message, Span where) {
+    void panic_with(Expr& message, Span where, llvm::Value* at = nullptr, const std::string& suffix = {}) {
         auto* p   = ptr_type();
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         auto* vd  = llvm::Type::getVoidTy(ctx_);
+        llvm::Value* loc = at ? at : loc_global(where);
+        if (!suffix.empty()) {   // the message, then a note: through a buffer
+            llvm::AllocaInst* buf = entry_alloca(buffer_type(), "buffer");
+            b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), buf);
+            if (message.kind == ExprKind::string_literal && message.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
+                for (FormatPart& part : message.as<LiteralExpr>().format_parts) {
+                    if (part.expr) format_hole(buf, part);
+                    else b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+                                       {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
+                }
+            } else {
+                llvm::Value* v = gen_expr(message);
+                b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
+            }
+            b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+                          {buf, message_bytes(suffix), llvm::ConstantInt::get(i64, suffix.size())});
+            b_.CreateCall(runtime("rift_panic_buf", vd, {p, p}), {loc, buf});
+            b_.CreateUnreachable();
+            return;
+        }
         if (message.kind == ExprKind::string_literal && message.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
             llvm::AllocaInst* buf = entry_alloca(buffer_type(), "buffer");
             b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), buf);
@@ -1845,11 +3260,11 @@ private:
                                   {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
                 }
             }
-            b_.CreateCall(runtime("rift_panic_buf", vd, {p, p}), {loc_global(where), buf});
+            b_.CreateCall(runtime("rift_panic_buf", vd, {p, p}), {loc, buf});
         } else {
             llvm::Value* v = gen_expr(message);
             b_.CreateCall(runtime("rift_panic_str", vd, {p, p, i64}),
-                          {loc_global(where), b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
+                          {loc, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
         }
         b_.CreateUnreachable();
     }
@@ -1858,6 +3273,17 @@ private:
     /// number, otherwise `std::none` (spec 17).
     llvm::Value* checked_cast(CastExpr& c, const types::Type* from, const types::Type* option) {
         const types::Type* to = option->symbol->template_args[0];
+        if (from->is_integer() && to->is(Kind::char_)) {   // a Unicode scalar value: not a surrogate, at most 0x10FFFF
+            llvm::Value* v    = gen_expr(*c.operand);
+            auto*        i128 = llvm::Type::getInt128Ty(ctx_);
+            llvm::Value* w    = from->is_signed ? b_.CreateSExt(v, i128) : b_.CreateZExt(v, i128);
+            llvm::Value* ok   = b_.CreateAnd(b_.CreateICmpSGE(w, llvm::ConstantInt::get(i128, 0)),
+                                             b_.CreateICmpSLE(w, llvm::ConstantInt::get(i128, 0x10FFFF)));
+            llvm::Value* sur  = b_.CreateAnd(b_.CreateICmpSGE(w, llvm::ConstantInt::get(i128, 0xD800)),
+                                             b_.CreateICmpSLE(w, llvm::ConstantInt::get(i128, 0xDFFF)));
+            ok = b_.CreateAnd(ok, b_.CreateNot(sur));
+            return option_of(option, b_.CreateTrunc(w, llvm::Type::getInt32Ty(ctx_)), ok);
+        }
         if (!from->is_numeric() || !to->is_numeric()) unsupported(c.span, "'cast::checked' between these types");
         llvm::Value* v         = gen_expr(*c.operand);
         llvm::Value* converted = nullptr;
@@ -1904,13 +3330,68 @@ private:
             converted = convert(v, from, to);
             exact = b_.CreateOr(b_.CreateFCmpUNO(v, v), b_.CreateFCmpOEQ(convert(converted, to, from), v));
         }
+        return option_of(option, converted, exact);
+    }
+
+    /// `cast::dynamic<derived&>(base)`: walks the object's vtables, from its own class to the root,
+    /// looking for the target class's vtable (spec 07, 17).
+    llvm::Value* dynamic_cast_value(CastExpr& c, const types::Type* target, const types::Type* option) {
+        llvm::Value*      object = object_address(*c.operand);
+        llvm::BasicBlock* test  = llvm::BasicBlock::Create(ctx_, "dynamic.test", cur_fn_);
+        llvm::BasicBlock* up    = llvm::BasicBlock::Create(ctx_, "dynamic.up", cur_fn_);
+        llvm::BasicBlock* found = llvm::BasicBlock::Create(ctx_, "dynamic.found", cur_fn_);
+        llvm::BasicBlock* none  = llvm::BasicBlock::Create(ctx_, "dynamic.none", cur_fn_);
+        llvm::BasicBlock* done  = llvm::BasicBlock::Create(ctx_, "dynamic.done", cur_fn_);
+        llvm::AllocaInst* cur   = entry_alloca(ptr_type(), "dynamic.vtable");
+        if (is_interface(types::strip_ref(c.operand->type))) {   // from an interface: its table has the type
+            llvm::Value* table = b_.CreateExtractValue(object, 1);
+            object             = b_.CreateExtractValue(object, 0);
+            llvm::Value* id    = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, 1));
+            if (!has_vtable(target->symbol)) {
+                b_.CreateCondBr(b_.CreateICmpEQ(id, type_id(target->symbol)), found, none);
+            } else {
+                llvm::BasicBlock* walk = llvm::BasicBlock::Create(ctx_, "dynamic.walk", cur_fn_);
+                b_.CreateCondBr(b_.CreateIsNull(id), walk, none);   // null: the object has a vtable
+                b_.SetInsertPoint(walk);
+            }
+        }
+        if (!b_.GetInsertBlock()->getTerminator()) {
+            b_.CreateStore(b_.CreateLoad(ptr_type(), object), cur);
+            b_.CreateBr(test);
+        }
+        llvm::Constant* want = has_vtable(target->symbol) ? vtable_of(target->symbol)
+                                                          : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+        b_.SetInsertPoint(test);
+        llvm::Value* v = b_.CreateLoad(ptr_type(), cur);
+        b_.CreateCondBr(b_.CreateICmpEQ(v, want), found, up);
+        b_.SetInsertPoint(up);
+        llvm::Value* parent = b_.CreateLoad(ptr_type(), v);   // entry 0: the base class's vtable
+        b_.CreateStore(parent, cur);
+        b_.CreateCondBr(b_.CreateICmpEQ(parent, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))), none, test);
+        b_.SetInsertPoint(found);
+        llvm::Value* yes = option_of(option, object, llvm::ConstantInt::getTrue(ctx_));
+        llvm::BasicBlock* found_end = b_.GetInsertBlock();
+        b_.CreateBr(done);
+        b_.SetInsertPoint(none);
+        llvm::Value* no = option_of(option, object, llvm::ConstantInt::getFalse(ctx_));
+        llvm::BasicBlock* none_end = b_.GetInsertBlock();
+        b_.CreateBr(done);
+        b_.SetInsertPoint(done);
+        llvm::PHINode* phi = b_.CreatePHI(yes->getType(), 2);
+        phi->addIncoming(yes, found_end);
+        phi->addIncoming(no, none_end);
+        return phi;
+    }
+
+    /// `some(value)` when `present`, else `none`, of the option type `option`.
+    llvm::Value* option_of(const types::Type* option, llvm::Value* value, llvm::Value* present) {
         const Symbol*     e    = option->symbol;
         llvm::Type*       et   = user_type(e);
-        llvm::AllocaInst* slot = entry_alloca(et, "checked");
+        llvm::AllocaInst* slot = entry_alloca(et, "option");
         b_.CreateStore(llvm::Constant::getNullValue(et), slot);
-        b_.CreateStore(b_.CreateSelect(exact, tag_constant(alternative(e, "some")), tag_constant(alternative(e, "none"))),
+        b_.CreateStore(b_.CreateSelect(present, tag_constant(alternative(e, "some")), tag_constant(alternative(e, "none"))),
                        b_.CreateStructGEP(et, slot, 0));
-        b_.CreateStore(converted, b_.CreateStructGEP(et, slot, 1));
+        b_.CreateStore(value, b_.CreateStructGEP(et, slot, 1));
         return b_.CreateLoad(et, slot);
     }
 
@@ -2014,10 +3495,23 @@ private:
     std::map<const Symbol*, bool>                needs_drop_memo_;
     std::map<const Symbol*, llvm::Function*>     drop_fns_;
     std::deque<const Symbol*>                    drop_queue_;
+    std::map<const Symbol*, llvm::Function*>     clone_fns_;
+    std::set<const Expr*>                        converting_;
+    std::deque<const Symbol*>                    clone_queue_;
     const types::Type*                           result_ = nullptr;   // the result of the function
 
     /// A type needs a destructor when it has one, or when a field or payload does.
     bool needs_drop(const types::Type* t) {
+        if (t && t->is(Kind::function)) return true;   // frees its captures
+        if (t && t->is(Kind::array)) return needs_drop(t->inner);
+        if (t && t->is(Kind::closure)) {               // a lambda owns its value captures (spec 18)
+            const LambdaExpr* l = tc_.lambda_of(t);
+            if (!l) return false;
+            for (const Capture& c : l->captures) {
+                if (c.symbol && c.symbol->type && !c.symbol->type->is(Kind::reference) && needs_drop(c.symbol->type)) return true;
+            }
+            return false;
+        }
         if (!t || !t->is(Kind::user) || !t->symbol) return false;
         return symbol_needs_drop(t->symbol);
     }
@@ -2039,6 +3533,7 @@ private:
             for (const Symbol* f : fields_of(s)) {
                 if (needs_drop(field_type(f))) result = true;
             }
+            if (const Symbol* base = s->base_class(); base && symbol_needs_drop(base)) result = true;
         }
         needs_drop_memo_[s] = result;
         return result;
@@ -2046,6 +3541,9 @@ private:
 
     /// The function that destroys a value of user type `t`; it is generated later.
     llvm::Function* drop_function(const types::Type* t) {
+        if (t->is(Kind::function)) return function_drop();
+        if (t->is(Kind::closure)) return closure_drop(t);
+        if (t->is(Kind::array)) return array_function(t, false);
         const Symbol* s = t->symbol;
         if (auto it = drop_fns_.find(s); it != drop_fns_.end()) return it->second;
         std::vector<std::string> parts = split_module(s->module ? s->module->name : "");
@@ -2056,6 +3554,229 @@ private:
         drop_fns_[s] = fn;
         drop_queue_.push_back(s);
         return fn;
+    }
+
+    /// Destroys a `std::function`: destroys its captures (the closure's drop function, if it has
+    /// one) and frees them.
+    llvm::Function* function_drop() {
+        if (llvm::Function* f = mod_->getFunction("rift_function_drop")) return f;
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
+                                          llvm::Function::InternalLinkage, "rift_function_drop", mod_.get());
+        auto*             entry = llvm::BasicBlock::Create(ctx_, "entry", fn);
+        auto*             call  = llvm::BasicBlock::Create(ctx_, "drop", fn);
+        auto*             done  = llvm::BasicBlock::Create(ctx_, "free", fn);
+        llvm::IRBuilder<> b(entry);
+        auto*             st   = llvm::StructType::get(ctx_, {ptr_type(), ptr_type(), ptr_type()});
+        llvm::Value*      env  = b.CreateLoad(ptr_type(), b.CreateStructGEP(st, fn->getArg(0), 0));
+        llvm::Value*      drop = b.CreateLoad(ptr_type(), b.CreateStructGEP(st, fn->getArg(0), 2));
+        b.CreateCondBr(b.CreateICmpNE(drop, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))), call, done);
+        b.SetInsertPoint(call);
+        b.CreateCall(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false), drop, {env});
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateCall(libc("free", llvm::Type::getVoidTy(ctx_), {ptr_type()}), {env});
+        b.CreateRetVoid();
+        return fn;
+    }
+
+    std::map<std::pair<const types::Type*, bool>, llvm::Function*> array_fns_;
+
+    /// Destroys (`clone` false: `(ptr)`) or clones (`(ptr dst, ptr src)`) every element of an
+    /// inline array, in a loop.
+    llvm::Function* array_function(const types::Type* t, bool clone) {
+        auto key = std::make_pair(t, clone);
+        if (auto it = array_fns_.find(key); it != array_fns_.end()) return it->second;
+        std::vector<llvm::Type*> params{ptr_type()};
+        if (clone) params.push_back(ptr_type());
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), params, false),
+                                          llvm::Function::InternalLinkage,
+                                          (clone ? "rac_" : "rad_") + std::to_string(array_fns_.size()), mod_.get());
+        array_fns_[key] = fn;
+        llvm::IRBuilderBase::InsertPoint saved = b_.saveIP();
+        llvm::Function*                  saved_fn = cur_fn_;
+        cur_fn_ = fn;
+        auto*        i64   = llvm::Type::getInt64Ty(ctx_);
+        llvm::Type*  et    = lower_type(t->inner);
+        auto*        entry = llvm::BasicBlock::Create(ctx_, "entry", fn);
+        auto*        loop  = llvm::BasicBlock::Create(ctx_, "loop", fn);
+        auto*        body  = llvm::BasicBlock::Create(ctx_, "body", fn);
+        auto*        done  = llvm::BasicBlock::Create(ctx_, "done", fn);
+        b_.SetInsertPoint(entry);
+        llvm::AllocaInst* iv = b_.CreateAlloca(i64);
+        b_.CreateStore(llvm::ConstantInt::get(i64, 0), iv);
+        b_.CreateBr(loop);
+        b_.SetInsertPoint(loop);
+        llvm::Value* i = b_.CreateLoad(i64, iv);
+        b_.CreateCondBr(b_.CreateICmpULT(i, llvm::ConstantInt::get(i64, tc_.array_count(t))), body, done);
+        b_.SetInsertPoint(body);
+        llvm::Value* dst = b_.CreateGEP(et, fn->getArg(0), i);
+        if (clone) {
+            b_.CreateStore(clone_value(t->inner, b_.CreateGEP(et, fn->getArg(1), i)), dst);
+        } else if (needs_drop(t->inner)) {
+            b_.CreateCall(drop_function(t->inner), {dst});
+        }
+        b_.CreateStore(b_.CreateAdd(i, llvm::ConstantInt::get(i64, 1)), iv);
+        b_.CreateBr(loop);
+        b_.SetInsertPoint(done);
+        b_.CreateRetVoid();
+        cur_fn_ = saved_fn;
+        b_.restoreIP(saved);
+        return fn;
+    }
+
+    std::map<const types::Type*, llvm::Function*> closure_drops_;
+
+    /// Destroys the value captures of a lambda that need it.
+    llvm::Function* closure_drop(const types::Type* t) {
+        if (auto it = closure_drops_.find(t); it != closure_drops_.end()) return it->second;
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
+                                          llvm::Function::InternalLinkage, "rld_" + std::to_string(closure_drops_.size()), mod_.get());
+        closure_drops_[t] = fn;
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", fn));
+        llvm::StructType* st = closure_type(t);
+        const LambdaExpr* l  = tc_.lambda_of(t);
+        for (std::size_t i = 0; i < l->captures.size(); ++i) {
+            const types::Type* ct = l->captures[i].symbol ? l->captures[i].symbol->type : nullptr;
+            if (!ct || ct->is(Kind::reference) || !needs_drop(ct)) continue;
+            b.CreateCall(drop_function(ct), {b.CreateStructGEP(st, fn->getArg(0), static_cast<unsigned>(i))});
+        }
+        b.CreateRetVoid();
+        return fn;
+    }
+
+    /// A lambda as a `std::function` (its captures move to the heap) or as a `std::fn_ptr` (a
+    /// function without the captures argument), spec 18.
+    llvm::Value* callable_from_lambda(Expr& e, const types::Type* to) {
+        const types::Type*     ct = types::strip_ref(e.type);
+        const ast::LambdaExpr* l  = tc_.lambda_of(ct);
+        llvm::Value*           v  = gen_expr(e);
+        llvm::Function*        fn = lambda_function(*l);
+        if (to->is(Kind::function)) {
+            std::uint64_t size = std::max<std::uint64_t>(mod_->getDataLayout().getTypeAllocSize(v->getType()), 1);
+            llvm::Value*  env  = b_.CreateCall(libc("malloc", ptr_type(), {llvm::Type::getInt64Ty(ctx_)}),
+                                               {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), size)});
+            check(b_.CreateICmpNE(env, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))), e.span, "out of memory");
+            b_.CreateStore(v, env);
+            llvm::Value* r = llvm::UndefValue::get(lower_type(to));
+            r = b_.CreateInsertValue(r, env, 0);
+            r = b_.CreateInsertValue(r, fn, 1);
+            llvm::Value* drop = needs_drop(ct) ? static_cast<llvm::Value*>(closure_drop(ct))
+                                               : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+            return b_.CreateInsertValue(r, drop, 2);
+        }
+        std::string name = fn->getName().str() + ".ptr";
+        if (llvm::Function* w = mod_->getFunction(name)) return w;
+        std::vector<llvm::Type*> params(fn->getFunctionType()->param_begin() + 1, fn->getFunctionType()->param_end());
+        auto* w = llvm::Function::Create(llvm::FunctionType::get(fn->getReturnType(), params, false), llvm::Function::InternalLinkage,
+                                         name, mod_.get());
+        llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", w));
+        std::vector<llvm::Value*> args{llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))};
+        for (llvm::Argument& a : w->args()) args.push_back(&a);
+        llvm::Value* r = b.CreateCall(fn, args);
+        if (w->getReturnType()->isVoidTy()) b.CreateRetVoid();
+        else b.CreateRet(r);
+        return w;
+    }
+
+    /// Calls a `std::function` or `std::fn_ptr` value.
+    llvm::Value* callable_call(Expr& callee, const types::Type* t, const std::vector<Expr*>& args) {
+        llvm::Value* v = gen_expr(callee);
+        std::vector<llvm::Value*> values;
+        std::vector<llvm::Type*>  params;
+        llvm::Value* target = v;
+        if (t->is(Kind::function)) {
+            values.push_back(b_.CreateExtractValue(v, 0));
+            params.push_back(ptr_type());
+            target = b_.CreateExtractValue(v, 1);
+        }
+        for (std::size_t i = 0; i < args.size() && i + 1 < t->args.size(); ++i) {
+            if (t->args[i]->is(Kind::reference)) {
+                values.push_back(object_address(*args[i]));
+                params.push_back(ptr_type());
+            } else {
+                values.push_back(gen_expr(*args[i]));
+                params.push_back(lower_type(t->args[i]));
+                moved_out(*args[i]);
+            }
+        }
+        const types::Type* rt  = t->args.back();
+        llvm::Type*        ret = is_void(rt) ? llvm::Type::getVoidTy(ctx_) : rt->is(Kind::reference) ? ptr_type() : lower_type(rt);
+        llvm::Value* r = b_.CreateCall(llvm::FunctionType::get(ret, params, false), target, values);
+        if (rt->is(Kind::reference)) return b_.CreateLoad(lower_type(types::strip_ref(rt)), r);
+        return r;
+    }
+
+    /// `x.clone()` for the object of type `t` at `src` (spec 05, 12): copy types are copied, a class
+    /// calls its `clone()` method, and structs and enums clone what they contain.
+    llvm::Value* clone_value(const types::Type* t, llvm::Value* src) {
+        if (!needs_drop(t)) return b_.CreateLoad(lower_type(t), src);
+        if (t->is(Kind::array)) {
+            llvm::Value* dst = entry_alloca(lower_type(t), "clone");
+            b_.CreateCall(array_function(t, true), {dst, src});
+            return b_.CreateLoad(lower_type(t), dst);
+        }
+        const Symbol* s = t->symbol;
+        if (auto it = s->members.find("clone"); it != s->members.end()) {
+            for (const Symbol* m : it->second) {
+                const FunctionDecl* f = body_decl(m);
+                if (f && f->params.empty() && !f->is_static) return b_.CreateCall(function_of(m), {src});
+            }
+        }
+        llvm::Type*  lt  = lower_type(t);
+        llvm::Value* dst = entry_alloca(lt, "clone");
+        b_.CreateCall(clone_function(t), {dst, src});
+        return b_.CreateLoad(lt, dst);
+    }
+
+    /// The function that clones a struct or enum of type `t` into place: `(ptr dst, ptr src)`.
+    llvm::Function* clone_function(const types::Type* t) {
+        const Symbol* s = t->symbol;
+        if (auto it = clone_fns_.find(s); it != clone_fns_.end()) return it->second;
+        std::vector<std::string> parts = split_module(s->module ? s->module->name : "");
+        parts.push_back(s->name);
+        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        auto* ptr = llvm::PointerType::get(ctx_, 0);
+        auto* fn  = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr, ptr}, false),
+                                           llvm::Function::InternalLinkage, "rc_" + mangle_parts(parts), mod_.get());
+        clone_fns_[s] = fn;
+        clone_queue_.push_back(s);
+        return fn;
+    }
+
+    void gen_clone(const Symbol* s) {
+        llvm::Function*                  fn       = clone_fns_[s];
+        llvm::IRBuilderBase::InsertPoint saved_ip = b_.saveIP();
+        llvm::Function*                  saved_fn = cur_fn_;
+        cur_fn_ = fn;
+        llvm::Value* dst = fn->getArg(0);
+        llvm::Value* src = fn->getArg(1);
+        b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", fn));
+        llvm::Type* lt = user_type(s);
+        if (s->kind == SymbolKind::enum_) {
+            b_.CreateStore(b_.CreateLoad(lt, src), dst);   // the tag and plain payloads
+            llvm::Value*      tag  = b_.CreateLoad(enum_tag_type(s), b_.CreateStructGEP(lt, src, 0));
+            llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_, "clone.done", fn);
+            llvm::SwitchInst* sw   = b_.CreateSwitch(tag, done);
+            for (const Symbol* a : s->member_order) {
+                if (!a->alternative || !a->alternative->payload) continue;
+                const types::Type* p = payload_of(a);
+                if (!needs_drop(p)) continue;
+                llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx_, "clone.case", fn);
+                sw->addCase(tag_constant(a), bb);
+                b_.SetInsertPoint(bb);
+                b_.CreateStore(clone_value(p, b_.CreateStructGEP(lt, src, 1)), b_.CreateStructGEP(lt, dst, 1));
+                b_.CreateBr(done);
+            }
+            b_.SetInsertPoint(done);
+        } else {
+            for (const Symbol* f : fields_of(s)) {
+                unsigned i = field_index(f);
+                b_.CreateStore(clone_value(field_type(f), b_.CreateStructGEP(lt, src, i)), b_.CreateStructGEP(lt, dst, i));
+            }
+        }
+        b_.CreateRetVoid();
+        cur_fn_ = saved_fn;
+        b_.restoreIP(saved_ip);
     }
 
     /// Runs the destructor (if any), then destroys the fields in reverse declaration order, or the
@@ -2102,6 +3823,10 @@ private:
             for (auto it = fields.rbegin(); it != fields.rend(); ++it) {
                 const types::Type* ft = field_type(*it);
                 if (needs_drop(ft)) b_.CreateCall(drop_function(ft), {b_.CreateStructGEP(st, self, field_index(*it))});
+            }
+            if (const Symbol* base = s->base_class()) {   // then the base part (spec 07)
+                const types::Type* bt = tc_.user(base);
+                if (needs_drop(bt)) b_.CreateCall(drop_function(bt), {self});
             }
         }
         b_.CreateRetVoid();
@@ -2174,6 +3899,7 @@ private:
 
     /// After a value was moved out of `e`, the local no longer owns it.
     void moved_out(const Expr& e) {
+        if (e.conversion == Expr::Conversion::string_to_str) return;   // a borrow, not a move
         if (const OwnedLocal* o = owned_path(e)) b_.CreateStore(llvm::ConstantInt::getFalse(ctx_), o->flag);
     }
 
@@ -2209,7 +3935,10 @@ private:
     llvm::StructType*                                 loc_type_ = nullptr;
     std::map<const Symbol*, llvm::Function*>          fns_;
     std::deque<const Symbol*>                         queue_;
-    std::map<const Symbol*, llvm::AllocaInst*>        locals_;
+    std::map<const LambdaExpr*, llvm::Function*>      lambda_fns_;
+    std::deque<const LambdaExpr*>                     lambda_queue_;
+    std::map<const types::Type*, llvm::StructType*>   closure_types_;
+    std::map<const Symbol*, llvm::Value*>             locals_;   // the storage of each local (lambda captures: their place in the closure)
     std::map<std::pair<FileId, std::uint32_t>, llvm::Constant*> locs_;
     std::vector<Loop>                                 loops_;
     std::set<std::tuple<FileId, std::uint32_t, std::string>>    reported_;
@@ -2247,10 +3976,20 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
         }
         text.append(line);
     }
+    if (options.panic_trap) {   // every panic ends in rift_panic_buf: make it a trap
+        const std::string head = "define internal void @rift_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
+        std::size_t at = runtime_text.find(head);
+        if (at != std::string::npos) {
+            runtime_text.replace(at, head.size(), head + "\n  call void @llvm.trap()\n  unreachable\n}\n"
+                                                  "define internal void @rift_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
+            runtime_text += "\ndeclare void @llvm.trap() cold noreturn nounwind\n";
+        }
+    }
     return text + "\n" + runtime_text;
 }
 
-bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error) {
+bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
+                      const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::LLVMContext ctx;
@@ -2277,10 +4016,27 @@ bool build_executable(std::string_view ir, const std::string& out_path, const st
         return false;
     }
     llvm::TargetOptions options;
-    std::unique_ptr<llvm::TargetMachine> machine(
-        target->createTargetMachine(triple_name, "generic", "", options, llvm::Reloc::PIC_));
+    bool optimize = codegen.optimization != "none";
+    std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
+        triple_name, "generic", "", options, llvm::Reloc::PIC_, std::nullopt,
+        optimize ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::None));
     mod->setTargetTriple(triple_name);
     mod->setDataLayout(machine->createDataLayout());
+    if (optimize) {   // the mode's optimization() (spec 24): LLVM's standard pipeline
+        llvm::LoopAnalysisManager     lam;
+        llvm::FunctionAnalysisManager fam;
+        llvm::CGSCCAnalysisManager    cgam;
+        llvm::ModuleAnalysisManager   mam;
+        llvm::PassBuilder             pb(machine.get());
+        pb.registerModuleAnalyses(mam);
+        pb.registerCGSCCAnalyses(cgam);
+        pb.registerFunctionAnalyses(fam);
+        pb.registerLoopAnalyses(lam);
+        pb.crossRegisterProxies(lam, fam, cgam, mam);
+        llvm::OptimizationLevel level = codegen.optimization == "size" ? llvm::OptimizationLevel::Os : llvm::OptimizationLevel::O2;
+        llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(level);
+        mpm.run(*mod, mam);
+    }
 
     std::string object_path = out_path + ".o";
     std::error_code ec;
@@ -2297,7 +4053,9 @@ bool build_executable(std::string_view ir, const std::string& out_path, const st
         }
         pm.run(*mod);
     }
-    std::string command = linker + " -o '" + out_path + "' '" + object_path + "' -lm";
+    std::string command = linker + " -o '" + out_path + "' '" + object_path + "'";
+    for (const std::string& input : extra_inputs) command += " '" + input + "'";
+    command += " -lm";
     int         status  = std::system(command.c_str());
     llvm::sys::fs::remove(object_path);
     if (status != 0) {

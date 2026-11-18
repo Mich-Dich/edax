@@ -1,0 +1,25 @@
+exit: 0
+--- stdout
+20! = 2432902008176640000 (computed at compile time)
+bit counts of 0..15: 0 1 1 2 1 2 2 3 1 2 2 3 2 3 3 4
+counter_for(200) is u8, counter_for(100000) is u32
+a small_counter holds 200 in 1 byte
+pin 13 set
+uart at 115200 baud
+sensor { .name = thermo .value = 21.5 .samples = 12 .calibrated = false }
+same as before calibration: false
+levels: low critical
+sensor has 4 fields and takes 32 bytes
+--- stderr
+warning[W4210]: old_api() is going away; call set_pin() instead
+   --> example/compile_time_demo.rifts:111:5
+    |
+111 |     old_api();
+    |     ^^^^^^^^^
+    = note: warning id: compile_time_demo::legacy
+    |
+ 57 |         std::compile_warning(legacy, "old_api() is going away; call set_pin() instead");
+    |         -------------------------------------------------------------------------------
+    = note: reported by this check
+
+0 errors, 1 warning

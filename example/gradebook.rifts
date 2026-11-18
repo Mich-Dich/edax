@@ -1,0 +1,86 @@
+// gradebook: files, parsing and error handling (specs 11, 19, 20). It writes a CSV file next to
+// the executable, reads it back line by line, and reports per-student averages.
+import std;
+
+enum load_error : u8 {
+    io(std::io_error),
+    bad_line(usize),
+}
+
+struct grade {
+    std::string student;
+    std::string subject;
+    u32 points = 0;
+}
+
+/// `?` returns the error early; `or_error` turns a `std::option` into a `std::result`.
+std::result<grade, load_error> parse_line(std::str line, usize number) {
+    std::darray<std::str> parts = line.split(',');
+    if (parts.len() != 3) { return std::error(load_error::bad_line(number)); }
+    u32 points = parts[2].trim().parse<u32>().or_error(load_error::bad_line(number))?;
+    return std::ok(grade{
+        .student = std::string::from(parts[0].trim()),
+        .subject = std::string::from(parts[1].trim()),
+        .points = points,
+    });
+}
+
+std::result<std::darray<grade>, load_error> load(std::filesystem::path& file) {
+    mut std::file in = std::file::open(file).map_error([](std::io_error e) { return load_error::io(e); })?;
+    mut std::darray<grade> grades = default;
+    mut usize number = 0;
+    for (std::str line : in.lines()) {
+        number += 1;
+        if (number == 1 || line.trim().is_empty()) { continue; }   // the header, empty lines
+        grades.push(parse_line(line, number)?);
+    }
+    return std::ok(move grades);
+}
+
+void write_sample(std::filesystem::path& file) {
+    mut std::file out = std::file::create(file).expect("cannot create the sample file");
+    out.write("student, subject, points\n").expect("write");
+    out.write("ada, math, 95\nada, physics, 88\nalan, math, 91\n").expect("write");
+    out.write("alan, physics, 79\ngrace, math, 99\ngrace, physics, 94\nalan, art, 70\n").expect("write");
+}
+
+void report(std::darray<grade>& grades) {
+    mut std::tree_map<std::string, u32> total = default;
+    mut std::tree_map<std::string, u32> count = default;
+    for (grade& g : grades) {
+        if (total.contains(g.student)) {
+            total[g.student] += g.points;
+            count[g.student] += 1;
+        } else {
+            total.insert(g.student.clone(), g.points);
+            count.insert(g.student.clone(), 1);
+        }
+    }
+    std::println(f"{"student":<8} {"exams":>5} {"average":>8}");
+    for (std::map_entry<std::string, u32> e : total.entries()) {
+        u32 n = count[e.key];
+        f64 average = cast<f64>(e.value) / cast<f64>(n);
+        std::println(f"{e.key:<8} {n:>5} {average:>8.2}");
+    }
+}
+
+i32 main() {
+    std::filesystem::path file = std::filesystem::executable_dir() / "grades.csv";
+    write_sample(file);
+    match (load(file)) {
+        std::ok(grades) => {
+            std::println(f"{grades.len()} grades from {file.as_str()}");
+            report(grades);
+        },
+        std::error(load_error::io(e)) => std::println(f"cannot read the file: {e}"),
+        std::error(load_error::bad_line(n)) => std::println(f"line {n} is not 'student, subject, points'"),
+    }
+    // A missing file is an error value, not an exception.
+    std::filesystem::path missing = std::filesystem::executable_dir() / "no_such_file.csv";
+    match (load(missing)) {
+        std::ok(grades) => std::println("unexpected"),
+        std::error(load_error::io(e)) => std::println(f"no_such_file.csv: {e}"),
+        std::error(load_error::bad_line(n)) => std::println(f"bad line {n}"),
+    }
+    return 0;
+}

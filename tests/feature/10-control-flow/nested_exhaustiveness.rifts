@@ -1,0 +1,24 @@
+// feature 10: exhaustiveness looks into enum payload patterns.
+import std;
+enum io : u8 { full, closed }
+enum wrap : u8 { one(io), two(bool), none }
+u32 f(std::result<u32, io> r, wrap w) {
+    u32 a = match (r) {
+        std::ok(v) => v,
+        std::error(io::full) => 1,
+        std::error(io::closed) => 2,
+    };
+    u32 b = match (w) {
+        wrap::one(io::full) => 1,
+        wrap::one(io::closed) => 2,
+        wrap::two(true) => 3,
+        wrap::two(false) => 4,
+        wrap::none => 5,
+    };
+    u32 c = match (w) {                      //~ error[E4060]: does not cover wrap::two
+        wrap::one(_) => 1,
+        wrap::two(true) => 3,
+        wrap::none => 5,
+    };
+    return a + b + c;
+}

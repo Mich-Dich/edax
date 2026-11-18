@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+1 + 2 * 3              = 7.0
+(1 + 2) * 3            = 9.0
+-4 / (2 - 0.5)         = -2.6666666666666665
+2 * (3 + 4             : error: a ')' is missing
+10 / (5 - 5)           : error: division by zero
+7 % 2                  : error: unexpected character '%'
+1 2                    : error: text after the expression
+--- stderr

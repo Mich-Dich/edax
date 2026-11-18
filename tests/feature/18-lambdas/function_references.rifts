@@ -1,0 +1,5 @@
+// feature 18: a std::function is stored, so it cannot hold reference captures.
+import std;
+std::function<u32(u32)> keep(u32 x) {
+    return [&x](u32 y) { return x + y; };       //~ error[E5015]: cannot hold a lambda with reference captures
+}

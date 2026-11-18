@@ -1,0 +1,28 @@
+// feature 16: user-defined operators: lookup, literal operands, unary operators, <=>.
+import std;
+struct money {
+    i64 cents = 0;
+    money operator+(money& o) { return money{ .cents = this.cents + o.cents }; }
+    money operator-() { return money{ .cents = -this.cents }; }
+    std::ordering operator<=>(money& o) { return this.cents <=> o.cents; }
+}
+
+money operator*(money& m, i64 k) { return money{ .cents = m.cents * k }; }
+
+struct plain {
+    u32 v = 0;
+}
+
+void use(money a, money b, plain p, mut money c) {
+    money sum = a + b;
+    money scaled = a * 3;                 // the literal takes the parameter's type
+    money neg = -a;
+    bool lt = a < b;
+    std::ordering o = a <=> b;
+    c += b;                                // `c = c + b`
+    money bad = a * 1.5;                  //~ error[E4013]: operator '*' is not defined for 'money'
+    plain q = -p;                         //~ error[E4013]: operator '-' is not defined for 'plain'
+    plain r = ~p;                         //~ error[E4013]: operator '~' is not defined for 'plain'
+    std::ordering po = p <=> p;           //~ error[E4013]: operator '<=>' is not defined for 'plain'
+    std::ordering lits = 1 <=> 2;         //~ error
+}

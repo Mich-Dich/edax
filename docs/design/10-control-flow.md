@@ -38,6 +38,10 @@ for (u32 x : numbers) { ... }                 // by value: copy types only
 for (usize i : 0..employees.len()) { ... }    // half-open range
 for (u8 b : 0..=255) { ... }                  // inclusive range
 ```
+- What a `for` loop can go over:
+  - a range `a..b` / `a..=b`;
+  - a **container**: a type with `usize len()` and `operator[](usize)`. The loop visits the indices in order. `mut T&` elements need the `mut operator[]` and a `mut` container;
+  - a **stream**: a type with a `next()` method that returns a `std::option<T>`. The loop runs until `none`; each element is a value that the loop variable owns. A temporary stream (`file.lines()`) lives until the loop ends.
 - `a..b` and `a..=b` are range expressions. They use the same syntax as range patterns in `match`. Literal bounds take their type from the loop variable.
 - There is no C-style `for (;;)`.
 - While a loop holds references into a container, the container can't be changed (see 12).

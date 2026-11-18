@@ -1,0 +1,88 @@
+// lambdas: closures, capture kinds, std::function and std::fn_ptr, higher-order functions
+// (spec 18).
+import std;
+
+/// An event bus keeps callbacks: `std::function` owns its lambda (and the lambda's captures).
+class event_bus {
+public:
+    void subscribe(std::string topic, std::function<void(u32)> handler) mut {
+        this.topics.push(move topic);
+        this.handlers.push(move handler);
+    }
+
+    void publish(std::str topic, u32 value) {
+        for (usize i : 0..this.topics.len()) {
+            if (this.topics[i].as_str() == topic) { this.handlers[i](value); }
+        }
+    }
+
+private:
+    std::darray<std::string> topics = default;
+    std::darray<std::function<void(u32)>> handlers = default;
+}
+
+/// A template takes any callable: each lambda type makes its own instance (no indirection).
+template<type F>
+u32 apply_n(F f, u32 times, u32 start) {
+    mut u32 x = start;
+    for (u32 i : 0..times) { x = f(x); }
+    return x;
+}
+
+/// A plain function pointer: only lambdas without captures convert to it.
+struct operation {
+    std::static_str name = "";
+    std::fn_ptr<i64(i64, i64)> run;
+}
+
+std::function<u32(u32)> make_scaler(u32 factor) {
+    return [factor](u32 x) { return x * factor; };     // captured by copy: safe to return
+}
+
+i32 main() {
+    // Capture kinds: by copy, by reference, mutable reference, move, and init captures.
+    mut u32 clicks = 0;
+    u32 step = 5;
+    auto add_step = [step](u32 x) { return x + step; };
+    auto count = [mut &clicks]() { clicks += 1; };
+    std::string label = std::string::from("total");
+    auto report = [name = move label](u32 v) { std::println(f"{name}: {v}"); };
+    count();
+    count();
+    report(add_step(clicks));
+
+    std::println(f"apply_n: {apply_n(add_step, 3, 0)} {apply_n([](u32 x) { return x * 2; }, 10, 1)}");
+    std::function<u32(u32)> triple = make_scaler(3);
+    std::println(f"scaler: {triple(14)}");
+
+    // A table of operations as function pointers.
+    mut std::darray<operation> ops = default;
+    ops.push(operation{ .name = "add", .run = [](i64 a, i64 b) { return a + b; } });
+    ops.push(operation{ .name = "sub", .run = [](i64 a, i64 b) { return a - b; } });
+    ops.push(operation{ .name = "max", .run = [](i64 a, i64 b) { if (a > b) { return a; } return b; } });
+    for (operation& op : ops) {
+        std::println(f"{op.name}(7, 12) = {op.run(7, 12)}");
+    }
+
+    // Callbacks that own their state.
+    mut event_bus bus = default;
+    bus.subscribe(std::string::from("temperature"), [](u32 v) { std::println(f"  thermometer: {v} C"); });
+    bus.subscribe(std::string::from("temperature"), [limit = 30u32](u32 v) {
+        if (v > limit) { std::println(f"  alarm: {v} is above {limit}"); }
+    });
+    bus.subscribe(std::string::from("door"), [](u32 v) { std::println(f"  door {v} opened"); });
+    std::println("publish temperature 25, 35 and door 2:");
+    bus.publish("temperature", 25);
+    bus.publish("temperature", 35);
+    bus.publish("door", 2);
+
+    // Lambdas with containers: filter and sort.
+    mut std::darray<i32> values = default;
+    for (i32 v : -5..=5) { values.push(v * v - 3 * v); }
+    values.retain([](i32& v) { return v % 2 == 0; });
+    values.sort_by_key(std::sort_order::ascending, [](i32& v) { return v; });
+    mut std::string text = std::string::from("");
+    for (i32& v : values) { text.push_str(std::format(f"{v} ")); }
+    std::println(f"even values, sorted: {text}");
+    return 0;
+}

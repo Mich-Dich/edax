@@ -1,0 +1,16 @@
+exit: 0
+--- stdout
+[first] []
+[] [second]
+b a 2 1
+1 0
+7 4
+--- stderr
+warning[W4002]: implicit allocation of a std::string from a string literal
+ --> tests/action/run/ownership_helpers.rifts:4:36
+  |
+4 | struct holder { std::string text = ""; std::darray<u32> list; }
+  |                                    ^^ allocates
+  = note: write 'std::string::from("...")' to make the allocation visible
+
+0 errors, 1 warning

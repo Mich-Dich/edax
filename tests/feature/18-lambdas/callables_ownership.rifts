@@ -1,0 +1,8 @@
+// feature 18: a std::function owns its callable: it is moved, never copied or cloned.
+import std;
+struct holder { std::function<u32(u32)> f; }
+void f(u32 base, holder h) {
+    std::function<u32(u32)> a = [base](u32 x) { return x + base; };
+    std::function<u32(u32)> copy = a;                                   //~ error[E5001]
+    holder h2 = h.clone();                                              //~ error[E5030]
+}

@@ -32,13 +32,29 @@ class hash_map { ... }
   u32 o = larger(3, 4);              // ERROR: T can't be deduced from untyped literals
   ```
 
+### Method templates
+A method can have its own template parameters, also in a class template. They are deduced from
+the call's arguments like a function's:
+```rift
+template<type T>
+class darray {
+public:
+    template<type F>
+    void retain(F keep) mut;           // keep: a lambda, deduced at each call
+}
+
+employees.retain([](employee& e) { return e.is_senior(); });
+```
+
 ### Constraints
 ```rift
 template<type T : std::comparable>
 T larger(T a, T b) { ... }
 ```
+- The std constraints are structural: `std::comparable` (numbers, `char`, strings, types with `operator<=>`), `std::cloneable` (everything but classes without `clone()`), `std::formattable` (what an f-string can print).
 - **Constrained** templates are checked **when they are defined**. The body may only use what the constraints provide. At the call site the compiler checks that `T` satisfies them, and errors point at the call: "`point` does not implement `std::comparable`".
 - **Unconstrained** templates are checked when they are instantiated, and the error shows the instantiation chain (at most one screen). Constraints are recommended for every public template.
+- A **method of a class template instance** only has to compile when it is used: `std::darray<std::unique_ptr<item>>` is fine, and only a call to its `clone()` is an error (E4214, at the call, with the reason in a note). Virtual methods and destructors always have to compile.
 
 ### No specialization
 There is no template specialization. Behaviour that depends on the type is written with `if compile_time` (see 15):

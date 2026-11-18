@@ -23,8 +23,342 @@ enum result : u8 {
     error(E),
 }
 
+/// The result of `a <=> b` (spec 16): `a < b` is `(a <=> b) < 0`.
+enum ordering : i8 {
+    less = -1,
+    equal = 0,
+    greater = 1,
+}
+
+/// The name of a compile-time warning (or error) that checks report (spec 23). Its identity is
+/// where it is declared: `compile_time std::diagnostic deprecated = default;` in module `gfx`
+/// is `gfx::deprecated`, and `--warn=gfx::deprecated=off` switches it off. The doc comment above
+/// the declaration describes it.
+struct diagnostic {
+}
+
+/// A place in the source code, for `std::compile_warning(std::location_of(param), ...)` (spec 23).
+struct source_location {
+}
+
+/// Opening a file by a relative path written in the code: the path is relative to the working
+/// directory the program is started from, not to the executable. Use
+/// `std::filesystem::executable_dir() / "name"`, or `std::filesystem::path::relative("name")` when
+/// the working directory is meant (spec 19).
+compile_time std::diagnostic relative_path = default;
+
+/// The direction of a sort (spec 20).
+enum sort_order : u8 {
+    ascending,
+    descending,
+}
+
 /// What `main` reports to the operating system (spec 04).
 enum exit_code : u8 {
     success = 0,
     failure = 1,
 }
+
+/// A growable array on the heap (spec 20). `a[i]` panics when `i` is out of bounds. An empty
+/// one is `default`.
+template<type T>
+class darray {
+public:
+    /// The number of elements.
+    usize len();
+
+    /// Whether there are no elements.
+    bool is_empty();
+
+    /// Adds `value` at the end.
+    void push(T value) mut;
+
+    /// Removes the last element and returns it, or `none` when empty.
+    std::option<T> pop() mut;
+
+    /// Destroys every element; the capacity is kept.
+    void clear() mut;
+
+    /// A copy with every element cloned.
+    darray<T> clone();
+
+    /// Keeps the elements for which `keep(element)` is true, in order; the others are destroyed.
+    template<type F>
+    void retain(F keep) mut;
+
+    /// Sorts by `key(element)`, stably (equal keys keep their order).
+    template<type F>
+    void sort_by_key(std::sort_order order, F key) mut;
+
+    T& operator[](usize i);
+    mut T& operator[](usize i) mut;
+
+    /// A view of the elements.
+    span<T> as_span();
+
+    /// Element `i`, or `none` when out of bounds.
+    std::option<T&> get(usize i);
+
+    /// Inserts `value` before element `i` (`i == len()` appends); panics when out of bounds.
+    void insert(usize i, T value) mut;
+
+    /// Removes element `i` and returns it; panics when out of bounds.
+    T remove(usize i) mut;
+
+    ~darray();
+}
+
+/// A view of elements stored somewhere else (spec 20): `a[i]` panics when out of bounds.
+template<type T>
+view class span {
+public:
+    /// A view of `count` elements at `data`; the caller vouches that they live long enough.
+    static unsafe span<T> from_raw(std::raw_ptr<T> data, usize count);
+
+    usize len();
+    bool is_empty();
+    T& operator[](usize i);
+}
+
+/// Text on the heap, in UTF-8 (spec 19). It converts to a `std::str` implicitly; a string
+/// literal converts to it with a warning, because that allocates.
+class string {
+public:
+    /// A new string with a copy of `text` (allocates).
+    static string from(std::str text);
+
+    /// The length in bytes.
+    usize len();
+
+    /// Whether the string is empty.
+    bool is_empty();
+
+    /// A view of the text.
+    std::str as_str();
+
+    /// Appends `text`.
+    void push_str(std::str text) mut;
+
+    /// Appends one character.
+    void push(char c) mut;
+
+    /// Removes all text; the capacity is kept.
+    void clear() mut;
+
+    /// A copy (allocates).
+    string clone();
+
+    bool operator==(string& other);
+
+    /// Byte-wise order (UTF-8 bytes compare like code points): `<`, `<=`, ... follow from it.
+    std::ordering operator<=>(string& other);
+
+    ~string();
+}
+
+/// Why an I/O operation failed (spec 20). It prints as its name: `not_found`.
+enum io_error : u8 {
+    not_found,
+    permission_denied,
+    already_exists,
+    is_directory,
+    invalid_data,
+    other,
+}
+
+/// An open file. It is closed when it is destroyed.
+class file {
+public:
+    /// Opens an existing file for reading.
+    static std::result<file, io_error> open(std::filesystem::path& path);
+
+    /// Opens the file named by `path`. A relative path written in the code is warned about
+    /// (`std::relative_path`).
+    static std::result<file, io_error> open(std::str path);
+
+    /// Creates (or empties) a file for writing.
+    static std::result<file, io_error> create(std::filesystem::path& path);
+    static std::result<file, io_error> create(std::str path);
+
+    /// The lines of the file, one after the other, without their line ends.
+    file_lines lines() mut;
+
+    /// Writes `text`.
+    std::result<usize, io_error> write(std::str text) mut;
+
+    ~file();
+}
+
+/// The lines of a `std::file`: a stream for `for (std::str line : f.lines())`. Each line is a
+/// view that is valid until the next one is read.
+view class file_lines {
+public:
+    std::option<std::str> next() mut;
+
+    ~file_lines();
+}
+
+/// The sole owner of a value on the heap (spec 13). Never null; moved, not copied. Destroying it
+/// destroys the value (through its class's destructor, also when the pointer's type is a base).
+template<type T>
+class unique_ptr {
+public:
+    /// Moves `value` to the heap (allocates).
+    static unique_ptr<T> make(T value);
+
+    T& operator*();
+    mut T& operator*() mut;
+
+    ~unique_ptr();
+}
+
+/// The counts of a shared value.
+struct shared_counts {
+    usize strong = 0;
+    usize weak = 0;
+}
+
+/// One of several owners of a value on the heap (spec 13). `clone()` adds an owner; the value is
+/// destroyed with its last owner. The value is read-only through a shared pointer.
+template<type T>
+class shared_ptr {
+public:
+    /// Moves `value` to the heap (allocates).
+    static shared_ptr<T> make(T value);
+
+    /// Another owner of the same value (count + 1).
+    shared_ptr<T> clone();
+
+    /// An observer that does not keep the value alive.
+    weak_ptr<T> weak();
+
+    /// The number of owners.
+    usize owners();
+
+    T& operator*();
+
+    ~shared_ptr();
+}
+
+/// Observes a value owned by shared pointers without keeping it alive (spec 13).
+template<type T>
+class weak_ptr {
+public:
+    /// An owner of the value, or `none` once its last owner is gone.
+    std::option<shared_ptr<T>> lock();
+
+    weak_ptr<T> clone();
+
+    ~weak_ptr();
+}
+
+/// Takes the value out of `place` and leaves its default behind (spec 12): `std::take(mut obj.field)`.
+template<type T>
+T take(mut T& place);
+
+/// Puts `value` into `place` and returns what was there.
+template<type T>
+T replace(mut T& place, T value);
+
+/// Exchanges the values of `a` and `b`.
+template<type T>
+void swap(mut T& a, mut T& b);
+
+/// N values of T, stored inline (spec 20). `a[i]` panics when out of bounds. An array of
+/// defaults is `default`.
+template<type T, usize N>
+struct array {
+    std::raw::array<T, N> items = default;
+
+    /// The number of elements: N.
+    usize len();
+
+    /// Element `i`, or `none` when out of bounds.
+    std::option<T&> get(usize i);
+
+    T& operator[](usize i);
+    mut T& operator[](usize i) mut;
+
+    /// A view of the elements.
+    span<T> as_span();
+}
+
+/// N bits (spec 20), stored inline.
+template<usize N>
+struct bitset {
+    std::raw::array<u64, (N + 63) / 64> words = default;
+
+    /// The number of bits: N.
+    usize len();
+
+    /// Whether bit `i` is set; panics when out of bounds.
+    bool test(usize i);
+
+    /// Sets bit `i` to `value`.
+    void set(usize i, bool value) mut;
+
+    /// The number of bits that are set.
+    usize count();
+}
+
+/// A key and its value in a map: what `entries()` lists.
+template<type K, type V>
+view struct map_entry {
+    K& key;
+    V& value;
+}
+
+/// A map with keys in no particular order, found by their hash (spec 20). Keys are integers,
+/// chars, bools, strings, or types with a `u64 hash()` method; they are compared with `==`.
+template<type K, type V>
+class hash_map {
+public:
+    usize len();
+    bool is_empty();
+
+    /// Adds or replaces the value of `key`; returns the old value.
+    std::option<V> insert(K key, V value) mut;
+
+    bool contains(K& key);
+
+    /// The value of `key`, or `none`.
+    std::option<V&> get(K& key);
+
+    /// Removes `key` and returns its value, or `none`.
+    std::option<V> remove(K& key) mut;
+
+    /// The value of `key`; panics when it is missing.
+    V& operator[](K& key);
+    mut V& operator[](K& key) mut;
+
+    /// Every key and value (a list of views, in no particular order).
+    std::darray<map_entry<K, V>> entries();
+
+    void clear() mut;
+
+    ~hash_map();
+}
+
+/// A map with its keys in order (spec 20). Keys are compared with `<`.
+template<type K, type V>
+class tree_map {
+public:
+    usize len();
+    bool is_empty();
+    std::option<V> insert(K key, V value) mut;
+    bool contains(K& key);
+    std::option<V&> get(K& key);
+    std::option<V> remove(K& key) mut;
+    V& operator[](K& key);
+    mut V& operator[](K& key) mut;
+
+    /// Every key and value, keys in ascending order.
+    std::darray<map_entry<K, V>> entries();
+
+    void clear() mut;
+}
+
+/// The hash of a key (spec 20): integers, chars, bools, strings, or a type's `u64 hash()`.
+template<type K>
+u64 hash(K& key);
+

@@ -9,6 +9,7 @@
 // Symbols are owned by their Module (stable addresses in a deque) and referenced from the AST.
 
 #include "rift/ast.hpp"
+#include "rift/diagnostics.hpp"
 
 #include <deque>
 #include <map>
@@ -54,6 +55,8 @@ struct Symbol {
 
     const ast::Decl* decl       = nullptr;   // declaration (the header one if there is a header)
     const ast::Decl* definition = nullptr;   // the `.rifts` definition with the body, if separate
+    const ast::Decl* source_block = nullptr; // a type's `.rifts` block (method bodies, private members)
+    const ast::TemplateParam* template_param = nullptr;   // a template parameter's declaration (constraints)
 
     bool        in_header  = false;   // declared in the module's .rifth
     bool        is_private = false;   // module-local (`private`, or only in a .rifts with a header)
@@ -84,6 +87,7 @@ struct Symbol {
 
     // Compile time (spec 15, 26).
     bool is_type_value = false;   // a compile_time variable or parameter of type `type`: usable as a type
+    const ast::TypeExpr* value_type = nullptr;   // template value parameters: `usize` in `template<usize N>`
     std::shared_ptr<const ct::Value> ct_value;   // the value of a compile_time constant, once evaluated
 
     [[nodiscard]] bool is_type() const {
@@ -97,6 +101,23 @@ struct Symbol {
     [[nodiscard]] bool is_open() const {
         return decl && (decl->kind == ast::DeclKind::class_) && decl->as<ast::TypeDecl>().is_open;
     }
+
+    /// The base class (not an interface), or null (spec 07: at most one, written first).
+    [[nodiscard]] const Symbol* base_class() const {
+        for (const Symbol* b : bases) {
+            if (b->kind == SymbolKind::class_) return b;
+        }
+        return nullptr;
+    }
+
+    /// Whether objects of this class start with a vtable pointer: an `open` class at the root of
+    /// its hierarchy (its destructor is virtual, spec 07). Derived classes reach it through their
+    /// base, which is their first member.
+    [[nodiscard]] bool has_vtable_pointer() const { return is_open() && !base_class(); }
+
+    /// The members an object starts with before its own fields: the base object or the vtable
+    /// pointer (0 or 1).
+    [[nodiscard]] unsigned layout_prefix() const { return base_class() || has_vtable_pointer() ? 1 : 0; }
 };
 
 /// The parameter substitution of the template instance that declares `s` (a member, payload or
@@ -145,6 +166,20 @@ struct Program {
     /// The standard library module (library/std, built into riftc), loaded on the first
     /// `import std`; null if nothing imports it. Also in `modules` as "std".
     Module*                                        std_module = nullptr;
+    /// The build mode being compiled for (spec 24): decides which mode-gated checks exist (spec 23).
+    std::string                                    build_mode = "debug";
+    /// The class of that mode (`std::build::mode::release`, or a mode of build.rifts), once
+    /// resolved; null without the standard library.
+    const Symbol*                                  build_mode_class = nullptr;
+    /// The values of the mode's settings by method name, as text: "optimization" → "speed",
+    /// "allow_undefined_behavior" → "false" (spec 24). Empty without the standard library.
+    std::map<std::string, std::string>             mode_settings;
+    /// What build.rifts passed to the target being compiled: `std::build::setting<T>(name)`.
+    std::map<std::string, std::shared_ptr<const ct::Value>> build_settings;
+    /// The graph that build.rifts' `build(g)` fills in; null when compiling ordinary code.
+    ct::BuildGraph*                                build_graph = nullptr;
+    /// `--warn=id=level` (spec 23): the level of each named diagnostic that is not the default.
+    std::map<std::string, std::string>             warn_levels;
     std::shared_ptr<types::TypeContext>            types;     // owns every Type the checker creates
     /// Instances of template types, in creation order. They are not in any module's items.
     std::vector<Symbol*>                           instances;
@@ -152,6 +187,12 @@ struct Program {
     std::vector<ast::Decl*>                        instance_copies;
     /// The re-parsed copies of templates that instances are made of (see check.cpp).
     std::deque<ast::File>                          instance_files;
+    /// Errors in methods of class template instances, kept until the method is used: like
+    /// C++, an instance's method is only required to compile when it is called
+    /// (`std::darray<std::unique_ptr<T>>` without `clone()`). By the method's declaration.
+    std::map<const ast::Decl*, std::vector<Diagnostic>> deferred_errors;
+    /// Copies of resolved declarations: the instances of method templates (spec 14).
+    std::deque<std::unique_ptr<ast::Decl>>         cloned_decls;
 };
 
 } // namespace rift::sema

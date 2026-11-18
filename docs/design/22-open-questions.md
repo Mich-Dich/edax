@@ -20,16 +20,18 @@ Ordered roughly by how much they affect the rest of the design.
 | 14 | **Types as values / reflection** | **Designed** (see 26): `type` values, `std::meta`, `for compile_time` | `.type = std::filesystem::path` from *Future thoughts* is now a `type` value |
 | 27 | **Generating declarations** | Not available (see 26) | Compile-time code that creates types, fields or functions (`std::meta::struct_builder`, like Zig). Needs rules for names, headers and error locations |
 | 28 | **Derive** | Not available | `@derive(std::formattable)` implementing an interface from the fields (needs attributes, #13). With 26 the same code can already be written as a generic function |
+| 30 | **Aliases** | Not available: every name is written in full (`std::build::mode::debug`) | A user-chosen short name for a namespace or type (never an implicit one). Syntax and scope (module-local only?) open |
+| 31 | **Names from `build.rifts` in code** | A user mode class is named `build::profile` in mode lists (see 23, 24) | How code reaches declarations of `build.rifts` in general (settings, mode classes) |
 | 29 | **Reflecting methods and template arguments** | Not available | `std::meta::methods<T>()`, `std::meta::template_args<T>()`, calling a method through reflection |
 | 15 | **Language as build system** | **Designed** (see 25) | |
 | 16 | **SIMD** | Sketch (see 21) | |
 | 18 | **`compile_time` parameters** | Covered by `compile_time check` entry checks (see 23) | A parameter modifier would only be needed if the *body* must use the value at compile time (e.g. to pick a type) |
-| 19 | **In-source warning control** | Command line only (`--warn=id=off`) | Needs attributes (#13), e.g. `@allow("gfx::deprecated")` on a statement or function |
+| 19 | **In-source warning control** | Command line only (`--warn=id=off`) | Needs attributes (#13), e.g. `@allow(gfx::deprecated)` on a statement or function |
 | 20 | **Fix-it suggestions** | Not available | `std::compile_fixit(location, replacement)` so tools can apply the author's suggested fix |
-| 21 | **Postconditions** | Entry checks are preconditions (see 23); debug-only checks are `run_time(debug) check` | Checks on return values, e.g. a `check` that sees the function's result? |
-| 22 | **Implicit `std::static_str` → `std::filesystem::path`** | Used in 19 and 25 (`std::file::open("x")`, `.root = "core"`) | Not in 02's list of implicit conversions. Add it there, or require `std::filesystem::path::from(...)`? |
+| 21 | **Postconditions** | Entry checks are preconditions (see 23); debug-only checks are `run_time(std::build::mode::debug) check` | Checks on return values, e.g. a `check` that sees the function's result? |
+| 22 | **Implicit `std::static_str` → `std::filesystem::path`** | Avoided: `std::file::open`/`create` have a `std::str` overload (19); build targets name files as `std::static_str` (25) | Whether paths should get a literal form or an implicit conversion after all |
 | 23 | **List literals** | Not available | `[a, b, c]` would shorten build scripts and container setup. Clashes with lambda captures `[x](...)` unless resolved by the token after `]` |
-| 24 | **C/C++ headers → Rift headers** | Hand-written `extern "C"` `.rifth` | A build step that generates `.rifth` from C headers (like `bindgen`). C++ classes are much harder than C |
+| 24 | **C/C++ headers → Rift headers** | Hand-written `extern(std::build::language::c)` `.rifth` | A build step that generates `.rifth` from C headers (like `bindgen`). C++ classes are much harder than C |
 | 25 | **Build sandboxing and remote cache** | Steps declare inputs/outputs (see 25) | Enforce declarations with a sandbox; share build outputs between machines and CI |
 | 26 | **Package registry** | Git and path dependencies only | A central registry with versions instead of commits? |
 | 17 | **Name** | `Rift` (working name) | |

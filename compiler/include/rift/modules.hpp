@@ -12,11 +12,18 @@
 #include "rift/symbols.hpp"
 
 #include <string>
+#include <vector>
 
 namespace rift {
 
 struct LoadOptions {
     std::string root;   // project root; empty = the entry file's directory
+    /// build.rifts, loaded as module `build` next to the entry: its mode classes are what
+    /// `--mode=` and `run_time(build::profile)` name (spec 24, open question 31).
+    std::string build_script;
+    /// More directories to find imported modules in, after `root`: the roots of dependencies
+    /// whose libraries a target links (spec 25).
+    std::vector<std::string> extra_roots;
 };
 
 /// Loads the entry module and its imports. Lexer, parser and import errors go to `diags`; the

@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+Hello from build 10
+optimization: none
+debug-like mode: true
+release-like mode: false
+overflow wraps: false
+250 + 10 would panic in this mode; with +% it is 4
+--- stderr

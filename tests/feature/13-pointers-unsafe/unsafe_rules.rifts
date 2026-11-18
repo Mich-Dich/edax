@@ -2,7 +2,7 @@
 // and non-thread-safe 'static mut' need an unsafe block.
 import std;
 
-extern "C" i32 puts(std::raw_ptr<u8> text);
+extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
 unsafe u32 read_register(usize address) { return 0; }
 static mut u32 raw_counter = 0;
 static mut std::atomic<u32> safe_counter = std::atomic<u32>{};

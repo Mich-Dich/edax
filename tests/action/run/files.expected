@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+1: [first line]
+2: [second]
+3: []
+4: [last]
+error: not_found
+--- stderr

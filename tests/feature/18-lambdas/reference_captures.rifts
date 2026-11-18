@@ -1,0 +1,12 @@
+// feature 18: a lambda with reference captures is a view: called and passed down, never kept.
+import std;
+deduce bad(u32 x) {
+    return [&x](u32 y) { return x + y; };       //~ error[E5013]: returns a lambda that refers to 'x'
+}
+deduce fine(u32& x) {
+    return [&x](u32 y) { return x + y; };       // x outlives the call
+}
+void ok(u32 x) {
+    auto f = [&x](u32 y) { return x + y; };
+    u32 r = f(1);
+}

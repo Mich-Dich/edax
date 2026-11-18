@@ -1,0 +1,95 @@
+// geometry: modules, structs, operators, enums with payloads and pattern matching
+// (specs 05, 08, 09, 10, 16).
+import std;
+import geometry::vec;
+
+struct disk {
+    geometry::vec::vec2 center;
+    f64 radius = 1.0;
+}
+
+struct box {
+    geometry::vec::vec2 low;
+    geometry::vec::vec2 high;
+}
+
+/// A regular polygon.
+struct regular {
+    u32 sides = 3;
+    f64 side = 1.0;
+}
+
+/// An enum whose alternatives carry data (one payload each; a struct groups several values).
+enum shape : u8 {
+    circle(disk),
+    rect(box),
+    polygon(regular),
+    dot,
+}
+
+f64 area(shape& s) {
+    return match (s) {
+        shape::circle(disk{ .radius = r, .center = _ }) => 3.141592653589793 * r * r,
+        shape::rect(b) => {
+            geometry::vec::vec2 d = b.high - b.low;
+            d.x * d.y
+        },
+        shape::polygon(regular{ .sides = n, .side = side }) if n == 4 => side * side,   // a guard
+        shape::polygon(regular{ .sides = n, .side = side }) => cast<f64>(n) * side * side / 4.0 / tan_pi_over(n),
+        shape::dot => 0.0,
+    };
+}
+
+/// tan(pi / n), from the Taylor series of sin and cos (no libm needed).
+f64 tan_pi_over(u32 n) {
+    f64 x = 3.141592653589793 / cast<f64>(n);
+    mut f64 sin = 0.0;
+    mut f64 cos = 0.0;
+    mut f64 term = 1.0;   // x^k / k!
+    for (u32 k : 0..20) {
+        if (k > 0) { term = term * x / cast<f64>(k); }
+        match (k % 4) {
+            0 => { cos += term; },
+            1 => { sin += term; },
+            2 => { cos -= term; },
+            _ => { sin -= term; },
+        }
+    }
+    return sin / cos;
+}
+
+std::string describe(shape& s) {
+    return match (s) {
+        shape::circle(d) => std::format(f"circle at ({d.center.x}, {d.center.y}) with radius {d.radius}"),
+        shape::rect(b) => std::format(f"rect from ({b.low.x}, {b.low.y}) to ({b.high.x}, {b.high.y})"),
+        shape::polygon(regular{ .sides = 3, .side = side }) => std::format(f"triangle with side {side}"),
+        shape::polygon(p) => std::format(f"{p.sides}-gon with side {p.side}"),
+        shape::dot => std::string::from("a dot"),
+    };
+}
+
+i32 main() {
+    geometry::vec::vec2 a = geometry::vec::vec2{ .x = 1.0, .y = 2.0 };
+    geometry::vec::vec2 b = geometry::vec::vec2{ .x = 4.0, .y = 6.0 };
+    geometry::vec::vec2 d = b - a;
+    geometry::vec::vec2 twice = d * 2.0;
+    geometry::vec::vec2 back = -d;
+    std::println(f"b - a = ({d.x}, {d.y}), length {d.length()}");
+    std::println(f"2(b - a) = ({twice.x}, {twice.y}), -(b - a) = ({back.x}, {back.y})");
+    std::println(f"a == a: {a == a}, a == b: {a == b}");
+
+    mut std::darray<shape> shapes = default;
+    shapes.push(shape::circle(disk{ .center = a, .radius = 1.5 }));
+    shapes.push(shape::rect(box{ .low = a, .high = b }));
+    shapes.push(shape::polygon(regular{ .sides = 3, .side = 2.0 }));
+    shapes.push(shape::polygon(regular{ .sides = 4, .side = 2.0 }));
+    shapes.push(shape::polygon(regular{ .sides = 6, .side = 1.0 }));
+    shapes.push(shape::dot);
+
+    // Sort by area, largest first: a lambda gives the key.
+    shapes.sort_by_key(std::sort_order::descending, [](shape& s) { return area(s); });
+    for (shape& s : shapes) {
+        std::println(f"{area(s):>8.3}  {describe(s)}");
+    }
+    return 0;
+}

@@ -1,0 +1,41 @@
+// feature 14: constraints are checked at the call and limit what the template's body may use.
+import std;
+interface printable {
+    std::string to_text();
+}
+struct point : printable {
+    f64 x = 0.0;
+    std::string to_text() override { return std::string::from("p"); }
+}
+struct plain { u32 v = 0; }
+class no_clone { }
+
+template<type T : printable>
+std::string show(T& item) {
+    return item.to_text();
+}
+
+template<type T : printable>
+u32 measure(T& item) {
+    return item.size();                           //~ error[E4162]: has no method 'size'
+}
+
+template<type T : std::comparable>
+bool less(T a, T b) { return a < b; }
+
+template<type T : std::cloneable>
+void keep(T& item) { }
+
+template<type T : printable>
+struct holder { T value; }
+
+void calls(point p, plain q, no_clone c) {
+    show(p);
+    show(q);                                      //~ error[E4161]: 'plain' does not implement 'printable'
+    bool b = less(1u32, 2u32);
+    bool bad = less(q, q);                        //~ error[E4161]: 'plain' has no 'operator<=>'
+    keep(p);
+    keep(c);                                      //~ error[E4161]: class 'no_clone' has no 'clone()'
+    holder<point> ok = holder<point>{ .value = p };
+    holder<plain> nope = holder<plain>{ .value = q };   //~ error[E4161]: 'plain' does not implement 'printable'
+}

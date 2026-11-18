@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/../../../example --out-dir=%t lambdas
+// The example program example/lambdas.rifts (built through example/build.rifts) keeps working.

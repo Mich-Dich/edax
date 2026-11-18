@@ -67,9 +67,11 @@ declare i32 @fputc(i32, ptr)
 declare i32 @fflush(ptr)
 declare i32 @memcmp(ptr, ptr, i64)
 declare i64 @strlen(ptr)
+declare void @exit(i32) noreturn
 declare i32 @snprintf(ptr, i64, ptr, ...)
 declare double @strtod(ptr, ptr)
 declare double @llvm.fabs.f64(double)
+declare double @llvm.floor.f64(double)
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 
 @rift_plain_spec = private constant %rift_spec { i8 0, i1 false, i32 -1, i32 -1, i8 0 }
@@ -425,8 +427,14 @@ precb:
   store i32 %kp, ptr %n
   br label %emit
 shortb:
-  store i32 1, ptr %pv
-  br label %search
+  ; A whole number below 1e16 prints all its digits ("50.0", not "5e+01").
+  %fl = call double @llvm.floor.f64(double %v)
+  %whole = fcmp oeq double %fl, %v
+  %small = fcmp olt double %abs, 1.0e16
+  %plain = and i1 %whole, %small
+  %p0 = select i1 %plain, i32 17, i32 1
+  store i32 %p0, ptr %pv
+  br i1 %plain, label %found, label %search
 search:
   %p = load i32, ptr %pv
   %atEnd = icmp sge i32 %p, 17
@@ -598,11 +606,126 @@ good:
   %r = trunc i128 %v to i32
   ret i32 %r
 }
+
+; The program's arguments (spec 04): raw for std::env::raw_args, and as std::str for main(args).
+@rift_argc = internal global i32 0
+@rift_argv = internal global ptr null
+
+define i32 @rift_arg_count() {
+entry:
+  %c = load i32, ptr @rift_argc
+  ret i32 %c
+}
+
+define ptr @rift_arg_values() {
+entry:
+  %v = load ptr, ptr @rift_argv
+  ret ptr %v
+}
+
+; Whether the n bytes at s are well-formed UTF-8.
+define internal i1 @rift_utf8_valid(ptr %s, i64 %n) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %more = icmp ult i64 %i, %n
+  br i1 %more, label %lead, label %yes
+lead:
+  %bp = getelementptr i8, ptr %s, i64 %i
+  %b = load i8, ptr %bp
+  %ascii = icmp ult i8 %b, 128
+  br i1 %ascii, label %one, label %multi
+one:
+  br label %advance
+multi:
+  %m2 = and i8 %b, 224
+  %is2 = icmp eq i8 %m2, 192
+  %ge2 = icmp uge i8 %b, 194
+  %two = and i1 %is2, %ge2
+  %m3 = and i8 %b, 240
+  %three = icmp eq i8 %m3, 224
+  %m4 = and i8 %b, 248
+  %is4 = icmp eq i8 %m4, 240
+  %le4 = icmp ule i8 %b, 244
+  %four = and i1 %is4, %le4
+  %l3 = select i1 %three, i64 3, i64 4
+  %l2 = select i1 %two, i64 2, i64 %l3
+  %known = or i1 %two, %three
+  %known2 = or i1 %known, %four
+  br i1 %known2, label %fits, label %no
+fits:
+  %end = add i64 %i, %l2
+  %inside = icmp ule i64 %end, %n
+  br i1 %inside, label %cont, label %no
+cont:
+  %j = phi i64 [ 1, %fits ], [ %j1, %contnext ]
+  %done = icmp eq i64 %j, %l2
+  br i1 %done, label %multidone, label %contbyte
+contbyte:
+  %k = add i64 %i, %j
+  %cp = getelementptr i8, ptr %s, i64 %k
+  %c = load i8, ptr %cp
+  %cm = and i8 %c, 192
+  %isc = icmp eq i8 %cm, 128
+  br i1 %isc, label %contnext, label %no
+contnext:
+  %j1 = add i64 %j, 1
+  br label %cont
+multidone:
+  br label %advance
+advance:
+  %step = phi i64 [ 1, %one ], [ %l2, %multidone ]
+  %next = add i64 %i, %step
+  br label %loop
+yes:
+  ret i1 true
+no:
+  ret i1 false
+}
+
+; Called by the entry point: keeps argc/argv and returns argv as an array of std::str.
+define ptr @rift_main_args(i32 %argc, ptr %argv) {
+entry:
+  store i32 %argc, ptr @rift_argc
+  store ptr %argv, ptr @rift_argv
+  %n = sext i32 %argc to i64
+  %bytes = mul i64 %n, 16
+  %size = add i64 %bytes, 16
+  %arr = call ptr @malloc(i64 %size)
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %store ]
+  %more = icmp slt i64 %i, %n
+  br i1 %more, label %body, label %done
+body:
+  %pp = getelementptr ptr, ptr %argv, i64 %i
+  %p = load ptr, ptr %pp
+  %len = call i64 @strlen(ptr %p)
+  %ok = call i1 @rift_utf8_valid(ptr %p, i64 %len)
+  br i1 %ok, label %store, label %bad
+store:
+  %slot = getelementptr { ptr, i64 }, ptr %arr, i64 %i
+  %f0 = getelementptr { ptr, i64 }, ptr %slot, i32 0, i32 0
+  store ptr %p, ptr %f0
+  %f1 = getelementptr { ptr, i64 }, ptr %slot, i32 0, i32 1
+  store i64 %len, ptr %f1
+  %next = add i64 %i, 1
+  br label %loop
+bad:
+  %err = load ptr, ptr @stderr
+  %w = call i64 @fwrite(ptr @rift_bad_arg, i64 1, i64 __BAD_ARG_LEN__, ptr %err)
+  call void @exit(i32 1)
+  unreachable
+done:
+  ret ptr %arr
+}
 )IR";
 
 } // namespace
 
 std::string llvm_runtime_ir() {
+    const std::string bad_arg = "error: a command-line argument is not valid UTF-8 (read it with std::env::raw_args())\n";
     std::string out = kTypesAndDeclarations;
     out += bytes_global("rift_oom", "rift: out of memory\n");
     out += cstring_global("rift_true", "true");
@@ -622,10 +745,14 @@ std::string llvm_runtime_ir() {
     out += bytes_global("rift_not_valid", ", which is not a valid exit status (0 to 255)");
     std::string body = kBuffers;
     // The length of the exit-status suffix, written in the IR below.
+    out += bytes_global("rift_bad_arg", bad_arg);
     std::string placeholder = "__NOT_VALID_LEN__";
     std::string len = std::to_string(std::string(", which is not a valid exit status (0 to 255)").size());
     for (std::size_t at = body.find(placeholder); at != std::string::npos; at = body.find(placeholder)) {
         body.replace(at, placeholder.size(), len);
+    }
+    for (std::size_t at = body.find("__BAD_ARG_LEN__"); at != std::string::npos; at = body.find("__BAD_ARG_LEN__")) {
+        body.replace(at, 15, std::to_string(bad_arg.size()));
     }
     return out + body;
 }

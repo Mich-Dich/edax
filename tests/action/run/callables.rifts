@@ -1,0 +1,22 @@
+// RUN: riftc run %s
+// std::function (a lambda moved to the heap, stored in a field and called) and std::fn_ptr
+// (a lambda without captures as a plain function pointer), spec 18.
+import std;
+class button {
+public:
+    std::function<void(u32)> on_click;
+    void click(u32 times) { this.on_click(times); }
+}
+u32 apply(std::fn_ptr<u32(u32)> f, u32 x) { return f(x); }
+i32 main() {
+    u32 base = 10;
+    std::function<u32(u32)> add = [base](u32 x) { return x + base; };
+    std::println(f"{add(5)}");
+    std::fn_ptr<u32(u32)> twice = [](u32 x) { return x * 2; };
+    std::println(f"{twice(21)} {apply(twice, 4)}");
+    button b = button{ .on_click = [base](u32 n) { std::println(f"clicked {n} times, base {base}"); } };
+    b.click(3);
+    std::function<u32(u32)> moved = move add;
+    std::println(f"{moved(1)}");
+    return 0;
+}

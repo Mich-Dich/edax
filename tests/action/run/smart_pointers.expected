@@ -1,0 +1,22 @@
+exit: 0
+--- stdout
+43 43
+3.0 c
+c: 3.0
+d: 12.0
+2 7
+1
+alive 7 2
+drop circle
+drop shape d
+drop circle
+drop shape c
+--- stderr
+warning[W4002]: implicit allocation of a std::string from a string literal
+ --> tests/action/run/smart_pointers.rifts:7:24
+  |
+7 |     std::string name = "";
+  |                        ^^ allocates
+  = note: write 'std::string::from("...")' to make the allocation visible
+
+0 errors, 1 warning

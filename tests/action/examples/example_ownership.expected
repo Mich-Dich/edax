@@ -1,0 +1,24 @@
+exit: 0
+--- stdout
+-- copy types are copied, everything else is moved
+5 5 hello
+hello hello
+-- destructors run when the owner's scope ends
+  open alpha
+  open beta
+  alpha <- hi
+  beta <- bye
+  close beta
+  end of block
+  close alpha
+-- borrowing
+report_final, first word: borrowed
+-- moving parts out of a struct
+took 2 items from ann; bob has 0
+right left
+-- a loop borrows its container
+total 34
+-- end of main
+  open gamma
+  close gamma
+--- stderr

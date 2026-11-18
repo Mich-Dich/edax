@@ -233,6 +233,13 @@ void DiagnosticEngine::sort_by_location() {
     diagnostics_ = std::move(unique);
 }
 
+std::vector<Diagnostic> DiagnosticEngine::take_since(std::size_t mark) {
+    std::vector<Diagnostic> out(std::make_move_iterator(diagnostics_.begin() + static_cast<std::ptrdiff_t>(mark)),
+                                std::make_move_iterator(diagnostics_.end()));
+    diagnostics_.resize(mark);
+    return out;
+}
+
 std::size_t DiagnosticEngine::error_count() const {
     return static_cast<std::size_t>(std::count_if(diagnostics_.begin(), diagnostics_.end(),
         [](const Diagnostic& d) { return d.severity == Severity::error; }));

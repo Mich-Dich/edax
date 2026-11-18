@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+7 grades from %t/debug/grades.csv
+student  exams  average
+ada          2    91.50
+alan         3    80.00
+grace        2    96.50
+no_such_file.csv: not_found
+--- stderr

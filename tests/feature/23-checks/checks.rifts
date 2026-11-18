@@ -1,0 +1,77 @@
+// feature 23: where checks may be written, what they evaluate, and their messages.
+import std;
+
+struct header {
+    u32 sequence;
+    u64 timestamp;
+    compile_time check (std::size_of<header>() == 16) else "header is 16 bytes";
+    compile_time check (std::size_of<header>() == 12) else f"header is {std::size_of<header>()} bytes, not 12";//~ error[E4210]: header is 16 bytes, not 12
+    run_time check (true) else "no";                            //~ error[E4211]: a run_time check needs a function body
+}
+
+compile_time check (std::align_of<header>() == 8) else "8-byte aligned";
+compile_time check (1 + 1 == 3) else "arithmetic is broken";    //~ error[E4001]: this integer literal has no type
+compile_time(std::build::mode::release) check (false) else "only in release builds";
+compile_time(std::build::mode::fast) check (true) else "unknown mode";            //~ error[E4212]: unknown build mode 'std::build::mode::fast'
+compile_time(release) check (true) else "short name";       //~ error[E4212]: unknown build mode 'release'
+run_time check (true) else "file scope";                        //~ error[E4211]: file scope only has compile_time checks
+compile_time check (std::size_of<header>()) else "not a bool";  //~ error[E4010]: expected 'bool' (the condition), found 'usize'
+compile_time check {
+    std::compile_note("this note goes with the error");
+    std::compile_error("block-form failure");                   //~ error[E4210]: block-form failure
+}
+
+void configure_output(u8 pin) {
+    compile_time check (pin < 32) else f"pin {pin} doesn't exist: this chip has pins 0..31";
+}
+
+compile_time run_time bool is_supported(u32 baud) { return baud == 9600 || baud == 115200; }
+
+void configure(u32 baud) {
+    compile_time run_time check (is_supported(baud)) else f"{baud} baud is not supported";
+}
+
+/// Calls to functions that are going away.
+compile_time std::diagnostic old = default;
+
+void deprecated() {
+    compile_time check {
+        std::compile_warning(old, "deprecated() is going away");
+    }
+}
+
+void wrong_ids() {
+    compile_time check {
+        std::compile_warning("api::old", "a string id");          //~ error[E4213]: declared 'std::diagnostic'
+        std::compile_warning(5u32, "not an id");                 //~ error[E4213]
+    }
+}
+
+u32 run_time_only(u32 x) { return x; }
+
+void calls(u8 user_pin, u32 user_rate) {
+    configure_output(5);
+    configure_output(40);                                       //~ error[E4210]: pin 40 doesn't exist
+    configure_output(user_pin);                                 //~ error[E4200]: 'user_pin' is not a compile-time value
+    configure(9600);
+    configure(9601);                                            //~ error[E4210]: 9601 baud is not supported
+    configure(user_rate);
+    deprecated();                                               //~ warning[W4210]: deprecated() is going away
+    u32 i = 3;
+    run_time check (i < 10) else f"index {i}";
+    compile_time check (i < 10) else "not at the entry";        //~ error[E4211]: must be at the entry of a function
+    run_time check (i) else 5;                                  //~ error[E4010]: expected 'bool' (the condition), found 'u32'
+    //~^ error[E4010]: expected 'std::static_str' (the message)
+}
+
+void entry(u32 x) {
+    compile_time check (run_time_only(x) > 0) else "calls a run-time function";//~ error[E4120]: 'run_time_only'
+}
+
+open class device {
+public:
+    virtual void reset(u32 level) {
+        compile_time check (level < 4) else "level";            //~ error[E4211]: may only have run_time entry checks
+        run_time check (level < 4) else "level";
+    }
+}

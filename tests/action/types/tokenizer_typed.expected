@@ -159,7 +159,7 @@ exit: 0
         (call : f64 (path weight) (path token_kind::plus : token_kind))))
     (var sq : square
       (new square : square
-        (.name (call : {unknown} (path std::string::from) (string "sq" : std::static_str)))
+        (.name (call : std::string (path std::string::from) (string "sq" : std::static_str)))
         (.side (float 2.0 : f64))))
     (var s : shape& (path sq : square))
     (var area : f64 (call : f64 (.area (path s : shape&))))
@@ -167,16 +167,16 @@ exit: 0
     (var big64 : u64 (call : u64 (path larger<u64>) (int 1 : u64) (int 2 : u64)))
     (var counter : mut u32 (int 0 : u32))
     (var inc : auto
-      (lambda : {unknown}
+      (lambda : lambda()
         (captures (mut-ref counter))
         (block (assign += (path counter : mut u32&) (int 1 : u32)))))
     (var add : auto
-      (lambda : {unknown}
+      (lambda : lambda(u32) -> u32
         (captures (copy n))
         (param x : u32)
         (-> u32)
         (block (return : never (+ : u32 (path x : u32) (path n : u32))))))
-    (var m : u32 (call : {unknown} (path add : {unknown}) (int 1 : {unknown})))
+    (var m : u32 (call : u32 (path add : lambda(u32) -> u32) (int 1 : u32)))
     (var t : token (call : token (path token::number : token) (float 1.5 : f64)))
     (var v : f64
       (match : f64

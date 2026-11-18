@@ -1,0 +1,18 @@
+// feature 13: `extern` names its language like `run_time(std::build::mode::debug)` names a build mode.
+// STOP-AFTER: parse
+extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
+extern(std::build::language::cpp) void draw();
+extern(std::build::language::c) {
+    i32 abs(i32 x);
+    /// Documented inside the block.
+    void free(std::raw_ptr<mut u8> p);
+}
+extern "C" i32 old_style(i32 x);              //~ error[E2033]: 'extern' names the language
+extern i32 no_language(i32 x);                //~ error[E2033]: 'extern' names the language
+extern(fortran) i32 unknown(i32 x);           //~ error[E2033]: 'extern' names the language
+extern(c) i32 short_name(i32 x);              //~ error[E2033]: 'extern' names the language
+extern(std::build::language::rust) i32 r(i32 x);   //~ error[E2033]: 'extern' names the language
+extern(std::build::language::c) {
+    extern(std::build::language::c) i32 twice(i32 x);               //~ error[E2033]: already inside an 'extern' block
+    static u32 counter = 0;                   //~ error[E2033]: function declarations only
+}

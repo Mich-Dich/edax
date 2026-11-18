@@ -15,6 +15,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rift {
 
@@ -22,6 +23,16 @@ struct LlvmOptions {
     /// Generate every non-template function in the entry module, not only those reachable from
     /// `main`. For testing the backend on code that is never run.
     bool all_functions = false;
+    /// `panic()` returning `trap` (spec 24): every panic is a trap instruction, without a message.
+    bool panic_trap = false;
+    /// The mode's debug_info() is not `none`: DWARF line tables for every Rift function.
+    bool debug_info = false;
+};
+
+/// How the object code is made (the mode's settings, spec 24).
+struct CodegenOptions {
+    std::string optimization = "none";   // "none", "size", "speed"
+    bool        debug_info   = false;    // (the IR carries it: LlvmOptions::debug_info)
 };
 
 /// Lowers the checked program to textual LLVM IR (LLVM 18 syntax). Returns an empty string when
@@ -31,7 +42,8 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
 
 /// Compiles LLVM IR text to an object file for the host and links an executable at `out_path`
 /// with `linker` (for example "cc"). Returns false and sets `error` on failure.
-bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error);
+bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
+                      const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});
 
 /// The runtime every generated module is linked with, as LLVM IR text (llvm_runtime.cpp).
 std::string llvm_runtime_ir();

@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/../../../example --out-dir=%t ownership
+// The example program example/ownership.rifts (built through example/build.rifts) keeps working.

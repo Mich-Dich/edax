@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(rift
-    VERSION 0.0.1
+    VERSION 0.1.0
     DESCRIPTION "The Rift programming language compiler"
     LANGUAGES CXX
 )
@@ -61,3 +61,13 @@ add_subdirectory(compiler)
 
 enable_testing()
 add_subdirectory(tests)
+
+# Example programs (example/build.rifts) ------------------------------------------------------------------------------
+# `cmake --build build --target examples` builds every example program into build/example/bin.
+add_custom_target(examples
+    COMMAND riftc build --root=${PROJECT_SOURCE_DIR}/example --out-dir=${PROJECT_BINARY_DIR}/example
+            --bin-dir=${PROJECT_BINARY_DIR}/example/bin
+    DEPENDS riftc
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    COMMENT "Building the example programs into ${PROJECT_BINARY_DIR}/example/bin"
+    USES_TERMINAL)

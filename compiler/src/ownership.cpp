@@ -1,4 +1,5 @@
 #include "rift/ownership.hpp"
+#include "rift/compile_time.hpp"
 
 #include "rift/ast_printer.hpp"
 #include "rift/types.hpp"
@@ -131,6 +132,18 @@ private:
         case Kind::untyped_default: return Copy::unknown;
         case Kind::user: return user_copy(t->symbol);
         case Kind::external: return external_copy(t);
+        case Kind::function: return Copy::no;   // owns its callable on the heap (spec 18)
+        case Kind::array: return copy_kind(t->inner);
+        case Kind::closure: {   // a lambda copies like its captured values (references are views)
+            Copy c = Copy::yes;
+            if (const LambdaExpr* l = tc_.lambda_of(t)) {
+                for (const Capture& cap : l->captures) {
+                    if (cap.kind == CaptureKind::ref || cap.kind == CaptureKind::mut_ref || !cap.symbol) continue;
+                    c = combine(c, copy_kind(cap.symbol->type));
+                }
+            }
+            return c;
+        }
         default: return Copy::yes;   // built-ins, references, raw pointers, ranges, string literals
         }
     }
@@ -194,6 +207,16 @@ private:
         if (!t) return false;
         switch (t->kind) {
         case Kind::reference: return true;
+        case Kind::array: return is_view(t->inner);
+        case Kind::closure: {   // a lambda with reference captures is a view (spec 18)
+            const LambdaExpr* l = tc_.lambda_of(t);
+            if (!l) return false;
+            for (const Capture& c : l->captures) {
+                if (c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref) return true;
+                if (c.symbol && is_view(c.symbol->type)) return true;
+            }
+            return false;
+        }
         case Kind::external: {
             std::string_view base = t->external_base();
             if (base == "std::str" || base == "std::span" || base == "std::format_args") return true;
@@ -207,7 +230,9 @@ private:
         case Kind::user: {
             const Symbol* s = t->symbol;
             if (s->decl && (s->kind == SymbolKind::struct_ || s->kind == SymbolKind::class_)) {
-                return s->decl->as<TypeDecl>().is_view;
+                if (s->decl->as<TypeDecl>().is_view) return true;
+                // A container of views is a view: `std::darray<std::str>` (spec 12).
+                return std::any_of(s->template_args.begin(), s->template_args.end(), [&](const Type* a) { return is_view(a); });
             }
             if (s->kind == SymbolKind::enum_) {
                 if (view_memo_.count(s)) return view_memo_[s];
@@ -227,6 +252,8 @@ private:
     /// Why a type cannot be cloned (empty if it can, or if unknown).
     std::string clone_blocker(const Type* t, int depth = 0) {
         if (!t || depth > 8 || copy_kind(t) == Copy::yes) return "";
+        if (t->is(Kind::function)) return std::format("{} cannot be cloned (it owns a callable)", quoted(t));
+        if (t->is(Kind::array)) return clone_blocker(t->inner, depth + 1);
         if (t->is(Kind::external)) {
             std::string_view base = t->external_base();
             if (base == "std::unique_ptr" || base == "std::file" || base == "std::mutex" || base == "std::atomic") {
@@ -237,7 +264,12 @@ private:
         if (!t->is(Kind::user)) return "";
         const Symbol* s = t->symbol;
         if (s->kind == SymbolKind::class_) {
-            return s->members.count("clone") ? "" : std::format("class {} has no 'clone()' method", quoted(t));
+            if (!s->members.count("clone")) return std::format("class {} has no 'clone()' method", quoted(t));
+            for (const Type* a : s->template_args) {   // `std::darray<T>` clones its elements
+                std::string why = clone_blocker(a, depth + 1);
+                if (!why.empty()) return why;
+            }
+            return "";
         }
         if (s->kind == SymbolKind::struct_) {
             for (const Symbol* m : s->member_order) {
@@ -298,6 +330,9 @@ private:
         if (!f || !f->result || f->is_destructor) return;
         const Type* r = lower(*f->result, &s);
         if (!is_view(r) || is_method) return;
+        // Compile-time-only code returns values of the interpreter, which live for the whole
+        // compilation (`std::build::current_mode()`, spec 24).
+        if (f->is_compile_time && !f->is_run_time) return;
         std::vector<const Param*> sources;
         for (const Param& p : f->params) {
             if (is_view(lower(*p.type, &s))) sources.push_back(&p);
@@ -326,7 +361,10 @@ private:
 
     void walk_decl(Decl& d) {
         switch (d.kind) {
-        case DeclKind::function: walk_function(d.as<FunctionDecl>()); break;
+        case DeclKind::function:
+            if (program_.deferred_errors.count(&d)) break;   // a broken instance method nobody uses
+            walk_function(d.as<FunctionDecl>());
+            break;
         case DeclKind::struct_:
         case DeclKind::class_:
         case DeclKind::interface:
@@ -350,7 +388,10 @@ private:
         FunctionFrame saved = std::move(frame_);
         frame_              = FunctionFrame{};
         frame_.name         = fn.name;
-        frame_.returns_view = fn.result && is_view(lower(*fn.result));
+        const Type* result  = fn.result && (fn.result->kind == ast::TypeKind::deduce || fn.result->kind == ast::TypeKind::auto_)
+                                  ? fn.deduced_result
+                                  : fn.result ? lower(*fn.result) : nullptr;
+        frame_.returns_view = result && is_view(result);
         compute_live_ranges(*fn.body);
         walk_block(*fn.body);
         frame_ = std::move(saved);
@@ -392,6 +433,14 @@ private:
                 break;
             case StmtKind::discard: f(*s.as<DiscardStmt>().value); break;
             case StmtKind::expression: f(*s.as<ExprStmt>().expr); break;
+            case StmtKind::check: {   // only the run-time part runs in the program (spec 23)
+                Check& c = s.as<CheckStmt>().check;
+                if (c.run_active && c.condition) {
+                    f(*c.condition);
+                    f(*c.message);
+                }
+                break;
+            }
             }
         };
         switch (e.kind) {
@@ -608,6 +657,14 @@ private:
 
     void walk_stmt(Stmt& s) {
         switch (s.kind) {
+        case StmtKind::check: {
+            Check& c = s.as<CheckStmt>().check;
+            if (c.run_active && c.condition) {
+                walk(*c.condition);
+                walk(*c.message);
+            }
+            return;
+        }
         case StmtKind::variable: {
             auto& v = s.as<VariableStmt>();
             if (v.init) {
@@ -750,7 +807,7 @@ private:
             auto& r = e.as<ReturnExpr>();
             if (r.value) {
                 walk(*r.value);
-                consume(*r.value, nullptr, /*is_return=*/true);
+                if (!frame_.returns_view) consume(*r.value, nullptr, /*is_return=*/true);   // a reference is not a copy
                 if (frame_.returns_view) check_returned_reference(*r.value);
             }
             frame_.state = State::unreachable();
@@ -833,6 +890,10 @@ private:
             auto& me = callee.as<MemberExpr>();
             walk(*me.object);
             if (me.symbol) fn = me.symbol->function();
+            if (me.symbol && me.symbol->kind == SymbolKind::function) {   // `text.split(c)`: str_split(text, c)
+                for (ExprPtr& a : c.args) walk(*a);
+                return;
+            }
             if (!me.symbol && types::is_mutating_library_method(types::strip_ref(me.object->type), me.name.segments.back().name)) {
                 receiver     = root_of(*me.object);
                 mut_receiver = true;
@@ -844,6 +905,10 @@ private:
                 mutation(receiver, me.object->span, std::format("call mut method '{}' on", fn->name));
             }
             check_clone(c, me);
+            if (!me.symbol && types::is_std_query_method(me.name.segments.back().name) &&
+                types::is_std_builtin_method(me.object->type, me.name.segments.back().name)) {
+                return;   // is_some and friends only look
+            }
             if (!me.symbol && types::is_std_builtin_method(me.object->type, me.name.segments.back().name)) {
                 consume(*me.object, nullptr);   // value_or, expect, or_error, map_error take the value (spec 11)
                 for (ExprPtr& a : c.args) {
@@ -853,6 +918,12 @@ private:
                 return;
             }
         } else if (callee.kind == ExprKind::path) {
+            if (ct::raw_intrinsic(c) == "write" && c.args.size() == 2) {   // the value moves into memory (spec 13)
+                walk(*c.args[0]);
+                walk(*c.args[1]);
+                consume(*c.args[1], nullptr);
+                return;
+            }
             const Symbol* s = callee.as<PathExpr>().symbol;
             if (s && s->kind == SymbolKind::local) use(s, callee.span);
             if (s && (s->kind == SymbolKind::function || s->kind == SymbolKind::method)) fn = s->function(), owner_sym = s;
@@ -947,10 +1018,47 @@ private:
 
     /// A returned reference must point into `this` or into a reference parameter.
     void check_returned_reference(Expr& value) {
+        if (value.kind == ExprKind::lambda) {   // what a returned lambda refers to must outlive the call
+            for (Capture& c : value.as<LambdaExpr>().captures) {
+                if ((c.kind != CaptureKind::ref && c.kind != CaptureKind::mut_ref) || !c.captured) continue;
+                const Symbol* s = c.captured;
+                if (s->is_reference || s->local_kind == LocalKind::ref_param) continue;
+                note(error(DiagCode::E5013, c.span,
+                           std::format("returns a lambda that refers to '{}', which is destroyed when '{}' returns", s->name, frame_.name),
+                           "does not outlive the function"),
+                     std::format("capture it by value ('[{0}]' or '[move {0}]') instead", s->name));
+            }
+            return;
+        }
+        if (value.kind == ExprKind::call && types::is_std_instance(types::strip_ref(value.type), "option")) {
+            // `std::some(place)` as a `std::option<T&>` borrows the place (spec 20)
+            auto&       c    = value.as<CallExpr>();
+            const auto& args = types::strip_ref(value.type)->symbol->template_args;
+            bool payload_ref = !args.empty() && args[0] && args[0]->is(Kind::reference);
+            if (payload_ref && c.args.size() == 1 && c.callee->kind == ExprKind::path) {
+                check_returned_reference(*c.args[0]);
+                return;
+            }
+        }
         const Symbol* root = root_of(value);
         if (root == &this_root_) return;
         if (!root) {
             if (value.kind == ExprKind::struct_literal) {
+                // A new view value borrows what its fields borrow (spec 12); a reference to the
+                // literal itself would dangle.
+                if (value.type && is_view(value.type) && !value.type->is(Kind::reference)) {
+                    const Type* t = types::strip_ref(value.type);
+                    for (FieldInit& f : value.as<StructLiteralExpr>().fields) {
+                        const Type* ft = nullptr;   // a reference field borrows its value's place
+                        if (t && t->is(Kind::user)) {
+                            if (auto it = t->symbol->members.find(f.name); it != t->symbol->members.end()) {
+                                ft = lower(*it->second.front()->decl->as<VariableDecl>().type, it->second.front());
+                            }
+                        }
+                        if (f.value && (is_view(f.value->type) || (ft && ft->is(Kind::reference)))) check_returned_reference(*f.value);
+                    }
+                    return;
+                }
                 error(DiagCode::E5013, value.span, "returns a reference to a temporary", "destroyed at the end of the statement");
             }
             return;

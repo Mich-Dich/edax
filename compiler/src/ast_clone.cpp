@@ -104,6 +104,21 @@ StmtPtr Cloner::stmt(const Stmt& s) {
         const auto& e = s.as<ExprStmt>();
         return std::make_unique<ExprStmt>(e.span, expr(*e.expr));
     }
+    case StmtKind::check: {
+        const Check& c   = s.as<CheckStmt>().check;
+        auto         out = std::make_unique<CheckStmt>(s.span);
+        Check&       k   = out->check;
+        k.is_compile_time    = c.is_compile_time;
+        k.is_run_time        = c.is_run_time;
+        k.compile_modes      = c.compile_modes;
+        k.run_modes          = c.run_modes;
+        k.compile_modes_span = c.compile_modes_span;
+        k.run_modes_span     = c.run_modes_span;
+        k.condition          = opt(c.condition);
+        k.message            = opt(c.message);
+        k.block              = opt(c.block);
+        return out;
+    }
     }
     return nullptr;
 }
@@ -299,6 +314,40 @@ ExprPtr Cloner::expr(const Expr& e) {
     case ExprKind::return_: return std::make_unique<ReturnExpr>(e.span, opt(e.as<ReturnExpr>().value));
     }
     return nullptr;
+}
+
+std::unique_ptr<FunctionDecl> Cloner::function(const FunctionDecl& f) {
+    auto out             = std::make_unique<FunctionDecl>(f.span);
+    out->name            = f.name;
+    out->name_span       = f.name_span;
+    out->doc             = f.doc;
+    out->is_private      = f.is_private;
+    out->access          = f.access;
+    out->result          = opt(f.result);
+    out->is_static       = f.is_static;
+    out->is_virtual      = f.is_virtual;
+    out->is_override     = f.is_override;
+    out->is_abstract     = f.is_abstract;
+    out->is_mut          = f.is_mut;
+    out->is_compile_time = f.is_compile_time;
+    out->is_run_time     = f.is_run_time;
+    out->is_unsafe       = f.is_unsafe;
+    out->is_extern       = f.is_extern;
+    out->abi             = f.abi;
+    out->is_destructor   = f.is_destructor;
+    out->is_operator     = f.is_operator;
+    out->is_defaulted    = f.is_defaulted;
+    for (const Param& p : f.params) {
+        Param copy;
+        copy.is_mut = p.is_mut;
+        copy.type   = opt(p.type);
+        copy.name   = p.name;
+        copy.span   = p.span;
+        copy.symbol = fresh(p.symbol);
+        out->params.push_back(std::move(copy));
+    }
+    out->body = opt(f.body);
+    return out;
 }
 
 } // namespace rift::ast

@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+hello from C
+7 true
+A
+true false -2
+--- stderr

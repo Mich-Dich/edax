@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+std::relative_path (warning id)
+Opening a file by a relative path written in the code: the path is relative to the working
+directory the program is started from, not to the executable. Use
+`std::filesystem::executable_dir() / "name"`, or `std::filesystem::path::relative("name")` when
+the working directory is meant (spec 19).
+--- stderr

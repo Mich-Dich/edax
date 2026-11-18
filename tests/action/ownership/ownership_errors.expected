@@ -26,7 +26,7 @@ error[E5001]: this field has type 'std::string', which is not a copy type
    |                        ^^^^^^^^^^^^^ would be copied
    = note: a field cannot be moved out: use '.clone()', 'std::take(mut obj.field)' or 'std::replace(...)'
 
-error[E5021]: cannot call 'push' on 'staff' while the loop borrows it
+error[E5021]: cannot call mut method 'push' on 'staff' while the loop borrows it
   --> tests/action/ownership/ownership_errors.rifts:18:9
    |
 18 |         staff.push(e.clone());

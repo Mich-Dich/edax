@@ -104,6 +104,7 @@ bool is_literal(TokenKind k) {
     case TokenKind::char_literal:
     case TokenKind::string_literal:
     case TokenKind::raw_string_literal:
+    case TokenKind::c_string_literal:
     case TokenKind::format_string_literal: return true;
     default: return false;
     }
@@ -183,7 +184,7 @@ public:
         while (!at(TokenKind::eof)) {
             std::size_t before = pos_;
             try {
-                f.decls.push_back(parse_top_level());
+                parse_top_level(f.decls);
                 stray_code_reported_ = false;
             } catch (const ParseError&) {
                 synchronize(/*top_level=*/true);
@@ -256,6 +257,7 @@ private:
         case TokenKind::char_literal:
         case TokenKind::string_literal:
         case TokenKind::raw_string_literal:
+        case TokenKind::c_string_literal:
         case TokenKind::format_string_literal: return std::format("{} {}", token_kind_spelling(t.kind), t.text);
         default:
             if (is_type_keyword(t.kind)) {
@@ -516,21 +518,63 @@ private:
             case TokenKind::kw_compile_time: m.is_compile_time = true; break;
             case TokenKind::kw_run_time: m.is_run_time = true; break;
             case TokenKind::kw_unsafe: m.is_unsafe = true; break;
-            case TokenKind::kw_open: m.is_open = true; break;
+            case TokenKind::identifier:   // `open` is a keyword only before `class` (spec 01, 07)
+                if (cur().text == "open" && (peek(1).kind == TokenKind::kw_class || peek(1).kind == TokenKind::kw_struct ||
+                                             peek(1).kind == TokenKind::kw_view)) {
+                    m.is_open = true;
+                    break;
+                }
+                return finish_modifiers(m);
             case TokenKind::kw_view: m.is_view = true; break;
             case TokenKind::kw_virtual: m.is_virtual = true; break;
             case TokenKind::kw_mut: m.is_mut = true; break;
             case TokenKind::kw_extern:
-                m.is_extern = true;
-                advance();
-                if (at(TokenKind::string_literal)) {
-                    m.abi = advance().value;
-                }
+                parse_extern_language(m);
                 continue;
             default: return finish_modifiers(m);
             }
             advance();
         }
+    }
+
+    /// `extern(std::build::language::c)` (spec 13): the language is an alternative of
+    /// `std::build::language`, written out in full like every std name.
+    void parse_extern_language(Modifiers& m) {
+        Span kw     = advance().span;   // extern
+        m.is_extern = true;
+        m.abi       = "c";
+        auto bad    = [&](Span where, std::string label) {
+            report(DiagCode::E2033, where, "'extern' names the language: 'extern(std::build::language::c)'", std::move(label))
+                .notes.push_back(Note{"the languages are std::build::language::c and std::build::language::cpp", std::nullopt});
+        };
+        if (at(TokenKind::string_literal)) {   // C++'s `extern "C"`
+            Span lit = advance().span;
+            bad(Span{kw.file, kw.begin, lit.end}, "write 'extern(std::build::language::c)'");
+            return;
+        }
+        if (!at(TokenKind::l_paren)) {
+            bad(kw, "the language is missing");
+            return;
+        }
+        Span open = advance().span;
+        if (at(TokenKind::r_paren)) {
+            bad(cur().span, "the language is missing");
+        } else {
+            Span        first = cur().span;
+            std::string path;
+            while (!at(TokenKind::r_paren) && !at(TokenKind::eof) && !at(TokenKind::semicolon)) {
+                path += std::string(advance().text);
+            }
+            Span where{first.file, first.begin, pos_ > 0 ? tokens_[pos_ - 1].span.end : first.end};
+            if (path == "std::build::language::c" || path == "std::build::language::cpp") {
+                m.abi = path.substr(path.rfind(':') + 1);
+            } else if (path == "c" || path == "cpp") {
+                bad(where, std::format("write 'std::build::language::{}': std names are written in full", path));
+            } else {
+                bad(where, "not a language");
+            }
+        }
+        expect_close(TokenKind::r_paren, open);
     }
 
     Modifiers finish_modifiers(Modifiers& m) {
@@ -572,12 +616,138 @@ private:
         expect_template_close();
     }
 
-    DeclPtr parse_top_level() {
+    // --- checks (spec 23) -----------------------------------------------------------------
+
+    /// `compile_time`, `run_time`, their mode lists, then `check`.
+    bool at_check_start() {
+        if (at(TokenKind::kw_check)) return true;
+        if (!at(TokenKind::kw_compile_time) && !at(TokenKind::kw_run_time)) return false;
+        return lookahead([&] {
+            for (TokenKind k : {TokenKind::kw_compile_time, TokenKind::kw_run_time}) {
+                if (accept(k) && at(TokenKind::l_paren)) {
+                    advance();
+                    while (!at(TokenKind::r_paren) && !at(TokenKind::eof)) advance();
+                    advance();
+                }
+            }
+            if (!at(TokenKind::kw_check)) throw ParseError{};
+        });
+    }
+
+    std::vector<std::string> parse_mode_list(Span& span) {
+        std::vector<std::string> modes;
+        Span open = advance().span;   // (
+        do {   // full paths, like every std name: `std::build::mode::debug` (spec 23)
+            std::string name = expect_identifier("a build mode");
+            while (accept(TokenKind::colon_colon)) name += "::" + expect_identifier("a name after '::'");
+            modes.push_back(std::move(name));
+        } while (accept(TokenKind::comma));
+        expect_close(TokenKind::r_paren, open);
+        span = from(open);
+        return modes;
+    }
+
+    Check parse_check() {
+        Check c;
+        Span  start = cur().span;
+        if (accept(TokenKind::kw_compile_time)) {
+            c.is_compile_time = true;
+            if (at(TokenKind::l_paren)) c.compile_modes = parse_mode_list(c.compile_modes_span);
+        }
+        if (accept(TokenKind::kw_run_time)) {
+            c.is_run_time = true;
+            if (at(TokenKind::l_paren)) c.run_modes = parse_mode_list(c.run_modes_span);
+        }
+        Span word = expect(TokenKind::kw_check, "").span;
+        if (!c.is_compile_time && !c.is_run_time) {
+            report(DiagCode::E2031, word, "a check says when it runs", "add 'compile_time' or 'run_time'")
+                .notes.push_back(Note{"write 'run_time check (...) else \"...\";' for an assert, or 'compile_time check' "
+                                      "for a build requirement",
+                                      std::nullopt});
+            c.is_run_time = true;
+        }
+        if (at(TokenKind::l_brace)) {
+            if (c.is_run_time) {
+                report(DiagCode::E2032, from(start), "a block-form check is 'compile_time' only", "block form")
+                    .notes.push_back(Note{"put a complex run-time condition into a 'compile_time run_time bool' "
+                                          "function and use 'run_time check (f(...)) else ...;'",
+                                          std::nullopt});
+            }
+            c.block = parse_block();
+            return c;
+        }
+        Span open = expect(TokenKind::l_paren, "after 'check'").span;
+        c.condition = parse_expr();
+        expect_close(TokenKind::r_paren, open);
+        expect(TokenKind::kw_else, "after the check's condition (write 'else \"message\"')");
+        c.message = parse_expr();
+        expect(TokenKind::semicolon, "after the check's message");
+        return c;
+    }
+
+    DeclPtr parse_check_decl() {
+        Span start = cur().span;
+        auto d     = std::make_unique<CheckDecl>(start);
+        d->doc     = take_doc();
+        d->name    = "check";
+        d->check   = parse_check();
+        d->span    = from(start);
+        d->name_span = start;
+        return d;
+    }
+
+    void parse_top_level(std::vector<DeclPtr>& out) {
+        if (at_check_start()) {
+            out.push_back(parse_check_decl());
+            return;
+        }
         bool      was_const = check_removed_keyword();
         Modifiers m         = parse_modifiers(MemberContext::top_level);
         if (was_const) {
             m.is_compile_time = true;
         }
+        if (m.is_extern && at(TokenKind::l_brace)) {
+            parse_extern_block(m, out);
+            return;
+        }
+        out.push_back(parse_top_level_item(m));
+    }
+
+    /// `extern(std::build::language::c) { i32 puts(std::raw_ptr<u8> text); ... }`: every function inside gets the
+    /// block's modifiers (spec 13).
+    void parse_extern_block(Modifiers& outer, std::vector<DeclPtr>& out) {
+        Span open = advance().span;   // {
+        while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
+            std::size_t before = pos_;
+            try {
+                Modifiers m = parse_modifiers(MemberContext::top_level);
+                if (m.is_extern) {
+                    report(DiagCode::E2033, m.start, "already inside an 'extern' block", "remove this 'extern'");
+                }
+                m.is_extern  = true;
+                m.abi        = outer.abi;
+                m.is_private = m.is_private || outer.is_private;
+                m.is_unsafe  = m.is_unsafe || outer.is_unsafe;
+                if (m.doc.empty()) m.doc = outer.doc;
+                if (!starts_declaration()) {
+                    fail(DiagCode::E2033, cur().span, std::format("expected a function declaration, found {}", describe(cur())),
+                         "an 'extern' block holds function declarations");
+                }
+                DeclPtr d = parse_function_or_variable(m, MemberContext::top_level, Access::none);
+                if (d->kind != DeclKind::function) {
+                    report(DiagCode::E2033, d->name_span, "an 'extern' block holds function declarations only",
+                           "not a function");
+                }
+                out.push_back(std::move(d));
+            } catch (const ParseError&) {
+                synchronize(/*top_level=*/false);   // stops before the block's '}'
+            }
+            if (pos_ == before) advance();
+        }
+        expect_close(TokenKind::r_brace, open);
+    }
+
+    DeclPtr parse_top_level_item(Modifiers& m) {
         switch (cur().kind) {
         case TokenKind::kw_import: return parse_import(m);
         case TokenKind::kw_struct: return parse_type_decl(m, DeclKind::struct_);
@@ -701,6 +871,11 @@ private:
     }
 
     DeclPtr parse_member(MemberContext ctx, Access access) {
+        if (at_check_start()) {
+            DeclPtr d = parse_check_decl();
+            d->access = access;
+            return d;
+        }
         Modifiers m = parse_modifiers(ctx);
         if (ctx == MemberContext::struct_ && m.is_virtual) {
             report(DiagCode::E2021, m.start, "structs cannot have virtual methods",
@@ -753,7 +928,9 @@ private:
             if (accept(TokenKind::l_bracket)) {
                 expect(TokenKind::r_bracket, "in 'operator[]'");
                 fn->name = "[]";
-            } else if (precedence(cur().kind) >= 0 || at(TokenKind::tilde) || at(TokenKind::bang)) {
+            } else if (precedence(cur().kind) >= 0 || at(TokenKind::tilde) || at(TokenKind::bang) ||
+                       (is_assignment_op(cur().kind) && !at(TokenKind::eq) && !at(TokenKind::plus_percent_eq) &&
+                        !at(TokenKind::minus_percent_eq) && !at(TokenKind::star_percent_eq))) {
                 fn->name = std::string(advance().text);
             } else {
                 fail_unexpected("an operator after 'operator'");
@@ -1185,6 +1362,13 @@ private:
         }
         check_removed_keyword();
 
+        if (at_check_start()) {
+            auto stmt   = std::make_unique<CheckStmt>(start);
+            stmt->check = parse_check();
+            stmt->span  = from(start);
+            block.statements.push_back(std::move(stmt));
+            return;
+        }
         switch (cur().kind) {
         case TokenKind::kw_compile_time:
             if (peek(1).kind != TokenKind::l_paren) {
@@ -1577,6 +1761,12 @@ private:
             std::size_t open = i, colon = 0, depth = 0, j = i + 1;
             for (; j < end; ++j) {
                 char d = src[j];
+                if (d == '"' || d == '\'') {   // a string or char literal in the hole
+                    for (++j; j < end && src[j] != d; ++j) {
+                        if (src[j] == '\\') ++j;
+                    }
+                    continue;
+                }
                 if (d == '(' || d == '[' || d == '{') ++depth;
                 else if ((d == ')' || d == ']' || d == '}') && depth > 0) --depth;
                 else if (d == '}') break;
@@ -1712,6 +1902,7 @@ private:
         case TokenKind::char_literal: return make_literal(ExprKind::char_literal);
         case TokenKind::string_literal:
         case TokenKind::raw_string_literal:
+        case TokenKind::c_string_literal:
         case TokenKind::format_string_literal: return make_literal(ExprKind::string_literal);
         case TokenKind::kw_true:
         case TokenKind::kw_false: return make_literal(ExprKind::bool_literal);

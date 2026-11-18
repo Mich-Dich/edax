@@ -1,0 +1,15 @@
+exit: 0
+--- stdout
+name point
+(3)
+hi
+name label
+(7)
+hi
+(7)
+hi
+point
+(3) point
+point
+drop hi
+--- stderr

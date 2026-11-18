@@ -1,0 +1,8 @@
+exit: 134
+--- stdout
+baud 115200
+small = 81
+baud 9600
+--- stderr
+tests/action/run/checks.rifts:45:5: panic: 1200 baud is not supported
+note: the check is at tests/action/run/checks.rifts:22:34

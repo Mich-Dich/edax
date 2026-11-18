@@ -108,6 +108,16 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
     }
     const auto& nt   = t.as<NamedType>();
     const auto& segs = nt.path.segments;
+    // `std::function<R(A...)>` and `std::fn_ptr<R(A...)>` (spec 18): built-in callable types.
+    if (!nt.symbol && segs.size() == 2 && segs[0].name == "std" && (segs[1].name == "function" || segs[1].name == "fn_ptr") &&
+        segs[1].template_args.size() == 1 && segs[1].template_args[0].type &&
+        segs[1].template_args[0].type->kind == TypeKind::function) {
+        const auto& f = segs[1].template_args[0].type->as<FunctionType>();
+        std::vector<const Type*> params;
+        for (const TypePtr& p : f.params) params.push_back(lower(*p, subst));
+        const Type* result = f.result ? lower(*f.result, subst) : void_t_;
+        return callable(segs[1].name == "function" ? Kind::function : Kind::fn_ptr, std::move(params), result);
+    }
     if (segs.size() == 1 && !nt.symbol) {
         if (const Type* b = builtin(segs[0].name)) return b;
     }
@@ -128,15 +138,40 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
             // `box<u32>`: an instance of the template for these arguments. Arguments that are
             // still unknown (inside a template that is not instantiated) make it unknown too.
             std::vector<const Type*> args;
-            for (const TemplateArg& a : segs.back().template_args) {
-                if (!a.type) return error_;   // value arguments are not supported yet
-                args.push_back(lower(*a.type, subst));
+            const auto& seg_args = segs.back().template_args;
+            for (std::size_t i = 0; i < seg_args.size(); ++i) {
+                const TemplateArg& a = seg_args[i];
+                if (a.type) {
+                    args.push_back(lower(*a.type, subst));
+                    continue;
+                }
+                // A value argument (spec 14): evaluated by the checker once per written argument.
+                if (a.evaluated) {
+                    args.push_back(a.evaluated);
+                    continue;
+                }
+                const Type* v = value_args_ && a.value ? value_args_(s, i, *a.value, subst) : nullptr;
+                if (!v) return error_;
+                if (!v->is_unknown()) a.evaluated = v;
+                args.push_back(v);
             }
-            return instance(s, args);
+            std::optional<Span> saved = site_;
+            site_                     = nt.span;
+            const Type* inst          = instance(s, args);
+            site_                     = saved;
+            return inst;
         }
         return error_;
     }
     if (!segs.empty() && segs[0].name == "std") {
+        // `std::raw::array<T, N>`: N values inline. N may depend on the template being instantiated.
+        if (segs.size() == 3 && segs[1].name == "raw" && segs[2].name == "array" && segs[2].template_args.size() == 2 &&
+            segs[2].template_args[0].type && segs[2].template_args[1].value) {
+            const Type* element = lower(*segs[2].template_args[0].type, subst);
+            const Type* count   = value_args_ ? value_args_(nullptr, 1, *segs[2].template_args[1].value, subst) : nullptr;
+            if (!count || count->is_unknown() || element->is_unknown()) return error_;
+            return array(element, count);
+        }
         if (segs.size() == 2 && segs[1].name == "raw_ptr" && segs[1].template_args.size() == 1 &&
             segs[1].template_args[0].type) {
             const TemplateArg& arg = segs[1].template_args[0];
@@ -168,6 +203,71 @@ const Type* TypeContext::instance(const sema::Symbol* templ, const std::vector<c
     return t;
 }
 
+const Type* TypeContext::value_arg(u128 bits, const Type* of) {
+    auto key = std::make_pair(bits, of);
+    if (auto it = value_args_made_.find(key); it != value_args_made_.end()) return it->second;
+    std::string text;
+    if (of->kind == Kind::bool_) {
+        text = bits ? "true" : "false";
+    } else if (of->is_signed && of->bits < 128 && (bits >> (of->bits - 1)) & 1) {
+        u128 magnitude = (~bits + 1) & ((u128{1} << of->bits) - 1);
+        text           = "-" + rift::to_string(magnitude);
+    } else {
+        text = rift::to_string(bits);
+    }
+    const Type* t = make(Type{Kind::value_arg, 0, false, false, nullptr, of, false, text, {}});
+    value_of_[t]  = bits;
+    return value_args_made_[key] = t;
+}
+
+const Type* TypeContext::closure(const ast::LambdaExpr* l) {
+    if (auto it = closures_.find(l); it != closures_.end()) return it->second;
+    const Type* t = make(Type{Kind::closure, 0, false, false, nullptr, nullptr, false, "lambda", {}});
+    lambdas_[t]   = l;
+    return closures_[l] = t;
+}
+
+void TypeContext::set_closure_signature(const Type* closure, std::vector<const Type*> params, const Type* result) {
+    params.push_back(result);
+    const_cast<Type*>(closure)->args = std::move(params);   // the type is unique to its lambda
+}
+
+const Type* TypeContext::callable(Kind kind, std::vector<const Type*> params, const Type* result) {
+    params.push_back(result);
+    auto key = std::make_pair(kind, params);
+    if (auto it = callables_.find(key); it != callables_.end()) return it->second;
+    std::string sig = to_string(result) + "(";
+    for (std::size_t i = 0; i + 1 < params.size(); ++i) sig += (i ? ", " : "") + to_string(params[i]);
+    sig += ")";
+    Type t{kind, 0, false, false, nullptr, nullptr, false,
+           (kind == Kind::function ? "std::function<" : "std::fn_ptr<") + sig + ">", {}};
+    t.args = std::move(params);
+    return callables_[key] = make(std::move(t));
+}
+
+const Type* TypeContext::array(const Type* element, const Type* count) {
+    auto key = std::make_pair(element, count);
+    if (auto it = arrays_.find(key); it != arrays_.end()) return it->second;
+    Type t{Kind::array, 0, false, false, nullptr, element, false,
+           "std::raw::array<" + to_string(element) + ", " + rift::to_string(value_bits(count)) + ">", {}};
+    t.args = {count};
+    return arrays_[key] = make(std::move(t));
+}
+
+std::uint64_t TypeContext::array_count(const Type* array) const {
+    return array && array->kind == Kind::array && !array->args.empty() ? static_cast<std::uint64_t>(value_bits(array->args[0])) : 0;
+}
+
+const ast::LambdaExpr* TypeContext::lambda_of(const Type* closure) const {
+    auto it = lambdas_.find(closure);
+    return it == lambdas_.end() ? nullptr : it->second;
+}
+
+u128 TypeContext::value_bits(const Type* t) const {
+    auto it = value_of_.find(t);
+    return it == value_of_.end() ? 0 : it->second;
+}
+
 const Type* TypeContext::pending(const sema::Symbol* templ, const std::vector<const Type*>& args) {
     auto key = std::make_pair(templ, args);
     if (auto it = pendings_.find(key); it != pendings_.end()) return it->second;
@@ -187,6 +287,13 @@ std::string to_string(const Type* t) {
     case Kind::reference: return (t->is_mut ? "mut " : "") + to_string(t->inner) + "&";
     case Kind::pointer: return std::string("std::raw_ptr<") + (t->is_mut ? "mut " : "") + to_string(t->inner) + ">";
     case Kind::range: return "range<" + to_string(t->inner) + ">";
+    case Kind::closure: {
+        std::string out = "lambda(";
+        for (std::size_t i = 0; i + 1 < t->args.size(); ++i) out += (i ? ", " : "") + to_string(t->args[i]);
+        out += ")";
+        if (!t->args.empty() && t->args.back() && !t->args.back()->is(Kind::void_)) out += " -> " + to_string(t->args.back());
+        return out;
+    }
     case Kind::user:
     case Kind::pending: {
         // Standard-library types are written `std::option<u32>`; instances show their arguments.
@@ -212,11 +319,18 @@ bool is_std_instance(const Type* t, std::string_view name) {
 }
 
 bool is_std_builtin_method(const Type* receiver, std::string_view method) {
-    if (is_std_instance(receiver, "option")) return method == "value_or" || method == "expect" || method == "or_error";
+    if (is_std_instance(receiver, "option")) {
+        return method == "value_or" || method == "expect" || method == "or_error" || method == "is_some" || method == "is_none";
+    }
     if (is_std_instance(receiver, "result")) {
-        return method == "value_or" || method == "expect" || method == "or_error" || method == "map_error";
+        return method == "value_or" || method == "expect" || method == "or_error" || method == "map_error" || method == "is_ok" ||
+               method == "is_error";
     }
     return false;
+}
+
+bool is_std_query_method(std::string_view method) {
+    return method == "is_some" || method == "is_none" || method == "is_ok" || method == "is_error";
 }
 
 const Type* strip_ref(const Type* t) { return t && t->kind == Kind::reference ? t->inner : t; }
@@ -239,6 +353,10 @@ Layout TypeContext::layout(const Type* t) {
     case Kind::pointer:
     case Kind::nullptr_: return {8, 8};
     case Kind::static_str: return {16, 8};
+    case Kind::array: {
+        Layout e = layout(t->inner);
+        return {e.size * array_count(t), e.align};
+    }
     case Kind::external: return t->name == "std::str" ? Layout{16, 8} : Layout{};
     case Kind::user: break;
     default: return {};
@@ -263,6 +381,15 @@ Layout TypeContext::layout(const Type* t) {
     }
     std::uint64_t offset = 0, align = 1;
     bool          any    = false;
+    if (const sema::Symbol* base = s->base_class()) {   // the base object comes first (spec 07)
+        Layout b = layout(user(base));
+        offset = b.size;
+        align  = b.align;
+        any    = true;
+    } else if (s->has_vtable_pointer()) {
+        offset = align = 8;
+        any    = true;
+    }
     for (const sema::Symbol* f : s->member_order) {
         if (f->kind != sema::SymbolKind::field || f->is_static) continue;
         Layout l = layout(lower(*f->decl->as<ast::VariableDecl>().type, subst));
@@ -280,6 +407,8 @@ std::vector<std::uint64_t> TypeContext::field_offsets(const Type* t) {
     const sema::Symbol* s = t->symbol;
     const std::map<const sema::Symbol*, const Type*>* subst = sema::substitution_of(s);
     std::uint64_t offset = 0;
+    if (const sema::Symbol* base = s->base_class()) offset = layout(user(base)).size;
+    else if (s->has_vtable_pointer()) offset = 8;
     for (const sema::Symbol* f : s->member_order) {
         if (f->kind != sema::SymbolKind::field || f->is_static) continue;
         Layout l = layout(lower(*f->decl->as<ast::VariableDecl>().type, subst));

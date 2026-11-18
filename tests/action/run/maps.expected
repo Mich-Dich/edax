@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+2 37 36 false
+38
+99 9801 2500 false
+-1: minus one
+3: THREE
+5: five
+2 five
+1 2 3 4 3
+--- stderr

@@ -1,0 +1,10 @@
+// feature 17: cast::dynamic from an interface reference to a type that implements it.
+import std;
+interface shape { f64 area(); }
+struct square : shape { f64 side = 1.0; f64 area() override { return this.side * this.side; } }
+struct other { u32 x = 0; }
+void f(shape& s) {
+    std::option<square&> a = cast::dynamic<square&>(s);
+    std::option<other&> b = cast::dynamic<other&>(s);         //~ error[E4091]: cannot convert 'shape' to 'other&'
+    std::option<square> c = cast::dynamic<square>(s);         //~ error[E4091]
+}

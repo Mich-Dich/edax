@@ -27,6 +27,7 @@ struct Type;
 }
 namespace rift::ct {
 struct Value;
+struct BuildGraph;
 }
 
 namespace rift::ast {
@@ -83,6 +84,11 @@ struct Expr : Node<ExprKind> {
     /// The value, when the checker computed it at compile time and code generation should use it
     /// as a constant (compile_time constants, `f.name` in a `for compile_time` loop, ...).
     std::shared_ptr<const ct::Value> constant;
+    /// An implicit conversion the checker found where the value is used (spec 19): a
+    /// `std::string` read as a `std::str`, or a literal that becomes a `std::string`.
+    enum class Conversion : unsigned char { none, string_to_str, literal_to_string, pointer_upcast, to_callable };
+    Conversion conversion = Conversion::none;
+    const types::Type* converted_to = nullptr;   // pointer_upcast: `std::unique_ptr<shape>` from `<circle>`
 };
 
 enum class PatternKind { wildcard, literal, range, binding, enum_alternative, struct_, error };
@@ -91,7 +97,7 @@ struct Pattern : Node<PatternKind> {
     using Node::Node;
 };
 
-enum class StmtKind { variable, assign, discard, expression };
+enum class StmtKind { variable, assign, discard, expression, check };
 
 struct Stmt : Node<StmtKind> {
     using Node::Node;
@@ -106,6 +112,8 @@ struct TemplateArg {
     ExprPtr value;
     bool    is_mut = false;   // `std::raw_ptr<mut T>`
     Span    span;
+    /// A value argument, once the checker has evaluated it (spec 14, 15): an interned value type.
+    mutable const types::Type* evaluated = nullptr;
 };
 
 struct PathSegment {
@@ -211,8 +219,9 @@ enum class UnaryOp {
 };
 
 struct UnaryExpr : Expr {
-    UnaryOp op;
-    ExprPtr operand;
+    UnaryOp   op;
+    ExprPtr   operand;
+    SymbolRef op_symbol = nullptr;   // a user-defined `-` or `~` (spec 16), set by the checker
     UnaryExpr(Span s, UnaryOp o, ExprPtr e) : Expr(ExprKind::unary, s), op(o), operand(std::move(e)) {}
 };
 
@@ -220,6 +229,7 @@ struct BinaryExpr : Expr {
     TokenKind op;   // the operator token: plus, amp_amp, eq_eq, ...
     ExprPtr   lhs;
     ExprPtr   rhs;
+    SymbolRef op_symbol = nullptr;   // a user-defined operator (spec 16), set by the checker
     BinaryExpr(Span s, TokenKind o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::binary, s), op(o), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -242,6 +252,7 @@ struct CallExpr : Expr {
 struct IndexExpr : Expr {
     ExprPtr object;
     ExprPtr index;
+    SymbolRef op_symbol = nullptr;   // `operator[]` of a user type (spec 16), set by the checker
     IndexExpr(Span s, ExprPtr o, ExprPtr i) : Expr(ExprKind::index, s), object(std::move(o)), index(std::move(i)) {}
 };
 
@@ -251,6 +262,7 @@ struct MemberExpr : Expr {
     Path    name;
     bool    arrow = false;
     SymbolRef symbol = nullptr;   // only resolved for `this.member`
+    SymbolRef deref_symbol = nullptr;   // `p->x` on a type with `operator*` (a smart pointer, spec 13, 16)
     MemberExpr(Span s, ExprPtr o, Path n, bool a)
         : Expr(ExprKind::member, s), object(std::move(o)), name(std::move(n)), arrow(a) {}
 };
@@ -409,6 +421,7 @@ struct AssignStmt : Stmt {
     TokenKind op;
     ExprPtr   target;
     ExprPtr   value;
+    SymbolRef op_symbol = nullptr;   // `a += b` with a user-defined `operator+=` or `operator+`
     AssignStmt(Span s, TokenKind o, ExprPtr t, ExprPtr v)
         : Stmt(StmtKind::assign, s), op(o), target(std::move(t)), value(std::move(v)) {}
 };
@@ -422,6 +435,29 @@ struct DiscardStmt : Stmt {
 struct ExprStmt : Stmt {
     ExprPtr expr;
     ExprStmt(Span s, ExprPtr e) : Stmt(StmtKind::expression, s), expr(std::move(e)) {}
+};
+
+/// A check (spec 23): `compile_time check (c) else msg;`, `run_time(debug) check (c) else msg;`,
+/// `compile_time run_time check (...)`, or the block form `compile_time check { ... }`.
+struct Check {
+    bool                     is_compile_time = false;
+    bool                     is_run_time     = false;
+    std::vector<std::string> compile_modes;   // `compile_time(release)`; empty = every build mode
+    std::vector<std::string> run_modes;       // `run_time(debug)`
+    Span                     compile_modes_span;
+    Span                     run_modes_span;
+    ExprPtr                  condition;       // condition form
+    ExprPtr                  message;
+    BlockPtr                 block;           // block form
+    // Set by the checker:
+    bool                     is_entry = false;   // at the entry of a function body
+    bool                     compile_active = true;   // the compile_time part is in this build mode
+    bool                     run_active     = true;   // the run_time part is in this build mode
+};
+
+struct CheckStmt : Stmt {
+    Check check;
+    CheckStmt(Span s) : Stmt(StmtKind::check, s) {}
 };
 
 // --- loops (expressions of type void, always used as statements) -------------------------
@@ -445,12 +481,17 @@ struct ForExpr : Expr {
     ExprPtr     iterable;
     BlockPtr    body;
     SymbolRef   symbol = nullptr;   // the loop variable
+    // Set by the checker for loops over a user type (spec 10): a container (`len()` and
+    // `operator[]`) or a stream (`next()`, which returns a `std::option`).
+    SymbolRef   len_symbol   = nullptr;
+    SymbolRef   index_symbol = nullptr;
+    SymbolRef   next_symbol  = nullptr;
     ForExpr(Span s) : Expr(ExprKind::for_, s) {}
 };
 
 // --- declarations -------------------------------------------------------------------------
 
-enum class DeclKind { import, function, variable, field, struct_, class_, interface, enum_ };
+enum class DeclKind { import, function, variable, field, struct_, class_, interface, enum_, check };
 
 enum class Access { none, public_, protected_, private_ };
 
@@ -492,11 +533,13 @@ struct FunctionDecl : Decl {
     bool               is_run_time     = false;
     bool               is_unsafe       = false;
     bool               is_extern       = false;
-    std::string        abi;                       // `extern "C"`
+    std::string        abi;                       // `extern(c)`: "c" or "cpp" (spec 13)
     bool               is_destructor   = false;
     bool               is_operator     = false;   // name is the operator spelling, e.g. "=="
     bool               is_defaulted    = false;   // `= default;`
     BlockPtr           body;                      // null for declarations
+    /// `deduce` (spec 15): the return type found in the body, once checked.
+    mutable const types::Type* deduced_result = nullptr;
     FunctionDecl(Span s) : Decl(DeclKind::function, s) {}
 };
 
@@ -529,6 +572,12 @@ struct EnumDecl : Decl {
     TypePtr                      tag_type;
     std::vector<EnumAlternative> alternatives;
     EnumDecl(Span s) : Decl(DeclKind::enum_, s) {}
+};
+
+/// A check at file scope or in a type body (spec 23).
+struct CheckDecl : Decl {
+    Check check;
+    CheckDecl(Span s) : Decl(DeclKind::check, s) {}
 };
 
 /// One parsed source file.

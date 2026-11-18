@@ -29,6 +29,7 @@ std::static_str d = "config.toml";                 // OK: can be stored in a str
 ### String literals
 - `"..."`: escapes `\n \t \r \\ \" \0 \u{XXXX}`. **Never interpolated**, so `"{x}"` is just the characters `{x}`.
 - `r"..."`: raw, with no escape processing.
+- `c"..."`: a C string, NUL-terminated, of type `std::raw_ptr<u8>` (static memory). Only for calling C (see 13); it cannot contain `\0`.
 - `f"..."`: format string (below).
 
 ### Format strings: `f"..."`
@@ -37,6 +38,7 @@ std::println(f"{e.name:<20} {e.age:>3} {e.salary:>10.2}");
 std::string s = std::format(f"{count} items");      // allocates: visible through the function
 ```
 - `{expr}` inserts any expression whose type implements `std::formattable`.
+- A hole may contain string and char literals: `f"[{"left":<8}] {join(parts, ", ")}"`.
 - `{expr:spec}` adds a format spec: alignment `<` `>` `^`, width, `.precision`, `x`/`b`/`o` for hex/binary/octal, `+` for the sign.
 - `{{` and `}}` produce a literal `{` and `}`.
 - The **spec and the types are checked at compile time**.
@@ -49,6 +51,7 @@ std::file in = std::file::open(std::filesystem::executable_dir() / "employees.cs
 std::file in = std::file::open(std::filesystem::path::relative("employees.csv"))?;     // OK: explicitly relative
 std::file in = std::file::open(user_path)?;                           // OK: run-time value, caller's choice
 ```
+- `std::file::open` and `create` take a `std::filesystem::path&` or a `std::str`; a literal goes to the `std::str` overload. Paths starting with `/`, `./` or `../` are not warned about.
 - The warning only applies to paths known at compile time, such as **string literals**.
 - It isn't built into the compiler: it's an entry check of `std::file::open` in the standard library's source (see 23, example 7). Silence it with `--warn=std::relative_path=off`.
 - `std::filesystem::executable_dir()` returns the directory that contains the executable. It was called `get_executable_path` in v0.2; the new name says it's a directory.

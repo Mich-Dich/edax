@@ -1,0 +1,12 @@
+// RUN: riftc check --diagnostic-format=short %s
+// std::file::open's entry check warns about relative path literals (spec 19, 23); it is library
+// code using std::is_compile_time and std::location_of.
+import std;
+void f(std::str user) {
+    std::result<std::file, std::io_error> a = std::file::open("employees.csv");
+    std::result<std::file, std::io_error> b = std::file::open("/etc/hostname");
+    std::result<std::file, std::io_error> c = std::file::open("./here.csv");
+    std::result<std::file, std::io_error> d = std::file::open(user);
+    std::result<std::file, std::io_error> e = std::file::open(std::filesystem::path::relative("x.csv"));
+    std::result<std::file, std::io_error> g = std::file::create("out.txt");
+}

@@ -15,7 +15,7 @@ exit: 0
   (public destructor ~counter)
   (private field value : u32 (int 0)))
 (enum shape : u8 (circle f64) (square f64) (empty))
-(extern "C" fn puts -> i32 (param text : std::raw_ptr<u8>))
+(extern(std::build::language::c) fn puts -> i32 (param text : std::raw_ptr<u8>))
 (unsafe fn peek -> u32 (param address : usize))
 (compile_time run_time fn clamp -> u32 (param x : u32) (param lo : mut u32&) (param hi : u32&))
 (fn twice -> deduce (template (type T)) (param x : T))

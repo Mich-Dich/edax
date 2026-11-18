@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+15
+42 8
+clicked 3 times, base 10
+11
+--- stderr

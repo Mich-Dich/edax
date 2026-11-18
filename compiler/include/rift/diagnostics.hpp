@@ -66,6 +66,13 @@ public:
     [[nodiscard]] std::size_t warning_count() const;
     [[nodiscard]] bool        has_errors() const { return error_count() > 0; }
 
+    /// The number of diagnostics so far (a mark for `take_since`).
+    [[nodiscard]] std::size_t size() const { return diagnostics_.size(); }
+    /// Removes and returns the diagnostics reported after `mark`.
+    std::vector<Diagnostic> take_since(std::size_t mark);
+    /// Reports a diagnostic made earlier (see `take_since`).
+    void add(Diagnostic d) { diagnostics_.push_back(std::move(d)); }
+
 private:
     std::vector<Diagnostic> diagnostics_;
 };

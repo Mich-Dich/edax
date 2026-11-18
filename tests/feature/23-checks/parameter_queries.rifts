@@ -1,0 +1,28 @@
+// feature 23: std::is_compile_time and std::location_of ask about the argument of a parameter.
+import std;
+
+/// Calls with a known size.
+compile_time std::diagnostic known_size = default;
+
+void reserve(usize n) {
+    compile_time check {
+        if (std::is_compile_time(n)) {
+            if (n > 1000) {
+                std::compile_warning(std::location_of(n), known_size, f"{n} is a lot");
+            }
+        }
+    }
+}
+
+void misuse(usize n) {
+    compile_time check {
+        if (std::is_compile_time(5u32)) { }               //~ error[E4030]: takes a parameter of the function
+    }
+    bool b = std::is_compile_time(n);                     //~ error[E4120]: only meaningful in a compile_time check
+}
+
+void calls(usize user) {
+    reserve(5);
+    reserve(5000);                                        //~ warning[W4210]: 5000 is a lot
+    reserve(user);
+}

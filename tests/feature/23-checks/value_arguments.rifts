@@ -1,0 +1,16 @@
+// feature 14: a template's type parameters take types, its value parameters values.
+template<type T, usize N>
+struct ring_buffer {
+    T first;
+}
+
+template<usize N>
+struct grid {
+    u32 cells = 0;
+}
+
+void uses() {
+    grid<u32> i = default;                               //~ error[E4180]: 'grid' takes a value here, not a type
+    ring_buffer<16, u32> j = default;                    //~ error[E4180]: 'ring_buffer' takes a type here, not a value
+    //~^ error[E4180]: 'ring_buffer' takes a value here, not a type
+}

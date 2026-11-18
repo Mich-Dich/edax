@@ -1,0 +1,10 @@
+// feature 20: std::option<T&> refers to a place; it is a view like a reference.
+import std;
+u32 make() { return 1; }
+void f(std::darray<u32> d) {
+    u32 x = 5;
+    std::option<u32&> a = std::some(x);                 // binds to x
+    std::option<u32&> b = d.get(0);
+    std::option<u32&> c = std::some(make());            //~ error[E4010]: needs a place to refer to
+    u32 v = a.value_or(x);
+}

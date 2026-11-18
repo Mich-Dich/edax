@@ -1,0 +1,31 @@
+exit: 0
+--- stdout
+-- interfaces and virtual calls
+Rex: woof!
+Tweety: tweet!
+unit-2: beep!
+Tweety the bird (2 legs) says tweet
+Rex the dog (4 legs) says woof, a good dog
+HEY unit-2
+-- a zoo of owned animals: std::unique_ptr<animal>
+Fido the dog (4 legs) says woof
+  Fido is a dog (good: false)
+Polly the bird (2 legs) says tweet
+  not a dog
+leaving the block destroys the zoo:
+  ~animal Polly
+  ~dog Fido
+  ~animal Fido
+-- interfaces behind smart pointers
+unit-42: beep!
+-- shared ownership
+owners: 2
+owners: 1
+still alive: Lassie
+-- end of main: locals are destroyed in reverse order
+  ~dog Lassie
+  ~animal Lassie
+  ~animal Tweety
+  ~dog Rex
+  ~animal Rex
+--- stderr

@@ -33,7 +33,7 @@ struct Project {
             std::filesystem::create_directories(p.parent_path());
             std::ofstream(p) << text;
         }
-        program = rift::load_program((root / entry).string(), rift::LoadOptions{root.string()}, sources, diags);
+        program = rift::load_program((root / entry).string(), [&] { rift::LoadOptions o; o.root = root.string(); return o; }(), sources, diags);
         if (!diags.has_errors()) rift::resolve_program(program, diags);
         if (!diags.has_errors() && stop != Stop::resolve) rift::check_types(program, sources, diags);
         if (!diags.has_errors() && stop == Stop::ownership) rift::check_ownership(program, diags);

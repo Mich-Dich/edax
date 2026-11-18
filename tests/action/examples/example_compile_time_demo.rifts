@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/../../../example --out-dir=%t compile_time_demo
+// The example program example/compile_time_demo.rifts (built through example/build.rifts) keeps working.

@@ -1,0 +1,10 @@
+// feature 18: what converts to std::function and std::fn_ptr.
+import std;
+struct holder { std::function<u32(u32)> f; }
+void f(u32 base, holder h) {
+    std::function<u32(u32)> a = [base](u32 x) { return x + base; };
+    std::fn_ptr<u32(u32)> b = [](u32 x) { return x; };
+    std::fn_ptr<u32(u32)> c = [base](u32 x) { return x + base; };      //~ error[E4010]
+    std::function<u32(u32)> d = [](u64 x) { return x; };               //~ error[E4010]
+    u32 r = a(1u32, 2u32);                                              //~ error[E4030]
+}

@@ -3,20 +3,34 @@
 The Rift programming language - C++-inspired, but explicitly simpler,
 safer, and more consistent. The language design lives in [`docs/design/`](docs/design/README.md).
 
-**Status:** M7 - code generation through LLVM. `riftc build` turns a program into a native
-executable: the checked program becomes LLVM IR, LLVM compiles it to an object file, and the
-system's `cc` only links it (no C code is generated). The supported core is integers and floats
-with checked arithmetic (overflow, division by zero and bad shifts panic, spec 16), `bool`,
-`char`, string literals, structs and classes with methods and destructors, enums with and
-without payloads, templates (types and functions), `match`, `if`/blocks as values, `while`,
-`for` over ranges, references, globals, several modules, `std::print`/`println`/`eprintln`/
-`panic` with f-strings, and the first part of the standard library: `std::option`,
-`std::result` (`std::ok`/`error`/`some`/`none`, `?`, `value_or`, `expect`, `or_error`),
-`std::exit_code` and `cast::checked`. Compile-time code runs in the compiler: `compile_time`
-constants and functions, `if compile_time`, types as values (`compile_time type t = u32;`),
-reflection with `std::meta` and `for compile_time` loops (spec 26). Containers and strings (`std::darray`, `std::string`),
-lambdas, inheritance and virtual calls are not generated yet; they are reported as E6001 where
-they are used. All front-end checks of M1-M5 run before code generation.
+**Status: v0.1.0** - everything in [`docs/design/`](docs/design/README.md) except the SIMD sketch
+(spec 21) is implemented. `riftc build` turns a program into a native executable through LLVM (no C
+code is generated; the system's `cc` only links). Supported: checked arithmetic, structs and
+classes with destructors and operators, inheritance with virtual calls, interfaces (references,
+smart pointers to them, `cast::dynamic`), enums with payloads and `match`, templates with
+constraints, lambdas and `std::function`, ownership and borrow checks, raw pointers and
+`extern(std::build::language::c)`, compile-time code, checks (spec 23) and reflection (spec 26).
+The standard library (`library/std`) is written in Rift on the `std::raw` intrinsics:
+`option`/`result`, `darray`, `array`, `span`, `bitset`, `hash_map`, `tree_map`, `string` and the
+`str` methods, smart pointers, `file`, `filesystem`, `env`, and `std::build` for build scripts.
+
+**Projects** are built by a `build.rifts` (spec 25): targets (Rift programs, libraries and tests,
+C/C++ libraries, system libraries), build modes as classes (spec 24), options, settings, custom
+steps, and path or git dependencies pinned in `build.lock`:
+
+```bash
+riftc build                      # every program of ./build.rifts, in debug
+riftc run app --mode=release     # build and run one target
+riftc test                       # build and run the tests
+riftc build --list               # targets, modes and options
+```
+
+Example programs for most features are in [`example/`](example/README.md):
+`cmake --build build --target examples` builds them into `build/example/bin`.
+
+Known limits of 0.1.0: no cross compiling (`--target=`), steps run one after the other,
+`build.rifts` is evaluated on every run, debug info is line tables only, and
+`link_time_optimization()` has no effect yet.
 
 ## Building
 
@@ -38,7 +52,7 @@ The binary is `build/compiler/riftc`:
 
 ```bash
 $ ./build/compiler/riftc --version
-riftc 0.0.1
+riftc 0.1.0
 $ ./build/compiler/riftc run examples/hello.rifts           # build in a temp dir and run
 $ ./build/compiler/riftc build examples/hello.rifts         # -> examples/build/debug/hello
 $ ./build/compiler/riftc build --mode=release examples/hello.rifts   # -> examples/build/release/hello
@@ -90,4 +104,4 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 | `tests/unit/`, `tests/feature/`, `tests/action/` | The test suites |
 | `scripts/test.sh` | Build + test in one command |
 | `examples/` | Example `.rifts` programs |
-| `docs/design/` | Language specification (v0.6) |
+| `docs/design/` | Language specification (v0.7) |

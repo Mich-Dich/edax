@@ -1,6 +1,6 @@
 // feature 13: smart pointers, raw pointers, unsafe blocks, FFI.
 // STOP-AFTER: parse   (syntax test: names are not declared)
-extern "C" i32 puts(std::raw_ptr<u8> text);
+extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
 
 void pointers(std::str message) {
     std::unique_ptr<circle> c = std::unique_ptr<circle>::make(circle{ .radius = 1.0 });

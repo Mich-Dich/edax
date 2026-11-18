@@ -1,0 +1,34 @@
+{
+  "name": "rift-language",
+  "displayName": "Rift Language",
+  "description": "Syntax highlighting for the Rift programming language (.rifts / .rifth)",
+  "version": "0.3.0",
+  "publisher": "dominikm",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rift",
+        "aliases": ["Rift", "rift"],
+        "extensions": [".rifts", ".rifth"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rift",
+        "scopeName": "source.rift",
+        "path": "./syntaxes/rift.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.interpolation.rift": "rift"
+        }
+      }
+    ]
+  }
+}

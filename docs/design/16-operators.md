@@ -73,8 +73,9 @@ std::ordering operator<=>(version& other) { ... }
 T& operator[](usize i) { ... }
 mut T& operator[](usize i) mut { ... }
 ```
-- **Overloadable:** `+ - * / % & | ^ ~ << >>`, unary `-`, `== <=>`, `[]`.
+- **Overloadable:** `+ - * / % & | ^ ~ << >>`, unary `-`, `== <=>`, `[]`, compound assignments (`+=` ...), and unary `*` (`T& operator*()`, for smart pointers).
 - **Not overloadable:** `&& || ! = . -> ? move`, `+% -% *%`, casts, and conversion to `bool`.
+- `p->x` on a type with `operator*` means `(*p).x`; the `mut operator*` is used when `p` is mutable.
 - `!=`, `<`, `<=`, `>`, `>=` come from `==` and `<=>` automatically.
 - `a += b` uses `operator+=` if it's defined, and `a = a + b` otherwise.
 

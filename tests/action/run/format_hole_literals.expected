@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+[left  ] [ right] a}b { x:y
+--- stderr

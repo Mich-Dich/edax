@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+capacity 16, mask 15, first 7
+2^10 = 1024
+areas 9 16
+--- stderr

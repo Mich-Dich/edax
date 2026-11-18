@@ -27,6 +27,10 @@ public:
     ExprPtr  expr(const Expr& e);
     TypePtr  type(const TypeExpr& t);
 
+    /// A copy of a resolved function (an instance of a method template, spec 14): it is no longer
+    /// a template, and its parameters and locals get fresh symbols.
+    std::unique_ptr<FunctionDecl> function(const FunctionDecl& f);
+
 private:
     SymbolRef ref(SymbolRef s) const;
     SymbolRef fresh(SymbolRef s);

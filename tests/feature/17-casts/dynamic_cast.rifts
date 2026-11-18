@@ -1,0 +1,12 @@
+// feature 17: cast::dynamic converts a base reference to a derived one, at run time.
+import std;
+open class base { }
+class derived : base { }
+struct plain { }
+
+void f(base& b, derived& d, plain& p) {
+    std::option<derived&> ok = cast::dynamic<derived&>(b);
+    auto up = cast::dynamic<base&>(d);              //~ error[E4091]: cannot convert 'derived' to 'base&'
+    auto val = cast::dynamic<derived>(b);           //~ error[E4091]: cannot convert
+    auto bad = cast::dynamic<derived&>(p);          //~ error[E4091]: cannot convert
+}

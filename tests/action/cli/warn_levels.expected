@@ -1,0 +1,9 @@
+exit: 1
+--- stdout
+--- stderr
+tests/action/cli/warn_levels.rifts:22:5: error[E4210]: strict warning
+tests/action/cli/warn_levels.rifts:22:5: note: warning id: warn_levels::strict
+tests/action/cli/warn_levels.rifts:16:9: note: reported by this check
+tests/action/cli/warn_levels.rifts:22:5: warning[W4210]: plain warning
+tests/action/cli/warn_levels.rifts:22:5: note: warning id: warn_levels::plain
+tests/action/cli/warn_levels.rifts:17:9: note: reported by this check

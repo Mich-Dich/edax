@@ -256,7 +256,16 @@ private:
     }
 
     void check_header(Module& m) {
+        auto no_check = [&](const Decl& d) {
+            if (d.kind != DeclKind::check) return;
+            note(error(DiagCode::E3019, d.span, "checks are written in the .rifts, not in a header", "check in a header"),
+                 "move it into the source file; importers still get it through the compiled module (spec 23)");
+        };
         for (const DeclPtr& d : m.header->ast.decls) {
+            no_check(*d);
+            if (d->kind == DeclKind::struct_ || d->kind == DeclKind::class_) {
+                for (const DeclPtr& mem : d->as<TypeDecl>().members) no_check(*mem);
+            }
             if (d->is_private) {
                 note(error(DiagCode::E3012, d->name_span, std::format("'{}' is marked 'private' in a header", d->name),
                            "private item"),
@@ -292,7 +301,8 @@ private:
     Symbol* add_item(Module& m, const Decl& d, bool from_header) {
         Symbol* sym = nullptr;
         switch (d.kind) {
-        case DeclKind::import: return nullptr;
+        case DeclKind::import:
+        case DeclKind::check: return nullptr;
         case DeclKind::function: {
             sym = m.make(SymbolKind::function, d.name, d.name_span);
             sym->is_static = d.as<FunctionDecl>().is_static;
@@ -349,6 +359,7 @@ private:
     }
 
     Symbol* add_member(Module& m, Symbol* type, const Decl& mem, bool from_header) {
+        if (mem.kind == DeclKind::check) return nullptr;   // type-body checks are not members (spec 23)
         bool    is_fn = mem.kind == DeclKind::function;
         Symbol* sym   = m.make(is_fn ? SymbolKind::method : SymbolKind::field, mem.name, mem.name_span);
         sym->parent     = type;
@@ -413,7 +424,8 @@ private:
 
     void merge_source_item(Module& m, const Decl& d) {
         switch (d.kind) {
-        case DeclKind::import: return;
+        case DeclKind::import:
+        case DeclKind::check: return;
         case DeclKind::function: {
             const auto&          fn    = d.as<FunctionDecl>();
             std::vector<Symbol*> cands = header_items(m, d.name);
@@ -498,7 +510,8 @@ private:
     }
 
     void merge_type(Module& m, Symbol* type, const TypeDecl& src) {
-        symbol_of_[&src] = type;
+        symbol_of_[&src]   = type;
+        type->source_block = &src;
         const auto& header = type->decl->as<TypeDecl>();
         if (template_sig(header) != template_sig(src)) {
             note(error(DiagCode::E3014, src.name_span,
@@ -512,6 +525,7 @@ private:
         }
         bool is_struct = type->kind == SymbolKind::struct_;
         for (const DeclPtr& mem : src.members) {
+            if (mem->kind == DeclKind::check) continue;
             Access access = member_access(type, *mem);
             std::vector<Symbol*> cands;
             if (auto it = type->members.find(mem->name); it != type->members.end()) {
@@ -665,6 +679,8 @@ private:
             d.template_param_symbols.clear();
             for (const TemplateParam& p : d.template_params) {
                 Symbol* s = r.module_->make(p.is_type ? SymbolKind::type_param : SymbolKind::value_param, p.name, p.span);
+                s->value_type = p.value_type.get();
+                s->template_param = &p;
                 r.template_params_.back().push_back(s);
                 d.template_param_symbols.push_back(s);
             }
@@ -917,6 +933,15 @@ private:
         TemplateScope ts(*this, d);
         switch (d.kind) {
         case DeclKind::import: return;
+        case DeclKind::check: {   // file scope or a type body: compile-time code of its own
+            Check& c = d.as<CheckDecl>().check;
+            declared_later_.clear();
+            if (c.block) collect_declarations(*c.block);
+            scopes_.emplace_back();
+            resolve_check(c);
+            scopes_.pop_back();
+            return;
+        }
         case DeclKind::function: resolve_function(d.as<FunctionDecl>(), self); return;
         case DeclKind::variable:
         case DeclKind::field: {
@@ -1048,16 +1073,51 @@ private:
         if (!s || !s->is_type() || !s->decl || !s->decl->is_template) return;
         std::size_t given = path.segments.empty() ? 0 : path.segments.back().template_args.size();
         std::size_t wanted = s->decl->template_params.size();
-        if (given == wanted) return;
+        if (given == wanted) {
+            // Types for `type` parameters, values for value parameters (`template<usize N>`).
+            const auto& args = path.segments.back().template_args;
+            for (std::size_t i = 0; i < given; ++i) {
+                bool wants_type = s->decl->template_params[i].is_type;
+                if (wants_type == (args[i].type != nullptr)) continue;
+                error(DiagCode::E4180, args[i].type ? args[i].type->span : args[i].value->span,
+                      std::format("'{}' takes a {} here, not a {}", s->name, wants_type ? "type" : "value",
+                                  wants_type ? "value" : "type"),
+                      wants_type ? "a value" : "a type");
+            }
+            return;
+        }
         error(DiagCode::E4180, span,
               std::format("'{}' takes {} template argument{}, but {} {} given", s->name, wanted, wanted == 1 ? "" : "s",
                           given, given == 1 ? "is" : "are"),
               "wrong number of template arguments");
     }
 
+    /// A bare name as a template argument is parsed as a type; it is a value argument when it
+    /// names a value: a template value parameter or a compile_time constant (spec 14, 15).
+    bool names_value(const TypeExpr& t) {
+        if (t.kind != TypeKind::named) return false;
+        const Path& p = t.as<NamedType>().path;
+        if (p.segments.size() != 1 || !p.segments[0].template_args.empty()) return false;
+        const std::string& name = p.segments[0].name;
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            if (auto found = it->names.find(name); found != it->names.end()) return !found->second->is_type_value;
+        }
+        if (Symbol* tp = find_template_param(name)) return tp->kind == SymbolKind::value_param;
+        if (auto it = module_->items.find(name); it != module_->items.end()) {
+            return it->second.front()->kind == SymbolKind::global && !it->second.front()->is_type_value;
+        }
+        return false;
+    }
+
     void resolve_template_args(Path& path) {
         for (PathSegment& seg : path.segments) {
             for (TemplateArg& arg : seg.template_args) {
+                if (arg.type && names_value(*arg.type)) {
+                    Path p     = std::move(arg.type->as<NamedType>().path);
+                    Span span  = arg.type->span;
+                    arg.value  = std::make_unique<PathExpr>(span, std::move(p));
+                    arg.type.reset();
+                }
                 if (arg.type) resolve_type(*arg.type);
                 if (arg.value) resolve_expr(*arg.value);
             }
@@ -1198,6 +1258,17 @@ private:
         }
         if (segs.size() == 2) {
             if (Symbol* alt = std_export(name)) return check_want(alt, want, span, "std::" + name);
+        }
+        // `std::filesystem::path`: an item of the library module `std::filesystem`;
+        // `std::build::mode::debug`: of `std::build::mode` (the longest module name wins).
+        for (std::size_t n = segs.size() - 1; n >= 2; --n) {
+            std::string module = "std";
+            for (std::size_t i = 1; i < n; ++i) module += "::" + segs[i].name;
+            auto m = program_.modules.find(module);
+            if (m == program_.modules.end()) continue;
+            if (auto it = m->second->items.find(segs[n].name); it != m->second->items.end()) {
+                return lookup_members(it->second.front(), path, n + 1, want, span);
+            }
         }
         return nullptr;
     }
@@ -1373,8 +1444,18 @@ private:
         scopes_.pop_back();
     }
 
+    void resolve_check(Check& c) {
+        if (c.block) {
+            resolve_block(*c.block);
+            return;
+        }
+        resolve_expr(*c.condition);
+        resolve_expr(*c.message);
+    }
+
     void resolve_stmt(Stmt& s) {
         switch (s.kind) {
+        case StmtKind::check: resolve_check(s.as<CheckStmt>().check); return;
         case StmtKind::variable: {
             auto& v = s.as<VariableStmt>();
             resolve_type(*v.type);
@@ -1833,7 +1914,7 @@ void resolve_program(Program& program, DiagnosticEngine& diags) { Resolver(progr
 
 Symbol* resolve_instance(Program& program, DiagnosticEngine& diags, const Symbol* templ, Decl& decl,
                          std::vector<Symbol*>& params) {
-    bool from_header = !templ->definition && templ->in_header;
+    bool from_header = !templ->definition && !templ->source_block && templ->in_header;
     return Resolver(program, diags).build_instance(*templ->module, from_header, decl, params);
 }
 

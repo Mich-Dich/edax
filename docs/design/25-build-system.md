@@ -20,7 +20,7 @@ A project is built by **`build.rifts`**, a Rift file at the project root. It des
 | `g.option<T>(name, default, help)` | The option value |
 | `g.env("VULKAN_SDK")` | The variable's value |
 | `g.find_program("slangc")` | The program's path and hash |
-| `g.host()`, `g.target()` | Host and target platform |
+| `g.host()`, `g.target_platform()` | Host and target platform (`x86_64-linux`) |
 
   If none of the recorded inputs changed, `riftc` reuses the previous graph without evaluating `build.rifts` again.
 
@@ -32,21 +32,24 @@ riftc test  [--mode=<mode>] [<test>...]
 riftc build --list            # targets, modes and options with their help text
 riftc build --compile-commands  # writes compile_commands.json for IDEs (clangd for the C/C++ parts)
 ```
+- `--root=DIR` names the project root (default: the current directory) and `--out-dir=DIR` the build directory (default: `<root>/build`).
+- A mode that relaxes a rule prints its note first (see 24). `riftc test` prints `PASS`/`FAIL` per test and fails when one fails.
 - Without `build.rifts`, `riftc build main.rifts` builds that one file as a program in `debug` mode.
+- **Current implementation:** steps run one after the other (not in parallel yet), Rift targets are rebuilt on every build (C objects are reused when newer than their source), and `build.rifts` is evaluated on every run (the recorded inputs are not used for caching yet). `--target=` (cross compiling) is not supported yet.
 - Build output goes to `build/<mode>/` (`build/<mode>/<platform>/` when cross-compiling).
 
 ### Targets
 | Method | Builds |
 |---|---|
-| `g.add_executable(std::build::rift_target{...})` | A Rift program (module with `main`) |
+| `g.add_executable(std::build::rift_target{...})` | A Rift program: `.root` is its main `.rifts` file, relative to the project root |
 | `g.add_library(std::build::rift_target{...})` | A Rift library (one or more modules) |
 | `g.add_c_library(std::build::c_target{...})` | A static library from C or C++ |
 | `g.add_test(std::build::rift_target{...})` | A test program, run by `riftc test` |
 
 Each method returns a **target handle** (`std::build::target`), a small copy type used to connect targets:
 ```rift
-std::build::target core = g.add_library(std::build::rift_target{ .name = "core", .root = "core" });
-std::build::target app  = g.add_executable(std::build::rift_target{ .name = "app", .root = "app" });
+std::build::target core = g.add_library(std::build::rift_target{ .name = "core", .root = "core/core.rifts" });
+std::build::target app  = g.add_executable(std::build::rift_target{ .name = "app", .root = "app/main.rifts" });
 g.link(app, core);              // app imports core's modules and links it
 ```
 
@@ -58,21 +61,22 @@ std::build::target vma = g.add_c_library(std::build::c_target{
     .standard = std::build::cpp_standard::cpp20,
 });
 g.add_sources(vma, g.glob("vendor/VulkanMemoryAllocator/src/*.cpp"));
-g.add_include_dir(vma, "vendor/VulkanMemoryAllocator/include", std::build::visibility::public);
+g.add_include_dir(vma, "vendor/VulkanMemoryAllocator/include", std::build::visibility::shared);
 g.define(vma, "VMA_STATIC_VULKAN_FUNCTIONS", "0");
 ```
-- `visibility::public` means "also applies to everything that links this target", like CMake's `PUBLIC`. `private` is the default.
-- **Rift calling C/C++:** a C library target can come with a Rift header (`.rifth`) of `extern "C"` declarations (see 13). Generating those headers from C headers is an open question (see 22).
+- `visibility::shared` means "also applies to everything that links this target", like CMake's `PUBLIC`; `visibility::own` keeps it to the target. (`public`/`private` are keywords, so the alternatives have other names.)
+- `g.add_sources` takes one file or a list from `g.glob`. A target's modules are found from the project root; a Rift library of a dependency adds the dependency's root.
+- **Rift calling C/C++:** a C library target can come with a Rift header (`.rifth`) of `extern(std::build::language::c)` declarations (see 13). Generating those headers from C headers is an open question (see 22).
 
 ### Modes and options
 ```rift
-g.add_mode(std::build::mode{ .name = "profile", .base = std::build::modes::release_with_debug_info });
+g.add_mode(profile);    // `open class profile : std::build::mode::release_with_debug_info { ... }`, see 24
 
-bool validation = g.option<bool>("vulkan_validation", std::build::mode_is(std::build::modes::debug),
+bool validation = g.option<bool>("vulkan_validation", std::build::mode_is(std::build::mode::debug),
                                  "Enable the Vulkan validation layers");
 g.set(app, "vulkan_validation", validation);           // visible to app's code
 
-g.set_mode(vma, std::build::modes::release);           // always optimize this dependency
+g.set_mode(vma, std::build::mode::release);           // always optimize this dependency
 ```
 - Build modes are described in 24.
 - **Options** are values given on the command line (`-Dvulkan_validation=true`), with a default and a help text.
@@ -110,8 +114,10 @@ std::build::project glm = g.dependency(std::build::git{
 });
 ```
 - Dependencies are a path or a git commit, **always pinned**. A branch name isn't accepted.
-- A dependency with its own `build.rifts` contributes its targets (`glm.target("glm")`). A dependency without one is described in our own `build.rifts` as a C/C++ target.
-- `riftc` writes `build.lock` with each dependency's content hash. The lock file belongs in version control.
+- A dependency with its own `build.rifts` contributes its targets: `g.target_of(glm, "glm")` (that build.rifts is run too, in the same mode). A dependency without one is described in our own `build.rifts` as a C/C++ target, with its files from `g.glob_in(dep, "src/*.cpp")`.
+- `std::build::local{ .path = "vendor/x" }` is a dependency in a directory of this machine; it is not locked.
+- `riftc` writes `build.lock` with each git dependency's content hash (the commit's tree). A changed hash is an error until its line is removed. The lock file belongs in version control.
+- Git dependencies are cloned into `build/deps/<name>-<commit>`.
 
 ### Reuse
 Build logic can live in ordinary modules and be imported:
@@ -131,15 +137,16 @@ Imported modules follow the same rules: `compile_time` only, with the outside wo
 // build.rifts
 import std::build;
 
+open class profile : std::build::mode::release_with_debug_info {
+public:
+    bool link_time_optimization() override { return true; }
+}
+
 compile_time void build(mut std::build::graph& g) {
-    g.add_mode(std::build::mode{
-        .name = "profile",
-        .base = std::build::modes::release_with_debug_info,
-        .link_time_optimization = true,
-    });
+    g.add_mode(profile);
 
     bool validation = g.option<bool>("vulkan_validation",
-        std::build::mode_is(std::build::modes::debug),
+        std::build::mode_is(std::build::mode::debug),
         "Enable the Vulkan validation layers");
 
     // --- C/C++ dependencies -----------------------------------------
@@ -149,8 +156,8 @@ compile_time void build(mut std::build::graph& g) {
         .standard = std::build::cpp_standard::cpp20,
     });
     g.add_sources(imgui, g.glob("vendor/imgui/*.cpp"));
-    g.add_include_dir(imgui, "vendor/imgui", std::build::visibility::public);
-    g.set_mode(imgui, std::build::modes::release);
+    g.add_include_dir(imgui, "vendor/imgui", std::build::visibility::shared);
+    g.set_mode(imgui, std::build::mode::release);
 
     std::build::target vulkan = g.add_system_library(std::build::system_library{
         .name = "vulkan",
@@ -158,15 +165,15 @@ compile_time void build(mut std::build::graph& g) {
     });
 
     // --- Rift code --------------------------------------------------
-    std::build::target core = g.add_library(std::build::rift_target{ .name = "core", .root = "core" });
+    std::build::target core = g.add_library(std::build::rift_target{ .name = "core", .root = "core/core.rifts" });
 
-    std::build::target renderer = g.add_library(std::build::rift_target{ .name = "renderer", .root = "renderer" });
+    std::build::target renderer = g.add_library(std::build::rift_target{ .name = "renderer", .root = "renderer/renderer.rifts" });
     g.link(renderer, core);
     g.link(renderer, imgui);
     g.link(renderer, vulkan);
     g.set(renderer, "vulkan_validation", validation);
 
-    std::build::target app = g.add_executable(std::build::rift_target{ .name = "engine", .root = "app" });
+    std::build::target app = g.add_executable(std::build::rift_target{ .name = "engine", .root = "app/main.rifts" });
     g.link(app, renderer);
 
     // --- Generated files --------------------------------------------
@@ -184,7 +191,7 @@ compile_time void build(mut std::build::graph& g) {
 
     // --- Tests ------------------------------------------------------
     for (std::build::path test : g.glob("tests/*.rifts")) {
-        std::build::target t = g.add_test(std::build::rift_target{ .name = test.stem(), .root = test });
+        std::build::target t = g.add_test(std::build::rift_target{ .name = test.stem(), .root = test.text });
         g.link(t, core);
     }
 }

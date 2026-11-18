@@ -1,0 +1,17 @@
+// feature 18: every lambda has its own type; calls check the arguments; the result is deduced.
+import std;
+
+enum parse_error : u8 { bad }
+
+std::result<u32, parse_error> parse() { return std::ok(1); }
+
+void uses() {
+    auto add = [](u32 a, u32 b) { return a + b; };
+    u32 x = add(1, 2);
+    u32 y = add(1);                                    //~ error[E4030]: this lambda takes 2 arguments, but 1 is given
+    bool z = add(1, 2);                                //~ error[E4010]: expected 'bool', found 'u32'
+    auto untyped = []() { return 5; };                 //~ error[E4001]: the return type is taken from the first 'return'
+    auto mixed = [](bool c) { if (c) { return 1u32; } return 2u64; };   //~ error[E4010]: expected 'u32', found 'u64'
+    auto wrong = parse().map_error([](u32 e) { return e; });            //~ error[E4010]: 'map_error' needs a lambda that takes the error 'parse_error'
+    auto not_lambda = parse().map_error(5u32);         //~ error[E4010]: 'map_error' takes a lambda
+}

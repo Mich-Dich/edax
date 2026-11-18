@@ -1,0 +1,18 @@
+// feature 15: compile-time code changes places through mut references and mut methods.
+import std;
+struct counter {
+    u32 n = 0;
+    compile_time void bump(u32 by) mut { this.n += by; }
+}
+compile_time void add_twice(mut u32& x) { x += 2; x += 2; }
+compile_time u32 total() {
+    mut u32 v = 1;
+    add_twice(mut v);
+    mut counter c = counter{};
+    c.bump(5);
+    c.bump(v);
+    return c.n;
+}
+compile_time check (total() == 10) else f"total is {total()}";
+i32 main() { return 0; }
+compile_time check (total() == 11) else f"total is {total()}";   //~ error[E4210]: total is 10

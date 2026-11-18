@@ -65,6 +65,8 @@ void render(std::ostream& out, const S& s, std::size_t indent) {
 
 S build(const Expr& e);
 S build(const Pattern& p);
+S build_check(const Check& c);
+
 S build(const Stmt& s);
 S build(const Decl& d);
 
@@ -106,6 +108,7 @@ std::string literal_head(const LiteralExpr& lit) {
         switch (lit.token_kind) {
         case TokenKind::raw_string_literal: return "raw-string " + quote(lit.value);
         case TokenKind::format_string_literal: return "format-string " + quote(lit.value);
+        case TokenKind::c_string_literal: return "c-string " + quote(lit.value);
         default: return "string " + quote(lit.value);
         }
     default: return "literal";
@@ -357,8 +360,28 @@ S build(const Stmt& s) {
     }
     case StmtKind::discard: return S{"discard", {build(*s.as<DiscardStmt>().value)}};
     case StmtKind::expression: return build(*s.as<ExprStmt>().expr);
+    case StmtKind::check: return build_check(s.as<CheckStmt>().check);
     }
     return S{"?", {}};
+}
+
+S build_check(const Check& c) {
+    auto modes = [](const std::vector<std::string>& m) {
+        if (m.empty()) return std::string();
+        std::string out = "(";
+        for (std::size_t i = 0; i < m.size(); ++i) out += (i ? ", " : "") + m[i];
+        return out + ")";
+    };
+    std::string head = (c.is_compile_time ? "compile_time" + modes(c.compile_modes) + " " : std::string()) +
+                       (c.is_run_time ? "run_time" + modes(c.run_modes) + " " : std::string()) + "check";
+    S out{head, {}};
+    if (c.block) {
+        out.kids.push_back(build(*c.block));
+    } else {
+        out.kids.push_back(build(*c.condition));
+        out.kids.push_back(S{"else", {build(*c.message)}});
+    }
+    return out;
 }
 
 std::string_view access_name(Access a) {
@@ -397,10 +420,11 @@ S build(const Decl& d) {
     S s;
     switch (d.kind) {
     case DeclKind::import: s = S{"import " + to_string(d.as<ImportDecl>().path), {}}; break;
+    case DeclKind::check: s = build_check(d.as<CheckDecl>().check); break;
     case DeclKind::function: {
         const auto& f = d.as<FunctionDecl>();
         std::string head = prefix;
-        head += f.is_extern ? "extern " + quote(f.abi) + " " : "";
+        head += f.is_extern ? "extern(std::build::language::" + f.abi + ") " : "";
         head += f.is_unsafe ? "unsafe " : "";
         head += f.is_static ? "static " : "";
         head += f.is_virtual ? "virtual " : "";

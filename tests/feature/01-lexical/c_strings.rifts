@@ -1,0 +1,4 @@
+// feature 01/13: c"..." is a NUL-terminated C string (a std::raw_ptr<u8>).
+// STOP-AFTER: lex
+static std::raw_ptr<u8> mode = c"rb";
+static std::raw_ptr<u8> bad = c"a\0b";               //~ error[E1016]: cannot contain

@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+true false false true true
+kept
+--- stderr

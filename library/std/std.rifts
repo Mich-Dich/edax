@@ -1,0 +1,1008 @@
+// The Rift standard library: bodies of the functions and methods declared in std.rifth.
+//
+// This file is compiled into riftc together with std.rifth (spec 09: a module is a header and a
+// source). It is written in Rift; the `std::raw` intrinsics are its only access to memory.
+
+/// Whether `a[i]` and the other index checks are compiled in: the mode's `bounds()` (spec 24).
+private compile_time bool checks_bounds() {
+    return std::build::current_mode().bounds() == std::build::bounds::panic;
+}
+
+template<type T>
+class darray {
+public:
+    usize len() { return this.count; }
+
+    bool is_empty() { return this.count == 0; }
+
+    void push(T value) mut {
+        if (this.count == this.capacity) {
+            mut usize next = 4;
+            if (this.capacity > 0) { next = this.capacity * 2; }
+            unsafe {
+                if (this.capacity == 0) {
+                    this.data = std::raw::allocate<T>(next);
+                } else {
+                    this.data = std::raw::reallocate(this.data, next);
+                }
+            }
+            this.capacity = next;
+        }
+        unsafe { std::raw::write(this.data.offset(this.count), move value); }
+        this.count += 1;
+    }
+
+    std::option<T> pop() mut {
+        if (this.count == 0) { return std::none; }
+        this.count -= 1;
+        unsafe { return std::some(std::raw::read(this.data.offset(this.count))); }
+    }
+
+    void clear() mut {
+        while (this.count > 0) {
+            this.count -= 1;
+            unsafe { std::raw::drop(this.data.offset(this.count)); }
+        }
+    }
+
+    darray<T> clone() {
+        mut darray<T> out = default;
+        if (this.count > 0) {
+            unsafe { out.data = std::raw::allocate<T>(this.count); }
+            out.capacity = this.count;
+            while (out.count < this.count) {
+                unsafe { std::raw::write(out.data.offset(out.count), (*this.data.offset(out.count)).clone()); }
+                out.count += 1;
+            }
+        }
+        return out;
+    }
+
+    template<type F>
+    void retain(F keep) mut {
+        mut usize kept = 0;
+        mut usize i = 0;
+        while (i < this.count) {
+            unsafe {
+                std::raw_ptr<mut T> item = this.data.offset(i);
+                if (keep(*item)) {
+                    if (kept != i) { std::raw::write(this.data.offset(kept), std::raw::read(item)); }
+                    kept += 1;
+                } else {
+                    std::raw::drop(item);
+                }
+            }
+            i += 1;
+        }
+        this.count = kept;
+    }
+
+    template<type F>
+    void sort_by_key(std::sort_order order, F key) mut {
+        // Insertion sort: stable, and in place.
+        mut usize i = 1;
+        while (i < this.count) {
+            unsafe {
+                T moving = std::raw::read(this.data.offset(i));
+                mut usize j = i;
+                while (j > 0) {
+                    auto a = key(moving);
+                    auto b = key(*this.data.offset(j - 1));
+                    mut bool earlier = a < b;
+                    if (order == std::sort_order::descending) { earlier = b < a; }
+                    if (!earlier) { break; }
+                    std::raw::write(this.data.offset(j), std::raw::read(this.data.offset(j - 1)));
+                    j -= 1;
+                }
+                std::raw::write(this.data.offset(j), move moving);
+            }
+            i += 1;
+        }
+    }
+
+    T& operator[](usize i) {
+        if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+        unsafe { return *this.data.offset(i); }
+    }
+
+    mut T& operator[](usize i) mut {
+        if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+        unsafe { return *this.data.offset(i); }
+    }
+
+    span<T> as_span() {
+        unsafe { return span<T>::from_raw(this.data, this.count); }
+    }
+
+    std::option<T&> get(usize i) {
+        if (i >= this.count) { return std::none; }
+        unsafe { return std::some(*this.data.offset(i)); }
+    }
+
+    void insert(usize i, T value) mut {
+        if compile_time (checks_bounds()) { run_time check (i <= this.count) else "insert position out of bounds"; }
+        this.push(move value);   // makes room; the new value is moved into place below
+        unsafe {
+            T last = std::raw::read(this.data.offset(this.count - 1));
+            std::raw::copy(this.data.offset(i + 1), this.data.offset(i), this.count - 1 - i);
+            std::raw::write(this.data.offset(i), move last);
+        }
+    }
+
+    T remove(usize i) mut {
+        if compile_time (checks_bounds()) { run_time check (i < this.count) else "remove position out of bounds"; }
+        unsafe {
+            T out = std::raw::read(this.data.offset(i));
+            std::raw::copy(this.data.offset(i), this.data.offset(i + 1), this.count - 1 - i);
+            this.count -= 1;
+            return out;
+        }
+    }
+
+    ~darray() {
+        this.clear();
+        unsafe {
+            if (this.data) { std::raw::free(this.data); }
+        }
+    }
+
+private:
+    std::raw_ptr<mut T> data = nullptr;
+    usize count = 0;
+    usize capacity = 0;
+}
+
+template<type T>
+class span {
+public:
+    static unsafe span<T> from_raw(std::raw_ptr<T> data, usize count) { return span<T>{ .data = data, .count = count }; }
+
+    usize len() { return this.count; }
+
+    bool is_empty() { return this.count == 0; }
+
+    T& operator[](usize i) {
+        if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+        unsafe { return *this.data.offset(i); }
+    }
+
+private:
+    std::raw_ptr<T> data;
+    usize count;
+}
+
+class string {
+public:
+    static string from(std::str text) {
+        mut string out = default;
+        out.push_str(text);
+        return out;
+    }
+
+    usize len() { return this.count; }
+
+    bool is_empty() { return this.count == 0; }
+
+    std::str as_str() {
+        unsafe { return std::raw::str_from(this.data, this.count); }
+    }
+
+    void push_str(std::str text) mut {
+        usize n = text.len();
+        if (n == 0) { return; }
+        this.reserve(this.count + n);
+        unsafe { std::raw::copy(this.data.offset(this.count), text.as_ptr(), n); }
+        this.count += n;
+    }
+
+    void push(char c) mut {
+        u32 code = cast<u32>(c);
+        this.reserve(this.count + 4);
+        if (code < 0x80) {
+            this.put(cast::truncate<u8>(code));
+        } else if (code < 0x800) {
+            this.put(cast::truncate<u8>(0xC0 | (code >> 6)));
+            this.put(cast::truncate<u8>(0x80 | (code & 0x3F)));
+        } else if (code < 0x10000) {
+            this.put(cast::truncate<u8>(0xE0 | (code >> 12)));
+            this.put(cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
+            this.put(cast::truncate<u8>(0x80 | (code & 0x3F)));
+        } else {
+            this.put(cast::truncate<u8>(0xF0 | (code >> 18)));
+            this.put(cast::truncate<u8>(0x80 | ((code >> 12) & 0x3F)));
+            this.put(cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
+            this.put(cast::truncate<u8>(0x80 | (code & 0x3F)));
+        }
+    }
+
+    void clear() mut { this.count = 0; }
+
+    string clone() { return string::from(this.as_str()); }
+
+    bool operator==(string& other) { return this.as_str() == other.as_str(); }
+
+    std::ordering operator<=>(string& other) {
+        mut usize i = 0;
+        while (i < this.count && i < other.count) {
+            mut u8 a = 0;
+            mut u8 b = 0;
+            unsafe {
+                a = std::raw::read(this.data.offset(i));
+                b = std::raw::read(other.data.offset(i));
+            }
+            if (a != b) { return a <=> b; }
+            i += 1;
+        }
+        return this.count <=> other.count;
+    }
+
+    ~string() {
+        unsafe {
+            if (this.data) { std::raw::free(this.data); }
+        }
+    }
+
+private:
+    std::raw_ptr<mut u8> data = nullptr;
+    usize count = 0;
+    usize capacity = 0;
+
+    /// Makes room for `need` bytes in total.
+    void reserve(usize need) mut {
+        if (need <= this.capacity) { return; }
+        mut usize next = 16;
+        if (this.capacity > 0) { next = this.capacity * 2; }
+        if (next < need) { next = need; }
+        unsafe {
+            if (this.capacity == 0) {
+                this.data = std::raw::allocate<u8>(next);
+            } else {
+                this.data = std::raw::reallocate(this.data, next);
+            }
+        }
+        this.capacity = next;
+    }
+
+    /// Appends one byte; the room was reserved.
+    void put(u8 b) mut {
+        unsafe { std::raw::write(this.data.offset(this.count), b); }
+        this.count += 1;
+    }
+}
+
+// --- the methods of std::str ----------------------------------------------------------------
+// `text.name(args)` calls `str_name(text, args)` (the compiler maps the call).
+
+private u8 byte_at(std::str text, usize i) {
+    unsafe { return std::raw::read(text.as_ptr().offset(i)); }
+}
+
+private std::str str_slice(std::str text, usize from, usize to) {
+    if compile_time (checks_bounds()) { run_time check (from <= to && to <= text.len()) else "slice out of bounds"; }
+    unsafe { return std::raw::str_from(text.as_ptr().offset(from), to - from); }
+}
+
+private bool str_starts_with(std::str text, std::str prefix) {
+    if (prefix.len() > text.len()) { return false; }
+    return str_slice(text, 0, prefix.len()) == prefix;
+}
+
+private bool str_ends_with(std::str text, std::str suffix) {
+    if (suffix.len() > text.len()) { return false; }
+    return str_slice(text, text.len() - suffix.len(), text.len()) == suffix;
+}
+
+private std::option<usize> str_find(std::str text, std::str needle) {
+    if (needle.len() > text.len()) { return std::none; }
+    mut usize i = 0;
+    while (i + needle.len() <= text.len()) {
+        if (str_slice(text, i, i + needle.len()) == needle) { return std::some(i); }
+        i += 1;
+    }
+    return std::none;
+}
+
+private bool str_contains(std::str text, std::str needle) {
+    return str_find(text, needle).value_or(text.len() + 1) <= text.len();
+}
+
+private bool is_space(u8 b) {
+    return b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12;
+}
+
+private std::str str_trim(std::str text) {
+    mut usize from = 0;
+    mut usize to = text.len();
+    while (from < to && is_space(byte_at(text, from))) { from += 1; }
+    while (to > from && is_space(byte_at(text, to - 1))) { to -= 1; }
+    return str_slice(text, from, to);
+}
+
+private std::darray<std::str> str_split(std::str text, char separator) {
+    mut std::darray<std::str> parts = default;
+    mut std::string sep = default;
+    sep.push(separator);
+    std::str s = sep;
+    mut usize start = 0;
+    mut usize i = 0;
+    while (i + s.len() <= text.len()) {
+        if (str_slice(text, i, i + s.len()) == s) {
+            parts.push(str_slice(text, start, i));
+            i += s.len();
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    parts.push(str_slice(text, start, text.len()));
+    return parts;
+}
+
+private extern(std::build::language::c) f64 strtod(std::raw_ptr<u8> text, std::raw_ptr<mut std::raw_ptr<u8>> end);
+
+/// `text.parse<T>()`: the number the whole text spells, or `none`. Integers are decimal with an
+/// optional sign; floats are what C's strtod reads, without leading spaces.
+template<type T>
+private std::option<T> str_parse(std::str text) {
+    if (text.is_empty()) { return std::none; }
+    if compile_time (std::is_integer<T>()) {
+        mut usize i = 0;
+        mut bool negative = false;
+        u8 first = byte_at(text, 0);
+        if (first == 45 || first == 43) {   // '-' or '+'
+            negative = first == 45;
+            i = 1;
+        }
+        if (i == text.len()) { return std::none; }
+        mut u128 value = 0;
+        while (i < text.len()) {
+            u8 b = byte_at(text, i);
+            if (b < 48 || b > 57) { return std::none; }
+            std::option<u128> next = std::checked_mul(value, 10u128);
+            match (next) {
+                std::some(v) => { value = v; },
+                std::none => { return std::none; },
+            }
+            match (std::checked_add(value, cast<u128>(b - 48))) {
+                std::some(v) => { value = v; },
+                std::none => { return std::none; },
+            }
+            i += 1;
+        }
+        if (negative) {
+            std::option<i128> magnitude = cast::checked<i128>(value);
+            match (magnitude) {
+                std::some(m) => { return cast::checked<T>(-m); },
+                std::none => {
+                    if (value == 170141183460469231731687303715884105728u128) { return cast::checked<T>(-170141183460469231731687303715884105727i128 - 1); }
+                    return std::none;
+                },
+            }
+        }
+        return cast::checked<T>(value);
+    } else {
+        u8 first = byte_at(text, 0);
+        if (is_space(first)) { return std::none; }
+        mut std::raw_ptr<mut u8> copy = nullptr;
+        unsafe {
+            copy = std::raw::allocate<u8>(text.len() + 1);
+            std::raw::copy(copy, text.as_ptr(), text.len());
+            std::raw::write(copy.offset(text.len()), 0u8);
+        }
+        mut std::raw_ptr<u8> end = nullptr;
+        mut f64 value = 0.0;
+        mut bool whole = false;
+        unsafe {
+            value = strtod(copy, mut &end);
+            whole = cast::reinterpret<usize>(end) == cast::reinterpret<usize>(copy) + text.len();
+            std::raw::free(copy);
+        }
+        if (!whole) { return std::none; }
+        if compile_time (std::is_same<T, f32>()) {
+            return std::some(cast::round<f32>(value));
+        } else {
+            return std::some(value);
+        }
+    }
+}
+
+// --- files ------------------------------------------------------------------------------------
+
+/// The C library functions behind std::file.
+private extern(std::build::language::c) {
+    std::raw_ptr<mut u8> fopen(std::raw_ptr<u8> path, std::raw_ptr<u8> mode);
+    i32 fclose(std::raw_ptr<mut u8> stream);
+    usize fwrite(std::raw_ptr<u8> data, usize size, usize count, std::raw_ptr<mut u8> stream);
+    isize getline(std::raw_ptr<mut std::raw_ptr<mut u8>> line, std::raw_ptr<mut usize> capacity, std::raw_ptr<mut u8> stream);
+    std::raw_ptr<mut i32> __errno_location();
+    void free(std::raw_ptr<mut u8> p);
+}
+
+/// The io_error for C's `errno`.
+private io_error last_error() {
+    mut i32 code = 0;
+    unsafe { code = *__errno_location(); }
+    return match (code) {
+        2 => io_error::not_found,
+        13 => io_error::permission_denied,
+        17 => io_error::already_exists,
+        21 => io_error::is_directory,
+        _ => io_error::other,
+    };
+}
+
+/// Opens `path` with the C mode `mode` (c"r", c"w").
+private std::result<file, io_error> open_with(std::filesystem::path& path, std::raw_ptr<u8> mode) {
+    mut std::string name = std::string::from(path.as_str());
+    name.push('\0');
+    std::str c_name = name;
+    mut std::raw_ptr<mut u8> handle = nullptr;
+    unsafe { handle = fopen(c_name.as_ptr(), mode); }
+    if (!handle) { return std::error(last_error()); }
+    return std::ok(file{ .handle = handle });
+}
+
+/// A path that is relative without saying so: not `/...`, `./...` or `../...` (spec 19).
+private compile_time run_time bool is_plain_relative(std::str path) {
+    return !path.starts_with("/") && !path.starts_with("./") && !path.starts_with("../");
+}
+
+class file {
+public:
+    static std::result<file, io_error> open(std::filesystem::path& path) { return open_with(path, c"r"); }
+
+    static std::result<file, io_error> create(std::filesystem::path& path) { return open_with(path, c"w"); }
+
+    static std::result<file, io_error> open(std::str path) {
+        compile_time check {
+            if (std::is_compile_time(path)) {
+                if (is_plain_relative(path)) {
+                    std::compile_note("use 'std::filesystem::executable_dir() / name', or 'std::filesystem::path::relative(name)' when the working directory is meant");
+                    std::compile_warning(std::location_of(path), std::relative_path,
+                        f"\"{path}\" is relative to the working directory, not to the executable");
+                }
+            }
+        }
+        return open_with(std::filesystem::path::from(path), c"r");
+    }
+
+    static std::result<file, io_error> create(std::str path) {
+        compile_time check {
+            if (std::is_compile_time(path)) {
+                if (is_plain_relative(path)) {
+                    std::compile_note("use 'std::filesystem::executable_dir() / name', or 'std::filesystem::path::relative(name)' when the working directory is meant");
+                    std::compile_warning(std::location_of(path), std::relative_path,
+                        f"\"{path}\" is relative to the working directory, not to the executable");
+                }
+            }
+        }
+        return open_with(std::filesystem::path::from(path), c"w");
+    }
+
+    file_lines lines() mut { return file_lines{ .handle = this.handle }; }
+
+    std::result<usize, io_error> write(std::str text) mut {
+        mut usize written = 0;
+        unsafe { written = fwrite(text.as_ptr(), 1, text.len(), this.handle); }
+        if (written != text.len()) { return std::error(last_error()); }
+        return std::ok(written);
+    }
+
+    ~file() {
+        unsafe { fclose(this.handle); }
+    }
+
+private:
+    std::raw_ptr<mut u8> handle;
+}
+
+class file_lines {
+public:
+    std::option<std::str> next() mut {
+        mut isize n = 0;
+        unsafe { n = getline(mut &this.buffer, mut &this.capacity, this.handle); }
+        if (n < 0) { return std::none; }
+        mut usize len = cast::saturate<usize>(n);
+        unsafe {
+            if (len > 0 && std::raw::read(this.buffer.offset(len - 1)) == 10u8) { len -= 1; }
+            if (len > 0 && std::raw::read(this.buffer.offset(len - 1)) == 13u8) { len -= 1; }
+            return std::some(std::raw::str_from(this.buffer, len));
+        }
+    }
+
+    ~file_lines() {
+        unsafe {
+            if (this.buffer) { free(this.buffer); }   // getline's buffer comes from C's malloc
+        }
+    }
+
+private:
+    std::raw_ptr<mut u8> handle;
+    std::raw_ptr<mut u8> buffer = nullptr;
+    usize capacity = 0;
+}
+
+// --- smart pointers ---------------------------------------------------------------------------
+
+template<type T>
+class unique_ptr {
+public:
+    static unique_ptr<T> make(T value) {
+        mut std::raw_ptr<mut T> p = nullptr;
+        unsafe {
+            p = std::raw::allocate<T>(1);
+            std::raw::write(p, move value);
+        }
+        return unique_ptr<T>{ .target = p };
+    }
+
+    T& operator*() {
+        unsafe { return *this.target; }
+    }
+
+    mut T& operator*() mut {
+        unsafe { return *this.target; }
+    }
+
+    ~unique_ptr() {
+        unsafe {
+            std::raw::drop(this.target);
+            std::raw::free(this.target);
+        }
+    }
+
+private:
+    std::raw_ptr<mut T> target;
+}
+
+template<type T>
+class shared_ptr {
+public:
+    static shared_ptr<T> make(T value) {
+        mut std::raw_ptr<mut T> p = nullptr;
+        mut std::raw_ptr<mut shared_counts> c = nullptr;
+        unsafe {
+            p = std::raw::allocate<T>(1);
+            std::raw::write(p, move value);
+            c = std::raw::allocate<shared_counts>(1);
+            std::raw::write(c, shared_counts{ .strong = 1, .weak = 0 });
+        }
+        return shared_ptr<T>{ .target = p, .counts = c };
+    }
+
+    shared_ptr<T> clone() {
+        unsafe { this.counts->strong += 1; }
+        return shared_ptr<T>{ .target = this.target, .counts = this.counts };
+    }
+
+    weak_ptr<T> weak() {
+        unsafe { this.counts->weak += 1; }
+        return weak_ptr<T>{ .target = this.target, .counts = this.counts };
+    }
+
+    usize owners() {
+        unsafe { return this.counts->strong; }
+    }
+
+    T& operator*() {
+        unsafe { return *this.target; }
+    }
+
+    ~shared_ptr() {
+        unsafe {
+            this.counts->strong -= 1;
+            if (this.counts->strong == 0) {
+                std::raw::drop(this.target);
+                std::raw::free(this.target);
+                if (this.counts->weak == 0) { std::raw::free(this.counts); }
+            }
+        }
+    }
+
+private:
+    std::raw_ptr<mut T> target;
+    std::raw_ptr<mut shared_counts> counts;
+}
+
+template<type T>
+class weak_ptr {
+public:
+    std::option<shared_ptr<T>> lock() {
+        mut bool alive = false;
+        unsafe {
+            alive = this.counts->strong > 0;
+            if (alive) { this.counts->strong += 1; }
+        }
+        if (!alive) { return std::none; }
+        return std::some(shared_ptr<T>{ .target = this.target, .counts = this.counts });
+    }
+
+    weak_ptr<T> clone() {
+        unsafe { this.counts->weak += 1; }
+        return weak_ptr<T>{ .target = this.target, .counts = this.counts };
+    }
+
+    ~weak_ptr() {
+        unsafe {
+            this.counts->weak -= 1;
+            if (this.counts->weak == 0 && this.counts->strong == 0) { std::raw::free(this.counts); }
+        }
+    }
+
+private:
+    std::raw_ptr<mut T> target;
+    std::raw_ptr<mut shared_counts> counts;
+}
+
+// --- ownership helpers (spec 12) ---------------------------------------------------------------
+
+template<type T>
+T take(mut T& place) {
+    T fresh = default;
+    return replace(mut place, move fresh);
+}
+
+template<type T>
+T replace(mut T& place, T value) {
+    unsafe {
+        T old = std::raw::read(&place);
+        std::raw::write(mut &place, move value);
+        return old;
+    }
+}
+
+template<type T>
+void swap(mut T& a, mut T& b) {
+    unsafe {
+        T first = std::raw::read(&a);
+        std::raw::write(mut &a, std::raw::read(&b));
+        std::raw::write(mut &b, move first);
+    }
+}
+
+// --- array and bitset -------------------------------------------------------------------------
+
+template<type T, usize N>
+struct array {
+    usize len() { return N; }
+
+    std::option<T&> get(usize i) {
+        if (i >= N) { return std::none; }
+        unsafe { return std::some(*cast::reinterpret<std::raw_ptr<T>>(&this.items).offset(i)); }
+    }
+
+    T& operator[](usize i) {
+        if compile_time (checks_bounds()) { run_time check (i < N) else "index out of bounds"; }
+        unsafe { return *cast::reinterpret<std::raw_ptr<T>>(&this.items).offset(i); }
+    }
+
+    mut T& operator[](usize i) mut {
+        if compile_time (checks_bounds()) { run_time check (i < N) else "index out of bounds"; }
+        unsafe { return *cast::reinterpret<std::raw_ptr<mut T>>(mut &this.items).offset(i); }
+    }
+
+    span<T> as_span() {
+        unsafe { return span<T>::from_raw(cast::reinterpret<std::raw_ptr<T>>(&this.items), N); }
+    }
+}
+
+template<usize N>
+struct bitset {
+    usize len() { return N; }
+
+    bool test(usize i) {
+        if compile_time (checks_bounds()) { run_time check (i < N) else "bit index out of bounds"; }
+        unsafe {
+            u64 word = *cast::reinterpret<std::raw_ptr<u64>>(&this.words).offset(i / 64);
+            return (word >> cast::truncate<u64>(i % 64)) & 1 == 1;
+        }
+    }
+
+    void set(usize i, bool value) mut {
+        if compile_time (checks_bounds()) { run_time check (i < N) else "bit index out of bounds"; }
+        unsafe {
+            std::raw_ptr<mut u64> word = cast::reinterpret<std::raw_ptr<mut u64>>(mut &this.words).offset(i / 64);
+            u64 mask = 1u64 << cast::truncate<u64>(i % 64);
+            if (value) { *word = *word | mask; } else { *word = *word & ~mask; }
+        }
+    }
+
+    usize count() {
+        mut usize n = 0;
+        mut usize i = 0;
+        while (i < N) {
+            if (this.test(i)) { n += 1; }
+            i += 1;
+        }
+        return n;
+    }
+}
+
+// --- hashing and maps --------------------------------------------------------------------------
+
+/// splitmix64's finalizer: spreads the bits of an integer.
+private u64 mix(u64 value) {
+    mut u64 x = value;
+    x = (x ^ (x >> 30)) *% 0xbf58476d1ce4e5b9u64;
+    x = (x ^ (x >> 27)) *% 0x94d049bb133111ebu64;
+    return x ^ (x >> 31);
+}
+
+/// FNV-1a over the bytes of a text.
+private u64 hash_text(std::str text) {
+    mut u64 h = 0xcbf29ce484222325u64;
+    mut usize i = 0;
+    while (i < text.len()) {
+        unsafe { h = (h ^ cast<u64>(std::raw::read(text.as_ptr().offset(i)))) *% 0x100000001b3u64; }
+        i += 1;
+    }
+    return h;
+}
+
+template<type K>
+u64 hash(K& key) {
+    if compile_time (std::is_integer<K>()) {
+        return mix(cast::truncate<u64>(key));
+    } else if compile_time (std::is_same<K, char>()) {
+        return mix(cast<u64>(key));
+    } else if compile_time (std::is_same<K, bool>()) {
+        return mix(cast<u64>(key));
+    } else if compile_time (std::is_same<K, std::string>()) {
+        return hash_text(key);
+    } else if compile_time (std::is_same<K, std::str>()) {
+        return hash_text(key);
+    } else {
+        return key.hash();
+    }
+}
+
+template<type K, type V>
+class hash_map {
+public:
+    usize len() { return this.count; }
+
+    bool is_empty() { return this.count == 0; }
+
+    std::option<V> insert(K key, V value) mut {
+        if ((this.used + 1) * 4 > this.capacity * 3) { this.grow(); }
+        usize at = this.find(key);
+        unsafe {
+            if (std::raw::read(this.states.offset(at)) == 1u8) {
+                V old = std::raw::read(this.values.offset(at));
+                std::raw::write(this.values.offset(at), move value);
+                return std::some(move old);
+            }
+            usize free = this.free_slot(key);
+            if (std::raw::read(this.states.offset(free)) == 0u8) { this.used += 1; }
+            std::raw::write(this.states.offset(free), 1u8);
+            std::raw::write(this.keys.offset(free), move key);
+            std::raw::write(this.values.offset(free), move value);
+        }
+        this.count += 1;
+        return std::none;
+    }
+
+    bool contains(K& key) {
+        if (this.capacity == 0) { return false; }
+        unsafe { return std::raw::read(this.states.offset(this.find(key))) == 1u8; }
+    }
+
+    std::option<V&> get(K& key) {
+        if (!this.contains(key)) { return std::none; }
+        unsafe { return std::some(*this.values.offset(this.find(key))); }
+    }
+
+    std::option<V> remove(K& key) mut {
+        if (!this.contains(key)) { return std::none; }
+        usize at = this.find(key);
+        unsafe {
+            std::raw::write(this.states.offset(at), 2u8);
+            std::raw::drop(this.keys.offset(at));
+            this.count -= 1;
+            return std::some(std::raw::read(this.values.offset(at)));
+        }
+    }
+
+    V& operator[](K& key) {
+        run_time check (this.contains(key)) else "key not found";
+        unsafe { return *this.values.offset(this.find(key)); }
+    }
+
+    mut V& operator[](K& key) mut {
+        run_time check (this.contains(key)) else "key not found";
+        unsafe { return *this.values.offset(this.find(key)); }
+    }
+
+    std::darray<map_entry<K, V>> entries() {
+        mut std::darray<map_entry<K, V>> out = default;
+        mut usize i = 0;
+        while (i < this.capacity) {
+            unsafe {
+                if (std::raw::read(this.states.offset(i)) == 1u8) {
+                    out.push(map_entry<K, V>{ .key = *this.keys.offset(i), .value = *this.values.offset(i) });
+                }
+            }
+            i += 1;
+        }
+        return out;
+    }
+
+    void clear() mut {
+        mut usize i = 0;
+        while (i < this.capacity) {
+            unsafe {
+                if (std::raw::read(this.states.offset(i)) == 1u8) {
+                    std::raw::drop(this.keys.offset(i));
+                    std::raw::drop(this.values.offset(i));
+                }
+                std::raw::write(this.states.offset(i), 0u8);
+            }
+            i += 1;
+        }
+        this.count = 0;
+        this.used = 0;
+    }
+
+    ~hash_map() {
+        this.clear();
+        unsafe {
+            if (this.capacity > 0) {
+                std::raw::free(this.states);
+                std::raw::free(this.keys);
+                std::raw::free(this.values);
+            }
+        }
+    }
+
+private:
+    std::raw_ptr<mut u8> states = nullptr;   // 0: empty, 1: full, 2: removed
+    std::raw_ptr<mut K> keys = nullptr;
+    std::raw_ptr<mut V> values = nullptr;
+    usize capacity = 0;
+    usize count = 0;
+    usize used = 0;                          // full and removed slots
+
+    /// The slot of `key`, or the empty slot that ends its probe sequence.
+    usize find(K& key) {
+        mut usize i = cast::truncate<usize>(hash(key)) % this.capacity;
+        unsafe {
+            while (true) {
+                u8 state = std::raw::read(this.states.offset(i));
+                if (state == 0u8) { return i; }
+                if (state == 1u8 && *this.keys.offset(i) == key) { return i; }
+                i = (i + 1) % this.capacity;
+            }
+        }
+        return i;
+    }
+
+    /// The first empty or removed slot on `key`'s probe sequence.
+    usize free_slot(K& key) {
+        mut usize i = cast::truncate<usize>(hash(key)) % this.capacity;
+        unsafe {
+            while (std::raw::read(this.states.offset(i)) == 1u8) { i = (i + 1) % this.capacity; }
+        }
+        return i;
+    }
+
+    void grow() mut {
+        usize old_capacity = this.capacity;
+        std::raw_ptr<mut u8> old_states = this.states;
+        std::raw_ptr<mut K> old_keys = this.keys;
+        std::raw_ptr<mut V> old_values = this.values;
+        mut usize next = 8;
+        if (old_capacity > 0) { next = old_capacity * 2; }
+        unsafe {
+            this.states = std::raw::allocate<u8>(next);
+            this.keys = std::raw::allocate<K>(next);
+            this.values = std::raw::allocate<V>(next);
+        }
+        this.capacity = next;
+        this.count = 0;
+        this.used = 0;
+        mut usize i = 0;
+        while (i < next) {
+            unsafe { std::raw::write(this.states.offset(i), 0u8); }
+            i += 1;
+        }
+        i = 0;
+        while (i < old_capacity) {
+            unsafe {
+                if (std::raw::read(old_states.offset(i)) == 1u8) {
+                    K k = std::raw::read(old_keys.offset(i));
+                    usize at = this.free_slot(k);
+                    std::raw::write(this.states.offset(at), 1u8);
+                    std::raw::write(this.keys.offset(at), move k);
+                    std::raw::write(this.values.offset(at), std::raw::read(old_values.offset(i)));
+                    this.count += 1;
+                    this.used += 1;
+                }
+            }
+            i += 1;
+        }
+        unsafe {
+            if (old_capacity > 0) {
+                std::raw::free(old_states);
+                std::raw::free(old_keys);
+                std::raw::free(old_values);
+            }
+        }
+    }
+}
+
+template<type K, type V>
+class tree_map {
+public:
+    usize len() { return this.keys.len(); }
+
+    bool is_empty() { return this.keys.is_empty(); }
+
+    std::option<V> insert(K key, V value) mut {
+        usize at = this.lower_bound(key);
+        if (at < this.keys.len() && !(key < this.keys[at])) {
+            return std::some(std::replace(mut this.values[at], move value));
+        }
+        this.keys.insert(at, move key);
+        this.values.insert(at, move value);
+        return std::none;
+    }
+
+    bool contains(K& key) {
+        usize at = this.lower_bound(key);
+        return at < this.keys.len() && !(key < this.keys[at]);
+    }
+
+    std::option<V&> get(K& key) {
+        if (!this.contains(key)) { return std::none; }
+        return std::some(this.values[this.lower_bound(key)]);
+    }
+
+    std::option<V> remove(K& key) mut {
+        if (!this.contains(key)) { return std::none; }
+        usize at = this.lower_bound(key);
+        K gone = this.keys.remove(at);
+        return std::some(this.values.remove(at));
+    }
+
+    V& operator[](K& key) {
+        run_time check (this.contains(key)) else "key not found";
+        return this.values[this.lower_bound(key)];
+    }
+
+    mut V& operator[](K& key) mut {
+        run_time check (this.contains(key)) else "key not found";
+        usize at = this.lower_bound(key);
+        return this.values[at];
+    }
+
+    std::darray<map_entry<K, V>> entries() {
+        mut std::darray<map_entry<K, V>> out = default;
+        mut usize i = 0;
+        while (i < this.keys.len()) {
+            out.push(map_entry<K, V>{ .key = this.keys[i], .value = this.values[i] });
+            i += 1;
+        }
+        return out;
+    }
+
+    void clear() mut {
+        this.keys.clear();
+        this.values.clear();
+    }
+
+private:
+    std::darray<K> keys = default;
+    std::darray<V> values = default;
+
+    /// The first position whose key is not less than `key` (binary search).
+    usize lower_bound(K& key) {
+        mut usize lo = 0;
+        mut usize hi = this.keys.len();
+        while (lo < hi) {
+            usize mid = lo + (hi - lo) / 2;
+            if (this.keys[mid] < key) { lo = mid + 1; } else { hi = mid; }
+        }
+        return lo;
+    }
+}
+

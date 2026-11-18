@@ -1,0 +1,51 @@
+// The build of the example programs (spec 25). From the repository root:
+//
+//   riftc build --root=example --out-dir=build/example --bin-dir=build/example/bin
+//                                                              every program -> build/example/bin
+//   riftc run --root=example zoo                               build and run one of them
+//   riftc build --root=example --list                          targets, modes and options
+//   riftc test --root=example                                  the example's tests
+//
+// (`cmake --build build --target examples` runs the first line.)
+import std;
+
+/// The examples' benchmark mode: release without overflow checks. It still has no undefined
+/// behaviour, so it does not need allow_undefined_behavior().
+class fast : std::build::mode::release {
+public:
+    std::build::overflow overflow() override { return std::build::overflow::wrap; }
+}
+
+compile_time void build(mut std::build::graph& g) {
+    g.add_mode(fast);
+
+    // One program per example file.
+    g.add_executable(std::build::rift_target{ .name = "hello", .root = "hello.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "numbers", .root = "numbers.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "geometry", .root = "geometry.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "zoo", .root = "zoo.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "generics", .root = "generics.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "lambdas", .root = "lambdas.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "calculator", .root = "calculator.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "containers", .root = "containers.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "ownership", .root = "ownership.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "gradebook", .root = "gradebook.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "compile_time_demo", .root = "compile_time_demo.rifts" });
+
+    // ffi links a C library built from native/stats.c, and libm.
+    std::build::target stats = g.add_c_library(std::build::c_target{ .name = "stats" });
+    g.add_sources(stats, g.glob("native/*.c"));
+    std::build::target libm = g.add_system_library(std::build::system_library{ .name = "m" });
+    std::build::target ffi = g.add_executable(std::build::rift_target{ .name = "ffi", .root = "ffi.rifts" });
+    g.link(ffi, stats);
+    g.link(ffi, libm);
+
+    // build_info gets settings from the build: an option of the command line, and a constant.
+    std::static_str greeting = g.option<std::static_str>("greeting", "Hello", "The greeting build_info prints");
+    std::build::target info = g.add_executable(std::build::rift_target{ .name = "build_info", .root = "build_info.rifts" });
+    g.set(info, "greeting", greeting);
+    g.set(info, "build_number", 10u32);
+
+    // A test: `riftc test --root=example`.
+    g.add_test(std::build::rift_target{ .name = "geometry_test", .root = "tests/geometry_test.rifts" });
+}

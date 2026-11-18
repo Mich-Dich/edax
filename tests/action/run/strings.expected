@@ -1,0 +1,25 @@
+exit: 0
+--- stdout
+hello, world!é 15 15 4
+true false
+ada 36
+implicit
+[abc] [  abc]
+abc
+abc-42
+--- stderr
+warning[W4002]: implicit allocation of a std::string from a string literal
+ --> tests/action/run/strings.rifts:5:36
+  |
+5 | struct person { std::string name = ""; u32 age = 0; }
+  |                                    ^^ allocates
+  = note: write 'std::string::from("...")' to make the allocation visible
+
+warning[W4002]: implicit allocation of a std::string from a string literal
+  --> tests/action/run/strings.rifts:23:23
+   |
+23 |     std::string lit = "implicit";
+   |                       ^^^^^^^^^^ allocates
+   = note: write 'std::string::from("...")' to make the allocation visible
+
+0 errors, 2 warnings

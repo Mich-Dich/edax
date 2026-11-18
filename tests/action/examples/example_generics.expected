@@ -1,0 +1,17 @@
+exit: 0
+--- stdout
+largest number: 42
+largest word:   zucchini
+push 10: true
+push 20: true
+push 30: true
+push 40: false
+push 50: false
+3 of 3, above 15: 2
+pop 30
+pop 20
+pop 10
+left(5) right(five)
+u8 is an integer, f32 is a float, bool is something else
+type names: bounded_stack<i32, 3>, size of either<u32, u8>: 8
+--- stderr

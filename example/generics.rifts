@@ -1,0 +1,110 @@
+// generics: templates with deduction, constraints, value parameters and method templates
+// (spec 14). Each instance is compiled for its own types: no boxing, no virtual calls.
+import std;
+
+/// Deduced from the arguments: `largest(darray<u32>)` makes `largest<u32>`.
+/// `std::comparable` lets the body use `<`, and the call site is checked against it.
+template<type T : std::comparable & std::cloneable>
+std::option<T> largest(std::darray<T>& items) {
+    if (items.is_empty()) { return std::none; }
+    mut usize best = 0;
+    for (usize i : 1..items.len()) {
+        if (items[best] < items[i]) { best = i; }
+    }
+    return std::some(items[best].clone());
+}
+
+/// A generic container: a stack that keeps at most `N` items (a value parameter).
+template<type T, usize N>
+class bounded_stack {
+public:
+    usize len() { return this.items.len(); }
+    usize capacity() { return N; }
+
+    /// `false` when full: the item is dropped.
+    bool push(T item) mut {
+        if (this.items.len() == N) { return false; }
+        this.items.push(move item);
+        return true;
+    }
+
+    std::option<T> pop() mut { return this.items.pop(); }
+
+    /// A method template: `F` is deduced from the lambda the caller passes.
+    template<type F>
+    usize count_if(F test) {
+        mut usize n = 0;
+        for (T& item : this.items) {
+            if (test(item)) { n += 1; }
+        }
+        return n;
+    }
+
+    compile_time check (N > 0) else "a bounded_stack needs room for at least one item";
+
+private:
+    std::darray<T> items = default;
+}
+
+/// A generic enum.
+template<type L, type R>
+enum either : u8 {
+    left(L),
+    right(R),
+}
+
+template<type L, type R>
+std::string show_either(either<L, R>& e) {
+    return match (e) {
+        either::left(l) => std::format(f"left({l})"),
+        either::right(r) => std::format(f"right({r})"),
+    };
+}
+
+/// Compile-time selection inside a template body.
+template<type T>
+std::static_str category() {
+    if compile_time (std::is_integer<T>()) {
+        return "an integer";
+    } else if compile_time (std::is_float<T>()) {
+        return "a float";
+    } else {
+        return "something else";
+    }
+}
+
+i32 main() {
+    mut std::darray<u32> numbers = default;
+    numbers.push(7);
+    numbers.push(42);
+    numbers.push(13);
+    mut std::darray<std::string> words = default;
+    words.push(std::string::from("pear"));
+    words.push(std::string::from("apple"));
+    words.push(std::string::from("zucchini"));
+    std::println(f"largest number: {largest(numbers).value_or(0)}");
+    std::string fallback = std::string::from("-");
+    std::println(f"largest word:   {largest(words).value_or(move fallback)}");
+
+    mut bounded_stack<i32, 3> stack = default;
+    for (i32 i : 1..=5) {
+        bool pushed = stack.push(i * 10);
+        std::println(f"push {i * 10}: {pushed}");
+    }
+    std::println(f"{stack.len()} of {stack.capacity()}, above 15: {stack.count_if([](i32& x) { return x > 15; })}");
+    while (true) {
+        match (stack.pop()) {
+            std::some(v) => std::println(f"pop {v}"),
+            std::none => break,
+        }
+    }
+
+    either<u32, std::string> a = either<u32, std::string>::left(5);
+    either<u32, std::string> b = either<u32, std::string>::right(std::string::from("five"));
+    std::println(f"{show_either(a)} {show_either(b)}");
+
+    std::println(f"u8 is {category<u8>()}, f32 is {category<f32>()}, bool is {category<bool>()}");
+    std::println(f"type names: {std::type_name<bounded_stack<i32, 3>>()}, size of either<u32, u8>: {std::size_of<either<u32, u8>>()}");
+    // bounded_stack<i32, 0> empty = default;   // compile error: the check in the class body fails
+    return 0;
+}

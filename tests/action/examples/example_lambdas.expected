@@ -1,0 +1,15 @@
+exit: 0
+--- stdout
+total: 7
+apply_n: 15 1024
+scaler: 42
+add(7, 12) = 19
+sub(7, 12) = -5
+max(7, 12) = 12
+publish temperature 25, 35 and door 2:
+  thermometer: 25 C
+  thermometer: 35 C
+  alarm: 35 is above 30
+  door 2 opened
+even values, sorted: -2 -2 0 0 4 4 10 10 18 28 40 
+--- stderr

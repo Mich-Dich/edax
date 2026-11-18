@@ -24,7 +24,7 @@ private:
 
 enum shape : u8 { circle(f64), square(f64), empty }
 
-extern "C" i32 puts(std::raw_ptr<u8> text);
+extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
 unsafe u32 peek(usize address);
 compile_time run_time u32 clamp(u32 x, mut u32& lo, u32& hi);
 template<type T> deduce twice(T x);

@@ -35,7 +35,7 @@ TEST_CASE("codegen: a program gets a C main that calls the Rift main") {
     Generated g = generate("u32 main() { return 0; }");
     CHECK_EQ(g.codes, std::string());
     CHECK(contains(g.ir, "define i32 @r_4main4main()"));
-    CHECK(contains(g.ir, "define i32 @main()"));
+    CHECK(contains(g.ir, "define i32 @main(i32 %0, ptr %1)"));
     CHECK(contains(g.ir, "call i32 @rift_exit_status("));
 }
 
@@ -81,10 +81,11 @@ TEST_CASE("codegen: operands with side effects are evaluated left to right") {
 
 TEST_CASE("codegen: missing main and unsupported constructs are errors") {
     CHECK_EQ(generate("u32 helper() { return 0; }").codes, std::string("E6002"));
-    CHECK_EQ(generate("void main() { auto f = [](u32 x) { return x; }; }").codes, std::string("E6001"));
-    CHECK_EQ(generate("import std;\nvoid main() { std::string s = std::string::from(\"x\"); }").codes, std::string("E6001"));
+    CHECK_EQ(generate("void main() { auto f = [](u32 x) { return x; }; }").codes, std::string());   // lambdas generate
+    CHECK_EQ(generate("import std;\nvoid main() { std::mutex<u32> m = default; }").codes, std::string("E6001"));
     // Unsupported code that main never reaches is fine.
-    CHECK_EQ(generate("void unused() { auto f = [](u32 x) { return x; }; }\nvoid main() { }").codes, std::string());
+    CHECK_EQ(generate("import std;\nvoid unused() { std::mutex<u32> m = default; }\nvoid main() { }").codes,
+             std::string());
 }
 
 TEST_CASE("codegen: output is deterministic") {
@@ -146,7 +147,7 @@ TEST_CASE("driver: emit-llvm prints the module") {
     DriverRun r = drive({"emit-llvm", src.string()});
     CHECK_EQ(r.status, 0);
     CHECK(contains(r.out, "define void @r_4tiny4main()"));
-    CHECK(contains(r.out, "define i32 @main()"));
+    CHECK(contains(r.out, "define i32 @main(i32 %0, ptr %1)"));
     std::filesystem::remove_all(src.parent_path());
 }
 

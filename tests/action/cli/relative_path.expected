@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+--- stderr
+tests/action/cli/relative_path.rifts:6:63: warning[W4210]: "employees.csv" is relative to the working directory, not to the executable
+tests/action/cli/relative_path.rifts:6:63: note: use 'std::filesystem::executable_dir() / name', or 'std::filesystem::path::relative(name)' when the working directory is meant
+tests/action/cli/relative_path.rifts:6:63: note: warning id: std::relative_path
+tests/action/cli/relative_path.rifts:11:65: warning[W4210]: "out.txt" is relative to the working directory, not to the executable
+tests/action/cli/relative_path.rifts:11:65: note: use 'std::filesystem::executable_dir() / name', or 'std::filesystem::path::relative(name)' when the working directory is meant
+tests/action/cli/relative_path.rifts:11:65: note: warning id: std::relative_path

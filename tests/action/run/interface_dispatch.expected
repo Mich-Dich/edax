@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+dog
+dog
+a dog
+pt 4
+not an animal
+not a pt
+animal dog
+--- stderr

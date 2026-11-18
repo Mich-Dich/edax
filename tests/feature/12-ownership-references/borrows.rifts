@@ -7,7 +7,7 @@ void use(employee& e) { }
 
 void loops(mut std::darray<employee> employees) {
     for (employee& e : employees) {
-        employees.push(e.clone());          //~ error[E5021]: cannot call 'push' on 'employees' while the loop borrows it
+        employees.push(e.clone());          //~ error[E5021]: cannot call mut method 'push' on 'employees' while the loop borrows it
     }
     for (mut employee& e : employees) {
         e.age += 1;                         // changing it through the loop variable is fine

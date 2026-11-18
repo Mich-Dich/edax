@@ -1,0 +1,24 @@
+// The Rift standard library: module std::filesystem (spec 19, 20).
+
+/// A path in the file system, as text.
+class path {
+public:
+    /// A path with a copy of `text` (allocates).
+    static path from(std::str text);
+
+    /// A path relative to the working directory, on purpose: no `std::relative_path` warning
+    /// (allocates).
+    static path relative(std::str text);
+
+    /// The path as text.
+    std::str as_str();
+
+    /// A copy (allocates).
+    path clone();
+}
+
+/// `dir / name`: `name` appended after a separator.
+path operator/(path& dir, std::str name);
+
+/// The directory that contains the running executable.
+path executable_dir();

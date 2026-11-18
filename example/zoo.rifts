@@ -1,0 +1,111 @@
+// zoo: classes, inheritance, interfaces, smart pointers and destructors (specs 06, 07, 12, 13).
+import std;
+
+/// Something that can introduce itself.
+interface named {
+    std::string name();
+}
+
+/// Things that make a sound. Interfaces extend other interfaces.
+interface noisy : named {
+    std::string sound();
+}
+
+/// An `open` class can be derived from; `abstract` methods must be overridden.
+open class animal : noisy {
+public:
+    std::string given_name = std::string::from("");
+    u32 legs = 4;
+
+    std::string name() override { return this.given_name.clone(); }
+    virtual std::string kind() abstract;
+    virtual std::string describe() {
+        return std::format(f"{this.given_name} the {this.kind()} ({this.legs} legs) says {this.sound()}");
+    }
+    ~animal() { std::println(f"  ~animal {this.given_name}"); }
+}
+
+class dog : animal {
+public:
+    bool good = true;
+    std::string kind() override { return std::string::from("dog"); }
+    std::string sound() override { return std::string::from("woof"); }
+    std::string describe() override {
+        std::string base = this.animal::describe();     // call the base version explicitly
+        if (this.good) { return std::format(f"{base}, a good dog"); }
+        return base;
+    }
+    ~dog() { std::println(f"  ~dog {this.given_name}"); }
+}
+
+class bird : animal {
+public:
+    std::string kind() override { return std::string::from("bird"); }
+    std::string sound() override { return std::string::from("tweet"); }
+}
+
+/// A struct can implement an interface too, without changing its layout.
+struct robot : noisy {
+    u32 serial = 0;
+    std::string name() override { return std::format(f"unit-{this.serial}"); }
+    std::string sound() override { return std::string::from("beep"); }
+}
+
+/// Dynamic dispatch through an interface reference (a fat pointer: object + table).
+void introduce(noisy& n) {
+    std::println(f"{n.name()}: {n.sound()}!");
+}
+
+/// Static dispatch: a template constrained by an interface, resolved at compile time.
+template<type T : named>
+std::string shout(T& thing) {
+    return std::format(f"HEY {thing.name()}");
+}
+
+i32 main() {
+    std::println("-- interfaces and virtual calls");
+    dog rex = dog{ .given_name = std::string::from("Rex") };
+    bird tweety = bird{ .given_name = std::string::from("Tweety"), .legs = 2 };
+    robot r2 = robot{ .serial = 2 };
+    introduce(rex);
+    introduce(tweety);
+    introduce(r2);
+    animal& some = tweety;
+    std::println(some.describe());
+    std::println(rex.describe());
+    std::println(shout(r2));
+
+    std::println("-- a zoo of owned animals: std::unique_ptr<animal>");
+    {
+        mut std::darray<std::unique_ptr<animal>> zoo = default;
+        zoo.push(std::unique_ptr<dog>::make(dog{ .given_name = std::string::from("Fido"), .good = false }));
+        zoo.push(std::unique_ptr<bird>::make(bird{ .given_name = std::string::from("Polly"), .legs = 2 }));
+        for (std::unique_ptr<animal>& a : zoo) {
+            std::println(a->describe());
+            match (cast::dynamic<dog&>(*a)) {
+                std::some(d) => std::println(f"  {d.given_name} is a dog (good: {d.good})"),
+                std::none => std::println("  not a dog"),
+            }
+        }
+        std::println("leaving the block destroys the zoo:");
+    }
+
+    std::println("-- interfaces behind smart pointers");
+    std::unique_ptr<noisy> speaker = std::unique_ptr<robot>::make(robot{ .serial = 42 });
+    introduce(*speaker);
+
+    std::println("-- shared ownership");
+    std::shared_ptr<dog> first = std::shared_ptr<dog>::make(dog{ .given_name = std::string::from("Lassie") });
+    std::weak_ptr<dog> watcher = first.weak();
+    {
+        std::shared_ptr<dog> second = first.clone();
+        std::println(f"owners: {first.owners()}");
+    }
+    std::println(f"owners: {first.owners()}");
+    match (watcher.lock()) {
+        std::some(d) => std::println(f"still alive: {d->given_name}"),
+        std::none => std::println("gone"),
+    }
+    std::println("-- end of main: locals are destroyed in reverse order");
+    return 0;
+}

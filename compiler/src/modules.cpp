@@ -36,10 +36,10 @@ std::string root_or_default(const std::string& entry, const std::string& root) {
 
 class Loader {
 public:
-    Loader(std::string root, SourceManager& sources, DiagnosticEngine& diags)
-        : root_(std::move(root)), sources_(sources), diags_(diags) {}
+    Loader(std::string root, SourceManager& sources, DiagnosticEngine& diags, std::vector<std::string> extra_roots = {})
+        : root_(std::move(root)), extra_roots_(std::move(extra_roots)), sources_(sources), diags_(diags) {}
 
-    sema::Program run(const std::string& entry) {
+    sema::Program run(const std::string& entry, const std::string& build_script = {}) {
         fs::path    entry_path(entry);
         std::string name = module_name_for(entry, root_);
         auto        module = std::make_unique<sema::Module>();
@@ -63,6 +63,18 @@ public:
         process_imports(*raw);
         stack_.pop_back();
         state_[name] = State::done;
+        if (!build_script.empty() && !program_.modules.count("build")) {
+            auto script  = std::make_unique<sema::Module>();
+            script->name = "build";
+            load_file(*script, fs::path(build_script), /*is_header=*/false);
+            sema::Module* s = script.get();
+            program_.modules.emplace("build", std::move(script));
+            state_["build"] = State::visiting;
+            stack_.push_back("build");
+            process_imports(*s);
+            stack_.pop_back();
+            state_["build"] = State::done;
+        }
         return std::move(program_);
     }
 
@@ -128,12 +140,16 @@ private:
     /// The standard library is built into riftc (library/std/std.rifth) and loaded once.
     void load_std() {
         if (program_.std_module) return;
-        auto module  = std::make_unique<sema::Module>();
-        module->name = "std";
-        parse_into(*module, sources_.add(std::string(std_header_path), std::string(std_header_text())), true);
-        program_.std_module = module.get();
-        program_.modules.emplace("std", std::move(module));
-        state_["std"] = State::done;
+        for (const StdModule& m : std_modules()) {
+            auto module  = std::make_unique<sema::Module>();
+            module->name = std::string(m.name);
+            parse_into(*module, sources_.add(std::string(m.header_path), std::string(m.header_text)), true);
+            parse_into(*module, sources_.add(std::string(m.source_path), std::string(m.source_text)), false);
+            module->header_imports_std = module->source_imports_std = true;   // `std::` names, from every std module
+            if (m.name == "std") program_.std_module = module.get();
+            state_[module->name] = State::done;
+            program_.modules.emplace(module->name, std::move(module));
+        }
     }
 
     sema::Module* load_module(const std::string& name, const ast::ImportDecl& imp) {
@@ -161,9 +177,17 @@ private:
         for (const ast::PathSegment& seg : imp.path.segments) {
             rel /= seg.name;
         }
-        fs::path header = fs::path(root_) / rel;
+        fs::path base = root_;
+        for (const std::string& extra : extra_roots_) {   // a dependency's module (spec 25)
+            fs::path h = fs::path(root_) / rel;
+            h += ".rifth";
+            fs::path e = fs::path(extra) / rel;
+            e += ".rifth";
+            if (!is_file(h) && is_file(e)) base = extra;
+        }
+        fs::path header = base / rel;
         header += ".rifth";
-        fs::path source = fs::path(root_) / rel;
+        fs::path source = base / rel;
         source += ".rifts";
         if (!is_file(header)) {
             if (is_file(source)) {
@@ -196,6 +220,7 @@ private:
     }
 
     std::string                   root_;
+    std::vector<std::string>      extra_roots_;
     SourceManager&                sources_;
     DiagnosticEngine&             diags_;
     sema::Program                 program_;
@@ -223,7 +248,7 @@ std::string module_name_for(const std::string& path, const std::string& root) {
 
 sema::Program load_program(const std::string& entry_path, const LoadOptions& options,
                            SourceManager& sources, DiagnosticEngine& diags) {
-    return Loader(root_or_default(entry_path, options.root), sources, diags).run(entry_path);
+    return Loader(root_or_default(entry_path, options.root), sources, diags, options.extra_roots).run(entry_path, options.build_script);
 }
 
 } // namespace rift

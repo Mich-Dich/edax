@@ -40,7 +40,7 @@ std::exit_code main() { ... }
 std::exit_code main(std::span<std::str> args) { ... }
 ```
 - Return type: `void`, `std::exit_code`, or any integer type. If an integer return value is outside the platform's exit-status range, the program panics instead of silently truncating it.
-- `args[0]` is the executable path; `args[1..]` are the user's arguments. If an argument isn't valid UTF-8, the program stops at startup with an error message. Raw bytes are available through `std::env::raw_args()`.
+- `args[0]` is the executable path; `args[1..]` are the user's arguments. If an argument isn't valid UTF-8, the program stops at startup with an error message. Raw bytes are available through `std::env::raw_args()`, which returns copies (`std::darray<std::darray<u8>>`).
 
 ```rift
 // examples/compile_check.rifts - valid:

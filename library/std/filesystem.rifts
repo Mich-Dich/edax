@@ -1,0 +1,44 @@
+// The Rift standard library: module std::filesystem.
+
+class path {
+public:
+    static path from(std::str text) { return path{ .text = std::string::from(text) }; }
+
+    static path relative(std::str text) { return path{ .text = std::string::from(text) }; }
+
+    std::str as_str() { return this.text; }
+
+    path clone() { return path{ .text = this.text.clone() }; }
+
+private:
+    std::string text = default;
+}
+
+path operator/(path& dir, std::str name) {
+    mut std::string text = std::string::from(dir.as_str());
+    if (!text.is_empty() && !text.as_str().ends_with("/")) { text.push('/'); }
+    text.push_str(name);
+    return path{ .text = move text };
+}
+
+private extern(std::build::language::c) isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
+
+path executable_dir() {
+    mut std::raw_ptr<mut u8> buffer = nullptr;
+    mut isize n = 0;
+    unsafe {
+        buffer = std::raw::allocate<u8>(4096);
+        n = readlink(c"/proc/self/exe", buffer, 4096);
+    }
+    run_time check (n > 0) else "cannot find the executable's directory";
+    mut std::str full = "";
+    unsafe { full = std::raw::str_from(buffer, cast::saturate<usize>(n)); }
+    mut usize end = full.len();
+    while (end > 1) {
+        end -= 1;
+        if (full.slice(end, end + 1) == "/") { break; }
+    }
+    path dir = path::from(full.slice(0, end));
+    unsafe { std::raw::free(buffer); }
+    return dir;
+}

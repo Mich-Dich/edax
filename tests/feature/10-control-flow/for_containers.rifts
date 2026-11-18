@@ -1,0 +1,21 @@
+// feature 10: for-loops over containers and streams.
+import std;
+struct point { u32 x = 0; }
+class numbers {
+public:
+    u32 n = 0;
+    std::option<u32> next() mut { return std::none; }
+}
+
+void loops(std::darray<u32> list, mut std::darray<u32> owned, point p, numbers s) {
+    for (u32 x : list) { }
+    for (u32& x : list) { }
+    for (mut u32& x : owned) { }
+    for (mut u32& x : list) { }               //~ error[E4020]
+    for (u64 x : list) { }                    //~ error[E4010]: expected 'u32' (the container's elements), found 'u64'
+    for (u32 x : p) { }                       //~ error[E4013]: cannot iterate over 'point'
+    for (u32 x : numbers{}) { }
+    for (u32& x : numbers{}) { }              //~ error[E4010]: a stream's elements are values
+    for (u32 x : s) { }                       //~ error[E4020]
+    for (u32 x : 5u32) { }                    //~ error[E4013]: cannot iterate over 'u32'
+}

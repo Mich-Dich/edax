@@ -1,0 +1,2 @@
+// RUN: riftc test --root=%S/../../../example --out-dir=%t
+// The tests of example/build.rifts pass.

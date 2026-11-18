@@ -1,6 +1,6 @@
-# Rift - Language Design (v0.6)
+# Rift - Language Design (v0.7)
 
-> **Status:** Draft v0.6. This folder replaces `docs/design_doc.md` (v0.2).
+> **Status:** Draft v0.7. This folder replaces `docs/design_doc.md` (v0.2).
 > **Lineage:** C++-inspired. Explicit, simple to use, high control.
 > **Files:** `.rifts` = source, `.rifth` = header.
 
@@ -51,13 +51,30 @@ A complete program written to these rules is in [`examples/employees.rifts`](../
 8. **Control when you ask for it.** Every safe default has a named escape hatch: `+%` wrapping arithmetic, `cast::truncate`, `std::raw_ptr`, `unsafe`.
 9. **Fast, legible compilation.** Each error fits on one screen.
 
+## Changes from v0.6
+
+| Change | Reason |
+|---|---|
+| `extern(std::build::language::c)` replaces `extern "C"`; `extern(...) { ... }` declares several functions; with a body it exports a Rift function to C (see 13) | The language is a real name (`std::build::language::c`), written in full like the mode in `run_time(std::build::mode::debug)`, not a string the compiler has to recognize |
+| Mode lists use full names: `run_time(std::build::mode::debug)` (see 23) | No implicit namespaces: a bare `debug` was looked up somewhere the code never named |
+| Build modes are classes: `std::build::mode::debug` / `release` are `open` classes implementing `std::build::mode::settings`; a user mode derives from one and overrides the settings it changes (see 24) | A variation of a mode is what inheritance already expresses; no `.base` field and no copied settings |
+| `c"..."` C string literals (see 01, 19) | Calling C no longer needs hand-written `\0`s |
+| Diagnostic ids are declared names: `compile_time std::diagnostic deprecated = default;`, used as `std::compile_warning(gfx::deprecated, ...)` (see 23) | A string id looked like a path but a typo went unnoticed |
+| `open` is a keyword only before a type declaration (see 01) | `std::file::open` is a method name |
+| `cast<u32>(c)` for chars, `cast::checked<char>(n)` (see 17) | Chars and integers had no conversion at all |
+| `for` over containers (`len()` + `operator[]`) and streams (`next()`) (see 10); method templates (see 14); `std::raw` memory intrinsics (see 13) | What the standard library needs to be written in Rift |
+| Build API details settled while implementing 24/25: `.root` names a target's main file, `std::build::visibility::own/shared` (`public`/`private` are keywords), `g.target_of(project, name)`, `g.glob_in(project, pattern)`, `std::build::local{...}` path dependencies, `g.target_platform()`; `std::file::open(std::str)` overload instead of an implicit path conversion (22, q22) | What the first implementation needed; each is the smallest change to the sketch |
+| A mode's settings drive the compiler (optimization pipeline, DWARF line tables, wrap/mask/trap, run_time checks); the library's index checks follow `bounds()` (see 24) | The settings were names; now each has an effect |
+| Run-time entry checks report the caller's line, then the check (see 23); interface methods implemented in an open class hierarchy are dispatched dynamically (see 07) | As the spec said; the first implementation deviated |
+| `std::array`, `std::bitset`, `std::hash_map`, `std::tree_map` written in Rift; `std::raw::array<T, N>` inline storage (see 13, 20); `get(i)` returns `std::option<T&>` | The catalogue's containers exist now, with no compiler magic beyond inline storage |
+
 ## Changes from v0.4
 
 | Change | Reason |
 |---|---|
 | New: build modes `debug`, `release`, `release_with_debug_info` (see 24) | The language knows build modes out of the box |
 | User-defined modes with a base mode; they may change safety rules, and undefined behaviour needs `.allow_undefined_behavior = true` | Full control, but never silent |
-| Mode-gated checks: `run_time(debug) check`, `compile_time(release) check` (see 23) | Expensive checks can be left out of a build completely |
+| Mode-gated checks: `run_time(std::build::mode::debug) check`, `compile_time(std::build::mode::release) check` (see 23) | Expensive checks can be left out of a build completely |
 | New: `build.rifts`, evaluated at compile time, builds Rift and C/C++ (see 25) | Rift is its own build system; no CMake needed |
 | Build settings reach code as `std::build::setting<T>(...)` | Typed replacement for `-D` defines |
 

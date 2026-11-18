@@ -24,6 +24,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -41,6 +42,11 @@ enum class Kind {
     type_param,
     pending,     // template enum with arguments still to come from context (symbol = template)
     type_value,  // `type` (spec 26)
+    value_arg,   // a template value argument: `4` in `box<4>` (inner = its type; the value: value_bits)
+    closure,     // the unnamed type of one lambda (spec 18); args = parameter types, then the result
+    function,    // std::function<R(A...)>: a callable on the heap; args = parameters, then the result
+    fn_ptr,      // std::fn_ptr<R(A...)>: a plain function pointer; args as for function
+    array,       // std::raw::array<T, N>: N values of T inline (inner = T, args[0] = the value_arg N)
     meta,        // std::meta::field, std::meta::alternative (name says which)
 };
 
@@ -78,6 +84,11 @@ struct Layout {
     std::uint64_t align = 1;
 };
 
+/// Evaluates a template value argument (`N + 1`) for the template parameter `param` of `templ`,
+/// with `subst` for the parameters in scope. Set by the checker; null when it cannot be done.
+using ValueArgResolver = std::function<const Type*(const sema::Symbol* templ, std::size_t index, const ast::Expr& value,
+                                                   const std::map<const sema::Symbol*, const Type*>* subst)>;
+
 /// The type a compile_time `type` variable or parameter holds (spec 26). Set by the checker.
 using TypeValueResolver = std::function<const Type*(const sema::Symbol* symbol)>;
 
@@ -91,6 +102,23 @@ public:
     /// Without an instantiator, template types lower to `error` (nothing is instantiated).
     void set_instantiator(TypeInstantiator instantiator) { instantiator_ = std::move(instantiator); }
     void set_type_value_resolver(TypeValueResolver resolver) { type_values_ = std::move(resolver); }
+    void set_value_arg_resolver(ValueArgResolver resolver) { value_args_ = std::move(resolver); }
+
+    /// The interned template value argument `bits` of type `of` (an integer type or bool).
+    const Type* value_arg(u128 bits, const Type* of);
+    /// The type of the lambda `l` (one per lambda). Its signature is set once the lambda is checked.
+    const Type* closure(const ast::LambdaExpr* l);
+    void        set_closure_signature(const Type* closure, std::vector<const Type*> params, const Type* result);
+    const ast::LambdaExpr* lambda_of(const Type* closure) const;
+    /// `std::function<R(A...)>` (kind function) or `std::fn_ptr<R(A...)>` (kind fn_ptr), interned.
+    const Type* callable(Kind kind, std::vector<const Type*> params, const Type* result);
+    /// `std::raw::array<T, N>` (the storage of std::array, spec 13 and 20), interned.
+    const Type* array(const Type* element, const Type* count);
+    /// The number of elements of an array type.
+    std::uint64_t array_count(const Type* array) const;
+    /// Where the type being instantiated right now is written (for the type-body checks of 23).
+    [[nodiscard]] std::optional<Span> instantiation_site() const { return site_; }
+    u128        value_bits(const Type* value_arg) const;
 
     const Type* error() const { return error_; }
     const Type* untyped_int() const { return untyped_int_; }
@@ -137,6 +165,14 @@ private:
 
     TypeInstantiator                                            instantiator_;
     TypeValueResolver                                           type_values_;
+    ValueArgResolver                                            value_args_;
+    std::map<std::pair<u128, const Type*>, const Type*>         value_args_made_;
+    std::map<const Type*, u128>                                 value_of_;
+    std::optional<Span>                                         site_;
+    std::map<const ast::LambdaExpr*, const Type*>               closures_;
+    std::map<std::pair<Kind, std::vector<const Type*>>, const Type*> callables_;
+    std::map<std::pair<const Type*, const Type*>, const Type*>       arrays_;
+    std::map<const Type*, const ast::LambdaExpr*>               lambdas_;
     std::map<std::pair<const sema::Symbol*, std::vector<const Type*>>, const Type*> instances_;
     std::deque<Type>                                            storage_;
     std::map<std::string, const Type*>                          builtins_;
@@ -170,6 +206,8 @@ bool is_std_instance(const Type* t, std::string_view name);
 
 /// The built-in methods of std::option and std::result (spec 11), provided by the compiler.
 bool is_std_builtin_method(const Type* receiver, std::string_view method);
+/// `is_some`/`is_none`/`is_ok`/`is_error`: they look at the value without taking it.
+bool is_std_query_method(std::string_view method);
 
 /// Removes any reference: `T&` -> `T`.
 const Type* strip_ref(const Type* type);

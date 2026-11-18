@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+3 arguments
+[hello]
+[wörld]
+3 raw, first byte of the last: 119
+--- stderr

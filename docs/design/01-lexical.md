@@ -30,13 +30,15 @@ Identifiers are ASCII letters, digits and `_`, and must not start with a digit. 
 ### Keywords
 ```
 import  struct  class  interface  enum  template  type
-open  virtual  override  abstract  operator
+virtual  override  abstract  operator
 public  protected  private  static  extern
 mut  move  this  view
 compile_time  run_time  deduce  check
 if  else  for  while  break  continue  return  match
 true  false  nullptr  default  auto  cast  bit  unsafe
 ```
+`open` is a keyword only directly before a type declaration (`open class shape`, see 07); elsewhere it is an ordinary name, so `std::file::open` is a method.
+
 Built-in type names, which are reserved like keywords:
 ```
 bool  char  void  never
@@ -56,6 +58,7 @@ f32 f64
 | Char | `'a'`, `'\n'`, `'\u{1F600}'` | Type `char` |
 | String | `"hello\n"` | Type `std::static_str`, never interpolated (see 19) |
 | Raw string | `r"C:\path\no\escapes"` | No escape processing |
+| C string | `c"r+b"` | A NUL-terminated `std::raw_ptr<u8>` for C functions (see 13); escapes as in `"..."`, but `\0` is an error (E1016) |
 | Format string | `f"x = {x}"` | Interpolated (see 19) |
 | Null pointer | `nullptr` | Only for `std::raw_ptr` (see 13) |
 

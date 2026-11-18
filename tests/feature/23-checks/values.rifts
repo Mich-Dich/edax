@@ -1,0 +1,24 @@
+// feature 14/23: template value parameters and type-body checks per instance.
+import std;
+
+template<type T, usize N>
+struct ring_buffer {
+    compile_time check (N > 0) else "capacity must be at least 1";
+    compile_time check ((N & (N - 1)) == 0) else f"capacity must be a power of two, got {N}";
+    T first;
+}
+
+template<usize N>
+struct grid {
+    u32 cells = 0;
+}
+
+compile_time usize side = 3;
+
+void uses(usize run_time_size) {
+    ring_buffer<u32, 16> good = ring_buffer<u32, 16>{ .first = 1 };
+    ring_buffer<u32, 12> bad = ring_buffer<u32, 12>{ .first = 1 };   //~ error[E4210]: capacity must be a power of two, got 12
+    grid<side + 1> g = grid<side + 1>{};
+    grid<run_time_size> h = default;                     //~ error[E4200]: 'run_time_size' is not a compile-time value
+    grid<-1> k = default;                                //~ error[E4002]: -1 does not fit in 'usize'
+}

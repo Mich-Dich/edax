@@ -17,7 +17,7 @@ A C/C++ `assert` is a run-time check; Rift's is `run_time check`. What's new is 
 
 - A `compile_time check` is a **build requirement**. It must pass, or nothing gets built.
 - A `run_time check` is the language's assert. Without a mode list it is compiled into **every** build mode (principle 3). There is no separate `std::assert`.
-- Either modifier can be limited to certain build modes, e.g. `run_time(debug) check` (see below).
+- Either modifier can be limited to certain build modes, e.g. `run_time(std::build::mode::debug) check` (see below).
 - `compile_time run_time check` gives one statement both jobs: an early error when the value is known at compile time, and a safety net otherwise.
 
 ### The two forms
@@ -40,25 +40,26 @@ compile_time check {
 ### Mode-gated checks
 A `compile_time` or `run_time` modifier can take a list of **build modes** (see 24). The check is then only part of builds in those modes, and in every other mode it **doesn't exist**: no code in the binary and no evaluation.
 ```
-run_time(debug) check (...) else ...;                        // only in debug-based builds
-run_time(debug, profile) check (...) else ...;               // debug-based or profile-based builds
-compile_time(release) check (...) else ...;                  // a build requirement for release-based builds only
-compile_time run_time(debug) check (...) else ...;           // compile-time part always, run-time part only in debug
+run_time(std::build::mode::debug) check (...) else ...;                  // only in debug-based builds
+run_time(std::build::mode::debug, build::profile) check (...) else ...;  // debug-based or profile-based builds
+compile_time(std::build::mode::release) check (...) else ...;            // a build requirement for release-based builds only
+compile_time run_time(std::build::mode::debug) check (...) else ...;     // compile-time part always, run-time part only in debug
 ```
-- A listed mode also covers every mode **based on** it (see 24): `run_time(release)` applies to `release`, `release_with_debug_info` and a user mode based on either.
-- Built-in mode names are always valid. A user mode name is only valid if the build defines it, so library code should list built-in modes only.
-- A check **without** a list is in every mode. Only a mode with `.run_time_checks = gated_only` or `none` and `.allow_undefined_behavior = true` can remove it (see 24).
+- A listed mode also covers every mode **derived from** it (see 24): `run_time(std::build::mode::release)` applies to `release`, `release_with_debug_info` and a user mode based on either.
+- Modes are written with their **full names**, like every other name: the built-in ones are the classes `std::build::mode::debug`, `::release` and `::release_with_debug_info` (see 24). A bare `debug` is an error (E4212); there is no implicit namespace.
+- A user mode is a class derived in `build.rifts` (`build::profile`, see 24 and 25). It is only valid if the build defines it, so library code should list built-in modes only.
+- A check **without** a list is in every mode. Only a mode whose `run_time_checks()` returns `gated_only` or `none` and whose `allow_undefined_behavior()` returns `true` can remove it (see 24).
 - For entry checks the **caller's** mode decides (see 24, "Scope of a mode").
 - Mode-gated checks have no side effects to lose: the condition and the message are only evaluated when the check is active. That's why removing them can't change what a correct program does.
 
 ```rift
 f32 sample(std::span<f32> data, usize i) {
     run_time check (i < data.len()) else f"sample index {i} out of range (len {data.len()})";
-    run_time(debug) check (data.is_sorted()) else "sample() expects sorted data";     // O(n): debug only
+    run_time(std::build::mode::debug) check (data.is_sorted()) else "sample() expects sorted data";     // O(n): debug only
     ...
 }
 
-compile_time(release) check (!std::build::setting<bool>("dev_tools")) else "dev_tools must be off in release builds";
+compile_time(std::build::mode::release) check (!std::build::setting<bool>("dev_tools")) else "dev_tools must be off in release builds";
 ```
 
 ### Where checks can be written
@@ -91,15 +92,21 @@ These count as compile-time values: literals, `compile_time` constants, template
 These are used in block-form checks, and anywhere else compile-time code runs (such as `if compile_time` branches, see 15):
 ```rift
 compile_time never std::compile_error(std::format_args message);
-compile_time never std::compile_error(std::static_str id, std::format_args message);
-compile_time void  std::compile_warning(std::static_str id, std::format_args message);
+compile_time never std::compile_error(std::diagnostic id, std::format_args message);
+compile_time void  std::compile_warning(std::diagnostic id, std::format_args message);
 compile_time void  std::compile_note(std::format_args message);
 // each also has an overload taking a std::source_location first
 compile_time std::source_location std::location_of(<parameter>);
 compile_time std::static_str      std::type_name<T>();
 compile_time bool                 std::is_compile_time(<parameter>);   // block form only, see example 7
 ```
-- **Warnings require an id** (`"gfx::deprecated"`). Users switch them per id: `riftc --warn=gfx::deprecated=off|error`. An id on an error is optional; `riftc explain <id>` shows the `///` doc comment above the check.
+- **Warnings require an id.** An id is a **declared name**, not a string: a `compile_time std::diagnostic` constant, with a doc comment that explains it:
+  ```rift
+  // gfx.rifth
+  /// Calls that are going away; each warning names the replacement.
+  compile_time std::diagnostic deprecated = default;
+  ```
+  Its full name is the id: `gfx::deprecated`. A misspelled id is an unknown name (a compile error), and a string where an id belongs is E4213. Users switch warnings per id: `riftc --warn=gfx::deprecated=off|error|on`. An id on an error is optional; `riftc explain <id>` shows the declaration's doc comment (std ids come with riftc; `gfx::deprecated` is looked up in `gfx.rifth`/`.rifts` under the current directory).
 - Notes emitted during a check are attached to that check's error or warning, in whatever order they're called.
 - A **panic during compile-time evaluation** is a compile error with the panic's message.
 - Check evaluation has a step budget. Exceeding it is an error, which keeps builds fast (principle 9).
@@ -204,7 +211,7 @@ The user sees this message *instead of* the generic "does not implement `std::fo
 ```rift
 void draw_quad(f32 x, f32 y) {
     compile_time check {
-        std::compile_warning("gfx::deprecated", "draw_quad() is deprecated; use draw_rect(rect) instead");
+        std::compile_warning(gfx::deprecated, "draw_quad() is deprecated; use draw_rect(rect) instead");
     }
     ...
 }
@@ -229,22 +236,27 @@ compile_time check (std::align_of<packet_header>() == 8) else "packet_header mus
 ### 7. The relative-path warning, as library code
 The warning from 19 is an entry check in the standard library's source:
 ```rift
-// std/file.rifts
+// library/std/std.rifts
 class file {
 public:
-    static std::result<std::file, std::io_error> open(std::filesystem::path& path) {
+    static std::result<std::file, std::io_error> open(std::str path) {
         compile_time check {
             if (std::is_compile_time(path)) {
-                if (path.is_relative() && !path.is_explicitly_relative()) {
-                    std::compile_warning("std::relative_path", std::location_of(path),
+                if (is_plain_relative(path)) {   // not "/...", "./..." or "../..."
+                    std::compile_note("use 'std::filesystem::executable_dir() / name', or ...");
+                    std::compile_warning(std::location_of(path), std::relative_path,
                         f"\"{path}\" is relative to the working directory, not to the executable");
                 }
             }
         }
-        ...
+        return open_with(std::filesystem::path::from(path), c"r");
     }
 }
 ```
+The warning is reported at the argument (`std::location_of(path)`), and `riftc explain
+std::relative_path` prints the doc comment of its declaration in `std.rifth`.
+`std::is_compile_time(param)` and `std::location_of(param)` take a parameter of the function and
+are only allowed in its compile-time code (E4030 otherwise, E4120 in run-time code).
 `std::is_compile_time(param)` lets a block-form check look at a parameter **only when** the call gives it a compile-time value. Without it, reading `path` in a `compile_time check` would make a compile-time argument required.
 
 ### 8. The `ASSERT` from the C++ example
@@ -257,7 +269,7 @@ There are no macros, so a malformed check is a normal syntax or name error at th
 - **`compile_time` / `run_time` on the check:** the difference from an assert isn't a different feature but a different *time*. The language already has words for that, so a check reads exactly like a function declaration's modifiers.
 - **Source only:** the source is the single source of truth. Headers stay a clean list of declarations, and the compiled interface carries what importers need, the same mechanism as for templates.
 - **Entry section:** preconditions are written where a reader looks first, at the top of the function. "At the top" also tells the compiler which checks belong to each call, with no extra syntax.
-- **Mode lists on the modifier:** the build mode is just another "when". `run_time(debug)` reads as "at run time, in debug", so gating needs no new keyword.
+- **Mode lists on the modifier:** the build mode is just another "when". `run_time(std::build::mode::debug)` reads as "at run time, in debug", so gating needs no new keyword.
 - **`compile_time check` requires compile-time arguments instead of silently skipping:** a check you can't be sure ran is not a requirement. Code that wants "check if possible" says so with `compile_time run_time`.
 - **Checks only report:** they can't generate code or change which overload is chosen. They can stop a build or a program, never change what it does.
 - **The library can replace compiler rules:** the relative-path warning passes the boundary test (see 20), so it lives in `std`.

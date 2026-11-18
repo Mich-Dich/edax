@@ -1,0 +1,73 @@
+// ffi: raw pointers, unsafe, the std::raw memory intrinsics and C interop (spec 13).
+// Build it through example/build.rifts, which compiles native/stats.c and links it and libm.
+import std;
+import native::stats;
+
+/// From the C library (libm). Calling a C function is `unsafe`: Rift can't check it.
+extern(std::build::language::c) {
+    f64 hypot(f64 x, f64 y);
+    i32 puts(std::raw_ptr<u8> text);
+}
+
+/// Exported to C: stats.c calls it by this name. Rift code may call it without `unsafe`.
+extern(std::build::language::c) void rift_log(std::raw_ptr<u8> message, i32 value) {
+    mut usize length = 0;
+    unsafe {
+        while (*message.offset(length) != 0u8) { length += 1; }
+        std::println(f"  [from C] {std::raw::str_from(message, length)} ({value})");
+    }
+}
+
+/// A tiny growable buffer on raw memory: what std::darray does, without the safety net.
+struct raw_buffer {
+    std::raw_ptr<mut i32> data = nullptr;
+    usize count = 0;
+}
+
+unsafe raw_buffer make_buffer(usize n) {
+    raw_buffer b = raw_buffer{ .data = std::raw::allocate<i32>(n), .count = n };
+    for (usize i : 0..n) {
+        std::raw::write(b.data.offset(i), cast::truncate<i32>((n - i) * 7 % 10));
+    }
+    return b;
+}
+
+i32 main() {
+    std::println("-- pointers to locals");
+    mut i32 x = 10;
+    std::raw_ptr<mut i32> p = mut &x;
+    unsafe { *p += 5; }
+    std::println(f"x = {x}, p is set: {p != nullptr}");
+
+    std::println("-- raw memory and a C sort");
+    unsafe {
+        raw_buffer b = make_buffer(8);
+        mut std::string before = std::string::from("");
+        for (usize i : 0..b.count) { before.push_str(std::format(f"{*b.data.offset(i)} ")); }
+        i32 swaps = native::stats::stats_sort(b.data, b.count);
+        mut std::string after = std::string::from("");
+        for (usize i : 0..b.count) { after.push_str(std::format(f"{std::raw::read(b.data.offset(i))} ")); }
+        std::println(f"{before}-> {after}({swaps} swaps in C)");
+        std::raw::free(b.data);
+    }
+
+    std::println("-- passing a Rift array to C");
+    mut std::array<f64, 4> samples = default;
+    samples[0] = 1.5;
+    samples[1] = 2.5;
+    samples[2] = 4.0;
+    samples[3] = 8.0;
+    mut f64 mean = 0.0;
+    unsafe {
+        std::raw_ptr<f64> first = cast::reinterpret<std::raw_ptr<f64>>(&samples);
+        mean = native::stats::stats_mean(first, samples.len());
+    }
+    std::println(f"mean = {mean}");
+
+    std::println("-- libm and libc");
+    unsafe {
+        std::println(f"hypot(3, 4) = {hypot(3.0, 4.0)}");
+        puts(c"a C string literal: NUL-terminated, printed by puts");
+    }
+    return 0;
+}

@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+hello x2
+7
+2
+--- stderr

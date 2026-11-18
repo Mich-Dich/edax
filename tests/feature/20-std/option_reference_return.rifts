@@ -1,0 +1,8 @@
+// feature 20: a std::option<T&> is a view; returning one follows the reference rules (spec 12).
+import std;
+std::option<u32&> leak(u32 x) {                        //~ error[E5012]
+    return std::some(x);                                //~ error[E5013]
+}
+std::option<u32&> first(std::darray<u32>& d) {
+    return d.get(0);                                    // borrows from a reference parameter
+}

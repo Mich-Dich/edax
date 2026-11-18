@@ -16,7 +16,7 @@ u32 f(u32 x) { return x; }
 u32 f(u64 x) { return 0; }
 
 unsafe u32 read_register(usize address) { return 0; }
-extern "C" i32 puts(std::raw_ptr<u8> text);
+extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
 
 std::exit_code main(std::span<std::str> args) {
     mut u32 counter = 0;

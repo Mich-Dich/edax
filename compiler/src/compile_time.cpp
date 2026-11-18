@@ -4,6 +4,11 @@
 #include "rift/source.hpp"
 
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <regex>
+#include <unistd.h>
+#include <algorithm>
 #include <format>
 
 namespace rift::ct {
@@ -152,13 +157,30 @@ std::string builtin_name(const CallExpr& c) {
     const auto& segs = pe.path.segments;
     if (segs.size() == 2 && segs[0].name == "std") {
         const std::string& n = segs[1].name;
-        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "size_of" || n == "align_of" || n == "type_name") {
+        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "size_of" || n == "align_of" || n == "type_name" ||
+            n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of") {
             return n;
         }
     }
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "meta") {
         const std::string& n = segs[2].name;
         if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum") return "meta::" + n;
+    }
+    return {};
+}
+
+std::string raw_intrinsic(const CallExpr& c) {
+    const Expr& callee = *c.callee;
+    if (callee.kind != ExprKind::path) return {};
+    const auto& pe = callee.as<PathExpr>();
+    if (pe.symbol) return {};
+    const auto& segs = pe.path.segments;
+    if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "raw") {
+        const std::string& n = segs[2].name;
+        if (n == "allocate" || n == "reallocate" || n == "free" || n == "read" || n == "write" || n == "drop" || n == "copy" ||
+            n == "str_from") {
+            return n;
+        }
     }
     return {};
 }
@@ -182,6 +204,12 @@ struct Evaluator::Impl {
     std::size_t         steps = 0;
     Value               returned;
     std::string         why;   // what the evaluation is for, for messages
+    bool                quiet = false;               // report nothing (Evaluator::Context::quiet)
+    std::optional<Span> site;                        // where compile_error/warning report
+    std::function<std::shared_ptr<const Value>(const Symbol*)> parameter;   // entry checks: the call's arguments
+    std::function<bool(const Symbol*)>                         parameter_known;
+    std::function<std::optional<Span>(const Symbol*)>          parameter_site;
+    std::vector<Note>   pending_notes;               // std::compile_note, for the next error or warning
 
     static constexpr std::size_t max_steps = 2'000'000;
     static constexpr std::size_t max_depth = 256;
@@ -209,6 +237,7 @@ struct Evaluator::Impl {
     }
 
     [[noreturn]] void not_constant(Span span, std::string message, std::string note = {}) {
+        if (quiet) throw Stop{};
         Diagnostic& d = diags.report(DiagCode::E4200, span, std::move(message), "not known at compile time");
         if (!note.empty()) d.notes.push_back(Note{std::move(note), std::nullopt});
         if (!why.empty()) d.notes.push_back(Note{why, std::nullopt});
@@ -217,6 +246,7 @@ struct Evaluator::Impl {
     }
 
     [[noreturn]] void failed(Span span, std::string message, std::string label) {
+        if (quiet) throw Stop{};
         Diagnostic& d = diags.report(DiagCode::E4201, span, std::move(message), std::move(label));
         if (!why.empty()) d.notes.push_back(Note{why, std::nullopt});
         call_notes(d);
@@ -323,8 +353,13 @@ struct Evaluator::Impl {
         }
         case ExprKind::string_literal: {
             const auto& lit = e.as<LiteralExpr>();
+            if (lit.token_kind == TokenKind::c_string_literal) not_constant(e.span, "a C string is a pointer, not known at compile time");
             if (lit.token_kind == TokenKind::format_string_literal) {
-                not_constant(e.span, "f-strings cannot be built at compile time yet");
+                std::string out;
+                for (const FormatPart& part : lit.format_parts) {
+                    out += part.expr ? format(eval(*part.expr), part.spec, part.expr->span) : part.text;
+                }
+                return string_value(std::move(out));
             }
             return string_value(lit.value);
         }
@@ -425,6 +460,14 @@ struct Evaluator::Impl {
                 if (auto found = it->locals.find(s); found != it->locals.end()) return found->second;
                 break;   // locals of other frames are not visible
             }
+            if (parameter && frames.size() == 1 && s->local_kind != sema::LocalKind::variable &&
+                s->local_kind != sema::LocalKind::binding && s->local_kind != sema::LocalKind::loop_variable) {
+                if (auto v = parameter(s)) {
+                    frames.back().locals[s] = *v;
+                    return *v;
+                }
+                throw Stop{};   // reported at the argument (or quiet)
+            }
             if (s->ct_value) return *s->ct_value;
             if (auto v = hooks.constant_value(s)) return *v;
             if (hooks.depends_on_template && hooks.depends_on_template(s)) unknown();
@@ -451,6 +494,19 @@ struct Evaluator::Impl {
         case SymbolKind::enum_:
         case SymbolKind::interface:
         case SymbolKind::type_param: return Value::of_type(type_of_symbol(s, pe.path), tc.type_value());
+        case SymbolKind::value_param: {   // `N` of `template<usize N>`
+            const Type* arg = nullptr;
+            if (!frames.empty() && frames.back().function) {
+                if (const auto* subst = sema::substitution_of(frames.back().function)) {
+                    if (auto it = subst->find(s); it != subst->end()) arg = it->second;
+                }
+            } else {
+                arg = hooks.substitute(s);
+            }
+            if (!arg || !arg->is(Kind::value_arg)) unknown();
+            if (arg->inner->is(Kind::bool_)) return Value::of_bool(tc.value_bits(arg) != 0, arg->inner);
+            return integer(tc.value_bits(arg), arg->inner);
+        }
         default:
             not_constant(pe.span, std::format("'{}' is not a compile-time value", ast::to_string(pe.path)));
         }
@@ -847,7 +903,10 @@ struct Evaluator::Impl {
         if (callee.kind == ExprKind::member) {
             const auto&        me   = callee.as<MemberExpr>();
             const std::string& name = me.name.segments.back().name;
-            if (me.symbol && me.symbol->kind == SymbolKind::method) return run(me.symbol, eval(*me.object), c);
+            if (me.symbol && me.symbol->kind == SymbolKind::method) {
+                Value self = eval(*me.object);
+                return run(dispatch(me.symbol, self), std::move(self), c);
+            }
             Value o = eval(*me.object);
             return method(o, name, c);
         }
@@ -859,6 +918,17 @@ struct Evaluator::Impl {
             std::size_t n = o.kind == Value::Kind::list ? o.elements.size() : o.string.size();
             if (name == "len") return integer(n, usize());
             if (name == "is_empty") return Value::of_bool(n == 0, tc.bool_());
+        }
+        if (o.kind == Value::Kind::string && c.args.size() == 1 &&
+            (name == "starts_with" || name == "ends_with" || name == "contains")) {   // std::str methods (spec 19)
+            Value a = eval(*c.args[0]);
+            std::string needle = a.kind == Value::Kind::string ? a.string
+                               : a.kind == Value::Kind::character ? std::string(1, static_cast<char>(a.character))
+                                                                  : (unknown(), std::string());
+            bool r = name == "starts_with" ? o.string.starts_with(needle)
+                   : name == "ends_with"   ? o.string.ends_with(needle)
+                                           : o.string.find(needle) != std::string::npos;
+            return Value::of_bool(r, tc.bool_());
         }
         if (o.kind == Value::Kind::field && name == "get" && c.args.size() == 1) {
             Value v = eval(*c.args[0]);
@@ -881,6 +951,8 @@ struct Evaluator::Impl {
         }
         if (o.kind == Value::Kind::enumeration && (types::is_std_instance(o.type, "option") || types::is_std_instance(o.type, "result"))) {
             bool good = o.symbol->name == "some" || o.symbol->name == "ok";
+            if (c.args.empty() && (name == "is_some" || name == "is_ok")) return Value::of_bool(good, tc.bool_());
+            if (c.args.empty() && (name == "is_none" || name == "is_error")) return Value::of_bool(!good, tc.bool_());
             if (name == "value_or" && c.args.size() == 1) return good ? o.elements.at(0) : eval(*c.args[0]);
             if (name == "expect" && c.args.size() == 1) {
                 if (good) return o.elements.at(0);
@@ -891,7 +963,149 @@ struct Evaluator::Impl {
         not_constant(c.span, std::format("the method '{}' cannot run at compile time", name));
     }
 
+    /// `{value:spec}` of an f-string, formatted by the compiler (spec 19, 23).
+    std::string format(const Value& v, const FormatSpec& spec, Span span) {
+        std::string text;
+        switch (v.kind) {
+        case Value::Kind::integer: {
+            bool       neg = v.type && v.type->is_signed && v.as_signed() < 0 && !spec.radix;
+            u128       mag = neg ? static_cast<u128>(-(v.as_signed() + 1)) + 1 : v.integer;
+            int        base = spec.radix == 'x' || spec.radix == 'X' ? 16 : spec.radix == 'b' ? 2 : spec.radix == 'o' ? 8 : 10;
+            const char* digits = spec.radix == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+            do {
+                text.insert(text.begin(), digits[static_cast<int>(mag % static_cast<u128>(base))]);
+                mag /= static_cast<u128>(base);
+            } while (mag != 0);
+            if (neg) text.insert(0, "-");
+            else if (spec.plus) text.insert(0, "+");
+            break;
+        }
+        case Value::Kind::floating: {
+            double f = v.floating;
+            if (std::isnan(f)) text = "NaN";
+            else if (std::isinf(f)) text = f < 0 ? "-inf" : "inf";
+            else if (spec.precision >= 0) text = std::format("{:.{}f}", f, spec.precision);
+            else {
+                text = v.type && v.type->bits == 32 ? std::format("{}", static_cast<float>(f)) : std::format("{}", f);
+                if (text.find_first_of(".en") == std::string::npos) text += ".0";
+            }
+            if (spec.plus && f >= 0 && !std::isnan(f)) text.insert(0, "+");
+            break;
+        }
+        case Value::Kind::boolean: text = v.boolean ? "true" : "false"; break;
+        case Value::Kind::character: encode_utf8(v.character, text); break;
+        case Value::Kind::string: text = v.string; break;
+        case Value::Kind::type: text = types::to_string(v.type_value); break;
+        case Value::Kind::enumeration: text = v.symbol ? v.symbol->name : "?"; break;
+        default: not_constant(span, std::format("{} cannot be formatted at compile time", to_string(v)));
+        }
+        if (spec.width > 0) {
+            std::size_t len = count_code_points(text);
+            std::size_t w   = static_cast<std::size_t>(spec.width);
+            if (len < w) {
+                std::size_t pad   = w - len;
+                bool        right = spec.align == '>' || (spec.align == 0 && (v.kind == Value::Kind::integer || v.kind == Value::Kind::floating));
+                if (spec.align == '^') text = std::string(pad / 2, ' ') + text + std::string(pad - pad / 2, ' ');
+                else if (right) text = std::string(pad, ' ') + text;
+                else text += std::string(pad, ' ');
+            }
+        }
+        return text;
+    }
+
+    /// std::compile_error / compile_warning / compile_note (spec 23).
+    Value diagnostic(const CallExpr& c, const std::string& name) {
+        auto text = [&](std::size_t i) { return eval(*c.args.at(i)).string; };
+        Span at   = site ? *site : c.span;
+        if (name == "compile_note") {
+            pending_notes.push_back(Note{text(0), std::nullopt});
+            return Value{};
+        }
+        std::size_t first = 0;   // an optional std::source_location first: where to report
+        if (!c.args.empty() && is_location(*c.args[0])) {
+            Value loc = eval(*c.args[0]);
+            if (loc.location) at = *loc.location;
+            first = 1;
+        }
+        bool        with_id = c.args.size() - first == 2;
+        std::string id      = with_id ? diagnostic_id(*c.args[first]) : std::string();
+        std::string message = text(with_id ? first + 1 : first);
+        if (quiet) throw Stop{};
+        bool error = name == "compile_error";
+        if (!error && !id.empty()) {   // --warn=id=off|error (spec 23)
+            auto level = program.warn_levels.find(id);
+            if (level != program.warn_levels.end() && level->second == "off") {
+                pending_notes.clear();
+                return Value{};
+            }
+            if (level != program.warn_levels.end() && level->second == "error") error = true;
+        }
+        Diagnostic& d = diags.report(error ? DiagCode::E4210 : DiagCode::W4210, at, message,
+                                     name == "compile_error" ? "check failed" : error ? "warning made an error" : "");
+        for (Note& n : pending_notes) d.notes.push_back(std::move(n));
+        pending_notes.clear();
+        if (!id.empty()) d.notes.push_back(Note{std::format("{} id: {}", name == "compile_error" ? "error" : "warning", id), std::nullopt});
+        // The check's own location, unless it is the standard library's (its source is not the user's)
+        const Symbol* checker = frames.empty() ? nullptr : frames.front().function;
+        bool in_std = checker && checker->module && (checker->module->name == "std" || checker->module->name.starts_with("std::"));
+        if (site && !in_std) d.notes.push_back(Note{"reported by this check", c.span});
+        if (name == "compile_error") throw Stop{};
+        return Value{};
+    }
+
+    static bool is_location(const Expr& e) {
+        const Type* t = types::strip_ref(e.type);
+        return t && t->is(Kind::user) && t->symbol->name == "source_location" && t->symbol->module && t->symbol->module->name == "std";
+    }
+
+    /// The full name of the `std::diagnostic` that `e` names: `gfx::deprecated`.
+    static std::string diagnostic_id(const Expr& e) {
+        const sema::Symbol* s = e.kind == ExprKind::path ? e.as<PathExpr>().symbol : nullptr;
+        if (!s) return ast::to_string(e.as<PathExpr>().path);
+        return s->module && !s->module->name.empty() ? s->module->name + "::" + s->name : s->name;
+    }
+
+    /// A check met while running compile-time code (spec 23): an entry check of a compile_time
+    /// function, or a run-time check in a `compile_time run_time` function. Failing is an error.
+    void run_check(const Check& k, Span span) {
+        if (k.block) {
+            if (k.is_compile_time && k.compile_active) block(*k.block);
+            return;
+        }
+        if (!(k.is_compile_time && k.compile_active) && !(k.is_run_time && k.run_active)) return;
+        if (truth(eval(*k.condition))) return;
+        std::string message = eval(*k.message).string;
+        Span        at      = span;
+        for (auto it = frames.rbegin(); it != frames.rend(); ++it) {
+            if (it->function) {
+                at = it->call_site;   // the call that broke the function's precondition
+                break;
+            }
+        }
+        if (quiet) throw Stop{};
+        Diagnostic& d = diags.report(DiagCode::E4210, at, message, "check failed");
+        if (at.begin != k.condition->span.begin || at.file != k.condition->span.file) {
+            d.notes.push_back(Note{"the check is here", k.condition->span});
+        }
+        call_notes(d);
+        throw Stop{};
+    }
+
     Value builtin(const CallExpr& c, const std::string& name) {
+        if (name.starts_with("compile_")) return diagnostic(c, name);
+        if (name == "is_compile_time" || name == "location_of") {   // about a parameter's argument (spec 23)
+            const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
+            if (name == "is_compile_time") {
+                bool known = p && frames.size() == 1 && parameter_known && parameter_known(p);
+                return Value::of_bool(known, tc.bool_());
+            }
+            std::optional<Span> at = p && frames.size() == 1 && parameter_site ? parameter_site(p) : std::nullopt;
+            Value v;
+            v.kind     = Value::Kind::aggregate;
+            v.type     = c.type;
+            v.location = at ? at : std::optional<Span>(c.args.empty() ? c.span : c.args[0]->span);
+            return v;
+        }
         const auto& seg = c.callee->as<PathExpr>().path.segments.back();
         auto arg = [&](std::size_t i) -> const Type* {
             if (i >= seg.template_args.size() || !seg.template_args[i].type) unknown();
@@ -947,22 +1161,459 @@ struct Evaluator::Impl {
     }
 
     /// Runs a compile_time function.
+    /// The method a call runs: an interface or virtual method is the object's own override
+    /// (the value knows its class at compile time).
+    const Symbol* dispatch(const Symbol* m, const Value& self) {
+        if (self.kind != Value::Kind::aggregate || !self.type || !self.type->is(Kind::user)) return m;
+        for (const Symbol* cls = self.type->symbol; cls; cls = cls->base_class()) {
+            auto it = cls->members.find(m->name);
+            if (it == cls->members.end()) continue;
+            for (const Symbol* candidate : it->second) {
+                if (candidate->kind != SymbolKind::method) continue;
+                const FunctionDecl* f = body_decl(candidate);
+                if (f && f->body && f->params.size() == body_decl(m)->params.size()) return candidate;
+            }
+        }
+        return m;
+    }
+
+    // --- std::build (spec 24, 25) --------------------------------------------------------
+
+    static bool in_build_module(const Symbol* s) {
+        const Symbol* owner = s->parent && s->parent->kind != SymbolKind::function ? s->parent : nullptr;
+        const sema::Module* m = s->module;
+        if (!m) return false;
+        if (m->name != "std::build") return false;
+        return !owner || owner->name == "graph" || owner->name == "path";
+    }
+
+    /// `**/*.cpp` as a regular expression over paths with `/`.
+    static std::string glob_regex(const std::string& pattern) {
+        std::string out;
+        for (std::size_t i = 0; i < pattern.size(); ++i) {
+            char ch = pattern[i];
+            if (ch == '*' && i + 1 < pattern.size() && pattern[i + 1] == '*') {
+                bool slash = i + 2 < pattern.size() && pattern[i + 2] == '/';
+                out += slash ? "(.*/)?" : ".*";
+                i += slash ? 2 : 1;
+            } else if (ch == '*') {
+                out += "[^/]*";
+            } else if (ch == '?') {
+                out += "[^/]";
+            } else if (std::string_view(".+()[]{}^$|\\").find(ch) != std::string_view::npos) {
+                out += '\\';
+                out += ch;
+            } else {
+                out += ch;
+            }
+        }
+        return out;
+    }
+
+    /// The `path` struct value with `text`.
+    Value path_value(const std::string& text, const Type* path_type) {
+        Value v;
+        v.kind = Value::Kind::aggregate;
+        v.type = path_type;
+        v.elements.push_back(string_value(text));
+        return v;
+    }
+
+    /// Whether class `cls` is `base` or derives from it.
+    static bool derives(const Symbol* cls, const Symbol* base) {
+        for (const Symbol* c = cls; c; c = c->base_class()) {
+            if (c == base) return true;
+        }
+        return false;
+    }
+
+    static std::string static_text(const Value& v) { return v.kind == Value::Kind::string ? v.string : std::string(); }
+
+    /// A value of `t` from the text of `-Dname=value`.
+    Value option_value(const std::string& text, const Type* t, Span span, const std::string& name) {
+        if (t->is(Kind::bool_)) {
+            if (text != "true" && text != "false") failed(span, std::format("-D{}={}: expected true or false", name, text), "bool option");
+            return Value::of_bool(text == "true", t);
+        }
+        if (t->is_integer()) {
+            try {
+                std::size_t used = 0;
+                long long   n    = std::stoll(text, &used);
+                if (used != text.size()) throw std::invalid_argument("rest");
+                return integer(static_cast<u128>(static_cast<i128>(n)), t);
+            } catch (...) {
+                failed(span, std::format("-D{}={}: expected an integer", name, text), "integer option");
+            }
+        }
+        if (t->is(Kind::static_str)) return string_value(text);
+        failed(span, std::format("an option of type '{}' is not supported", types::to_string(t)), "option type");
+    }
+
+
+    Value build_intrinsic(const Symbol* s, const std::optional<Value>& self, const CallExpr& c) {
+        const std::string& n = s->name;
+        if (n == "current_mode") {
+            if (!program.build_mode_class) failed(c.span, "the build mode is not known here", "no mode");
+            Value v;
+            v.kind = Value::Kind::aggregate;
+            v.type = tc.user(program.build_mode_class);
+            return v;
+        }
+        if (n == "mode_is") {
+            Value m = eval(*c.args.at(0));
+            const Type* t = m.kind == Value::Kind::type ? m.type_value : nullptr;
+            if (!t || !t->is(Kind::user)) failed(c.args[0]->span, "'std::build::mode_is' takes a mode class", "not a mode");
+            return Value::of_bool(program.build_mode_class && derives(program.build_mode_class, t->symbol), tc.bool_());
+        }
+        if (n == "setting") {
+            std::string name = static_text(eval(*c.args.at(0)));
+            auto it = program.build_settings.find(name);
+            if (it == program.build_settings.end() || !it->second) {
+                failed(c.span, std::format("build.rifts does not set '{}' for this target", name), "no such setting");
+            }
+            // The value comes from build.rifts' own program: rebuilt with this program's types.
+            const Type* want = type_of(c);
+            const Value& v   = *it->second;
+            std::string  had = v.type ? types::to_string(types::strip_ref(v.type)) : "?";
+            if (want && had == types::to_string(want)) {
+                if (v.kind == Value::Kind::boolean) return Value::of_bool(v.boolean, want);
+                if (v.kind == Value::Kind::integer) return integer(v.integer, want);
+                if (v.kind == Value::Kind::string) return string_value(v.string);
+            }
+            if (want && want->is(Kind::static_str) && v.kind == Value::Kind::string) return string_value(v.string);
+            failed(c.span, std::format("the setting '{}' is a '{}', not a '{}'", name, had, want ? types::to_string(want) : "?"),
+                   "wrong type");
+        }
+        if (s->parent && s->parent->name == "path") {   // the methods of std::build::path
+            std::string text = self && self->kind == Value::Kind::aggregate && !self->elements.empty() ? self->elements[0].string : "";
+            std::string file = text.substr(text.find_last_of('/') == std::string::npos ? 0 : text.find_last_of('/') + 1);
+            std::size_t dot  = file.find_last_of('.');
+            if (n == "stem") return string_value(dot == std::string::npos || dot == 0 ? file : file.substr(0, dot));
+            if (n == "extension") return string_value(dot == std::string::npos || dot == 0 ? "" : file.substr(dot));
+            if (n == "with_extension") {
+                std::string ext  = static_text(eval(*c.args.at(0)));
+                std::string base = dot == std::string::npos || dot == 0 ? text : text.substr(0, text.size() - (file.size() - dot));
+                if (!ext.empty() && ext.front() != '.') ext = "." + ext;
+                return path_value(base + ext, self->type);
+            }
+        }
+        ct::BuildGraph* g = program.build_graph;
+        if (!g) failed(c.span, "'std::build::graph' only exists while build.rifts runs", "not in build.rifts");
+        std::vector<Value> args;
+        for (const ExprPtr& a : c.args) args.push_back(eval(*a));
+        auto target_of = [&](std::size_t i) -> BuildTarget& {
+            u128 id = args.at(i).kind == Value::Kind::aggregate && !args[i].elements.empty() ? args[i].elements[0].integer : 0;
+            if (id == 0 || id > g->targets.size()) failed(c.args[i]->span, "not a target of this build", "unknown target");
+            return g->targets[static_cast<std::size_t>(id - 1)];
+        };
+        auto field = [&](const Value& v, const char* name) -> const Value& {
+            return v.elements.at(field_index(v.type, name, c.span));
+        };
+        auto handle = [&](std::size_t id) {
+            Value v;
+            v.kind = Value::Kind::aggregate;
+            v.type = type_of(c);
+            v.elements.push_back(integer(id, tc.builtin("u32")));
+            return v;
+        };
+        if (n == "add_executable" || n == "add_library" || n == "add_test" || n == "add_c_library") {
+            BuildTarget t;
+            t.kind = n == "add_executable" ? BuildTarget::Kind::executable
+                   : n == "add_library"    ? BuildTarget::Kind::library
+                   : n == "add_test"       ? BuildTarget::Kind::test
+                                           : BuildTarget::Kind::c_library;
+            const Value& spec = args.at(0);
+            t.name = static_text(field(spec, "name"));
+            if (t.name.empty()) failed(c.args[0]->span, "a target needs a '.name'", "no name");
+            for (const BuildTarget& other : g->targets) {
+                if (other.name == t.name) failed(c.args[0]->span, std::format("there is already a target '{}'", t.name), "duplicate");
+            }
+            if (t.kind == BuildTarget::Kind::c_library) {
+                const Value& lang = field(spec, "language");
+                const Value& std_ = field(spec, "standard");
+                t.language = lang.symbol ? lang.symbol->name : "c";
+                t.standard = std_.symbol ? std_.symbol->name : "";
+            } else {
+                t.root = static_text(field(spec, "root"));
+                if (t.root.empty()) failed(c.args[0]->span, "a Rift target needs a '.root' (its main .rifts file)", "no root");
+            }
+            t.span = c.span;
+            g->targets.push_back(std::move(t));
+            return handle(g->targets.size());
+        }
+        if (n == "link") {
+            target_of(0).links.push_back(static_cast<std::size_t>(args[1].elements.at(0).integer - 1));
+            target_of(1);
+            return Value{};
+        }
+        if (n == "add_sources") {   // a file, or a list of paths (g.glob)
+            BuildTarget& t = target_of(0);
+            if (t.kind != BuildTarget::Kind::c_library) failed(c.span, "sources are added to C targets", "not a C target");
+            if (args[1].kind == Value::Kind::list) {
+                for (const Value& f : args[1].elements) t.sources.push_back(f.elements.at(0).string);
+            } else {
+                t.sources.push_back(static_text(args[1]));
+            }
+            return Value{};
+        }
+        if (n == "add_include_dir") {
+            target_of(0).include_dirs.emplace_back(static_text(args[1]), args[2].symbol && args[2].symbol->name == "shared");
+            return Value{};
+        }
+        if (n == "define") {
+            target_of(0).defines.emplace_back(static_text(args[1]), static_text(args[2]));
+            return Value{};
+        }
+        if (n == "add_mode" || n == "set_mode") {
+            const Value& m = args.at(n == "add_mode" ? 0 : 1);
+            const Symbol* settings = nullptr;
+            if (auto mm = program.modules.find("std::build::mode"); mm != program.modules.end()) {
+                if (auto it = mm->second->items.find("settings"); it != mm->second->items.end()) settings = it->second.front();
+            }
+            const Type* t = m.kind == Value::Kind::type ? m.type_value : nullptr;
+            bool ok = t && t->is(Kind::user) && t->symbol->kind == SymbolKind::class_;
+            bool implements = false;
+            for (const Symbol* cls = ok ? t->symbol : nullptr; cls && !implements; cls = cls->base_class()) {
+                for (const Symbol* b : cls->bases) implements = implements || b == settings;
+            }
+            if (!ok || !implements) {
+                failed(c.args.back()->span, "a mode is a class that derives from a std::build::mode class", "not a mode");
+            }
+            if (n == "set_mode") target_of(0).mode = t->symbol;
+            else g->modes.push_back(t->symbol);
+            return Value{};
+        }
+        if (n == "option") {
+            std::string name = static_text(args.at(0));
+            const Type* t    = type_of(c);
+            Value       v    = args.at(1);
+            if (auto it = g->given.find(name); it != g->given.end()) v = option_value(it->second, t, c.span, name);
+            g->options.push_back(BuildOption{name, static_text(args.at(2)), types::to_string(t), to_string(v)});
+            return v;
+        }
+        if (n == "set") {
+            BuildTarget& t = target_of(0);
+            t.settings[static_text(args.at(1))] = std::make_shared<const Value>(args.at(2));
+            return Value{};
+        }
+        auto path_text = [&](std::size_t i) -> std::string {
+            const Value& v = args.at(i);
+            if (v.kind == Value::Kind::string) return v.string;
+            return v.kind == Value::Kind::aggregate && !v.elements.empty() ? v.elements[0].string : std::string();
+        };
+        auto step_of = [&](std::size_t i) -> BuildStep& {
+            u128 id = args.at(i).kind == Value::Kind::aggregate && !args[i].elements.empty() ? args[i].elements[0].integer : 0;
+            if (id == 0 || id > g->steps.size()) failed(c.args[i]->span, "not a step of this build", "unknown step");
+            return g->steps[static_cast<std::size_t>(id - 1)];
+        };
+        if (n == "glob" || n == "glob_in") {
+            namespace fs = std::filesystem;
+            bool        in_dep  = n == "glob_in";   // in a dependency: absolute paths
+            std::string pattern = static_text(args.at(in_dep ? 1 : 0));
+            std::regex  re(glob_regex(pattern));
+            std::vector<std::string> found;
+            std::error_code ec;
+            fs::path root(g->root);
+            if (in_dep) {
+                u128 id = args.at(0).elements.empty() ? 0 : args[0].elements[0].integer;
+                if (id == 0 || id > g->dependencies.size()) failed(c.args[0]->span, "not a dependency of this build", "unknown project");
+                root = g->dependencies[static_cast<std::size_t>(id - 1)].dir;
+            }
+            for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                fs::path p = it->path();
+                if (it->is_directory(ec)) {
+                    std::string name = p.filename().string();
+                    if (name.starts_with(".") || p == fs::path(g->out_dir)) it.disable_recursion_pending();
+                    continue;
+                }
+                std::string rel = p.lexically_relative(root).generic_string();
+                if (std::regex_match(rel, re)) found.push_back(in_dep ? p.generic_string() : rel);
+            }
+            std::sort(found.begin(), found.end());
+            g->globs[pattern] = found;
+            Value list;
+            list.kind = Value::Kind::list;
+            list.type = type_of(c);
+            const Type* path_type = nullptr;
+            if (auto bm = program.modules.find("std::build"); bm != program.modules.end()) {
+                if (auto it = bm->second->items.find("path"); it != bm->second->items.end()) path_type = tc.user(it->second.front());
+            }
+            for (const std::string& f : found) list.elements.push_back(path_value(f, path_type));
+            return list;
+        }
+        if (n == "find_program") {
+            std::string name = static_text(args.at(0));
+            std::string found;
+            if (name.find('/') != std::string::npos) {
+                found = name;
+            } else if (const char* path = std::getenv("PATH")) {
+                std::string_view dirs(path);
+                while (!dirs.empty() && found.empty()) {
+                    std::size_t colon = dirs.find(':');
+                    std::string dir(dirs.substr(0, colon));
+                    std::filesystem::path candidate = std::filesystem::path(dir.empty() ? "." : dir) / name;
+                    std::error_code ec;
+                    if (std::filesystem::is_regular_file(candidate, ec) && access(candidate.c_str(), X_OK) == 0) found = candidate.string();
+                    dirs = colon == std::string_view::npos ? std::string_view{} : dirs.substr(colon + 1);
+                }
+            }
+            if (found.empty()) failed(c.span, std::format("the program '{}' is not on the PATH", name), "not found");
+            g->programs[name] = found;
+            Value v;
+            v.kind = Value::Kind::aggregate;
+            v.type = type_of(c);
+            v.elements.push_back(string_value(found));
+            return v;
+        }
+        if (n == "output_path") return path_value((std::filesystem::path(g->out_dir) / "gen" / path_text(0)).string(), type_of(c));
+        if (n == "add_step") {
+            BuildStep st;
+            st.name    = static_text(field(args.at(0), "name"));
+            const Value& prog_value = field(args.at(0), "program");
+            st.program = prog_value.elements.empty() ? std::string() : prog_value.elements[0].string;
+            if (st.program.empty()) failed(c.args[0]->span, "a step needs a '.program' (g.find_program(...))", "no program");
+            st.span = c.span;
+            g->steps.push_back(std::move(st));
+            return handle(g->steps.size());
+        }
+        if (n == "add_argument") {
+            step_of(0).arguments.push_back(path_text(1));
+            return Value{};
+        }
+        if (n == "add_input" || n == "add_output") {
+            (n == "add_input" ? step_of(0).inputs : step_of(0).outputs).push_back(path_text(1));
+            return Value{};
+        }
+        if (n == "depends_on") {
+            BuildTarget& t = target_of(0);
+            step_of(1);
+            t.steps.push_back(static_cast<std::size_t>(args[1].elements[0].integer - 1));
+            return Value{};
+        }
+        if (n == "add_system_library") {
+            BuildTarget t;
+            t.kind         = BuildTarget::Kind::system_library;
+            t.name         = static_text(field(args.at(0), "name"));
+            t.library_root = static_text(field(args.at(0), "root"));
+            t.span         = c.span;
+            if (t.name.empty()) failed(c.args[0]->span, "a system library needs a '.name'", "no name");
+            g->targets.push_back(std::move(t));
+            return handle(g->targets.size());
+        }
+        if (n == "dependency") {
+            BuildDependency d;
+            const Value& spec = args.at(0);
+            bool is_git = spec.type && spec.type->is(Kind::user) && spec.type->symbol->name == "git";
+            d.kind = is_git ? "git" : "local";
+            if (is_git) {
+                d.source = static_text(field(spec, "url"));
+                d.commit = static_text(field(spec, "commit"));
+                bool hex = d.commit.size() >= 7 && d.commit.find_first_not_of("0123456789abcdef") == std::string::npos;
+                if (!hex) failed(c.args[0]->span, std::format("'{}' is not a commit: dependencies are pinned to a commit hash, never a branch", d.commit),
+                                 "not a commit");
+            } else {
+                d.source = static_text(field(spec, "path"));
+            }
+            if (!g->fetch) failed(c.span, "dependencies cannot be fetched here", "no fetch");
+            std::string error;
+            d.dir = g->fetch(d, error);
+            if (d.dir.empty()) failed(c.span, std::format("cannot fetch the dependency '{}': {}", d.source, error), "fetch failed");
+            g->dependencies.push_back(std::move(d));
+            return handle(g->dependencies.size());
+        }
+        if (n == "target_of") {
+            u128 id = args.at(0).elements.empty() ? 0 : args[0].elements[0].integer;
+            if (id == 0 || id > g->dependencies.size()) failed(c.args[0]->span, "not a dependency of this build", "unknown project");
+            BuildTarget t;
+            t.kind       = BuildTarget::Kind::foreign;
+            t.name       = static_text(args.at(1));
+            t.dependency = static_cast<std::size_t>(id);
+            t.span       = c.span;
+            g->targets.push_back(std::move(t));
+            return handle(g->targets.size());
+        }
+        if (n == "host" || n == "target_platform") {
+            std::string arch =
+#if defined(__x86_64__)
+                "x86_64";
+#elif defined(__aarch64__)
+                "aarch64";
+#else
+                "unknown";
+#endif
+            return string_value(arch + "-linux");
+        }
+        if (n == "env") {
+            std::string name = static_text(args.at(0));
+            const char* value = std::getenv(name.c_str());
+            g->env_read[name] = value ? value : "";
+            return string_value(value ? value : "");
+        }
+        failed(c.span, std::format("'{}' is not supported by riftc's build interpreter yet", n), "unsupported");
+    }
+
     Value run(const Symbol* s, std::optional<Value> self, const CallExpr& c) {
+        if (in_build_module(s) && (s->kind == SymbolKind::function || s->kind == SymbolKind::method)) return build_intrinsic(s, self, c);
         const FunctionDecl* f = body_decl(s);
         if (!f || !f->body) not_constant(c.span, std::format("'{}' has no body to run at compile time", s->name));
-        if (!f->is_compile_time) {
+        if (!f->is_compile_time && !is_mode_class(s->parent)) {
             not_constant(c.span, std::format("'{}' is not a compile_time function", s->name),
                          std::format("mark it 'compile_time' (or 'compile_time run_time') to call it at compile time"));
         }
-        if (!hooks.check_function(s)) unknown();
-        if (frames.size() >= max_depth) {
-            failed(c.span, std::format("compile-time calls are nested more than {} deep", max_depth), "too deep");
-        }
         std::vector<Value> args;
         for (const ExprPtr& a : c.args) args.push_back(eval(*a));
+        // `mut T&` parameters and `mut` methods change the caller's place: the values are
+        // copied in, and copied back out when the call returns (spec 15).
+        std::vector<Value>   finals;
+        std::optional<Value> final_self;
+        Value result = run_values(s, std::move(self), std::move(args), c.span, &finals, &final_self);
+        for (std::size_t i = 0; i < f->params.size() && i < c.args.size() && i < finals.size(); ++i) {
+            const TypeExpr& pt = *f->params[i].type;
+            if (pt.kind != TypeKind::reference || !pt.as<ReferenceType>().is_mut) continue;
+            const Expr* arg = c.args[i].get();
+            if (arg->kind == ExprKind::unary && arg->as<UnaryExpr>().op == UnaryOp::mut_marker) arg = arg->as<UnaryExpr>().operand.get();
+            if (is_place_expr(*arg)) place(*arg) = finals[i];
+        }
+        if (f->is_mut && final_self && c.callee->kind == ExprKind::member) {
+            const Expr& object = *c.callee->as<MemberExpr>().object;
+            if (is_place_expr(object)) place(object) = *final_self;
+        }
+        return result;
+    }
+
+    bool is_place_expr(const Expr& e) {
+        if (e.kind == ExprKind::this_) return !frames.empty() && frames.back().self.has_value();
+        if (e.kind == ExprKind::path) {
+            const Symbol* s = e.as<PathExpr>().symbol;
+            return !frames.empty() && frames.back().locals.count(s);
+        }
+        if (e.kind == ExprKind::member) return is_place_expr(*e.as<MemberExpr>().object);
+        if (e.kind == ExprKind::index) return is_place_expr(*e.as<IndexExpr>().object);
+        return false;
+    }
+
+    /// A build mode's methods run at compile time without being marked (spec 24): the
+    /// interpreter is what reads a mode's settings.
+    static bool is_mode_class(const Symbol* cls) {
+        for (const Symbol* c = cls; c && (c->kind == SymbolKind::class_); c = c->base_class()) {
+            if (c->module && c->module->name == "std::build::mode") return true;
+        }
+        return false;
+    }
+
+    Value run_values(const Symbol* s, std::optional<Value> self, std::vector<Value> args, Span call_site,
+                     std::vector<Value>* finals = nullptr, std::optional<Value>* final_self = nullptr) {
+        const FunctionDecl* f = body_decl(s);
+        if (!f || !f->body) not_constant(call_site, std::format("'{}' has no body to run at compile time", s->name));
+        if (!hooks.check_function(s)) unknown();
+        if (frames.size() >= max_depth) {
+            failed(call_site, std::format("compile-time calls are nested more than {} deep", max_depth), "too deep");
+        }
         Frame frame;
         frame.function  = s;
-        frame.call_site = c.span;
+        frame.call_site = call_site;
         frame.self      = std::move(self);
         // Type-valued parameters are read through their symbol when a type is lowered.
         std::vector<std::pair<const Symbol*, std::shared_ptr<const Value>>> saved;
@@ -990,6 +1641,13 @@ struct Evaluator::Impl {
             restore();
             throw;
         }
+        if (finals) {
+            for (std::size_t i = 0; i < f->params.size(); ++i) {
+                auto it = f->params[i].symbol ? frames.back().locals.find(f->params[i].symbol) : frames.back().locals.end();
+                finals->push_back(it != frames.back().locals.end() ? it->second : Value{});
+            }
+        }
+        if (final_self) *final_self = frames.back().self;
         restore();
         return result;
     }
@@ -1063,11 +1721,13 @@ struct Evaluator::Impl {
         }
         case StmtKind::discard: eval(*s.as<DiscardStmt>().value); return;
         case StmtKind::expression: eval(*s.as<ExprStmt>().expr); return;
+        case StmtKind::check: run_check(s.as<CheckStmt>().check, s.span); return;
         }
     }
 
     /// The storage a compile-time assignment target denotes.
     Value& place(const Expr& e) {
+        if (e.kind == ExprKind::this_ && !frames.empty() && frames.back().self) return *frames.back().self;   // a `mut` method
         if (e.kind == ExprKind::path) {
             const Symbol* s = e.as<PathExpr>().symbol;
             if (!frames.empty()) {
@@ -1198,22 +1858,87 @@ Evaluator::Evaluator(sema::Program& program, DiagnosticEngine& diags, Hooks hook
 Evaluator::~Evaluator() = default;
 
 std::shared_ptr<const Value> Evaluator::evaluate(const Expr& e, std::string_view why) {
+    return evaluate_in(e, why, Context{});
+}
+
+std::shared_ptr<const Value> Evaluator::call(const Symbol* fn, std::vector<Value> args, Span call_site) {
+    std::vector<Impl::Frame> saved = std::move(impl_->frames);
+    impl_->frames.clear();
+    impl_->steps = 0;
+    std::shared_ptr<const Value> result;
+    try {
+        result = std::make_shared<const Value>(impl_->run_values(fn, std::nullopt, std::move(args), call_site));
+    } catch (Stop) {
+    } catch (Flow) {
+    }
+    impl_->frames = std::move(saved);
+    return result;
+}
+
+std::shared_ptr<const Value> Evaluator::mode_setting(const Symbol* mode_class, const std::string& name) {
+    const Symbol* method = nullptr;
+    for (const Symbol* c = mode_class; c && !method; c = c->base_class()) {
+        auto it = c->members.find(name);
+        if (it != c->members.end() && it->second.front()->kind == SymbolKind::method && body_decl(it->second.front()) &&
+            body_decl(it->second.front())->body) {
+            method = it->second.front();
+        }
+    }
+    if (!method) return nullptr;
+    Value self;
+    self.kind = Value::Kind::aggregate;
+    self.type = impl_->tc.user(mode_class);
+    std::vector<Impl::Frame> saved = std::move(impl_->frames);
+    impl_->frames.clear();
+    std::shared_ptr<const Value> result;
+    try {
+        result = std::make_shared<const Value>(impl_->run_values(method, self, {}, method->span));
+    } catch (Stop) {
+    } catch (Flow) {
+    }
+    impl_->frames = std::move(saved);
+    return result;
+}
+
+std::shared_ptr<const Value> Evaluator::evaluate_in(const Expr& e, std::string_view why, Context context) {
     unknown_ = false;
     std::vector<Impl::Frame> saved_frames = std::move(impl_->frames);
+    std::string saved_why       = std::move(impl_->why);
+    bool        saved_quiet     = impl_->quiet;
+    auto        saved_site      = impl_->site;
+    auto        saved_parameter = std::move(impl_->parameter);
+    auto        saved_known     = std::move(impl_->parameter_known);
+    auto        saved_psite     = std::move(impl_->parameter_site);
     impl_->frames.clear();
-    std::string saved_why = std::move(impl_->why);
-    impl_->why            = std::string(why);
-    impl_->steps          = 0;
+    if (context.function) {
+        Impl::Frame top;
+        top.function = context.function;
+        top.call_site = context.site ? *context.site : e.span;
+        impl_->frames.push_back(std::move(top));
+    }
+    impl_->why       = std::string(why);
+    impl_->quiet     = context.quiet;
+    impl_->site      = context.site;
+    impl_->parameter = std::move(context.parameter);
+    impl_->parameter_known = std::move(context.parameter_known);
+    impl_->parameter_site  = std::move(context.parameter_site);
+    impl_->steps     = 0;
+    impl_->pending_notes.clear();
     std::shared_ptr<const Value> result;
     try {
         result = std::make_shared<const Value>(impl_->eval(e));
     } catch (Stop s) {
         unknown_ = s.unknown;
     } catch (Flow) {
-        unknown_ = true;   // break/continue/return outside the code being evaluated
+        unknown_ = true;
     }
-    impl_->frames = std::move(saved_frames);
-    impl_->why    = std::move(saved_why);
+    impl_->frames    = std::move(saved_frames);
+    impl_->why       = std::move(saved_why);
+    impl_->quiet     = saved_quiet;
+    impl_->site      = saved_site;
+    impl_->parameter = std::move(saved_parameter);
+    impl_->parameter_known = std::move(saved_known);
+    impl_->parameter_site  = std::move(saved_psite);
     return result;
 }
 

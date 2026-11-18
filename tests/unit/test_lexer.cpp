@@ -83,7 +83,7 @@ TEST_CASE("lexer: byte order mark is skipped") {
 
 TEST_CASE("lexer: every keyword and built-in type is recognized") {
     for (std::string_view word : {"import", "struct", "class", "interface", "enum", "template",
-                                  "type", "open", "virtual", "override", "abstract", "operator",
+                                  "type", "virtual", "override", "abstract", "operator",
                                   "public", "protected", "private", "static", "extern", "mut",
                                   "move", "this", "view", "compile_time", "run_time", "deduce",
                                   "if", "else", "for", "while", "break", "continue", "return",
@@ -101,6 +101,11 @@ TEST_CASE("lexer: removed keywords are plain identifiers") {
     // Spec 01: const, fn, consteval, impl, in, null, runtime were removed.
     CHECK_EQ(kinds("const fn consteval impl in null runtime"),
              std::string("identifier identifier identifier identifier identifier identifier identifier"));
+}
+
+TEST_CASE("lexer: 'open' is contextual") {
+    // Spec 01: `open` is a keyword only before a type declaration, so `std::file::open` works.
+    CHECK_EQ(kinds("open"), std::string("identifier"));
 }
 
 TEST_CASE("lexer: underscore alone is the wildcard") {

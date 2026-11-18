@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+8 12
+true false true
+5
+true false true
+11
+2 7
+-4 240 true true
+--- stderr

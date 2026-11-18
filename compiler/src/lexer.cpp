@@ -200,6 +200,14 @@ Token Lexer::next() {
     if (c == 'f' && peek(1) == '"') {
         return lex_string(begin, TokenKind::format_string_literal);
     }
+    if (c == 'c' && peek(1) == '"') {   // c"...": NUL-terminated, for C (spec 13, 19)
+        Token t = lex_string(begin, TokenKind::c_string_literal);
+        if (t.kind == TokenKind::c_string_literal && t.value.find('\0') != std::string::npos) {
+            diags_.report(DiagCode::E1016, span(begin, pos_), "a C string literal cannot contain '\\0'",
+                          "C would end the string there");
+        }
+        return t;
+    }
     if (is_ident_start(c)) {
         return lex_identifier(begin);
     }
@@ -464,7 +472,41 @@ Token Lexer::lex_string(std::size_t begin, TokenKind kind) {
     pos_ += kind == TokenKind::string_literal ? 1 : 2;   // `"` or `r"` / `f"`
     bool        raw = kind == TokenKind::raw_string_literal;
     std::string value;
-    while (!at_end() && peek() != '"' && peek() != '\n') {
+    // An f-string's holes may contain string and char literals: `f"{name:<8} {join(a, ", ")}"`.
+    std::size_t depth = 0;
+    while (!at_end() && peek() != '\n' && (peek() != '"' || depth > 0)) {
+        if (kind == TokenKind::format_string_literal) {
+            char c = peek();
+            if (depth == 0 && (c == '{' || c == '}') && !at_end(1) && text_[pos_ + 1] == c) {   // `{{`, `}}`
+                value.append(2, c);
+                pos_ += 2;
+                continue;
+            }
+            if (c == '{') ++depth;
+            if (c == '}' && depth > 0) --depth;
+            if (depth > 0 && (c == '"' || c == '\'')) {   // a literal inside a hole: up to its closing quote
+                // Only when it closes on this line and the f-string still ends after it; otherwise
+                // this quote ends the f-string (an unclosed hole is reported by the parser).
+                std::size_t k = pos_ + 1;
+                while (k < text_.size() && text_[k] != c && text_[k] != '\n') k += text_[k] == '\\' ? 2u : 1u;
+                std::size_t rest = k + 1;
+                while (rest < text_.size() && text_[rest] != '"' && text_[rest] != '\n') ++rest;
+                if (k >= text_.size() || text_[k] != c || rest >= text_.size() || text_[rest] != '"') {
+                    if (c == '"') break;
+                    value.push_back(c);
+                    ++pos_;
+                    continue;
+                }
+                value.push_back(c);
+                ++pos_;
+                while (!at_end() && peek() != c && peek() != '\n') {
+                    if (peek() == '\\' && !at_end(1)) value.push_back(text_[pos_++]);
+                    value.push_back(text_[pos_++]);
+                }
+                if (!at_end() && peek() == c) value.push_back(text_[pos_++]);
+                continue;
+            }
+        }
         if (peek() == '\\' && !raw) {
             lex_escape(value);
             continue;

@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+built '%t/prog' (release_with_debug_info)
+--- stderr

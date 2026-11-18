@@ -1,0 +1,6 @@
+// The build of a dependency: one Rift library.
+import std;
+
+compile_time void build(mut std::build::graph& g) {
+    g.add_library(std::build::rift_target{ .name = "geo", .root = "geo/area.rifts" });
+}

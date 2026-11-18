@@ -157,14 +157,17 @@ std::string builtin_name(const CallExpr& c) {
     const auto& segs = pe.path.segments;
     if (segs.size() == 2 && segs[0].name == "std") {
         const std::string& n = segs[1].name;
-        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "size_of" || n == "align_of" || n == "type_name" ||
+        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "implements" || n == "size_of" || n == "align_of" || n == "type_name" ||
             n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of") {
             return n;
         }
     }
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "meta") {
         const std::string& n = segs[2].name;
-        if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum") return "meta::" + n;
+        if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum" || n == "result_of" ||
+            n == "is_view") {
+            return "meta::" + n;
+        }
     }
     return {};
 }
@@ -178,7 +181,7 @@ std::string raw_intrinsic(const CallExpr& c) {
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "raw") {
         const std::string& n = segs[2].name;
         if (n == "allocate" || n == "reallocate" || n == "free" || n == "read" || n == "write" || n == "drop" || n == "copy" ||
-            n == "str_from") {
+            n == "str_from" || n.starts_with("atomic_") || n == "futex_wait" || n == "futex_wake" || n == "spin_hint") {
             return n;
         }
     }
@@ -806,6 +809,15 @@ struct Evaluator::Impl {
         if (t->is(Kind::user) && (t->symbol->kind == SymbolKind::struct_ || t->symbol->kind == SymbolKind::class_)) {
             return build_aggregate(t, {}, span);
         }
+        if (t->is(Kind::array) && !t->args.empty() && t->args[0]->is(Kind::value_arg)) {   // std::raw::array<T, N>: N defaults
+            Value v;
+            v.kind = Value::Kind::list;
+            v.type = t;
+            u128 n = tc.value_bits(t->args[0]);
+            if (n > 4096) not_constant(span, std::format("the default of {} is too large to compute at compile time", types::to_string(t)));
+            for (u128 i = 0; i < n; ++i) v.elements.push_back(default_of(t->inner, span));
+            return v;
+        }
         not_constant(span, std::format("the default of {} is not known at compile time", types::to_string(t)));
     }
 
@@ -1115,11 +1127,25 @@ struct Evaluator::Impl {
         if (name == "is_integer") return Value::of_bool(t->is_integer(), tc.bool_());
         if (name == "is_float") return Value::of_bool(t->is_float(), tc.bool_());
         if (name == "is_same") return Value::of_bool(t == arg(1), tc.bool_());
+        if (name == "implements") {
+            const Type* i = arg(1);
+            if (t->is_unknown() || t->is(Kind::type_param) || i->is_unknown()) unknown();
+            return Value::of_bool(hooks.implements && hooks.implements(t, i), tc.bool_());
+        }
         if (name == "type_name") return string_value(types::to_string(t));
         if (name == "size_of" || name == "align_of") {
             types::Layout l = tc.layout(t);
             if (l.size == 0 && !t->is(Kind::void_)) not_constant(c.span, std::format("the size of {} is not known", types::to_string(t)));
             return integer(name == "size_of" ? l.size : l.align, usize());
+        }
+        if (name == "meta::result_of") {   // what calling a callable gives (spec 26): the result type of a lambda
+            if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) return Value::of_type(t->args.back(), c.type);
+            if (t->is_unknown() || t->is(Kind::type_param)) unknown();
+            failed(c.span, std::format("std::meta::result_of needs a lambda or callable type, not {}", types::to_string(t)), "not callable");
+        }
+        if (name == "meta::is_view") {
+            if (t->is_unknown() || t->is(Kind::type_param)) unknown();
+            return Value::of_bool(hooks.is_view && hooks.is_view(t), tc.bool_());
         }
         bool is_user = t->is(Kind::user);
         if (name == "meta::is_struct") return Value::of_bool(is_user && t->symbol->kind == SymbolKind::struct_, tc.bool_());

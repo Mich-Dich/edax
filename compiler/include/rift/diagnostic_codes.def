@@ -181,6 +181,10 @@ RIFT_DIAG(E4213, error,   "a diagnostic id must be a declared 'std::diagnostic'"
 RIFT_DIAG(E4215, error,   "a build mode allows undefined behaviour without saying so")
 RIFT_DIAG(E4216, error,   "build.rifts has no build function")
 RIFT_DIAG(E4214, error,   "a method of a template instance that does not compile is used")
+RIFT_DIAG(E4220, error,   "a consuming ('move') method needs a value the caller owns")
+RIFT_DIAG(E4230, error,   "a value that can't be moved to another thread")
+RIFT_DIAG(E4231, error,   "a value that can't be shared between threads")
+RIFT_DIAG(E4232, error,   "a thread-safety promise ('unsafe std::sendable') is not allowed here")
 
 // --- ownership and references ---------------------------------------------------------------
 RIFT_DIAG(E5001, error,   "value of a non-copy type would be copied implicitly")
@@ -193,6 +197,7 @@ RIFT_DIAG(E5015, error,   "a std::function cannot hold a lambda with reference c
 RIFT_DIAG(E5020, error,   "the same value is passed as 'mut' and as another argument")
 RIFT_DIAG(E5021, error,   "container changed while a loop borrows it")
 RIFT_DIAG(E5022, error,   "value changed while a reference to it is in use")
+RIFT_DIAG(E5023, error,   "value used while something borrows it mutably")
 RIFT_DIAG(E5030, error,   "type cannot be cloned")
 
 // E6xxx: code generation (M6)

@@ -1,0 +1,15 @@
+// RUN: riftc build --diagnostic-format=short %s -o %t/prog
+// Constructs the backend does not handle yet are reported where they are used (E6001).
+import std;
+
+u32 twice(u32 x) { return x * 2; }
+
+extern(std::build::language::cpp) void legacy();   // C++ linkage: not generated yet
+
+void main() {
+    unsafe { legacy(); }
+}
+
+void unused() {
+    auto g = [](u32 x) { return x; };       // never called from main: not generated, not reported
+}

@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+42 15
+3705032704
+--- stderr
+note: building in mode 'fast' (base: release): overflow wraps, bounds checks off - undefined behaviour is allowed

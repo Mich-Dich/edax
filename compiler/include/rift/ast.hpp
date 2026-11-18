@@ -402,7 +402,7 @@ struct SimplePattern : Pattern {   // wildcard, error
 
 // --- statements ---------------------------------------------------------------------------
 
-enum class Storage { local, compile_time, static_ };
+enum class Storage { local, compile_time, static_, thread_local_ };
 
 /// `[mut] T name = init;`, `compile_time T name = init;`
 struct VariableStmt : Stmt {
@@ -529,6 +529,7 @@ struct FunctionDecl : Decl {
     bool               is_override     = false;
     bool               is_abstract     = false;
     bool               is_mut          = false;   // trailing `mut`
+    bool               is_move         = false;   // trailing `move`: consumes `this` (spec 06, 27)
     bool               is_compile_time = false;
     bool               is_run_time     = false;
     bool               is_unsafe       = false;
@@ -552,11 +553,22 @@ struct VariableDecl : Decl {
     VariableDecl(DeclKind k, Span s) : Decl(k, s) {}
 };
 
+/// `unsafe std::sendable(condition)` in a base list (spec 27): a thread-safety promise the
+/// compiler can't check.
+struct ThreadPromise {
+    bool                shareable = false;   // std::shareable (else std::sendable)
+    Path                path;                // as written
+    ExprPtr             condition;           // may be null: unconditional
+    Span                span;
+    std::optional<bool> value;               // the condition's value, once evaluated (per instance)
+};
+
 /// struct, class and interface share one node.
 struct TypeDecl : Decl {
     bool                 is_open = false;
     bool                 is_view = false;
     std::vector<TypePtr> bases;
+    std::vector<ThreadPromise> promises;     // `unsafe std::sendable(...)` bases
     std::vector<DeclPtr> members;
     TypeDecl(DeclKind k, Span s) : Decl(k, s) {}
 };

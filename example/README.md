@@ -29,6 +29,7 @@ riftc build --root=example --list                 # targets, modes and options
 | `gradebook` | files next to the executable, parsing a CSV, error enums, `map_error`, a report | 11, 19, 20 |
 | `compile_time_demo` | compile-time functions and tables, types as values, checks, a declared warning, reflection | 15, 23, 26 |
 | `ffi` | raw pointers, `unsafe`, `std::raw` memory, a C library built by `build.rifts`, a Rift function called from C, libm | 13, 25 |
+| `concurrency` | threads that borrow or own, channels, a mutex and an atomic, the thread pool's parallel loop and deterministic reduction, a pool task | 27, 28 |
 | `build_info` | reading the build mode and settings from `build.rifts`, mode-gated checks, a user mode | 24, 25 |
 
 `compile_time_demo` prints a compiler warning on purpose: it shows a declared warning id

@@ -1,0 +1,5 @@
+exit: 2
+--- stdout
+--- stderr
+riftc: error: unknown build mode 'fast' (debug, release, release_with_debug_info; other modes are defined in build.rifts)
+Run 'riftc --help' for usage.

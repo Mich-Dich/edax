@@ -1,0 +1,2 @@
+// RUN: riftc build --root=%S/engine_project --out-dir=%t --mode=turbo
+// Modes are the built-in ones and those build.rifts adds.

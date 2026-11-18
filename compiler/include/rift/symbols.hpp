@@ -44,6 +44,13 @@ enum class SymbolKind {
 
 std::string_view to_string(SymbolKind kind);
 
+/// The std types that are named as members of another std type (`std::thread_pool::options` is
+/// the library's `thread_pool_options`, spec 28). Rift has no nested type declarations; these
+/// names are the standard library's only ones.
+inline bool is_std_nested_type(std::string_view name) {
+    return name == "thread_pool_options" || name == "thread_pool_task" || name == "thread_pool_scoped_task";
+}
+
 enum class LocalKind { variable, value_param, ref_param, binding, loop_variable, capture };
 
 struct Symbol {

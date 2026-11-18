@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+ran step 'a'
+ran step 'b'
+49 1.414 5
+--- stderr

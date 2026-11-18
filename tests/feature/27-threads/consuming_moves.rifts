@@ -1,0 +1,18 @@
+// feature 06/27: after a consuming call the variable counts as moved.
+import std;
+
+class ticket {
+public:
+    u32 id = 0;
+    u32 redeem() move { return this.id; }
+}
+
+void twice() {
+    ticket t = default;
+    u32 a = t.redeem();
+    u32 b = t.redeem();                         //~ error[E5002]: 't' is used after it was moved
+    ticket u = default;
+    std::thread::handle<u32> worker = std::thread::spawn([]() { return 1u32; });
+    u32 r = worker.join();
+    u32 s = worker.join();                      //~ error[E5002]: 'worker' is used after it was moved
+}

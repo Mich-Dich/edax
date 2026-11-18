@@ -1,0 +1,194 @@
+// The Rift standard library: module std::thread (spec 27), on POSIX threads.
+
+private extern(std::build::language::c) {
+    i32 pthread_create(std::raw_ptr<mut u64> thread, std::raw_ptr<u8> attributes,
+                       std::fn_ptr<std::raw_ptr<u8>(std::raw_ptr<u8>)> start, std::raw_ptr<u8> argument);
+    i32 pthread_join(u64 thread, std::raw_ptr<u8> result);
+    i32 pthread_detach(u64 thread);
+    u64 pthread_self();
+    i32 pthread_attr_init(std::raw_ptr<mut u8> attributes);
+    i32 pthread_attr_setstacksize(std::raw_ptr<mut u8> attributes, usize size);
+    i32 pthread_attr_destroy(std::raw_ptr<mut u8> attributes);
+    i32 pthread_setname_np(u64 thread, std::raw_ptr<u8> name);
+    i64 sysconf(i32 name);
+    i32 sched_yield();
+    i32 nanosleep(std::raw_ptr<sleep_time> wanted, std::raw_ptr<mut sleep_time> left);
+}
+
+private struct sleep_time {
+    i64 seconds = 0;
+    i64 nanos = 0;
+}
+
+private compile_time i32 online_processors = 84;   // _SC_NPROCESSORS_ONLN (Linux)
+
+// The thread's state, shared by the handle and the thread: whether it is running, finished or
+// detached (whoever comes second frees the block), and its result.
+private template<type R>
+struct thread_packet {
+    u32            state = 0;   // 0 running, 1 finished, 2 detached
+    std::option<R> result = std::none;
+}
+
+private compile_time u32 running = 0;
+private compile_time u32 finished = 1;
+private compile_time u32 detached = 2;
+
+// The block the new thread gets: the packet first (so that its address is the block's), then
+// the lambda, which the thread runs and destroys.
+private template<type F, type R>
+struct thread_start {
+    thread_packet<R> packet;
+    F                body;
+}
+
+private template<type F, type R>
+R call_body(mut F& body) { return body(); }
+
+private unsafe template<type F, type R>
+void thread_main(std::raw_ptr<u8> argument) {
+    std::raw_ptr<mut thread_start<F, R>> start = cast::reinterpret<std::raw_ptr<mut thread_start<F, R>>>(argument);
+    (*start).packet.result = std::some(call_body<F, R>(mut (*start).body));
+    std::raw::drop(mut &(*start).body);   // the lambda's captures are destroyed on this thread
+    if (std::raw::atomic_exchange(&(*start).packet.state, finished, std::memory_order::acquire_release) == detached) {
+        std::raw::drop(mut &(*start).packet);   // nobody will join: the thread cleans up itself
+        std::raw::free(start);
+    }
+}
+
+/// Waits for the thread and takes its result; frees the shared block.
+private unsafe template<type R>
+std::option<R> join_thread(u64 thread, std::raw_ptr<mut thread_packet<R>> packet) {
+    _ = pthread_join(thread, nullptr);
+    std::option<R> result = std::raw::read(mut &(*packet).result);
+    std::raw::free(packet);
+    return result;
+}
+
+template<type F : std::sendable>
+deduce spawn(F f) {
+    return spawn(options{}, move f);
+}
+
+template<type F : std::sendable>
+deduce spawn(options settings, F f) {
+    compile_time type R = std::meta::result_of<F>();
+    mut u64 thread = 0;
+    mut std::raw_ptr<mut thread_packet<R>> packet = nullptr;
+    unsafe {
+        std::raw_ptr<mut thread_start<F, R>> start = std::raw::allocate<thread_start<F, R>>(1);
+        std::raw::write(start, thread_start<F, R>{ .packet = thread_packet<R>{}, .body = move f });
+        packet = cast::reinterpret<std::raw_ptr<mut thread_packet<R>>>(start);
+        std::fn_ptr<std::raw_ptr<u8>(std::raw_ptr<u8>)> entry = [](std::raw_ptr<u8> argument) -> std::raw_ptr<u8> {
+            thread_main<F, R>(argument);
+            return argument;
+        };
+        mut std::raw::array<u64, 8> attributes = default;   // a pthread_attr_t (56 or 64 bytes)
+        std::raw_ptr<mut u8> attr = cast::reinterpret<std::raw_ptr<mut u8>>(mut &attributes);
+        _ = pthread_attr_init(attr);
+        if (settings.stack_size > 0) { _ = pthread_attr_setstacksize(attr, settings.stack_size); }
+        i32 failed = pthread_create(mut &thread, attr, entry, cast::reinterpret<std::raw_ptr<u8>>(start));
+        _ = pthread_attr_destroy(attr);
+        run_time check (failed == 0) else "std::thread::spawn: the operating system can't start another thread";
+        if (!settings.name.is_empty()) {
+            mut std::raw::array<u8, 16> name = default;   // at most 15 bytes and a NUL
+            std::raw_ptr<mut u8> bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &name);
+            mut usize i = 0;
+            while (i < 15 && i < settings.name.len()) {
+                std::raw::write(bytes.offset(i), *settings.name.as_ptr().offset(i));
+                i += 1;
+            }
+            _ = pthread_setname_np(thread, bytes);
+        }
+    }
+    if compile_time (std::meta::is_view<F>()) {
+        return scoped_handle<R>{ .thread = thread, .packet = packet };
+    } else {
+        return handle<R>{ .thread = thread, .packet = packet };
+    }
+}
+
+template<type R>
+class handle {
+public:
+    compile_time check (std::implements<R, std::sendable>())
+        else f"the thread's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
+
+    R join() move {
+        std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+        this.packet = nullptr;
+        unsafe { return join_thread(this.thread, packet).expect("the thread produced no result"); }
+    }
+
+    void detach() move {
+        std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+        this.packet = nullptr;
+        unsafe {
+            _ = pthread_detach(this.thread);
+            if (std::raw::atomic_exchange(&(*packet).state, detached, std::memory_order::acquire_release) == finished) {
+                std::raw::drop(packet);   // it already ended: its result is dropped here
+                std::raw::free(packet);
+            }
+        }
+    }
+
+    ~handle() {
+        if (this.packet) {
+            unsafe { _ = join_thread(this.thread, this.packet); }
+        }
+    }
+
+private:
+    u64 thread = 0;
+    std::raw_ptr<mut thread_packet<R>> packet = nullptr;
+}
+
+template<type R>
+view class scoped_handle {
+public:
+    compile_time check (std::implements<R, std::sendable>())
+        else f"the thread's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
+
+    R join() move {
+        std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+        this.packet = nullptr;
+        unsafe { return join_thread(this.thread, packet).expect("the thread produced no result"); }
+    }
+
+    ~scoped_handle() {
+        if (this.packet) {
+            unsafe { _ = join_thread(this.thread, this.packet); }
+        }
+    }
+
+private:
+    u64 thread = 0;
+    std::raw_ptr<mut thread_packet<R>> packet = nullptr;
+}
+
+usize available_parallelism() {
+    unsafe {
+        i64 n = sysconf(online_processors);
+        if (n < 1) { return 1; }
+        return cast::truncate<usize>(cast::reinterpret<u64>(n));
+    }
+}
+
+u64 current_id() {
+    unsafe { return pthread_self(); }
+}
+
+void sleep(std::time::duration d) {
+    u64 ns = d.as_nanoseconds();
+    sleep_time wanted = sleep_time{ .seconds = cast::saturate<i64>(ns / 1000000000), .nanos = cast::saturate<i64>(ns % 1000000000) };
+    mut sleep_time left = default;
+    unsafe { _ = nanosleep(&wanted, mut &left); }
+}
+
+void yield_now() {
+    unsafe { _ = sched_yield(); }
+}
+
+void spin_hint() {
+    unsafe { std::raw::spin_hint(); }
+}

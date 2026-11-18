@@ -337,6 +337,7 @@ std::string storage_prefix(Storage storage) {
     switch (storage) {
     case Storage::compile_time: return "compile_time ";
     case Storage::static_: return "static ";
+    case Storage::thread_local_: return "thread_local ";
     case Storage::local: return "";
     }
     return "";

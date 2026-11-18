@@ -23,6 +23,7 @@ struct Modifiers {
     std::string                doc;
     bool                       is_private      = false;
     bool                       is_static       = false;
+    bool                       is_thread_local = false;
     bool                       is_compile_time = false;
     bool                       is_run_time     = false;
     bool                       is_unsafe       = false;
@@ -515,6 +516,7 @@ private:
                 m.is_private = true;
                 break;
             case TokenKind::kw_static: m.is_static = true; break;
+            case TokenKind::kw_thread_local: m.is_thread_local = true; break;
             case TokenKind::kw_compile_time: m.is_compile_time = true; break;
             case TokenKind::kw_run_time: m.is_run_time = true; break;
             case TokenKind::kw_unsafe: m.is_unsafe = true; break;
@@ -810,6 +812,20 @@ private:
         decl->name      = expect_identifier(std::format("a {} name", what));
         if (accept(TokenKind::colon)) {
             do {
+                if (at(TokenKind::kw_unsafe)) {   // `unsafe std::sendable(cond)`: a promise (spec 27)
+                    ThreadPromise p;
+                    p.span = cur().span;
+                    advance();
+                    p.path      = parse_type_path();
+                    p.shareable = !p.path.segments.empty() && p.path.segments.back().name == "shareable";
+                    if (accept(TokenKind::l_paren)) {
+                        p.condition = parse_expr();
+                        expect(TokenKind::r_paren, "')' after the condition");
+                    }
+                    p.span = from(p.span);
+                    decl->promises.push_back(std::move(p));
+                    continue;
+                }
                 decl->bases.push_back(parse_type({}));
             } while (accept(TokenKind::comma));
         }
@@ -923,6 +939,10 @@ private:
             fn->access      = access;
             fn->is_operator = true;
             fn->result      = std::move(type);
+            if (m.is_mut && fn->result && fn->result->kind == TypeKind::reference) {   // `mut T& operator[](usize i)`
+                fn->result->as<ReferenceType>().is_mut = true;
+                m.is_mut                               = false;
+            }
             advance();
             fn->name_span = cur().span;
             if (accept(TokenKind::l_bracket)) {
@@ -959,6 +979,11 @@ private:
             fn->name      = std::move(name);
             fn->name_span = name_span;
             fn->result    = std::move(type);
+            // `mut T& at(...)`: the function returns a mutable reference.
+            if (m.is_mut && fn->result && fn->result->kind == TypeKind::reference) {
+                fn->result->as<ReferenceType>().is_mut = true;
+                m.is_mut                               = false;
+            }
             return finish_function(std::move(fn), m, ctx);
         }
 
@@ -969,9 +994,17 @@ private:
         var->access    = access;
         var->name      = std::move(name);
         var->name_span = name_span;
-        var->storage   = m.is_compile_time ? Storage::compile_time : m.is_static ? Storage::static_ : Storage::local;
+        var->storage   = m.is_compile_time ? Storage::compile_time
+                       : m.is_thread_local ? Storage::thread_local_
+                       : m.is_static       ? Storage::static_
+                                           : Storage::local;
+        if (m.is_thread_local && (is_field || m.is_static || m.is_compile_time)) {
+            report(DiagCode::E2001, m.start, "'thread_local' is a storage of its own: a file-scope variable, one copy per thread",
+                   "not here");
+        }
         var->type      = std::move(type);
-        var->is_mut    = m.is_mut;
+        var->is_mut    = apply_mut(*var->type, m.is_mut);   // `mut T& field` in a view: a mutable reference
+        if (!var->is_mut) m.is_mut = false;
 
         if (ctx == MemberContext::interface) {
             fail(DiagCode::E2001, name_span, "interfaces cannot have fields", "only method signatures are allowed");
@@ -1038,6 +1071,7 @@ private:
     /// `[mut] [override] [abstract] ( ; | = default ; | { body } )`
     void parse_function_tail(FunctionDecl& fn, MemberContext ctx) {
         fn.is_mut = accept(TokenKind::kw_mut);
+        if (!fn.is_mut) fn.is_move = accept(TokenKind::kw_move);
         while (true) {
             if (at(TokenKind::kw_override)) {
                 if (fn.is_virtual) {

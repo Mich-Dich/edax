@@ -48,7 +48,7 @@ std::string params_sig(const FunctionDecl& f) {
         s += (i ? ", " : "") + to_string(*f.params[i].type);
     }
     s += ")";
-    return f.is_mut ? s + " mut" : s;
+    return f.is_mut ? s + " mut" : f.is_move ? s + " move" : s;
 }
 
 std::string result_sig(const FunctionDecl& f) { return f.result ? to_string(*f.result) : ""; }
@@ -195,6 +195,13 @@ public:
             return sym;
         }
         for (const DeclPtr& mem : d.as<TypeDecl>().members) add_member(m, sym, *mem, false);
+        for (ThreadPromise& p : d.as<TypeDecl>().promises) {
+            if (p.condition) {
+                scopes_.emplace_back();
+                resolve_expr(*p.condition);
+                scopes_.pop_back();
+            }
+        }
         for (const DeclPtr& mem : d.as<TypeDecl>().members) resolve_decl(*mem, sym);
         return sym;
     }
@@ -955,6 +962,13 @@ private:
         case DeclKind::interface: {
             auto    it = symbol_of_.find(&d);
             Symbol* t  = it == symbol_of_.end() ? nullptr : it->second;
+            for (ThreadPromise& p : d.as<TypeDecl>().promises) {   // `unsafe std::sendable(cond)` (spec 27)
+                if (p.condition) {
+                    scopes_.emplace_back();
+                    resolve_expr(*p.condition);
+                    scopes_.pop_back();
+                }
+            }
             for (const DeclPtr& mem : d.as<TypeDecl>().members) resolve_decl(*mem, t);
             return;
         }
@@ -1303,6 +1317,19 @@ private:
             }
             bool    opaque = false;
             Symbol* mem    = find_member(base, name, opaque);
+            if (!mem && base->module && base->module->name == "std") {
+                // A few std types have types of their own (`std::thread_pool::options`, spec 28):
+                // the library declares them as `thread_pool_options` and so on.
+                std::string inner = base->name + "_" + name;
+                if (sema::is_std_nested_type(inner)) {
+                    if (auto it = base->module->items.find(inner); it != base->module->items.end() && it->second.front()->is_type()) {
+                        display += "::" + name;
+                        base = it->second.front();
+                        ++i;
+                        continue;
+                    }
+                }
+            }
             if (!mem) {
                 if (opaque) return nullptr;
                 Diagnostic& e = error(DiagCode::E3025, seg,

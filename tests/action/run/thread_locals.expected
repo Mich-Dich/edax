@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+other thread saw 101015
+main 102 25 7 total 3 limit 3
+--- stderr

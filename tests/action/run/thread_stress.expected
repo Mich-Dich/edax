@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+mpmc true
+mutex 160000
+fib 196418
+tasks 200
+reduce 19999900000 stable true data 50 200049
+--- stderr

@@ -70,6 +70,18 @@ struct Borrow {
     std::uint32_t live_end;
 };
 
+/// A view held in a local (`holder`) that borrows `root` (spec 12, 27): a lambda with reference
+/// captures, a `std::str` of a string, a thread that borrows, a darray of such handles. While the
+/// holder is alive, `root` is frozen (shared) or not usable at all (exclusive).
+struct ViewBorrow {
+    const Symbol* holder;
+    const Symbol* root;
+    bool          exclusive;
+    Span          at;         // where the borrow starts
+    bool          to_scope_end;   // the holder has a destructor: it borrows until its scope ends
+    int           depth;      // the block depth of the holder's scope
+};
+
 class Ownership {
 public:
     Ownership(sema::Program& program, DiagnosticEngine& diags)
@@ -374,10 +386,14 @@ private:
         }
     }
 
+    std::map<std::uint32_t, std::string> consumed_by_;   // the span of a consuming call: its method's name
+
     struct FunctionFrame {
         State                          state;
         std::vector<LoopContext>       loops;
         std::vector<Borrow>            borrows;
+        std::vector<ViewBorrow>        views;
+        int                            depth = 0;
         std::map<const Symbol*, std::uint32_t> live_end;
         bool                           returns_view = false;
         std::string                    name;
@@ -551,9 +567,16 @@ private:
                 bool earlier_iteration = it->second.begin > span.begin;
                 Diagnostic& d = error(DiagCode::E5002, span, std::format("'{}' is used after it was moved", s->name),
                                       "used after move");
-                note(d, earlier_iteration ? "moved here, in an earlier iteration of the loop" : "moved here", it->second);
+                std::string where = earlier_iteration ? "moved here, in an earlier iteration of the loop" : "moved here";
+                if (auto c = consumed_by_.find(it->second.begin); c != consumed_by_.end()) {
+                    where += std::format(" by the consuming method '{}'", c->second);
+                }
+                note(d, where, it->second);
                 note(d, std::format("assign a new value to '{}' first, or move a '.clone()' instead", s->name));
             }
+        }
+        for (const ViewBorrow& v : frame_.views) {
+            if (v.root == s && v.exclusive && view_active(v, span)) view_conflict(v, span, "use");
         }
         for (const LoopContext& l : frame_.loops) {
             if (l.borrowed == s && l.borrow_mut) {
@@ -567,6 +590,9 @@ private:
 
     void mutation(const Symbol* root, Span span, std::string_view action) {
         if (!root) return;
+        for (const ViewBorrow& v : frame_.views) {
+            if (v.root == root && !v.exclusive && view_active(v, span)) view_conflict(v, span, action);
+        }
         for (const LoopContext& l : frame_.loops) {
             if (l.borrowed == root) {
                 Diagnostic& d = error(DiagCode::E5021, span,
@@ -650,9 +676,145 @@ private:
 
     void walk_block(BlockExpr& b) {
         std::size_t borrows = frame_.borrows.size();
+        ++frame_.depth;
         for (StmtPtr& s : b.statements) walk_stmt(*s);
         if (b.tail) walk(*b.tail);
         frame_.borrows.resize(borrows);   // references declared in the block are gone
+        int d = frame_.depth--;
+        std::erase_if(frame_.views, [&](const ViewBorrow& v) { return v.depth >= d; });   // so are its views
+    }
+
+    // --- views that borrow (spec 12, 27) ----------------------------------------------------
+
+    std::map<const Symbol*, int> holder_depth_;
+
+    /// Whether destroying a value of `t` runs code (a destructor somewhere inside).
+    bool drops(const Type* t, int depth = 0) {
+        if (!t || depth > 20) return false;
+        switch (t->kind) {
+        case Kind::array: return drops(t->inner, depth + 1);
+        case Kind::function: return true;
+        case Kind::closure: {
+            const LambdaExpr* l = tc_.lambda_of(t);
+            if (!l) return false;
+            for (const Capture& c : l->captures) {
+                if ((c.kind == CaptureKind::move || c.kind == CaptureKind::init) && c.symbol && drops(c.symbol->type, depth + 1)) return true;
+            }
+            return false;
+        }
+        case Kind::user: {
+            const Symbol* s = t->symbol;
+            for (const Symbol* m : s->member_order) {
+                if (m->kind == SymbolKind::method && m->function() && m->function()->is_destructor) return true;
+                if (m->kind == SymbolKind::field && !m->is_static && drops(lower(*m->decl->as<VariableDecl>().type, m), depth + 1)) return true;
+                if (m->kind == SymbolKind::alternative && m->alternative->payload && drops(lower(*m->alternative->payload, m), depth + 1)) return true;
+            }
+            if (const Symbol* b = s->base_class()) return drops(tc_.user(b), depth + 1);
+            return false;
+        }
+        default: return false;
+        }
+    }
+
+    /// What the value of `e` borrows: (root, exclusive) pairs.
+    std::vector<std::pair<const Symbol*, bool>> borrows_of(const Expr& e) {
+        std::vector<std::pair<const Symbol*, bool>> out;
+        auto add_holder = [&](const Symbol* holder) {
+            for (const ViewBorrow& v : frame_.views) {
+                if (v.holder == holder) out.push_back({v.root, v.exclusive});
+            }
+        };
+        switch (e.kind) {
+        case ExprKind::lambda:
+            for (const Capture& c : e.as<LambdaExpr>().captures) {
+                const Symbol* outer = c.captured;
+                if (!outer) continue;
+                if (c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref) {
+                    if (outer->kind == SymbolKind::local) out.push_back({outer, c.kind == CaptureKind::mut_ref});
+                    add_holder(outer);
+                } else {
+                    add_holder(outer);   // a view captured by copy or move keeps its borrows
+                }
+            }
+            return out;
+        case ExprKind::path:
+            if (const Symbol* l = local_of(e)) add_holder(l);
+            return out;
+        case ExprKind::unary: {
+            const auto& u = e.as<UnaryExpr>();
+            if (u.op == UnaryOp::move || u.op == UnaryOp::mut_marker) return borrows_of(*u.operand);
+            return out;
+        }
+        case ExprKind::call: {
+            const auto& c = e.as<CallExpr>();
+            if (!c.type || !is_view(c.type) || c.type->is(Kind::reference)) return out;
+            if (c.callee->kind == ExprKind::member) {   // `s.as_str()`, `list.as_mut_span()`: borrows the receiver
+                const auto& me = c.callee->as<MemberExpr>();
+                const FunctionDecl* fn = me.symbol ? me.symbol->function() : nullptr;
+                if (fn && !fn->is_static) {
+                    const Symbol* root = root_of(*me.object);
+                    if (root && root != &this_root_) out.push_back({root, fn->is_mut});
+                    if (root) add_holder(root);
+                    if (!root) {   // a method of a temporary view: `list.as_mut_span().chunks(n)`
+                        for (auto b : borrows_of(*me.object)) out.push_back(b);
+                    }
+                }
+            }
+            // A function with exactly one view argument returns something that borrows what that
+            // argument borrows (spec 12): `std::thread::spawn([&x]() { ... })`.
+            const Expr* only = nullptr;
+            int         views = 0;
+            for (const ExprPtr& a : c.args) {
+                if (a->type && is_view(a->type)) {
+                    ++views;
+                    only = a.get();
+                }
+            }
+            if (views == 1) {
+                for (auto b : borrows_of(*only)) out.push_back(b);
+            }
+            return out;
+        }
+        default: return out;
+        }
+    }
+
+    /// `holder` (declared at `at`) now borrows what `value` borrows.
+    void hold(const Symbol* holder, const Expr& value, Span at) {
+        if (!holder) return;
+        int depth = holder_depth_.contains(holder) ? holder_depth_[holder] : frame_.depth;
+        bool to_end = drops(types::strip_ref(holder->type));
+        for (auto [root, exclusive] : borrows_of(value)) {
+            if (root == holder) continue;
+            bool known = std::any_of(frame_.views.begin(), frame_.views.end(), [&](const ViewBorrow& v) {
+                return v.holder == holder && v.root == root && v.at.begin == at.begin;
+            });
+            if (!known) frame_.views.push_back(ViewBorrow{holder, root, exclusive, at, to_end, depth});
+        }
+    }
+
+    bool view_active(const ViewBorrow& v, Span span) {
+        if (span.begin <= v.at.end) return false;
+        if (frame_.state.moved.count(v.holder)) return false;   // joined, consumed or moved away
+        if (v.to_scope_end) return true;
+        auto it = frame_.live_end.find(v.holder);
+        return it != frame_.live_end.end() && span.begin < it->second;
+    }
+
+    void view_conflict(const ViewBorrow& v, Span span, std::string_view action) {
+        if (silent_ != 0 || !reported_.insert({v.root, span.begin}).second) return;
+        Diagnostic& d = v.exclusive
+            ? error(DiagCode::E5023, span,
+                    std::format("'{}' is already borrowed mutably by '{}'", v.root->name, v.holder->name), "borrowed mutably")
+            : error(DiagCode::E5022, span,
+                    std::format("cannot {} '{}' while '{}' borrows it", action, v.root->name, v.holder->name), "still borrowed");
+        note(d, v.to_scope_end ? std::format("the borrow lasts until '{}' is joined, consumed or destroyed", v.holder->name)
+                               : std::format("the borrow lasts until the last use of '{}'", v.holder->name),
+             v.at);
+        if (v.exclusive) {
+            note(d, "a 'mut &' borrow is the only way to reach the value while it lasts; to share a counter between threads "
+                    "use a std::atomic or a std::mutex (spec 27)");
+        }
     }
 
     void walk_stmt(Stmt& s) {
@@ -674,6 +836,8 @@ private:
             if (v.symbol) {
                 frame_.state.moved.erase(v.symbol);
                 const Type* t = v.symbol->type;
+                holder_depth_[v.symbol] = frame_.depth;
+                if (t && !t->is(Kind::reference) && is_view(t) && v.init) hold(v.symbol, *v.init, v.span);
                 if (t && t->is(Kind::reference) && v.init) {
                     if (const Symbol* root = root_of(*v.init); root && root != &this_root_) {
                         frame_.borrows.push_back(Borrow{v.symbol, root, v.span, frame_.live_end[v.symbol]});
@@ -795,6 +959,10 @@ private:
                 return;
             }
             walk(*f.iterable);
+            if (f.symbol && f.symbol->type && is_view(f.symbol->type)) {   // `for (std::span<mut T> part : list.as_mut_span().chunks(n))`
+                holder_depth_[f.symbol] = frame_.depth;
+                hold(f.symbol, *f.iterable, f.iterable->span);
+            }
             const Symbol* borrowed = nullptr;
             bool          by_ref   = f.type->kind == TypeKind::reference;
             if (by_ref) borrowed = root_of(*f.iterable);
@@ -903,6 +1071,29 @@ private:
                 receiver     = root_of(*me.object);
                 mut_receiver = true;
                 mutation(receiver, me.object->span, std::format("call mut method '{}' on", fn->name));
+                // A view passed to a mut method of a view (`running.push(handle)`) borrows as long
+                // as that object is alive (spec 12).
+                if (const Symbol* holder = local_of(*me.object); holder && is_view(types::strip_ref(holder->type))) {
+                    for (ExprPtr& a : c.args) {
+                        if (a->type && is_view(a->type)) hold(holder, *a, c.span);
+                    }
+                }
+            }
+            if (fn && fn->is_move) {   // a consuming method (spec 06, 27): the receiver is moved
+                const Expr* o = me.object.get();
+                if (o->kind == ExprKind::unary && o->as<UnaryExpr>().op == UnaryOp::move) o = o->as<UnaryExpr>().operand.get();
+                if (const Symbol* l = local_of(*o)) {
+                    mutation(l, me.object->span, std::format("call the consuming method '{}' on", fn->name));
+                    for (ExprPtr& a : c.args) {
+                        walk(*a);
+                        consume(*a, nullptr);
+                    }
+                    if (frame_.state.reachable) {
+                        frame_.state.moved[l] = me.name.span;
+                        consumed_by_[me.name.span.begin] = fn->name;
+                    }
+                    return;
+                }
             }
             check_clone(c, me);
             if (!me.symbol && types::is_std_query_method(me.name.segments.back().name) &&

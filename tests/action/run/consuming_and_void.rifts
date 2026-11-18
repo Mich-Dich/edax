@@ -1,0 +1,32 @@
+// RUN: riftc run %s
+// Consuming methods (trailing 'move', spec 06) and void as a template argument (spec 02, 08).
+import std;
+class res {
+public:
+    u32 id = 0;
+    u32 finish() move {
+        std::println(f"finish {this.id}");
+        this.id = 0;
+        return 7;
+    }
+    ~res() { std::println(f"drop {this.id}"); }
+}
+res make(u32 i) { return res{ .id = i }; }
+std::result<void, u32> verify(u32 x) {
+    if (x > 3) { return std::error(x); }
+    return std::ok();
+}
+void hello() { std::println("hello"); }
+template<type R, type F>
+R call_it(F f) { return f(); }
+i32 main() {
+    res a = res{ .id = 1 };
+    u32 x = a.finish();
+    u32 y = make(2).finish();
+    res b = res{ .id = 3 };
+    std::println(f"{x} {y}");
+    call_it<void>([]() { hello(); });
+    std::option<void> o = std::some(hello());
+    std::println(f"{o.is_some()} {verify(2).is_ok()} {verify(5).is_ok()} {std::size_of<std::option<void>>()}");
+    return 0;
+}

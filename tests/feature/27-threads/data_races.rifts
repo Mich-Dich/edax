@@ -1,0 +1,34 @@
+// feature 27: a borrowing thread keeps what it captures borrowed until it is joined or destroyed,
+// so a data race is a compile error.
+import std;
+
+void counters() {
+    mut u32 counter = 0;
+    std::thread::scoped_handle<void> a = std::thread::spawn([mut &counter]() { counter += 1; });
+    std::thread::scoped_handle<void> b = std::thread::spawn([mut &counter]() { counter += 1; });   //~ error[E5023]: 'counter' is already borrowed mutably by 'a'
+}
+
+void readers(mut std::darray<u32>& list) {
+    std::thread::scoped_handle<usize> a = std::thread::spawn([&list]() { return list.len(); });
+    std::thread::scoped_handle<usize> b = std::thread::spawn([&list]() { return list.len(); });   // shared borrows may overlap
+    list.push(1);                               //~ error[E5022]: cannot call mut method 'push' on 'list' while 'a' borrows it
+    usize n = a.join() + b.join();
+    list.push(2);                               // joined: no longer borrowed
+}
+
+void parts(mut std::darray<f32>& samples) {
+    mut std::darray<std::thread::scoped_handle<void>> running = default;
+    for (std::span<mut f32> part : samples.as_mut_span().chunks(64)) {
+        running.push(std::thread::spawn([move part]() {
+            for (mut f32& x : part) { x *= 2.0f32; }
+        }));
+    }
+    f32 first = samples[0];                     //~ error[E5023]: 'samples' is already borrowed mutably by 'running'
+}
+
+void views() {
+    mut std::string text = std::string::from("hello");
+    std::str seen = text.as_str();
+    text.push_str("!");                         //~ error[E5022]: cannot call mut method 'push_str' on 'text' while 'seen' borrows it
+    std::println(seen);
+}

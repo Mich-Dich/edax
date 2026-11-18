@@ -5,9 +5,9 @@ Ordered roughly by how much they affect the rest of the design.
 | # | Topic | Current state | Notes |
 |---|---|---|---|
 | 1 | **Lifetimes beyond second-class references** | Reference elision rule only (see 12) | Is "borrow from `this` or the only parameter" enough? If not: explicit lifetime parameters, or more `std::shared_ptr` use |
-| 2 | **Concurrency** | Not designed | Threads, `std::atomic`, `std::mutex<T>`. Which types may cross threads (like Rust's `Send`/`Sync`)? Needed to finish the `static mut` and `shared_ptr` rules |
-| 3 | **`shared_ptr` reference count** | Unspecified | Always atomic (simple, small cost), or a separate `std::local_shared_ptr`? |
-| 4 | **Consuming methods** | Not available | A trailing `move` (like trailing `mut`) for methods that consume `this`, e.g. `std::string into_upper() move` |
+| 2 | **Concurrency** | **Designed** (see 27): threads, `std::sendable`/`std::shareable`, atomics, mutex, condition, channels | |
+| 3 | **`shared_ptr` reference count** | **Decided:** always atomic (see 13, 27) | |
+| 4 | **Consuming methods** | **Decided:** trailing `move` (see 06, 27) | The option/result built-ins can become ordinary `move` methods |
 | 5 | **Panic strategy** | Abort, or trap via build mode (see 24) | A user-defined panic handler for embedded and safety-critical targets |
 | 6 | **Interface default methods** | Not allowed | Useful, but adds rules about which implementation wins |
 | 7 | **Variadic templates** | Not available | Needed for `std::function<R(Args...)>`, which currently relies on compiler magic |
@@ -34,4 +34,13 @@ Ordered roughly by how much they affect the rest of the design.
 | 24 | **C/C++ headers → Rift headers** | Hand-written `extern(std::build::language::c)` `.rifth` | A build step that generates `.rifth` from C headers (like `bindgen`). C++ classes are much harder than C |
 | 25 | **Build sandboxing and remote cache** | Steps declare inputs/outputs (see 25) | Enforce declarations with a sandbox; share build outputs between machines and CI |
 | 26 | **Package registry** | Git and path dependencies only | A central registry with versions instead of commits? |
+| 32 | **Async / tasks** | Not available | Lightweight tasks or `async` functions on top of threads; needs an executor design |
+| 33 | **Thread pools and parallel algorithms** | **Designed** (see 28): `std::thread_pool`, `for_chunks`, `reduce_chunks` | Parallel `sort` and other algorithms on top of the pool |
+| 34 | **Real-time threads** | Not available | Priority, CPU affinity and scheduling policy in `std::thread::options` (platform-specific) |
+| 35 | **Targets without threads** | Not designed | Bare-metal targets: `std::thread::spawn` as a compile error there (a `compile_time check` on the target platform), atomics still available |
+| 36 | **Timeouts** | Not available | `try_lock_for`, `wait_for`, `receive_for` with a `std::time::duration` |
+| 37 | **Read-write lock** | Not available | `std::rw_mutex<T>` with `read()` / `write()` guards |
+| 39 | **Nested type declarations** | Not available | The library names three types as members of `std::thread_pool` (`options`, `task<R>`, `scoped_task<R>`); they are declared as `thread_pool_options` etc. and the compiler maps the member names. User code can't nest types yet |
+| 40 | **Deducing from a lambda's result** | Only literals | `reduce_chunks(data, n, 0.0, map, combine)`: a template parameter given only by an untyped literal takes the result type of a lambda argument that fits the literal. A general rule (deducing through `std::meta::result_of`) is open |
+| 38 | **Splitting a mutable span in two** | Only `chunks(n)` (equal parts) | `split_at(i)` must return two `std::span<mut T>` at once. Needs tuples or destructuring (q8), or a consuming method returning a pair struct whose fields can be moved out |
 | 17 | **Name** | `Rift` (working name) | |

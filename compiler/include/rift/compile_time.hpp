@@ -141,6 +141,12 @@ struct Hooks {
     /// The fields of a struct/class that are visible to code in the checker's current module
     /// (spec 26: reflection respects privacy).
     std::function<std::vector<const sema::Symbol*>(const types::Type* t)> visible_fields;
+    /// `std::implements<T, I>()`: whether `t` satisfies the interface or constraint `iface`
+    /// (user interfaces, std::comparable, std::sendable, ...).
+    std::function<bool(const types::Type* t, const types::Type* iface)> implements;
+    /// Whether values of `t` borrow something (a reference, a view, a lambda with reference
+    /// captures, spec 12).
+    std::function<bool(const types::Type* t)> is_view;
 };
 
 class Evaluator {

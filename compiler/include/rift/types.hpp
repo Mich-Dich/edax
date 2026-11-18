@@ -199,6 +199,9 @@ private:
 
 /// Source-like spelling: `u32`, `mut employee&`, `std::raw_ptr<u8>`, `{integer}`.
 std::string to_string(const Type* type);
+/// Like to_string, with every user type's module: `geometry::point`, `std::darray<shapes::circle>`.
+std::string qualified_name(const Type* type);
+std::string type_name(const Type* type, bool qualified);
 
 /// Whether `t` (references removed) is an instance of the std template `name` ("option",
 /// "result"): `std::option<u32>`.

@@ -1,0 +1,43 @@
+// feature 27: std::sendable / std::shareable are derived from a type's parts; raw pointers are
+// neither; `unsafe std::sendable` promises them; statics must be shareable; spawn needs sendable.
+import std;
+
+class window {
+public:
+    void draw() { }
+private:
+    std::raw_ptr<mut u8> handle = nullptr;
+}
+
+class device : unsafe std::sendable {           // a promise the compiler can't check
+public:
+    std::raw_ptr<mut u8> registers = nullptr;
+}
+
+struct texture {
+    u32               id = 0;
+    std::thread_bound stays = default;           // opts out without raw pointers
+}
+
+class bad : unsafe std::comparable {           //~ error[E4232]: 'unsafe' can only promise std::sendable or std::shareable
+}
+
+static u32 limit = 10;
+static std::atomic<u64> seen = default;
+static window main_window = default;           //~ error[E4231]: 'static main_window' is visible to every thread
+thread_local mut u32 calls = 0;
+
+template<type T>
+struct holder { T value; }
+
+void run() {
+    std::println(f"{std::implements<u32, std::sendable>()} {std::implements<device, std::sendable>()}");
+    std::println(f"{std::implements<texture, std::sendable>()} {std::implements<window, std::shareable>()}");
+    window w = default;
+    std::thread::handle<void> a = std::thread::spawn([move w]() { w.draw(); });   //~ error[E4230]: moves the lambda to another thread
+    device d = default;
+    std::thread::handle<void> b = std::thread::spawn([move d]() { });
+    mut u32& mine = calls;
+    std::thread::scoped_handle<void> c = std::thread::spawn([&mine]() { });       //~ error[E4230]: can't go there
+    holder<void> h = holder<void>{ .value = run() };   //~ error[E4180]: would have a field 'value' of type void
+}

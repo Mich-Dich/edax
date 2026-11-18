@@ -1,0 +1,12 @@
+exit: 0
+--- stdout
+finish 1
+drop 0
+finish 2
+drop 0
+7 7
+hello
+hello
+true true false 1
+drop 3
+--- stderr

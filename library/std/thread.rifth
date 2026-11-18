@@ -1,0 +1,63 @@
+// The Rift standard library: module std::thread (spec 27).
+//
+// One function starts a thread: `std::thread::spawn`. What it returns depends on what the lambda
+// captures: a lambda that owns all its captures gives a `handle<R>`, which may outlive the
+// current function; a lambda that borrows gives a `scoped_handle<R>`, a view that keeps what the
+// lambda borrows borrowed until the thread is joined. Destroying either handle joins the thread.
+
+/// How to start a thread.
+view struct options {
+    /// The thread's name, shown by debuggers and `top` (the first 15 bytes).
+    std::str name = "";
+    /// The stack size in bytes; 0: the platform's default.
+    usize stack_size = 0;
+}
+
+/// A running thread whose lambda owns everything it uses. `join()` waits for its result;
+/// destroying the handle joins too; `detach()` lets the thread run on alone.
+template<type R>
+class handle : unsafe std::sendable, unsafe std::shareable {
+public:
+    /// Waits for the thread and returns its result.
+    R join() move;
+
+    /// Lets the thread run on; nobody waits for it or gets its result.
+    void detach() move;
+
+    ~handle();
+}
+
+/// A running thread whose lambda borrows: a view, so the thread can't outlive what it borrows.
+/// Destroying the handle joins the thread; there is no detach.
+template<type R>
+view class scoped_handle : unsafe std::sendable, unsafe std::shareable {
+public:
+    /// Waits for the thread and returns its result.
+    R join() move;
+
+    ~scoped_handle();
+}
+
+/// Starts a thread running `f` (spec 27). `f` and its result must be std::sendable. Returns a
+/// `handle<R>` when `f` owns all its captures, a `scoped_handle<R>` when it borrows.
+template<type F : std::sendable>
+deduce spawn(F f);
+
+/// The same with a name and a stack size.
+template<type F : std::sendable>
+deduce spawn(options settings, F f);
+
+/// How many threads can run at the same time (the online CPUs).
+usize available_parallelism();
+
+/// An id of the calling thread, unique among running threads.
+u64 current_id();
+
+/// Sleeps for `d`.
+void sleep(std::time::duration d);
+
+/// Gives the rest of the time slice to another thread.
+void yield_now();
+
+/// Tells the CPU the thread is busy-waiting (`pause` on x86, `yield` on ARM).
+void spin_hint();

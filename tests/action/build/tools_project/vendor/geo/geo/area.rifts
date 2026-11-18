@@ -1,0 +1,1 @@
+u32 square(u32 side) { return side * side; }

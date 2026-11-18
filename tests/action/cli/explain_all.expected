@@ -157,6 +157,10 @@ E4213  error    a diagnostic id must be a declared 'std::diagnostic'
 E4215  error    a build mode allows undefined behaviour without saying so
 E4216  error    build.rifts has no build function
 E4214  error    a method of a template instance that does not compile is used
+E4220  error    a consuming ('move') method needs a value the caller owns
+E4230  error    a value that can't be moved to another thread
+E4231  error    a value that can't be shared between threads
+E4232  error    a thread-safety promise ('unsafe std::sendable') is not allowed here
 E5001  error    value of a non-copy type would be copied implicitly
 E5002  error    use of a moved value
 E5010  error    references cannot be stored in fields
@@ -167,6 +171,7 @@ E5015  error    a std::function cannot hold a lambda with reference captures
 E5020  error    the same value is passed as 'mut' and as another argument
 E5021  error    container changed while a loop borrows it
 E5022  error    value changed while a reference to it is in use
+E5023  error    value used while something borrows it mutably
 E5030  error    type cannot be cloned
 E6001  error    not supported by code generation yet
 E6002  error    the program has no 'main' function

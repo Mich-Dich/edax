@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/engine_project --out-dir=%t --mode=embedded shifter
+// shifts() returning mask: a count of 33 on a u32 is 1; bit(9) on a u8 is bit 1.

@@ -1,0 +1,30 @@
+// The Rift standard library: module std::time, durations and a monotonic clock (spec 20, 27).
+
+/// A length of time, in nanoseconds.
+struct duration {
+    u64 nanos = 0;
+
+    static duration nanoseconds(u64 n);
+    static duration microseconds(u64 n);
+    static duration milliseconds(u64 n);
+    static duration seconds(u64 n);
+
+    u64 as_nanoseconds();
+    u64 as_microseconds();
+    u64 as_milliseconds();
+    f64 as_seconds();
+}
+
+/// A point on the monotonic clock: for measuring how long something takes.
+struct instant {
+    u64 nanos = 0;
+
+    /// Now.
+    static instant now();
+
+    /// The time since this instant.
+    duration elapsed();
+
+    /// The time from `earlier` to this instant (zero if `earlier` is later).
+    duration since(instant earlier);
+}

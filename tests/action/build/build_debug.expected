@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+built '%t/prog' (debug)
+--- stderr

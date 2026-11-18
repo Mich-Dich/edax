@@ -31,6 +31,7 @@ compile_time void build(mut std::build::graph& g) {
     g.add_executable(std::build::rift_target{ .name = "ownership", .root = "ownership.rifts" });
     g.add_executable(std::build::rift_target{ .name = "gradebook", .root = "gradebook.rifts" });
     g.add_executable(std::build::rift_target{ .name = "compile_time_demo", .root = "compile_time_demo.rifts" });
+    g.add_executable(std::build::rift_target{ .name = "concurrency", .root = "concurrency.rifts" });
 
     // ffi links a C library built from native/stats.c, and libm.
     std::build::target stats = g.add_c_library(std::build::c_target{ .name = "stats" });

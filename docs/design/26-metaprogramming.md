@@ -38,6 +38,8 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::fields<T>()` | `std::span<std::meta::field>`: the fields of a struct or class, in declaration order |
 | `std::meta::alternatives<T>()` | `std::span<std::meta::alternative>`: the alternatives of an enum, in declaration order |
 | `std::meta::is_struct<T>()`, `is_class<T>()`, `is_enum<T>()` | `bool` |
+| `std::meta::result_of<F>()` | `type`: what calling the lambda or callable type `F` returns (`std::thread::spawn` uses it to name `handle<R>`) |
+| `std::meta::is_view<T>()` | `bool`: whether `T` borrows (a reference, a view, a lambda with reference captures, see 12) |
 | `std::is_integer<T>()`, `std::is_float<T>()`, `std::is_same<A, B>()`, `std::size_of<T>()`, `std::align_of<T>()`, `std::type_name<T>()` | As in 15 and 23 |
 
 ```rift

@@ -34,10 +34,3 @@ The keyword list mirrors `compiler/include/rift/token_kinds.def`. When the lexer
 ```sh
 npx @vscode/vsce package --allow-missing-repository
 ```
-
-
-
-install with:
-```bash
-code --install-extension editors/vscode/rift-language-0.3.0.vsix
-```

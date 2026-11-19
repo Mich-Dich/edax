@@ -1,1 +1,1 @@
-// RUN: riftc symbols examples/employees.rifts
+// RUN: riftc symbols %S/../examples/employees.rifts

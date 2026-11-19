@@ -1,1 +1,1 @@
-// RUN: riftc parse examples/employees.rifts
+// RUN: riftc parse %S/employees.rifts

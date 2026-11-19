@@ -1,1 +1,3 @@
-u32 square(u32 side) { return side * side; }
+namespace geo {
+    u32 square(u32 side) { return side * side; }
+}

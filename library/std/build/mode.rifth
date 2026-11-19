@@ -1,49 +1,51 @@
 // The Rift standard library: module std::build::mode, the build modes (spec 24). A mode is a
 // class implementing `settings`; build.rifts derives its own modes from these.
 
-/// The settings of a build mode. A mode overrides the methods whose values it changes.
-interface settings {
-    std::build::optimization optimization();
-    std::build::debug_info debug_info();
-    std::build::overflow overflow();
-    std::build::shifts shifts();
-    std::build::bounds bounds();
-    std::build::run_time_checks run_time_checks();
-    std::build::panic_behavior panic();
-    bool link_time_optimization();
-    bool allow_undefined_behavior();
-}
+namespace std::build::mode {
+    /// The settings of a build mode. A mode overrides the methods whose values it changes.
+    interface settings {
+        std::build::optimization optimization();
+        std::build::debug_info debug_info();
+        std::build::overflow overflow();
+        std::build::shifts shifts();
+        std::build::bounds bounds();
+        std::build::run_time_checks run_time_checks();
+        std::build::panic_behavior panic();
+        bool link_time_optimization();
+        bool allow_undefined_behavior();
+    }
 
-/// No optimization, full debug info, every check (the default mode).
-open class debug : settings {
-public:
-    std::build::optimization optimization() override;
-    std::build::debug_info debug_info() override;
-    std::build::overflow overflow() override;
-    std::build::shifts shifts() override;
-    std::build::bounds bounds() override;
-    std::build::run_time_checks run_time_checks() override;
-    std::build::panic_behavior panic() override;
-    bool link_time_optimization() override;
-    bool allow_undefined_behavior() override;
-}
+    /// No optimization, full debug info, every check (the default mode).
+    open class debug : settings {
+    public:
+        std::build::optimization optimization() override;
+        std::build::debug_info debug_info() override;
+        std::build::overflow overflow() override;
+        std::build::shifts shifts() override;
+        std::build::bounds bounds() override;
+        std::build::run_time_checks run_time_checks() override;
+        std::build::panic_behavior panic() override;
+        bool link_time_optimization() override;
+        bool allow_undefined_behavior() override;
+    }
 
-/// Optimized for speed, no debug info, every check.
-open class release : settings {
-public:
-    std::build::optimization optimization() override;
-    std::build::debug_info debug_info() override;
-    std::build::overflow overflow() override;
-    std::build::shifts shifts() override;
-    std::build::bounds bounds() override;
-    std::build::run_time_checks run_time_checks() override;
-    std::build::panic_behavior panic() override;
-    bool link_time_optimization() override;
-    bool allow_undefined_behavior() override;
-}
+    /// Optimized for speed, no debug info, every check.
+    open class release : settings {
+    public:
+        std::build::optimization optimization() override;
+        std::build::debug_info debug_info() override;
+        std::build::overflow overflow() override;
+        std::build::shifts shifts() override;
+        std::build::bounds bounds() override;
+        std::build::run_time_checks run_time_checks() override;
+        std::build::panic_behavior panic() override;
+        bool link_time_optimization() override;
+        bool allow_undefined_behavior() override;
+    }
 
-/// `release` with full debug info.
-open class release_with_debug_info : release {
-public:
-    std::build::debug_info debug_info() override;
+    /// `release` with full debug info.
+    open class release_with_debug_info : release {
+    public:
+        std::build::debug_info debug_info() override;
+    }
 }

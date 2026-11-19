@@ -1,1 +1,3 @@
-u32 twice(u32 x) { return x * 2; }
+namespace core {
+    u32 twice(u32 x) { return x * 2; }
+}

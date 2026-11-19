@@ -1,6 +1,6 @@
 import std;
 import core::util;
 i32 main() {
-    run_time check (core::util::twice(2) == 4) else "twice";
+    run_time check (core::twice(2) == 4) else "twice";
     return 0;
 }

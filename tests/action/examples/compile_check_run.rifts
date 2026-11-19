@@ -1,2 +1,2 @@
-// RUN: riftc run examples/compile_check.rifts
+// RUN: riftc run %S/compile_check.rifts
 // The milestone-6 target: the first example compiles to a program that exits 0.

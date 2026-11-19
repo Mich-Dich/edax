@@ -5,7 +5,7 @@ compile_time bool verbose = std::build::setting<bool>("verbose");
 i32 main() {
     u32 big = 4000000000;
     if compile_time (verbose) { std::println("verbose"); }
-    unsafe { std::println(f"{core::util::twice(21)} {triple(5)}"); }
+    unsafe { std::println(f"{core::twice(21)} {triple(5)}"); }
     run_time(build::profile) check (false) else "profile only";
     std::println(f"{big + big}");
     return 0;

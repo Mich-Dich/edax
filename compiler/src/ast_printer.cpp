@@ -337,6 +337,7 @@ std::string storage_prefix(Storage storage) {
     switch (storage) {
     case Storage::compile_time: return "compile_time ";
     case Storage::static_: return "static ";
+    case Storage::thread_local_: return "thread_local ";
     case Storage::local: return "";
     }
     return "";
@@ -409,6 +410,9 @@ void add_common(S& s, const Decl& d) {
             }
         }
         s.kids.insert(s.kids.begin(), std::move(t));
+    }
+    for (auto it = d.annotations.rbegin(); it != d.annotations.rend(); ++it) {   // spec 29
+        s.kids.insert(s.kids.begin(), S{"@" + to_string(it->path), {}});
     }
     if (!d.doc.empty()) {
         s.kids.insert(s.kids.begin(), S{"doc " + quote(d.doc), {}});
@@ -499,7 +503,7 @@ S build(const Decl& d) {
 } // namespace
 
 std::string to_string(const Path& path) {
-    std::string out;
+    std::string out = path.global ? "::" : "";
     for (std::size_t i = 0; i < path.segments.size(); ++i) {
         out += (i ? "::" : "") + path.segments[i].name + template_args(path.segments[i]);
     }

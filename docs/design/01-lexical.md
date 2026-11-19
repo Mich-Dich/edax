@@ -29,14 +29,16 @@ Identifiers are ASCII letters, digits and `_`, and must not start with a digit. 
 
 ### Keywords
 ```
-import  struct  class  interface  enum  template  type
+import  namespace  struct  class  interface  enum  template  type  annotation
 virtual  override  abstract  operator
 public  protected  private  static  extern
 mut  move  this  view
-compile_time  run_time  deduce  check
+compile_time  run_time  deduce  check  thread_local
 if  else  for  while  break  continue  return  match
 true  false  nullptr  default  auto  cast  bit  unsafe
 ```
+`annotated` and `generate` are keywords only inside an `annotation` declaration (see 29). `@` starts an annotation.
+
 `open` is a keyword only directly before a type declaration (`open class shape`, see 07); elsewhere it is an ordinary name, so `std::file::open` is a method.
 
 Built-in type names, which are reserved like keywords:

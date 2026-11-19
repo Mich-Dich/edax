@@ -119,6 +119,8 @@ std::string to_string(const Value& v) {
     }
     case Value::Kind::field: return std::format("field '{}' of {}", v.symbol->name, types::to_string(v.type_value));
     case Value::Kind::alternative: return std::format("alternative '{}' of {}", v.symbol->name, types::to_string(v.type_value));
+    case Value::Kind::function: return std::format("method '{}' of {}", v.symbol->name, types::to_string(v.type_value));
+    case Value::Kind::parameter: return std::format("parameter {} of '{}'", v.index, v.symbol->name);
     }
     return "?";
 }
@@ -134,7 +136,9 @@ bool equal(const Value& a, const Value& b) {
     case Value::Kind::string: return a.string == b.string;
     case Value::Kind::type: return a.type_value == b.type_value;
     case Value::Kind::field:
-    case Value::Kind::alternative: return a.symbol == b.symbol && a.type_value == b.type_value;
+    case Value::Kind::alternative:
+    case Value::Kind::function: return a.symbol == b.symbol && a.type_value == b.type_value;
+    case Value::Kind::parameter: return a.symbol == b.symbol && a.index == b.index;
     case Value::Kind::enumeration:
         if (!a.symbol || !b.symbol || a.symbol->name != b.symbol->name) return false;
         [[fallthrough]];
@@ -157,14 +161,19 @@ std::string builtin_name(const CallExpr& c) {
     const auto& segs = pe.path.segments;
     if (segs.size() == 2 && segs[0].name == "std") {
         const std::string& n = segs[1].name;
-        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "size_of" || n == "align_of" || n == "type_name" ||
-            n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of") {
+        if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "implements" || n == "size_of" || n == "align_of" || n == "type_name" ||
+            n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of" ||
+            n == "literal_text") {
             return n;
         }
     }
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "meta") {
         const std::string& n = segs[2].name;
-        if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum") return "meta::" + n;
+        if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum" || n == "result_of" ||
+            n == "is_view" || n == "methods" || n == "interfaces" || n == "template_args" || n == "annotation" || n == "has_annotation" ||
+            n == "function_annotation" || n == "type_annotation" || n == "file_annotation") {
+            return "meta::" + n;
+        }
     }
     return {};
 }
@@ -178,7 +187,7 @@ std::string raw_intrinsic(const CallExpr& c) {
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "raw") {
         const std::string& n = segs[2].name;
         if (n == "allocate" || n == "reallocate" || n == "free" || n == "read" || n == "write" || n == "drop" || n == "copy" ||
-            n == "str_from") {
+            n == "str_from" || n.starts_with("atomic_") || n == "futex_wait" || n == "futex_wake" || n == "spin_hint") {
             return n;
         }
     }
@@ -209,6 +218,7 @@ struct Evaluator::Impl {
     std::function<std::shared_ptr<const Value>(const Symbol*)> parameter;   // entry checks: the call's arguments
     std::function<bool(const Symbol*)>                         parameter_known;
     std::function<std::optional<Span>(const Symbol*)>          parameter_site;
+    std::function<std::optional<std::string>(const Symbol*)>   parameter_text;
     std::vector<Note>   pending_notes;               // std::compile_note, for the next error or warning
 
     static constexpr std::size_t max_steps = 2'000'000;
@@ -806,6 +816,15 @@ struct Evaluator::Impl {
         if (t->is(Kind::user) && (t->symbol->kind == SymbolKind::struct_ || t->symbol->kind == SymbolKind::class_)) {
             return build_aggregate(t, {}, span);
         }
+        if (t->is(Kind::array) && !t->args.empty() && t->args[0]->is(Kind::value_arg)) {   // std::raw::array<T, N>: N defaults
+            Value v;
+            v.kind = Value::Kind::list;
+            v.type = t;
+            u128 n = tc.value_bits(t->args[0]);
+            if (n > 4096) not_constant(span, std::format("the default of {} is too large to compute at compile time", types::to_string(t)));
+            for (u128 i = 0; i < n; ++i) v.elements.push_back(default_of(t->inner, span));
+            return v;
+        }
         not_constant(span, std::format("the default of {} is not known at compile time", types::to_string(t)));
     }
 
@@ -820,6 +839,7 @@ struct Evaluator::Impl {
             }
             const auto& d = f->decl->as<VariableDecl>();
             if (d.init) {
+                if (!d.init->type && hooks.check_field) hooks.check_field(f);   // declared later, or in another module
                 if (!d.init->type) not_constant(span, std::format("the default of '{}::{}' is not checked yet", t->symbol->name, f->name),
                                                 "declare the type before the compile-time code that uses it");
                 v.elements.push_back(eval(*d.init));
@@ -878,8 +898,74 @@ struct Evaluator::Impl {
                 return integer(index, usize());
             }
         }
+        if (o.kind == Value::Kind::function) {
+            const Symbol*       m = o.symbol;
+            const FunctionDecl* f = body_decl(m);
+            if (name == "name") return string_value(m->name);
+            if (name == "result") return Value::of_type(f->result ? tc.lower(*f->result, sema::substitution_of(m)) : tc.void_(), tc.type_value());
+            if (name == "is_mut") return Value::of_bool(f->is_mut, tc.bool_());
+            if (name == "is_static") return Value::of_bool(m->is_static, tc.bool_());
+            if (name == "parameters") {
+                Value list;
+                list.kind = Value::Kind::list;
+                list.type = type_of(me);
+                for (std::size_t i = 0; i < f->params.size(); ++i) {
+                    Value p;
+                    p.kind       = Value::Kind::parameter;
+                    p.type       = tc.meta_parameter();
+                    p.symbol     = m;
+                    p.index      = i;
+                    p.type_value = o.type_value;
+                    list.elements.push_back(p);
+                }
+                return list;
+            }
+        }
+        if (o.kind == Value::Kind::parameter) {
+            const ast::Param& p = function_decl(o.symbol)->params.at(o.index);
+            if (name == "name") return string_value(p.name);
+            if (name == "index") return integer(o.index, usize());
+            const Type* pt = tc.lower(*p.type, sema::substitution_of(o.symbol));
+            if (name == "type") return Value::of_type(types::strip_ref(pt), tc.type_value());
+            if (name == "passing") {
+                const Type* passing = type_of(me);
+                if (!passing->is(Kind::user)) unknown();
+                Value v;
+                v.kind   = Value::Kind::enumeration;
+                v.type   = passing;
+                v.symbol = passing->symbol->members.at(!pt->is(Kind::reference) ? "by_value" : pt->is_mut ? "by_mut_reference" : "by_reference").front();
+                return v;
+            }
+        }
         if (o.kind == Value::Kind::aggregate) return o.elements.at(field_index(o.type, name, me.span));
         not_constant(me.span, std::format("'.{}' is not known at compile time", name));
+    }
+
+    /// The declaration of a function whose parameters are reflected (the one with annotations).
+    static const FunctionDecl* function_decl(const Symbol* f) { return &f->decl->as<FunctionDecl>(); }
+
+    /// `annotation<A>()` / `has<A>()` on the annotations `uses` (spec 29).
+    Value annotation_of(const std::vector<ast::AnnotationUse>* uses, const Type* a, bool has, const CallExpr& c) {
+        if (!a->is(Kind::user)) unknown();
+        const ast::AnnotationUse* found = nullptr;
+        if (uses) {
+            for (const ast::AnnotationUse& u : *uses) {
+                if (u.symbol == a->symbol) found = &u;
+            }
+        }
+        if (has) return Value::of_bool(found != nullptr, tc.bool_());
+        const Type* option = type_of(c);
+        if (!option->is(Kind::user)) unknown();
+        Value out;
+        out.kind   = Value::Kind::enumeration;
+        out.type   = option;
+        out.symbol = option->symbol->members.at(found ? "some" : "none").front();
+        if (found) {
+            std::shared_ptr<const Value> v = found->value_symbol ? hooks.constant_value(found->value_symbol) : nullptr;
+            if (!v) not_constant(c.span, std::format("the value of '@{}' is not known", ast::to_string(found->path)));
+            out.elements.push_back(*v);
+        }
+        return out;
     }
 
     Value call(const CallExpr& c) {
@@ -929,6 +1015,47 @@ struct Evaluator::Impl {
                    : name == "ends_with"   ? o.string.ends_with(needle)
                                            : o.string.find(needle) != std::string::npos;
             return Value::of_bool(r, tc.bool_());
+        }
+        if (o.kind == Value::Kind::string && name == "slice" && c.args.size() == 2) {   // byte range (spec 19, 31)
+            Value from = eval(*c.args[0]);
+            Value to   = eval(*c.args[1]);
+            if (from.integer > to.integer || to.integer > o.string.size()) {
+                failed(c.span, std::format("slice {}..{} of a text of {} bytes", rift::to_string(from.integer), rift::to_string(to.integer),
+                                           o.string.size()),
+                       "out of bounds");
+            }
+            return string_value(o.string.substr(static_cast<std::size_t>(from.integer), static_cast<std::size_t>(to.integer - from.integer)));
+        }
+        if (o.kind == Value::Kind::string && name == "find" && c.args.size() == 1) {   // std::option<usize>
+            Value       a      = eval(*c.args[0]);
+            std::string needle = a.kind == Value::Kind::string ? a.string
+                               : a.kind == Value::Kind::character ? std::string(1, static_cast<char>(a.character))
+                                                                  : (unknown(), std::string());
+            const Type* option = type_of(c);
+            if (!option || !option->is(Kind::user)) unknown();
+            std::size_t at = o.string.find(needle);
+            Value out;
+            out.kind   = Value::Kind::enumeration;
+            out.type   = option;
+            out.symbol = option->symbol->members.at(at == std::string::npos ? "none" : "some").front();
+            if (at != std::string::npos) out.elements.push_back(integer(at, usize()));
+            return out;
+        }
+        if ((name == "has" || name == "annotation") &&
+            (o.kind == Value::Kind::field || o.kind == Value::Kind::alternative || o.kind == Value::Kind::function ||
+             o.kind == Value::Kind::parameter)) {
+            const auto& seg = c.callee->as<MemberExpr>().name.segments.back();
+            if (seg.template_args.empty() || !seg.template_args[0].type) unknown();
+            const Type* a = lower(*seg.template_args[0].type);
+            const std::vector<ast::AnnotationUse>* uses = nullptr;
+            switch (o.kind) {
+            case Value::Kind::field:
+            case Value::Kind::function: uses = o.symbol->decl ? &o.symbol->decl->annotations : nullptr; break;
+            case Value::Kind::alternative: uses = o.symbol->alternative ? &o.symbol->alternative->annotations : nullptr; break;
+            case Value::Kind::parameter: uses = &function_decl(o.symbol)->params.at(o.index).annotations; break;
+            default: break;
+            }
+            return annotation_of(uses, a, name == "has", c);
         }
         if (o.kind == Value::Kind::field && name == "get" && c.args.size() == 1) {
             Value v = eval(*c.args[0]);
@@ -1032,6 +1159,11 @@ struct Evaluator::Impl {
         std::string message = text(with_id ? first + 1 : first);
         if (quiet) throw Stop{};
         bool error = name == "compile_error";
+        if (!error && !id.empty() &&   // `@std::allow{ .id = ... }` on the function being checked (spec 29)
+            std::find(program.allowed_warnings.begin(), program.allowed_warnings.end(), id) != program.allowed_warnings.end()) {
+            pending_notes.clear();
+            return Value{};
+        }
         if (!error && !id.empty()) {   // --warn=id=off|error (spec 23)
             auto level = program.warn_levels.find(id);
             if (level != program.warn_levels.end() && level->second == "off") {
@@ -1062,7 +1194,7 @@ struct Evaluator::Impl {
     static std::string diagnostic_id(const Expr& e) {
         const sema::Symbol* s = e.kind == ExprKind::path ? e.as<PathExpr>().symbol : nullptr;
         if (!s) return ast::to_string(e.as<PathExpr>().path);
-        return s->module && !s->module->name.empty() ? s->module->name + "::" + s->name : s->name;
+        return s->key();
     }
 
     /// A check met while running compile-time code (spec 23): an entry check of a compile_time
@@ -1093,6 +1225,11 @@ struct Evaluator::Impl {
 
     Value builtin(const CallExpr& c, const std::string& name) {
         if (name.starts_with("compile_")) return diagnostic(c, name);
+        if (name == "literal_text") {   // the text of a literal argument, or "" (spec 31)
+            const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
+            std::optional<std::string> text = p && frames.size() == 1 && parameter_text ? parameter_text(p) : std::nullopt;
+            return string_value(text ? *text : std::string());
+        }
         if (name == "is_compile_time" || name == "location_of") {   // about a parameter's argument (spec 23)
             const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
             if (name == "is_compile_time") {
@@ -1106,6 +1243,29 @@ struct Evaluator::Impl {
             v.location = at ? at : std::optional<Span>(c.args.empty() ? c.span : c.args[0]->span);
             return v;
         }
+        if (name == "meta::function_annotation" || name == "meta::type_annotation" || name == "meta::file_annotation") {
+            // `annotation<A>` around a call site (spec 31): on the function it is written in, on
+            // that function's type, or on its file.
+            const auto& s = c.callee->as<PathExpr>().path.segments.back();
+            if (s.template_args.empty() || !s.template_args[0].type || c.args.size() != 1) unknown();
+            const Type* a     = lower(*s.template_args[0].type);
+            Value       where = eval(*c.args[0]);
+            const std::vector<ast::AnnotationUse>* uses = nullptr;
+            const Symbol* f = where.symbol;
+            while (f && f->template_of) f = f->template_of;
+            if (name == "meta::function_annotation" && f && f->decl) uses = &f->decl->annotations;
+            if (name == "meta::type_annotation" && f && f->parent) {
+                const Symbol* t = f->parent;
+                while (t->template_of) t = t->template_of;
+                if (t->decl) uses = &t->decl->annotations;
+            }
+            if (name == "meta::file_annotation" && where.location) {
+                for (const auto& [mname, m] : program.modules) {
+                    if (m->source && m->source->id == where.location->file) uses = &m->source->ast.annotations;
+                }
+            }
+            return annotation_of(uses, a, false, c);
+        }
         const auto& seg = c.callee->as<PathExpr>().path.segments.back();
         auto arg = [&](std::size_t i) -> const Type* {
             if (i >= seg.template_args.size() || !seg.template_args[i].type) unknown();
@@ -1115,11 +1275,25 @@ struct Evaluator::Impl {
         if (name == "is_integer") return Value::of_bool(t->is_integer(), tc.bool_());
         if (name == "is_float") return Value::of_bool(t->is_float(), tc.bool_());
         if (name == "is_same") return Value::of_bool(t == arg(1), tc.bool_());
+        if (name == "implements") {
+            const Type* i = arg(1);
+            if (t->is_unknown() || t->is(Kind::type_param) || i->is_unknown()) unknown();
+            return Value::of_bool(hooks.implements && hooks.implements(t, i), tc.bool_());
+        }
         if (name == "type_name") return string_value(types::to_string(t));
         if (name == "size_of" || name == "align_of") {
             types::Layout l = tc.layout(t);
             if (l.size == 0 && !t->is(Kind::void_)) not_constant(c.span, std::format("the size of {} is not known", types::to_string(t)));
             return integer(name == "size_of" ? l.size : l.align, usize());
+        }
+        if (name == "meta::result_of") {   // what calling a callable gives (spec 26): the result type of a lambda
+            if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) return Value::of_type(t->args.back(), c.type);
+            if (t->is_unknown() || t->is(Kind::type_param)) unknown();
+            failed(c.span, std::format("std::meta::result_of needs a lambda or callable type, not {}", types::to_string(t)), "not callable");
+        }
+        if (name == "meta::is_view") {
+            if (t->is_unknown() || t->is(Kind::type_param)) unknown();
+            return Value::of_bool(hooks.is_view && hooks.is_view(t), tc.bool_());
         }
         bool is_user = t->is(Kind::user);
         if (name == "meta::is_struct") return Value::of_bool(is_user && t->symbol->kind == SymbolKind::struct_, tc.bool_());
@@ -1141,6 +1315,49 @@ struct Evaluator::Impl {
                 list.elements.push_back(v);
             }
             return list;
+        }
+        if (name == "meta::methods") {
+            if (!is_user || t->symbol->kind == SymbolKind::enum_) {
+                failed(c.span, std::format("std::meta::methods needs a struct, class or interface, not {}", types::to_string(t)),
+                       "no methods");
+            }
+            for (const Symbol* m : hooks.visible_methods ? hooks.visible_methods(t) : std::vector<const Symbol*>{}) {
+                Value v;
+                v.kind       = Value::Kind::function;
+                v.type       = tc.meta_function();
+                v.symbol     = m;
+                v.type_value = t;
+                list.elements.push_back(v);
+            }
+            return list;
+        }
+        if (name == "meta::interfaces") {
+            if (!is_user) return list;
+            std::vector<const Symbol*> found;
+            std::function<void(const Symbol*)> walk = [&](const Symbol* s) {
+                for (const Symbol* b : s->bases) {
+                    if (b->kind == SymbolKind::interface && std::find(found.begin(), found.end(), b) == found.end()) found.push_back(b);
+                    walk(b);
+                }
+            };
+            walk(t->symbol);
+            for (const Symbol* i : found) list.elements.push_back(Value::of_type(tc.user(i), tc.type_value()));
+            return list;
+        }
+        if (name == "meta::template_args") {
+            if (!is_user) return list;
+            for (const Type* a : t->symbol->template_args) {
+                if (a && !a->is(Kind::value_arg)) list.elements.push_back(Value::of_type(a, tc.type_value()));
+            }
+            return list;
+        }
+        if (name == "meta::annotation" || name == "meta::has_annotation") {   // (A, T): annotation A on type T (spec 29)
+            const Type* a      = t;
+            const Type* target = arg(1);
+            if (a->is_unknown() || target->is_unknown() || target->is(Kind::type_param)) unknown();
+            const std::vector<ast::AnnotationUse>* uses =
+                target->is(Kind::user) && target->symbol->decl ? &target->symbol->decl->annotations : nullptr;
+            return annotation_of(uses, a, name == "meta::has_annotation", c);
         }
         if (name == "meta::alternatives") {
             if (!is_user || t->symbol->kind != SymbolKind::enum_) {
@@ -1227,6 +1444,18 @@ struct Evaluator::Impl {
         return false;
     }
 
+    /// A setting from build.rifts' program as a value of this program's type `want` (spec 25).
+    Value setting_value(const Value& v, const Type* want, const std::string& name, Span at) {
+        std::string had = v.type ? types::to_string(types::strip_ref(v.type)) : "?";
+        if (want && had == types::to_string(want)) {
+            if (v.kind == Value::Kind::boolean) return Value::of_bool(v.boolean, want);
+            if (v.kind == Value::Kind::integer) return integer(v.integer, want);
+            if (v.kind == Value::Kind::string) return string_value(v.string);
+        }
+        if (want && want->is(Kind::static_str) && v.kind == Value::Kind::string) return string_value(v.string);
+        failed(at, std::format("the setting '{}' is a '{}', not a '{}'", name, had, want ? types::to_string(want) : "?"), "wrong type");
+    }
+
     static std::string static_text(const Value& v) { return v.kind == Value::Kind::string ? v.string : std::string(); }
 
     /// A value of `t` from the text of `-Dname=value`.
@@ -1265,24 +1494,45 @@ struct Evaluator::Impl {
             if (!t || !t->is(Kind::user)) failed(c.args[0]->span, "'std::build::mode_is' takes a mode class", "not a mode");
             return Value::of_bool(program.build_mode_class && derives(program.build_mode_class, t->symbol), tc.bool_());
         }
+        if (n == "setting_at") {   // the setting for the file of a call site, or the target's, or none (spec 31)
+            namespace fs = std::filesystem;
+            Value       where = eval(*c.args.at(0));
+            std::string name  = static_text(eval(*c.args.at(1)));
+            std::string file;
+            if (where.type && where.type->is(Kind::user)) {
+                std::size_t i = 0;
+                for (const Symbol* m : where.type->symbol->member_order) {
+                    if (m->kind != SymbolKind::field || m->is_static) continue;
+                    if (m->name == "file" && i < where.elements.size()) file = where.elements[i].string;
+                    ++i;
+                }
+            }
+            std::error_code ec;
+            std::string     canonical = file.empty() ? std::string() : fs::weakly_canonical(fs::path(file), ec).generic_string();
+            std::shared_ptr<const Value> found;
+            for (const sema::FileSetting& fset : program.file_settings) {
+                if (fset.name == name && std::find(fset.files.begin(), fset.files.end(), canonical) != fset.files.end()) found = fset.value;
+            }
+            if (!found) {
+                auto it = program.build_settings.find(name);
+                if (it != program.build_settings.end()) found = it->second;
+            }
+            const Type* option = type_of(c);
+            if (!option || !option->is(Kind::user) || option->symbol->template_args.empty()) unknown();
+            Value out;
+            out.kind   = Value::Kind::enumeration;
+            out.type   = option;
+            out.symbol = option->symbol->members.at(found ? "some" : "none").front();
+            if (found) out.elements.push_back(setting_value(*found, option->symbol->template_args[0], name, c.span));
+            return out;
+        }
         if (n == "setting") {
             std::string name = static_text(eval(*c.args.at(0)));
             auto it = program.build_settings.find(name);
             if (it == program.build_settings.end() || !it->second) {
                 failed(c.span, std::format("build.rifts does not set '{}' for this target", name), "no such setting");
             }
-            // The value comes from build.rifts' own program: rebuilt with this program's types.
-            const Type* want = type_of(c);
-            const Value& v   = *it->second;
-            std::string  had = v.type ? types::to_string(types::strip_ref(v.type)) : "?";
-            if (want && had == types::to_string(want)) {
-                if (v.kind == Value::Kind::boolean) return Value::of_bool(v.boolean, want);
-                if (v.kind == Value::Kind::integer) return integer(v.integer, want);
-                if (v.kind == Value::Kind::string) return string_value(v.string);
-            }
-            if (want && want->is(Kind::static_str) && v.kind == Value::Kind::string) return string_value(v.string);
-            failed(c.span, std::format("the setting '{}' is a '{}', not a '{}'", name, had, want ? types::to_string(want) : "?"),
-                   "wrong type");
+            return setting_value(*it->second, type_of(c), name, c.span);
         }
         if (s->parent && s->parent->name == "path") {   // the methods of std::build::path
             std::string text = self && self->kind == Value::Kind::aggregate && !self->elements.empty() ? self->elements[0].string : "";
@@ -1368,7 +1618,7 @@ struct Evaluator::Impl {
             const Value& m = args.at(n == "add_mode" ? 0 : 1);
             const Symbol* settings = nullptr;
             if (auto mm = program.modules.find("std::build::mode"); mm != program.modules.end()) {
-                if (auto it = mm->second->items.find("settings"); it != mm->second->items.end()) settings = it->second.front();
+                settings = mm->second->item("std::build::mode::settings");
             }
             const Type* t = m.kind == Value::Kind::type ? m.type_value : nullptr;
             bool ok = t && t->is(Kind::user) && t->symbol->kind == SymbolKind::class_;
@@ -1394,6 +1644,36 @@ struct Evaluator::Impl {
         if (n == "set") {
             BuildTarget& t = target_of(0);
             t.settings[static_text(args.at(1))] = std::make_shared<const Value>(args.at(2));
+            return Value{};
+        }
+        if (n == "set_for_files") {   // a setting for the files of `t` matching a pattern (spec 31)
+            namespace fs = std::filesystem;
+            BuildTarget&    t       = target_of(0);
+            std::string     pattern = static_text(args.at(1));
+            std::regex      re(glob_regex(pattern));
+            std::error_code ec;
+            fs::path base = fs::path(t.base.empty() ? g->root : t.base) / t.root;
+            if (!fs::is_directory(base, ec)) base = base.parent_path();
+            sema::FileSetting fsetting;
+            fsetting.name  = static_text(args.at(2));
+            fsetting.value = std::make_shared<const Value>(args.at(3));
+            for (auto it = fs::recursive_directory_iterator(base, fs::directory_options::skip_permission_denied, ec);
+                 it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                if (it->is_directory(ec)) {
+                    if (it->path().filename().string().starts_with(".") || it->path() == fs::path(g->out_dir)) it.disable_recursion_pending();
+                    continue;
+                }
+                std::string rel = it->path().lexically_relative(base).generic_string();
+                if (std::regex_match(rel, re)) fsetting.files.push_back(fs::weakly_canonical(it->path(), ec).generic_string());
+            }
+            if (fsetting.files.empty()) {
+                failed(c.args[1]->span, std::format("\"{}\" matches no file of target '{}' (relative to '{}')", pattern, t.name,
+                                                    base.lexically_relative(g->root).generic_string()),
+                       "no such file");
+            }
+            g->globs[pattern] = fsetting.files;
+            t.file_settings.push_back(std::move(fsetting));
             return Value{};
         }
         auto path_text = [&](std::size_t i) -> std::string {
@@ -1438,7 +1718,7 @@ struct Evaluator::Impl {
             list.type = type_of(c);
             const Type* path_type = nullptr;
             if (auto bm = program.modules.find("std::build"); bm != program.modules.end()) {
-                if (auto it = bm->second->items.find("path"); it != bm->second->items.end()) path_type = tc.user(it->second.front());
+                if (const Symbol* p = bm->second->item("std::build::path")) path_type = tc.user(p);
             }
             for (const std::string& f : found) list.elements.push_back(path_value(f, path_type));
             return list;
@@ -1909,6 +2189,7 @@ std::shared_ptr<const Value> Evaluator::evaluate_in(const Expr& e, std::string_v
     auto        saved_parameter = std::move(impl_->parameter);
     auto        saved_known     = std::move(impl_->parameter_known);
     auto        saved_psite     = std::move(impl_->parameter_site);
+    auto        saved_ptext     = std::move(impl_->parameter_text);
     impl_->frames.clear();
     if (context.function) {
         Impl::Frame top;
@@ -1922,6 +2203,7 @@ std::shared_ptr<const Value> Evaluator::evaluate_in(const Expr& e, std::string_v
     impl_->parameter = std::move(context.parameter);
     impl_->parameter_known = std::move(context.parameter_known);
     impl_->parameter_site  = std::move(context.parameter_site);
+    impl_->parameter_text  = std::move(context.parameter_text);
     impl_->steps     = 0;
     impl_->pending_notes.clear();
     std::shared_ptr<const Value> result;
@@ -1939,6 +2221,7 @@ std::shared_ptr<const Value> Evaluator::evaluate_in(const Expr& e, std::string_v
     impl_->parameter = std::move(saved_parameter);
     impl_->parameter_known = std::move(saved_known);
     impl_->parameter_site  = std::move(saved_psite);
+    impl_->parameter_text  = std::move(saved_ptext);
     return result;
 }
 

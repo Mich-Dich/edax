@@ -1,0 +1,10 @@
+// feature 31: a file annotation stands after the imports and before the first declaration.
+import std;
+
+u32 helper() { return 0; }
+
+@std::log::level_override{ .level = std::log::level::info };   //~ error[E2038]: a file annotation stands after the imports and before the first declaration
+
+u32 main() {
+    return helper();
+}

@@ -75,6 +75,7 @@ public:
             stack_.pop_back();
             state_["build"] = State::done;
         }
+        load_named_std();
         return std::move(program_);
     }
 
@@ -137,12 +138,46 @@ private:
         }
     }
 
+    /// Standard library modules that are loaded only when the program names them (their text
+    /// contains `std::log`): checking them costs time, and a program that never names them can't
+    /// be affected by them (spec 31: std::log).
+    static bool on_demand(std::string_view name) { return name == "std::log"; }
+
+    /// Loads the on-demand std modules that some loaded file names.
+    void load_named_std() {
+        if (!program_.std_module) return;
+        for (const StdModule& m : std_modules()) {
+            if (!on_demand(m.name) || program_.modules.count(std::string(m.name))) continue;
+            bool named = false;
+            for (const auto& [mname, mod] : program_.modules) {
+                if (mod->project == "std") continue;
+                for (const auto* f : {&mod->header, &mod->source}) {
+                    if (*f && sources_.file((*f)->id).text().find(m.name) != std::string_view::npos) named = true;
+                }
+            }
+            if (named) add_std_module(m);
+        }
+    }
+
+    void add_std_module(const StdModule& m) {
+        auto module  = std::make_unique<sema::Module>();
+        module->name = std::string(m.name);
+        module->project = "std";
+        parse_into(*module, sources_.add(std::string(m.header_path), std::string(m.header_text)), true);
+        parse_into(*module, sources_.add(std::string(m.source_path), std::string(m.source_text)), false);
+        module->header_imports_std = module->source_imports_std = true;
+        state_[module->name] = State::done;
+        program_.modules.emplace(module->name, std::move(module));
+    }
+
     /// The standard library is built into riftc (library/std/std.rifth) and loaded once.
     void load_std() {
         if (program_.std_module) return;
         for (const StdModule& m : std_modules()) {
+            if (on_demand(m.name)) continue;
             auto module  = std::make_unique<sema::Module>();
             module->name = std::string(m.name);
+            module->project = "std";
             parse_into(*module, sources_.add(std::string(m.header_path), std::string(m.header_text)), true);
             parse_into(*module, sources_.add(std::string(m.source_path), std::string(m.source_text)), false);
             module->header_imports_std = module->source_imports_std = true;   // `std::` names, from every std module
@@ -203,8 +238,9 @@ private:
             return nullptr;
         }
 
-        auto module  = std::make_unique<sema::Module>();
-        module->name = name;
+        auto module     = std::make_unique<sema::Module>();
+        module->name    = name;
+        module->project = base == fs::path(root_) ? std::string() : fs::path(base).lexically_normal().generic_string();
         load_file(*module, header, true);
         if (is_file(source)) {
             load_file(*module, source, false);

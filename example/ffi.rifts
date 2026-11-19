@@ -44,7 +44,7 @@ i32 main() {
         raw_buffer b = make_buffer(8);
         mut std::string before = std::string::from("");
         for (usize i : 0..b.count) { before.push_str(std::format(f"{*b.data.offset(i)} ")); }
-        i32 swaps = native::stats::stats_sort(b.data, b.count);
+        i32 swaps = native::stats_sort(b.data, b.count);
         mut std::string after = std::string::from("");
         for (usize i : 0..b.count) { after.push_str(std::format(f"{std::raw::read(b.data.offset(i))} ")); }
         std::println(f"{before}-> {after}({swaps} swaps in C)");
@@ -60,7 +60,7 @@ i32 main() {
     mut f64 mean = 0.0;
     unsafe {
         std::raw_ptr<f64> first = cast::reinterpret<std::raw_ptr<f64>>(&samples);
-        mean = native::stats::stats_mean(first, samples.len());
+        mean = native::stats_mean(first, samples.len());
     }
     std::println(f"mean = {mean}");
 

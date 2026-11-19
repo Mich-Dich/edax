@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+halves: true
+pipeline: 100 jobs, largest 100
+pipeline: sum of squares 338350
+atomic: 100 items seen
+pool: 4 threads, sum 50050000.0
+pool: task gave 332833500
+--- stderr

@@ -48,8 +48,8 @@ void open_uart(u32 baud) {
     std::println(f"uart at {baud} baud");
 }
 
-/// A declared warning id (spec 23): `riftc explain compile_time_demo::legacy` prints this comment;
-/// `--warn=compile_time_demo::legacy=off` silences it.
+/// A declared warning id (spec 23): `riftc explain legacy` prints this comment;
+/// `--warn=legacy=off` silences it (a program's own global name; a library would use a namespace).
 compile_time std::diagnostic legacy = default;
 
 void old_api() {

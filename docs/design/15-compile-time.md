@@ -40,6 +40,12 @@ compile_time u32 area = square(16);
   compile_time std::darray<argument_spec> specs = build_specs();
   ```
 
+### `compile_time` parameters
+A function parameter marked `compile_time` takes a compile-time value and is a compile-time constant in the body; the function is instantiated once per distinct set of such arguments (see 31, 10.3). This closes open question 18.
+
+### Strings at compile time
+Compile-time code can use `len`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice(from, to)` and `find(needle)` (a `std::option<usize>`) on strings.
+
 ### `if compile_time`
 ```rift
 if compile_time (std::is_integer<T>()) { ... } else { ... }

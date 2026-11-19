@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+status: 2 resets
+unknown: false
+show_status/0 reset/0mut plain/3 label/0 version/0 
+0:count:by_value 1:total:by_mut_reference 2:note:by_value version() = 7 
+interfaces: 1, args: 2, first: u32
+true terminal
+green true false
+red
+--- stderr

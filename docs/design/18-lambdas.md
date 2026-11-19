@@ -34,6 +34,7 @@ employees.retain([](employee& e) { return e.age >= 30; });
 ### Types and storage
 - Every lambda has its own unnamed type, so lambdas are stored with `auto` or passed to template parameters.
 - A lambda with **reference captures is a view type** (see 12). It can be passed down and called, but not stored in a field or returned.
+- A lambda is `std::sendable` / `std::shareable` when its captures are (see 27). `std::thread::spawn` takes any sendable lambda; one with reference captures becomes a borrowing (scoped) thread.
 - To store a callable, use `std::function<R(Args...)>`. It **always** puts the callable on the heap, and the type makes that visible.
 - Lambdas with no captures convert to `std::fn_ptr<R(Args...)>`, a plain function pointer for callbacks and FFI.
 - A `std::function` owns its callable: it is moved, never copied or cloned. A field of a callable type is called like a method: `this.on_click(n)`.

@@ -1,0 +1,19 @@
+// Stable sort of 500k records by a key.
+import std;
+struct record { u32 key = 0; u32 id = 0; }
+i32 main() {
+    mut std::darray<record> v = default;
+    mut u32 x = 2463534242;
+    for (u32 i : 0..500000) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        v.push(record{ .key = x % 1000, .id = i });
+    }
+    v.sort_by_key(std::sort_order::ascending, [](record& r) { return r.key; });
+    for (usize i : 1..v.len()) {
+        if (v[i - 1].key > v[i].key || (v[i - 1].key == v[i].key && v[i - 1].id > v[i].id)) { std::println("bad"); return 1; }
+    }
+    std::println(f"{v[0].id} {v[v.len() - 1].id}");
+    return 0;
+}

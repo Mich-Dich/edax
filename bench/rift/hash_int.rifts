@@ -1,0 +1,31 @@
+// hash_map<u64, u64>: 2M inserts, 4M lookups (half hits), 1M removes.
+import std;
+i32 main() {
+    mut std::hash_map<u64, u64> m = default;
+    mut u64 x = 88172645463325252;
+    for (u64 i : 0..2000000) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        m.insert(x, i);
+    }
+    mut u64 found = 0;
+    mut u64 y = 88172645463325252;
+    for (u64 i : 0..2000000) {
+        y ^= y << 13;
+        y ^= y >> 7;
+        y ^= y << 17;
+        if (m.contains(y)) { found += 1; }
+        u64 miss = y +% 1;
+        if (m.contains(miss)) { found += 1; }
+    }
+    mut u64 z = 88172645463325252;
+    for (u64 i : 0..1000000) {
+        z ^= z << 13;
+        z ^= z >> 7;
+        z ^= z << 17;
+        m.remove(z);
+    }
+    std::println(f"{m.len()} {found}");
+    return 0;
+}

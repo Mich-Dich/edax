@@ -1,0 +1,12 @@
+// feature 31: where `implicit` and `compile_time` parameters may be written.
+import std;
+
+void late(implicit std::call_site where, u32 n) { }   //~ error[E2037]: implicit parameters come after every ordinary parameter
+void both(u32 n, implicit compile_time std::call_site where) { }
+struct implicit { u32 x = 0; }
+void a_type_named_implicit(implicit x) { }            // `implicit x)`: the type `implicit`
+
+u32 main() {
+    auto f = [](implicit u32 y) { };                  //~ error[E2036]: 'implicit' and 'compile_time' parameters belong to function declarations
+    return 0;
+}

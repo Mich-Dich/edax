@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/../../../example --out-dir=%t concurrency
+// The example program example/concurrency.rifts (built through example/build.rifts) keeps working.

@@ -30,6 +30,7 @@
 - Methods are written like class methods, with a trailing `mut` if they mutate.
 - Implemented by classes **and structs** using `override`.
 - Interfaces may extend other interfaces: `interface solid : shape_like { f64 volume(); }`.
+- An interface may declare `compile_time static` methods (`std::implicit<T>`, see 31). They are implemented with `override`; such an interface is used as a base or a template constraint.
 - Two ways to use an interface, each with a visible cost:
 
 | Use | Dispatch | Cost |
@@ -79,6 +80,9 @@ void print_one(T& item) {                                       // static dispat
     std::println(item.to_text());
 }
 ```
+
+### Who may implement an interface
+Only the type's own declaration: its base list, or an annotation written on it that generates the implementation (see 29). No other module can make an existing type implement an interface (see 30).
 
 ## Rationale
 - **`virtual` only introduces, `override` only implements:** v0.2 used both styles in different places. Separating them means every method says exactly one thing.

@@ -1,0 +1,7 @@
+namespace shapes {
+    f64 area(square& s) { return s.side * s.side; }
+}
+
+namespace extra {
+    shapes::circle operator+(shapes::circle& a, shapes::circle& b) { return a; }   //~ error[E3066]
+}

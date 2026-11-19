@@ -60,17 +60,19 @@ std::file f = default;               // ERROR: std::file has no default
 |---|---|
 | `compile_time T x = v;` | Constant with no storage. May be declared in a `.rifth` |
 | `static T x = v;` | Storage for the program's lifetime. `v` must be compile-time evaluable |
-| `static mut T x = v;` | Mutable global (rules below) |
+| `static mut T x = v;` | Mutable global: every access needs `unsafe` |
+| `thread_local [mut] T x = v;` | One copy per thread; `mut` needs no `unsafe` (see 27) |
 | `private` + any of the above | Visible only in this module (see 09) |
 | `T x = v;` | **ERROR:** say `static` or `compile_time` |
 
 - Static initializers are evaluated at compile time, so there is no initialization-order problem at startup.
-- **`static mut` in safe code** is only allowed for types that are safe to share between threads (`std::atomic<T>`, `std::mutex<T>`). For any other type, every read and write must be inside `unsafe { }`.
+- **`static` is visible to every thread**, so its type must be `std::shareable` (see 27). Shared mutable globals are `static` synchronized types (`std::atomic<T>`, `std::mutex<T>`), which change through immutable references.
+- **`static mut` is always unsafe:** every read and write must be inside `unsafe { }`, whatever the type.
 - `private` and `static` are orthogonal: `private static u32 x = 0;` is module-local *and* has program lifetime.
 
 ```rift
 compile_time usize buffer_size = 4096;
-private static mut std::atomic<u32> request_count = std::atomic<u32>{};
+private static std::atomic<u32> request_count = default;       // no mut needed: atomics synchronize
 static mut u32 raw_counter = 0;          // allowed, but every access needs unsafe
 ```
 

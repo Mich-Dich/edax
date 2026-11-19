@@ -65,6 +65,9 @@ declare void @abort()
 declare i64 @fwrite(ptr, i64, i64, ptr)
 declare i32 @fputc(i32, ptr)
 declare i32 @fflush(ptr)
+declare void @flockfile(ptr)
+declare void @funlockfile(ptr)
+declare i64 @syscall(i64, ...)
 declare i32 @memcmp(ptr, ptr, i64)
 declare i64 @strlen(ptr)
 declare void @exit(i32) noreturn
@@ -506,25 +509,45 @@ release:
   ret void
 }
 
+; The text and its newline under one lock of the stream, so lines of different threads don't mix.
 define internal void @rift_write_str(ptr %f, ptr %s, i64 %n, i1 %newline) {
 entry:
+  call void @flockfile(ptr %f)
   call i64 @fwrite(ptr %s, i64 1, i64 %n, ptr %f)
   br i1 %newline, label %nl, label %done
 nl:
   call i32 @fputc(i32 10, ptr %f)
   br label %done
 done:
+  call void @funlockfile(ptr %f)
   ret void
 }
 
-define internal i1 @rift_str_eq(ptr %a, i64 %an, ptr %b, i64 %bn) {
+; Sleeps while the u32 at %p still holds %expected (FUTEX_WAIT_PRIVATE), and wakes up to %count
+; sleepers (FUTEX_WAKE_PRIVATE). Spurious wake-ups are fine: callers check their condition again.
+define internal void @rift_futex_wait(ptr %p, i32 %expected) {
+entry:
+  %r = call i64 (i64, ...) @syscall(i64 @@SYS_FUTEX@@, ptr %p, i32 128, i32 %expected, ptr null, ptr null, i32 0)
+  ret void
+}
+
+define internal void @rift_futex_wake(ptr %p, i32 %count) {
+entry:
+  %r = call i64 (i64, ...) @syscall(i64 @@SYS_FUTEX@@, ptr %p, i32 129, i32 %count, ptr null, ptr null, i32 0)
+  ret void
+}
+
+; Equal lengths first: different lengths never reach memcmp.
+define internal i1 @rift_str_eq(ptr %a, i64 %an, ptr %b, i64 %bn) alwaysinline {
 entry:
   %same = icmp eq i64 %an, %bn
-  %n = select i1 %same, i64 %an, i64 0
-  %cmp = call i32 @memcmp(ptr %a, ptr %b, i64 %n)
+  br i1 %same, label %bytes, label %no
+bytes:
+  %cmp = call i32 @memcmp(ptr %a, ptr %b, i64 %an)
   %zero = icmp eq i32 %cmp, 0
-  %r = and i1 %same, %zero
-  ret i1 %r
+  ret i1 %zero
+no:
+  ret i1 false
 }
 
 ; The stream a message goes to: stdout, or stderr when `err` is true.
@@ -571,11 +594,32 @@ entry:
   %lenp = getelementptr inbounds %rift_buf, ptr %b, i32 0, i32 1
   %data = load ptr, ptr %datap
   %blen = load i64, ptr %lenp
+  ; std::log's hook (spec 31): log the panic and write and flush every queued record first, so
+  ; the panic is the last line. Taken once, so a panic inside the hook doesn't run it again.
+  %hook = atomicrmw xchg ptr @rift_panic_hook, ptr null seq_cst
+  %has_hook = icmp ne ptr %hook, null
+  br i1 %has_hook, label %run_hook, label %print
+run_hook:
+  %line_len = sub i64 %blen, 1
+  call void %hook(ptr %data, i64 %line_len)
+  %out2 = load ptr, ptr @stdout
+  call i32 @fflush(ptr %out2)
+  br label %print
+print:
   %err = load ptr, ptr @stderr
   call i64 @fwrite(ptr %data, i64 1, i64 %blen, ptr %err)
   call i32 @fflush(ptr %err)
   call void @abort()
   unreachable
+}
+
+@rift_panic_hook = internal global ptr null
+
+; Sets the function a panic calls before printing its message (std::log, spec 31).
+define void @rift_set_panic_hook(ptr %hook) {
+entry:
+  store atomic ptr %hook, ptr @rift_panic_hook seq_cst, align 8
+  ret void
 }
 
 define void @rift_panic_str(ptr %loc, ptr %s, i64 %n) noreturn cold {

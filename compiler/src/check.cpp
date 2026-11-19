@@ -1,4 +1,5 @@
 #include "rift/check.hpp"
+#include "rift/ast_walk.hpp"
 
 #include "rift/ast_clone.hpp"
 #include "rift/ast_printer.hpp"
@@ -205,17 +206,61 @@ public:
         if (program_.entry) check_main(*program_.entry);
     }
 
+    /// The checks of one annotation use (spec 29): run once for every place the annotation is
+    /// written, with `annotated` set to what it's written on. A failure is reported at the
+    /// annotation, with a note pointing into the check.
+    void run_annotation_check(sema::AnnotationCheck& ac) {
+        if (ac.done) return;
+        ac.done = true;
+        module_ = ac.origin;
+        const Type* owner = ac.owner && ac.owner->is_type() ? tc_.user(ac.owner) : nullptr;
+        if (ac.handle) {
+            ct::Value h;
+            h.type_value = owner;
+            h.symbol     = ac.member;
+            switch (ac.target) {
+            case sema::AnnotationTarget::field: h.kind = ct::Value::Kind::field, h.type = tc_.meta_field(); break;
+            case sema::AnnotationTarget::alternative: h.kind = ct::Value::Kind::alternative, h.type = tc_.meta_alternative(); break;
+            case sema::AnnotationTarget::function: h.kind = ct::Value::Kind::function, h.type = tc_.meta_function(); break;
+            case sema::AnnotationTarget::parameter:
+                h.kind  = ct::Value::Kind::parameter;
+                h.type  = tc_.meta_parameter();
+                h.index = ac.param_index;
+                break;
+            default: return;
+            }
+            ac.handle->ct_value = std::make_shared<const ct::Value>(std::move(h));
+        }
+        Check&      c      = ac.check->check;
+        std::size_t errors = diags_.error_count();
+        check_check(c, Where::type_body, ac.check->span);
+        if (diags_.error_count() != errors || !c.is_compile_time || !c.compile_active) return;
+        std::string            what = "@" + ast::to_string(ac.use->path);
+        ct::Evaluator::Context ctx;
+        ctx.site = ac.use->span;
+        if (c.block) {
+            evaluator().evaluate_in(*c.block, "", ctx);
+            return;
+        }
+        std::shared_ptr<const ct::Value> v = evaluator().evaluate_in(*c.condition, "", ctx);
+        if (!v || v->kind != ct::Value::Kind::boolean || v->boolean) return;
+        ctx.quiet                          = true;
+        std::shared_ptr<const ct::Value> m = evaluator().evaluate_in(*c.message, "", ctx);
+        Diagnostic& d = error(DiagCode::E4210, ac.use->span, m && m->kind == ct::Value::Kind::string ? m->string : "check failed",
+                              std::format("fails the check of '{}'", what));
+        if (ac.origin->name != "std" && !ac.origin->name.starts_with("std::")) note(d, "the check is here", c.condition->span);
+    }
+
     /// build.rifts (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
     /// calls of the graph's methods fill in program_.build_graph.
     void run_build() {
         Module* m = program_.entry;
         if (!m) return;
-        auto it = m->items.find("build");
-        const Symbol* fn = it == m->items.end() ? nullptr : it->second.front();
+        const Symbol* fn = m->item("build");
         const FunctionDecl* f = fn ? fn->function() : nullptr;
         const Symbol* graph = nullptr;
         if (auto bm = program_.modules.find("std::build"); bm != program_.modules.end()) {
-            if (auto g = bm->second->items.find("graph"); g != bm->second->items.end()) graph = g->second.front();
+            graph = bm->second->item("std::build::graph");
         }
         Span where = m->source ? Span{m->source->id, 0, 0} : Span{};
         if (!f || !f->is_compile_time || f->params.size() != 1 || !graph) {
@@ -250,16 +295,17 @@ public:
             for (const char* module : {"std::build::mode", "build"}) {
                 auto m = program_.modules.find(module);
                 if (m == program_.modules.end()) continue;
-                auto it = m->second->items.find(program_.build_mode);
-                if (it != m->second->items.end() && it->second.front()->kind == SymbolKind::class_) {
-                    program_.build_mode_class = it->second.front();
+                const Symbol* cls = m->second->item(std::string(module) == "build" ? program_.build_mode
+                                                                                    : "std::build::mode::" + program_.build_mode);
+                if (cls && cls->kind == SymbolKind::class_) {
+                    program_.build_mode_class = cls;
                     break;
                 }
             }
         }
         if (!program_.build_mode_class) {   // an unknown mode (the driver says so): checked as debug
             if (auto m = program_.modules.find("std::build::mode"); m != program_.modules.end()) {
-                if (auto it = m->second->items.find("debug"); it != m->second->items.end()) program_.build_mode_class = it->second.front();
+                program_.build_mode_class = m->second->item("std::build::mode::debug");
             }
         }
         const Symbol* mode = program_.build_mode_class;
@@ -326,7 +372,8 @@ public:
     /// Checks (and evaluates) a global compile_time constant on demand.
     void check_global_symbol(const Symbol* g) {
         if (!g->decl) return;
-        module_ = g->module;
+        module_        = g->module;
+        global_symbol_ = g;   // e.g. the constant holding an annotation's value (spec 29): not a module item
         check_decl(const_cast<Decl&>(*g->decl), nullptr);
     }
 
@@ -342,6 +389,18 @@ public:
         if (copy.kind == DeclKind::function) {
             check_decl(copy, inst->kind == SymbolKind::method ? inst->parent : nullptr);
             return;
+        }
+        check_promises(copy.as<TypeDecl>(), copy.kind);
+        for (DeclPtr& m : copy.as<TypeDecl>().members) {   // `void` is a template argument for results only (spec 02, 27)
+            if (m->kind != DeclKind::field || m->as<VariableDecl>().storage != Storage::local) continue;
+            const Type* ft = lower(*m->as<VariableDecl>().type);
+            if (ft->is(Kind::void_)) {
+                note(error(DiagCode::E4180, instance_site_ ? *instance_site_ : m->name_span,
+                           std::format("'{}' would have a field '{}' of type void", types::to_string(tc_.user(inst)), m->name),
+                           "void field"),
+                     "void can be a template argument only where it is a result or a payload (std::option<void>, std::result<void, E>)",
+                     m->name_span);
+            }
         }
         for (DeclPtr& m : copy.as<TypeDecl>().members) {
             bool lazy = m->kind == DeclKind::function && !m->as<FunctionDecl>().is_destructor &&
@@ -390,7 +449,98 @@ private:
     /// A type written in the code being checked: template parameters are those of the instance
     /// being checked (`subst_`), if any.
     const Type* lower(const TypeExpr& t, const std::map<const Symbol*, const Type*>* subst = nullptr) {
+        const TypeExpr* named = t.kind == TypeKind::reference ? t.as<ReferenceType>().inner.get() : &t;
+        if (named->kind == TypeKind::named && named->as<NamedType>().symbol) deprecated_use(named->as<NamedType>().symbol, named->span);
         return tc_.lower(t, subst ? subst : &subst_);
+    }
+
+    // --- the standard library's annotations (spec 29) --------------------------------------
+
+    /// The types an annotation's fields may have (spec 29, rule 1).
+    bool annotation_value_type(const Type* t, std::set<const Symbol*>& seen) {
+        if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || t->is(Kind::type_value)) return true;
+        if (t->is(Kind::external) && t->external_base() == "std::span") {
+            const auto* args = tc_.external_args(t);
+            return args && args->size() == 1 && annotation_value_type((*args)[0], seen);
+        }
+        if (!t->is(Kind::user)) return false;
+        if (is_std_instance(t, "span") && t->symbol->template_args.size() == 1) return annotation_value_type(t->symbol->template_args[0], seen);
+        if (t->symbol->kind == SymbolKind::enum_) return !enum_has_payload(t->symbol);
+        if (t->symbol->kind != SymbolKind::struct_) return false;
+        if (!seen.insert(t->symbol).second) return true;
+        for (const Symbol* f : t->symbol->member_order) {
+            if (f->kind == SymbolKind::field && !f->is_static && !annotation_value_type(lower_owned(f, *f->decl->as<VariableDecl>().type), seen)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// The annotations written on what `s` declares (an instance: on its template).
+    static const std::vector<AnnotationUse>* annotations_of(const Symbol* s) {
+        if (!s) return nullptr;
+        if (s->kind == SymbolKind::alternative) return s->alternative ? &s->alternative->annotations : nullptr;
+        if (s->template_of && s->decl && s->decl->annotations.empty()) s = s->template_of;
+        return s->decl ? &s->decl->annotations : nullptr;
+    }
+
+    /// A string field of an annotation's value (`message` of std::deprecated), or "".
+    std::string annotation_text(const AnnotationUse& u, std::string_view field) {
+        std::shared_ptr<const ct::Value> v = u.value_symbol ? ensure_constant(u.value_symbol) : nullptr;
+        if (!v || v->kind != ct::Value::Kind::aggregate || !u.symbol) return {};
+        std::size_t i = 0;
+        for (const Symbol* f : u.symbol->member_order) {
+            if (f->kind != SymbolKind::field || f->is_static) continue;
+            if (f->name == field) return i < v->elements.size() ? v->elements[i].string : std::string();
+            ++i;
+        }
+        return {};
+    }
+
+    /// `@std::deprecated`: a warning at every use of what it's written on (id std::deprecated),
+    /// except inside its own declaration.
+    void deprecated_use(const Symbol* s, Span at) {
+        const std::vector<AnnotationUse>* uses = annotations_of(s);
+        const AnnotationUse*              u    = uses ? sema::find_annotation(*uses, "std::deprecated") : nullptr;
+        if (!u || fn_.generic) return;
+        const Symbol* own = s->kind == SymbolKind::method || s->kind == SymbolKind::field || s->kind == SymbolKind::alternative ? s->parent : s;
+        if (fn_.self && (fn_.self == own || fn_.self->template_of == own)) return;
+        if (fn_.decl && fn_.decl == s->decl) return;
+        if (!program_.reported_uses.insert({at.file, at.begin, s}).second) return;
+        const std::string id = "std::deprecated";
+        if (std::find(program_.allowed_warnings.begin(), program_.allowed_warnings.end(), id) != program_.allowed_warnings.end()) return;
+        auto level = program_.warn_levels.find(id);
+        if (level != program_.warn_levels.end() && level->second == "off") return;
+        bool        as_error = level != program_.warn_levels.end() && level->second == "error";
+        std::string message  = annotation_text(*u, "message");
+        Diagnostic& d = diags_.report(as_error ? DiagCode::E4210 : DiagCode::W4210, at,
+                                      std::format("'{}' is deprecated{}{}", s->name, message.empty() ? "" : ": ", message),
+                                      as_error ? "warning made an error" : "deprecated");
+        note(d, "warning id: std::deprecated");
+        note(d, "marked here", u->span);
+    }
+
+    /// The function or method a checked call calls, or null.
+    static const Symbol* called_symbol(const CallExpr& c) {
+        if (c.callee->kind == ExprKind::path) return c.callee->as<PathExpr>().symbol;
+        if (c.callee->kind == ExprKind::member) return c.callee->as<MemberExpr>().symbol;
+        return nullptr;
+    }
+
+    /// The warning ids `@std::allow{ .id = ... }` names on a function (spec 29).
+    static std::vector<std::string> allowed_ids(const FunctionDecl& fn) {
+        std::vector<std::string> out;
+        for (const AnnotationUse& u : fn.annotations) {
+            if (!u.symbol || u.symbol->key() != "std::allow" || !u.value_symbol || !u.value_symbol->decl) continue;
+            const Expr* init = u.value_symbol->decl->as<VariableDecl>().init.get();
+            if (!init || init->kind != ExprKind::struct_literal) continue;
+            for (const FieldInit& f : init->as<StructLiteralExpr>().fields) {
+                if (f.name != "id" || f.value->kind != ExprKind::path) continue;
+                const Symbol* id = f.value->as<PathExpr>().symbol;
+                out.push_back(id ? id->key() : ast::to_string(f.value->as<PathExpr>().path));
+            }
+        }
+        return out;
     }
 
     /// The parameter substitution of the template instance that declares `s` (a member, payload
@@ -561,13 +711,31 @@ private:
 
     // --- the standard library's core types (spec 08, 11) ------------------------------------
 
+    /// The modules whose items code in this module can name (spec 30): itself, its imports and,
+    /// after `import std;`, the standard library's modules.
+    std::vector<const Module*> visible_modules() const {
+        std::vector<const Module*> out;
+        if (!module_) return out;
+        out.push_back(module_);
+        auto add = [&](const Module* m) {
+            if (std::find(out.begin(), out.end(), m) == out.end()) out.push_back(m);
+        };
+        for (const Module* m : module_->header_imports) add(m);
+        for (const Module* m : module_->source_imports) add(m);
+        if (module_->header_imports_std || module_->source_imports_std) {
+            for (const auto& [name, m] : program_.modules) {
+                if (name == "std" || name.starts_with("std::")) add(m.get());
+            }
+        }
+        return out;
+    }
+
     /// An item of the built-in std module (`option`, `result`, `exit_code`), or null when no
     /// file imports std.
     const Symbol* std_item(std::string_view name) const {
         const Module* m = program_.std_module;
         if (!m) return nullptr;
-        auto it = m->items.find(std::string(name));
-        return it == m->items.end() ? nullptr : it->second.front();
+        return m->item("std::" + std::string(name));
     }
 
     /// `std::ordering`, the result of `<=>` (spec 16).
@@ -990,6 +1158,31 @@ private:
     }
 
     /// `{expr:spec}` in an f-string: the value needs a type, and the spec must fit it (spec 19).
+    /// An f-string passed to a function's `std::format_args` parameter is evaluated only if the
+    /// function formats it (spec 31), so its holes can't change anything. (std::println,
+    /// std::format and std::panic always format it, once.)
+    void check_lazy_holes(Expr& arg) {
+        if (arg.kind != ExprKind::string_literal || arg.as<LiteralExpr>().token_kind != TokenKind::format_string_literal) return;
+        for (FormatPart& part : arg.as<LiteralExpr>().format_parts) {
+            if (!part.expr) continue;
+            Expr& e = *part.expr;
+            ast::walk_exprs(e, [&](Expr& x) {
+                const char* what = nullptr;
+                if (x.kind == ExprKind::unary && x.as<UnaryExpr>().op == UnaryOp::move) what = "move a value";
+                if (x.kind == ExprKind::unary && x.as<UnaryExpr>().op == UnaryOp::mut_marker) what = "pass a mutable reference";
+                if (x.kind == ExprKind::call && x.as<CallExpr>().callee->kind == ExprKind::member) {
+                    const Symbol*       m  = x.as<CallExpr>().callee->as<MemberExpr>().symbol;
+                    const FunctionDecl* fd = m ? m->function() : nullptr;
+                    if (fd && (fd->is_mut || fd->is_move)) what = fd->is_mut ? "call a mut method" : "call a consuming method";
+                }
+                if (!what) return true;
+                note(error(DiagCode::E4251, x.span, std::format("an f-string hole can't {}", what), "changes something"),
+                     "a hole is only evaluated if the message is formatted; compute the value before the f-string");
+                return false;
+            });
+        }
+    }
+
     void check_format_hole(FormatPart& part) {
         Expr&       e = *part.expr;
         const Type* t = types::strip_ref(infer(e));
@@ -998,6 +1191,16 @@ private:
             return;
         }
         const FormatSpec& s = part.spec;
+        if (t->is(Kind::user) && !formattable(t)) {
+            Diagnostic& d = error(DiagCode::E4171, e.span, std::format("{} can't be printed in an f-string", quoted(t)),
+                                  "not std::formattable");
+            if (t->symbol->kind == SymbolKind::enum_) {
+                note(d, "write '@std::derive::formattable' on the enum to print its alternative and payload (spec 29)");
+            } else {
+                note(d, "give it a 'void format(mut std::string& out)' method (std::formattable), or write '@std::derive::formattable' on it");
+            }
+            return;
+        }
         if (!s.present || t->is_unknown() || t->is(Kind::external) || t->is(Kind::user)) return;
         auto bad = [&](std::string_view what, std::string_view fix) {
             note(error(DiagCode::E4170, s.span, std::format("{} cannot be used with {}", what, quoted(t)),
@@ -1030,10 +1233,43 @@ private:
             }
             return;
         }
-        case DeclKind::function: check_function(d.as<FunctionDecl>(), self); return;
+        case DeclKind::function: {
+            if (!d.generated_by) {
+                check_function(d.as<FunctionDecl>(), self);
+                return;
+            }
+            // Errors in generated code are reported at the `@` that caused it, with a note into
+            // the generate block (spec 29).
+            std::size_t mark = diags_.size();
+            check_function(d.as<FunctionDecl>(), self);
+            for (Diagnostic& g : diags_.take_since(mark)) {
+                Diagnostic moved = g;
+                moved.span       = d.generated_by->span;
+                moved.label      = std::format("in the code '@{}' generates for '{}'", ast::to_string(d.generated_by->path),
+                                               self ? self->name : "?");
+                moved.notes.insert(moved.notes.begin(), Note{"the generated code is here", g.span});
+                diags_.add(std::move(moved));
+            }
+            return;
+        }
         case DeclKind::variable:
         case DeclKind::field: {
             auto& v = d.as<VariableDecl>();
+            if (d.kind == DeclKind::variable && v.storage == Storage::static_ && !v.is_mut && !fn_.generic) {
+                // Every thread can see a static, so its type must be shareable (spec 27).
+                const Type* t = lower(*v.type);
+                std::string why;
+                std::optional<Span> where;
+                if (!t->is_unknown() && !thread_safe(t, true, &why, &where)) {
+                    Diagnostic& e = error(DiagCode::E4231, v.name_span,
+                                          std::format("'static {}' is visible to every thread, but {} can't be shared between threads",
+                                                      v.name, quoted(t)),
+                                          "not std::shareable");
+                    note(e, why, where);
+                    note(e, "use 'thread_local' for one copy per thread, a synchronized type (std::atomic<T>, std::mutex<T>), or "
+                            "'static mut' with 'unsafe' at every use");
+                }
+            }
             if (!v.init) {
                 if (d.kind == DeclKind::field && compile_time_only(lower(*v.type))) {
                     run_time_use(v.type->span, lower(*v.type), std::format("'{}' is a field", v.name),
@@ -1054,6 +1290,12 @@ private:
                 if (Symbol* g = symbol_for(d); g && diags_.error_count() == errors) {
                     g->ct_value = evaluate(*v.init, std::format("the value of compile_time constant '{}' is computed at compile time", v.name));
                 }
+            } else if (d.kind == DeclKind::variable && v.storage == Storage::thread_local_ && diags_.error_count() == errors) {
+                // Each thread's copy starts with this value: it is computed at compile time, so a
+                // thread_local needs no "initialized yet?" check (spec 27).
+                if (auto c = evaluate(*v.init, std::format("the initial value of thread_local '{}' is computed at compile time", v.name))) {
+                    v.init->constant = c;
+                }
             } else if (compile_time_only(declared)) {
                 run_time_use(v.type->span, declared,
                              std::format("'{}' is {}", v.name, d.kind == DeclKind::field ? "a field" : "a static variable"),
@@ -1066,7 +1308,25 @@ private:
         case DeclKind::class_:
         case DeclKind::interface: {
             Symbol* t = symbol_for(d);
-            for (DeclPtr& m : d.as<TypeDecl>().members) check_decl(*m, t);
+            check_promises(d.as<TypeDecl>(), d.kind);
+            bool annotation = t && t->decl && t->decl->kind == DeclKind::struct_ &&
+                              t->decl->as<TypeDecl>().is_annotation;   // its checks run per use (spec 29)
+            if (annotation && t->decl == &d) {   // fields hold compile-time values (spec 29, rule 1)
+                for (const DeclPtr& m : d.as<TypeDecl>().members) {
+                    if (m->kind != DeclKind::field) continue;
+                    const Type* ft = lower(*m->as<VariableDecl>().type);
+                    std::set<const Symbol*> seen;
+                    if (!ft->is_unknown() && !annotation_value_type(ft, seen)) {
+                        note(error(DiagCode::E4240, m->as<VariableDecl>().type->span,
+                                   std::format("an annotation's field can't be {}", quoted(ft)), "not a compile-time value"),
+                             "use numbers, bool, char, std::static_str, type, simple enums, structs of these, or std::span of these");
+                    }
+                }
+            }
+            for (DeclPtr& m : d.as<TypeDecl>().members) {
+                if (annotation && m->kind == DeclKind::check) continue;
+                check_decl(*m, t);
+            }
             return;
         }
         case DeclKind::enum_: {
@@ -1090,7 +1350,8 @@ private:
     }
 
     Symbol* symbol_for(const Decl& d) {
-        auto it = module_->items.find(d.name);
+        if (global_symbol_ && global_symbol_->decl == &d) return const_cast<Symbol*>(global_symbol_);
+        auto it = module_->items.find(d.ns.empty() ? d.name : d.ns + "::" + d.name);
         if (it == module_->items.end()) return nullptr;
         for (Symbol* s : it->second) {
             if (s->decl == &d || s->definition == &d) return s;
@@ -1112,15 +1373,24 @@ private:
         }
         fn_.self            = self;
         fn_.has_this        = self && !fn.is_static;
-        fn_.this_mut        = fn.is_mut || fn.is_destructor;
+        fn_.this_mut        = fn.is_mut || fn.is_destructor || fn.is_move;
         fn_.is_compile_time = fn.is_compile_time;
         fn_.decl            = &fn;
         fn_.name            = fn.name;
         fn_.generic         = (fn.is_template && subst_.empty()) ||
                       (self && self->decl && self->decl->is_template && !self->template_of);
         if (fn.is_unsafe) ++unsafe_depth_;
+        std::vector<std::string> allowed = allowed_ids(fn);   // `@std::allow{ .id = ... }` (spec 29)
+        program_.allowed_warnings.insert(program_.allowed_warnings.end(), allowed.begin(), allowed.end());
         for (Param& p : fn.params) {
             if (p.symbol) set_local(p.symbol, lower(*p.type));
+            if (!p.is_compile_time || !p.symbol) continue;   // a constant in an instance (spec 31)
+            for (const auto& [sym, t] : subst_) {
+                if (sym && sym->name == "$" + p.name && t && t->is(Kind::value_arg)) {
+                    p.symbol->ct_value = std::make_shared<const ct::Value>(value_of_arg(t));
+                }
+            }
+            if (!p.symbol->ct_value) unknown_values_.insert(p.symbol);   // the generic check: not known yet
         }
         // The entry: the checks at the very start of the body (spec 23), also those inside an
         // `if compile_time` that holds only checks (the library's index checks follow the mode).
@@ -1151,6 +1421,7 @@ private:
             }
         }
         if (fn_.deducing) fn.deduced_result = fn_.deduced ? fn_.deduced : tc_.void_();
+        program_.allowed_warnings.resize(program_.allowed_warnings.size() - allowed.size());
         unsafe_depth_ = unsafe0;
         fn_           = saved;
         end_check(&fn);
@@ -1196,6 +1467,7 @@ private:
         if (!evaluator_) {
             ct::Hooks h;
             h.check_function = [this](const Symbol* f) { return ensure_function(f); };
+            h.check_field    = [this](const Symbol* f) { ensure_field(f); };
             h.constant_value = [this](const Symbol* c) -> std::shared_ptr<const ct::Value> {
                 if (c->ct_value) return c->ct_value;
                 return c->kind == SymbolKind::global ? ensure_constant(c) : nullptr;
@@ -1212,6 +1484,21 @@ private:
                     if (f->kind == SymbolKind::field && !f->is_static && member_visible(f)) out.push_back(f);
                 }
                 return out;
+            };
+            h.visible_methods = [this](const Type* t) {
+                std::vector<const Symbol*> out;
+                for (const Symbol* m : t->symbol->member_order) {
+                    if (m->kind != SymbolKind::method || !member_visible(m)) continue;
+                    const FunctionDecl* f = m->function();
+                    if (!f || f->is_destructor || f->is_operator || f->is_template) continue;
+                    out.push_back(m);
+                }
+                return out;
+            };
+            h.is_view = [this](const Type* t) { return view_type(t); };
+            h.implements = [this](const Type* t, const Type* i) {
+                std::string why;
+                return satisfies(t, i, why);
             };
             evaluator_ = std::make_unique<ct::Evaluator>(program_, diags_, std::move(h));
         }
@@ -1255,6 +1542,7 @@ private:
 
     /// The compile-time value a template value argument stands for.
     ct::Value value_of_arg(const Type* arg) const {
+        if (std::shared_ptr<const void> rich = tc_.value_payload(arg)) return *std::static_pointer_cast<const ct::Value>(rich);
         const Type* of = arg->inner;
         if (of->is(Kind::bool_)) return ct::Value::of_bool(tc_.value_bits(arg) != 0, of);
         return ct::Value::of_integer(tc_.value_bits(arg), of);
@@ -1304,7 +1592,7 @@ private:
             if (path.starts_with("build::")) {   // a mode class of build.rifts (spec 24, open question 31)
                 const Symbol* cls = nullptr;
                 if (auto bm = program_.modules.find("build"); bm != program_.modules.end()) {
-                    if (auto it = bm->second->items.find(path.substr(7)); it != bm->second->items.end()) cls = it->second.front();
+                    cls = bm->second->item(path.substr(7));
                 }
                 if (!cls || cls->kind != SymbolKind::class_) {
                     note(error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode"),
@@ -1449,6 +1737,19 @@ private:
                 }
                 return std::nullopt;
             };
+            ctx.parameter_text = [&](const Symbol* p) -> std::optional<std::string> {
+                for (std::size_t i = 0; i < f.params.size() && i < args.size(); ++i) {
+                    if (f.params[i].symbol != p) continue;
+                    const Expr& a = *args[i];
+                    if (a.kind != ExprKind::string_literal) return std::nullopt;
+                    const auto& lit = a.as<LiteralExpr>();
+                    if (lit.token_kind != TokenKind::format_string_literal) return lit.value;
+                    std::string text;
+                    for (const FormatPart& part : lit.format_parts) text += part.expr ? std::string("{}") : part.text;
+                    return text;
+                }
+                return std::nullopt;
+            };
             if (k.block) {
                 evaluator().evaluate_in(*k.block, "", ctx);
                 continue;
@@ -1513,6 +1814,9 @@ private:
         switch (s.kind) {
         case StmtKind::variable: {
             auto& v = s.as<VariableStmt>();
+            if (v.symbol && v.init && v.type->kind == TypeKind::reference && reaches_thread_local(*v.init)) {
+                thread_local_refs_.insert(v.symbol);   // can't go to another thread (spec 27)
+            }
             bool  is_auto = v.type->kind == TypeKind::auto_;
             const Type* declared = is_auto ? nullptr : lower(*v.type);
             std::size_t errors   = diags_.error_count();
@@ -1564,6 +1868,21 @@ private:
             if (t->is(Kind::pending)) {
                 no_context(e, "here");
                 return;
+            }
+            if (e.kind == ExprKind::call && !t->is(Kind::void_) && !t->is(Kind::never)) {   // @std::must_use (spec 29)
+                const Symbol*                     f    = called_symbol(e.as<CallExpr>());
+                const std::vector<AnnotationUse>* on_f = annotations_of(f && f->template_of && f->template_of->kind == f->kind ? f->template_of : f);
+                const Type*                       rt   = types::strip_ref(t);
+                const std::vector<AnnotationUse>* on_t = rt->is(Kind::user) ? annotations_of(rt->symbol) : nullptr;
+                bool by_f = on_f && sema::find_annotation(*on_f, "std::must_use");
+                if (by_f || (on_t && sema::find_annotation(*on_t, "std::must_use"))) {
+                    Diagnostic& d = error(DiagCode::E4150, e.span,
+                                          by_f ? std::format("the result of '{}' must be used", f->name)
+                                               : std::format("the {} returned here must be used", quoted(t)),
+                                          "result not used");
+                    note(d, "it is marked '@std::must_use'; discard it explicitly with '_ = ...;'");
+                    return;
+                }
             }
             if ((e.kind == ExprKind::call) && (is_std_instance(t, "result") ||
                                                 (t->is(Kind::external) && t->external_base() == "std::result"))) {
@@ -1654,7 +1973,8 @@ private:
             }
             if (s->kind == SymbolKind::global) {
                 p.is_place   = true;
-                p.is_mutable = s->is_mut && s->decl->as<VariableDecl>().storage == Storage::static_;
+                p.is_mutable = s->is_mut && (s->decl->as<VariableDecl>().storage == Storage::static_ ||
+                                             s->decl->as<VariableDecl>().storage == Storage::thread_local_);
                 return p;
             }
             return p;
@@ -1781,11 +2101,20 @@ private:
         case ExprKind::this_:
             if (!fn_.self || !fn_.has_this) return set(e, tc_.error());
             return set(e, tc_.reference(tc_.user(fn_.self), fn_.this_mut));
-        case ExprKind::default_: return set(e, tc_.untyped_default());
+        case ExprKind::default_:
+            if (e.constant && e.type) return e.type;   // an argument the compiler supplied (spec 31)
+            return set(e, tc_.untyped_default());
         case ExprKind::break_:
         case ExprKind::continue_: return set(e, tc_.never());
         case ExprKind::error: return set(e, tc_.error());
-        case ExprKind::path: return infer_path(e.as<PathExpr>());
+        case ExprKind::path: {
+            const Type* t = infer_path(e.as<PathExpr>());
+            if (const Symbol* s = e.as<PathExpr>().symbol; s && (s->kind == SymbolKind::alternative || s->kind == SymbolKind::global)) {
+                deprecated_use(s->kind == SymbolKind::alternative && s->parent && s->parent->template_of
+                                   ? nullptr : s, e.span);
+            }
+            return t;
+        }
         case ExprKind::unary: return infer_unary(e.as<UnaryExpr>());
         case ExprKind::binary: return infer_binary(e.as<BinaryExpr>());
         case ExprKind::range: {
@@ -1803,13 +2132,29 @@ private:
         case ExprKind::call: {
             const Type* t = infer_call(e.as<CallExpr>());
             fold_compile_time_call(e.as<CallExpr>());
+            if (const Symbol* f = called_symbol(e.as<CallExpr>())) {
+                deprecated_use(f->template_of && f->template_of->kind == f->kind ? f->template_of : f,
+                               e.as<CallExpr>().callee->kind == ExprKind::member ? e.as<CallExpr>().callee->as<MemberExpr>().name.span
+                                                                                 : e.as<CallExpr>().callee->span);
+            }
             return t;
         }
         case ExprKind::index: {
             auto& i = e.as<IndexExpr>();
             return set(e, infer_index(i));
         }
-        case ExprKind::member: return infer_member(e.as<MemberExpr>());
+        case ExprKind::member: {
+            const Type* t = infer_member(e.as<MemberExpr>());
+            // A field of a compile-time value (`r.min` of a `compile_time range r`): a constant too.
+            if (!e.constant && e.as<MemberExpr>().object->constant && !t->is_unknown() && !compile_time_only(t) &&
+                e.as<MemberExpr>().object->constant->kind == ct::Value::Kind::aggregate) {
+                ct::Evaluator::Context quiet;
+                quiet.quiet = true;
+                e.constant  = evaluator().evaluate_in(e, "", quiet);
+            }
+            if (const Symbol* f = e.as<MemberExpr>().symbol; f && f->kind == SymbolKind::field) deprecated_use(f, e.as<MemberExpr>().name.span);
+            return t;
+        }
         case ExprKind::try_: return infer_try(e.as<TryExpr>());
         case ExprKind::cast: return infer_cast(e.as<CastExpr>());
         case ExprKind::bit: return infer_bit(e.as<BitExpr>());
@@ -1940,14 +2285,44 @@ private:
         }
     }
 
+    /// `x.join()` where `join` ends with `move` (spec 06, 27): `x` must be a value the caller owns,
+    /// a local variable, a by-value parameter or a temporary, never something reached through a
+    /// reference, a field or `this` of a method that doesn't consume it.
+    void check_consumed_receiver(const Expr& object, const std::string& name, Span span) {
+        const Expr* o = &object;
+        if (o->kind == ExprKind::unary && o->as<UnaryExpr>().op == UnaryOp::move) o = o->as<UnaryExpr>().operand.get();
+        const Type* t = o->type;
+        if (!t || t->is_unknown()) return;
+        std::string why;
+        if (o->kind == ExprKind::path) {
+            const Symbol* l = o->as<PathExpr>().symbol;
+            if (!l || l->kind != SymbolKind::local) why = "it is not a local variable";
+            else if (t->is(Kind::reference) || l->is_reference) why = std::format("'{}' is a reference", l->name);
+            else if (l->local_kind == sema::LocalKind::capture) why = std::format("'{}' is a capture of the lambda", l->name);
+            else return;
+        } else if (o->kind == ExprKind::this_) {
+            if (fn_.decl && fn_.decl->is_move) return;
+            why = "'this' is only borrowed by this method (add 'move' after its parameter list to consume it)";
+        } else if (o->kind == ExprKind::member || o->kind == ExprKind::index || t->is(Kind::reference) ||
+                   (o->kind == ExprKind::unary && o->as<UnaryExpr>().op == UnaryOp::deref)) {
+            why = "it is part of another value or reached through a reference";
+        } else {
+            return;   // a temporary
+        }
+        note(error(DiagCode::E4220, span, std::format("'{}' consumes the object it is called on, but {}", name, why),
+                   "needs an owned value"),
+             "a method ending in 'move' takes ownership of 'this'; call it on a local variable, a by-value parameter or a "
+             "temporary (spec 06)");
+    }
+
     void check_static_mut_access(const Symbol& s, Span span) {
         const auto& v = s.decl->as<VariableDecl>();
         if (!v.is_mut || v.storage != Storage::static_ || unsafe_depth_ > 0) return;
         const Type* t = lower(*v.type);
-        if (t->is(Kind::external) && (t->external_base() == "std::atomic" || t->external_base() == "std::mutex")) return;
         note(error(DiagCode::E4102, span, std::format("'{}' is a 'static mut' of type {}", s.name, quoted(t)),
                    "needs 'unsafe'"),
-             "only thread-safe types (std::atomic, std::mutex) can be used without 'unsafe { }'");
+             "every thread can see a 'static mut', so every access is unsafe; for shared mutable state use a 'static' "
+             "synchronized type such as std::atomic<T> or std::mutex<T> (spec 27)");
     }
 
     const Type* unify_operands(Expr& lhs, Expr& rhs, const Type* l, const Type* r, Span span, std::string_view what) {
@@ -2017,7 +2392,7 @@ private:
             if (t && found) *found = s;
             return t;
         };
-        return search_operator(op, l, try_fn);
+        return search_operator(op, l, r, try_fn);
     }
 
     const Type* match_operator(const Symbol* s, bool is_method, std::string_view op, const Type* l, const Type* r) {
@@ -2059,7 +2434,7 @@ private:
     }
 
     template <typename F>
-    const Type* search_operator(std::string_view op, const Type* l, F&& try_fn) {
+    const Type* search_operator(std::string_view op, const Type* l, const Type* r, F&& try_fn) {
         if (l->is(Kind::user)) {
             if (auto it = l->symbol->members.find(std::string(op)); it != l->symbol->members.end()) {
                 for (Symbol* m : it->second) {
@@ -2067,17 +2442,17 @@ private:
                 }
             }
         }
-        for (const auto* items : {&module_->items}) {
-            if (auto it = items->find(std::string(op)); it != items->end()) {
-                for (Symbol* s : it->second) {
-                    if (const Type* t = try_fn(s, false)) return t;
-                }
-            }
-        }
-        // Operators declared in the module that owns the type.
-        if (l->is(Kind::user) && l->symbol->module != module_) {
-            auto& items = l->symbol->module->items;
-            if (auto it = items.find(std::string(op)); it != items.end()) {
+        // Free operators live with one of their operand types: in that type's namespace and
+        // module (spec 16, 30). Nothing else is searched, so no other module can add one.
+        const Symbol* homes[2] = {nullptr, nullptr};
+        if (const Type* lt = types::strip_ref(l); lt && lt->is(Kind::user)) homes[0] = lt->symbol;
+        if (const Type* rt = r ? types::strip_ref(r) : nullptr; rt && rt->is(Kind::user)) homes[1] = rt->symbol;
+        for (int i = 0; i < 2; ++i) {
+            const Symbol* home = homes[i];
+            if (!home || (i == 1 && homes[0] && homes[0]->module == home->module && homes[0]->ns == home->ns)) continue;
+            const Symbol* type = home->template_of ? home->template_of : home;
+            std::string   key  = type->ns.empty() ? std::string(op) : type->ns + "::" + std::string(op);
+            if (auto it = type->module->items.find(key); it != type->module->items.end()) {
                 for (Symbol* s : it->second) {
                     if (const Type* t = try_fn(s, false)) return t;
                 }
@@ -2111,7 +2486,8 @@ private:
                 return set(b, ordering_type());
             }
             const Type* t = unify_operands(*b.lhs, *b.rhs, l, r, b.span, "operands of '<=>'");
-            if (!t->is_numeric() && !t->is(Kind::char_) && !t->is_unknown() && !t->is_untyped()) {
+            bool text = t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str");   // byte order (spec 19)
+            if (!t->is_numeric() && !t->is(Kind::char_) && !text && !t->is_unknown() && !t->is_untyped()) {
                 error(DiagCode::E4013, b.span, std::format("{} values cannot be ordered", quoted(t)), "not ordered");
             }
             return set(b, ordering_type());
@@ -2172,7 +2548,8 @@ private:
                 return set(b, tc_.bool_());
             }
             const Type* t = unify_operands(*b.lhs, *b.rhs, l, r, b.span, "the compared values");
-            if (is_comparison(op) && !t->is_numeric() && !t->is(Kind::char_) && !t->is_unknown() && !t->is_untyped()) {
+            bool text = t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str");   // byte order (spec 19)
+            if (is_comparison(op) && !t->is_numeric() && !t->is(Kind::char_) && !text && !t->is_unknown() && !t->is_untyped()) {
                 error(DiagCode::E4013, b.span, std::format("{} values cannot be ordered", quoted(t)), "not ordered");
             }
             return set(b, tc_.bool_());
@@ -2379,9 +2756,30 @@ private:
     /// functions of the compiler. Their value is computed here, so run-time code gets a constant.
     const Type* infer_builtin(CallExpr& c, const std::string& name) {
         if (name.starts_with("compile_")) return infer_diagnostic(c, name);
-        if (name == "is_compile_time" || name == "location_of") return infer_parameter_query(c, name);
+        if (name == "is_compile_time" || name == "location_of" || name == "literal_text") return infer_parameter_query(c, name);
+        if (name == "meta::function_annotation" || name == "meta::type_annotation" || name == "meta::file_annotation") {
+            auto&         s  = c.callee->as<PathExpr>().path.segments.back();
+            const Symbol* cs = std_item("call_site");
+            if (s.template_args.size() != 1 || !s.template_args[0].type || c.args.size() != 1 || !cs) {
+                error(DiagCode::E4030, c.span,
+                      std::format("'{}' takes one annotation and a call site: '{}<A>(where)'", ast::to_string(c.callee->as<PathExpr>().path),
+                                  ast::to_string(c.callee->as<PathExpr>().path)),
+                      "wrong arguments");
+                return set(c, tc_.error());
+            }
+            coerce(*c.args[0], tc_.user(cs));
+            const Type* t = option_of_annotation(s.template_args[0], c.span);
+            set(c, t);
+            if (!fn_.is_compile_time) {
+                error(DiagCode::E4200, c.span, std::format("'{}' runs at compile time only", ast::to_string(c.callee->as<PathExpr>().path)),
+                      "not in a compile_time function");
+                return t;
+            }
+            if (c.args[0]->constant) c.constant = evaluate(c, "");
+            return t;
+        }
         auto&       seg   = c.callee->as<PathExpr>().path.segments.back();
-        std::size_t wants = name == "is_same" ? 2 : 1;
+        std::size_t wants = name == "is_same" || name == "implements" || name == "meta::annotation" || name == "meta::has_annotation" ? 2 : 1;
         if (seg.template_args.size() != wants || !c.args.empty()) {
             error(DiagCode::E4030, c.span,
                   std::format("'{}' takes {} template argument{} and no arguments: '{}<{}>()'", ast::to_string(c.callee->as<PathExpr>().path),
@@ -2394,8 +2792,12 @@ private:
         }
         const Type* t = name == "size_of" || name == "align_of"   ? tc_.builtin("usize")
                       : name == "type_name"                       ? tc_.static_str()
+                      : name == "meta::result_of"                 ? tc_.type_value()
                       : name == "meta::fields"                    ? list_of(tc_.meta_field())
                       : name == "meta::alternatives"              ? list_of(tc_.meta_alternative())
+                      : name == "meta::methods"                   ? list_of(tc_.meta_function())
+                      : name == "meta::interfaces" || name == "meta::template_args" ? list_of(tc_.type_value())
+                      : name == "meta::annotation"                ? option_of_annotation(seg.template_args[0], c.span)
                                                                   : tc_.bool_();
         set(c, t);
         c.constant = evaluate(c, "");
@@ -2405,8 +2807,73 @@ private:
     /// `std::raw::allocate<T>(n)`, `reallocate(p, n)`, `free(p)`, `read(p)`, `write(p, v)`,
     /// `drop(p)` and `copy(to, from, n)`: the memory operations the library is written with
     /// (spec 13). All of them require `unsafe`.
+    /// The thread intrinsics of std::raw (spec 27): atomic operations on memory, the futex and
+    /// the spin-loop hint. The library's synchronized types are written with them.
+    const Type* infer_thread_raw(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
+        static const std::map<std::string, std::size_t> arity{
+            {"atomic_load", 2}, {"atomic_store", 3}, {"atomic_exchange", 3}, {"atomic_compare_exchange", 6},
+            {"atomic_fetch_add", 3}, {"atomic_fetch_sub", 3}, {"atomic_fetch_and", 3}, {"atomic_fetch_or", 3},
+            {"atomic_fetch_xor", 3}, {"atomic_fence", 1}, {"futex_wait", 2}, {"futex_wake", 2}, {"spin_hint", 0}};
+        auto it = arity.find(name);
+        if (it == arity.end() || args.size() != it->second) {
+            error(DiagCode::E4030, c.span, std::format("'std::raw::{}' takes {} arguments", name, it == arity.end() ? 0 : it->second),
+                  "wrong arguments");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        const Symbol* order_sym = std_item("memory_order");
+        const Type*   order     = order_sym ? tc_.user(order_sym) : tc_.error();
+        auto ordering = [&](Expr& e) { coerce(e, order); };
+        auto atomic_pointer = [&](Expr& e) -> const Type* {
+            const Type* t = types::strip_ref(e.type);
+            if (t->is_unknown()) return nullptr;
+            const Type* v = t->is(Kind::pointer) ? t->inner : nullptr;
+            if (!v || !(v->is_integer() || v->is(Kind::bool_) || v->is(Kind::char_) || v->is(Kind::pointer) || v->is_unknown())) {
+                error(DiagCode::E4010, e.span,
+                      std::format("expected a 'std::raw_ptr' to an integer, bool, char or raw pointer, found {}", quoted(t)),
+                      "not atomic");
+                return nullptr;
+            }
+            return v;
+        };
+        if (name == "spin_hint") return set(c, tc_.void_());
+        if (name == "atomic_fence") {
+            ordering(*args[0]);
+            return set(c, tc_.void_());
+        }
+        if (name == "futex_wait" || name == "futex_wake") {
+            coerce(*args[0], tc_.pointer(tc_.builtin("u32"), false));
+            coerce(*args[1], tc_.builtin("u32"));
+            return set(c, tc_.void_());
+        }
+        const Type* v = atomic_pointer(*args[0]);
+        if (name == "atomic_load") {
+            ordering(*args[1]);
+            return set(c, v ? v : tc_.error());
+        }
+        if (name == "atomic_compare_exchange") {
+            if (v) {
+                coerce(*args[1], tc_.pointer(v, true));
+                coerce(*args[2], v);
+            }
+            ordering(*args[3]);
+            ordering(*args[4]);
+            coerce(*args[5], tc_.bool_());
+            return set(c, tc_.bool_());
+        }
+        if (v) coerce(*args[1], v);
+        ordering(*args[2]);
+        if (name.starts_with("atomic_fetch_") && v && !v->is_integer() && !v->is_unknown()) {
+            error(DiagCode::E4010, args[0]->span, std::format("'std::raw::{}' works on integers, not {}", name, quoted(v)), "not an integer");
+        }
+        return set(c, name == "atomic_store" ? tc_.void_() : v ? v : tc_.error());
+    }
+
     const Type* infer_raw(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
         require_unsafe(c.span, std::format("'std::raw::{}'", name));
+        if (name.starts_with("atomic_") || name.starts_with("futex_") || name == "spin_hint") return infer_thread_raw(c, name, args);
         auto& seg = c.callee->as<PathExpr>().path.segments.back();
         std::size_t want = name == "allocate" || name == "free" || name == "read" || name == "drop" ? 1
                          : name == "copy"                                                         ? 3
@@ -2469,7 +2936,9 @@ private:
         }
         const Type* to   = pointer(*args[0], true);   // copy
         const Type* from = pointer(*args[1], false);
-        if (to && from && to->inner != from->inner) mismatch(args[1]->span, from, tc_.pointer(to->inner, false));
+        if (to && from && to->inner != from->inner && !deep_unknown(to->inner) && !deep_unknown(from->inner)) {
+            mismatch(args[1]->span, from, tc_.pointer(to->inner, false));
+        }
         count(*args[2]);
         return set(c, tc_.void_());
     }
@@ -2478,7 +2947,10 @@ private:
     /// a call gives a parameter, so only in a function's compile-time code.
     const Type* infer_parameter_query(CallExpr& c, const std::string& name) {
         const Symbol* loc_sym = std_item("source_location");
-        const Type*   result  = name == "is_compile_time" ? tc_.bool_() : loc_sym ? tc_.user(loc_sym) : tc_.error();
+        const Type*   result  = name == "is_compile_time" ? tc_.bool_()
+                              : name == "literal_text"    ? tc_.static_str()
+                              : loc_sym                   ? tc_.user(loc_sym)
+                                                          : tc_.error();
         const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
         bool is_param = p && p->kind == SymbolKind::local &&
                         (p->local_kind == sema::LocalKind::value_param || p->local_kind == sema::LocalKind::ref_param);
@@ -2559,15 +3031,45 @@ private:
         return t;
     }
 
-    /// `f.name`, `a.payload`, ...: the parts of std::meta::field / std::meta::alternative.
+    /// `std::option<A>` for `annotation<A>()`: A must be an annotation (spec 29).
+    const Type* option_of_annotation(const TemplateArg& arg, Span span) {
+        const Symbol* option = std_item("option");
+        if (!arg.type || !option) return tc_.error();
+        const Type* a = lower(*arg.type);
+        if (a->is_unknown()) return tc_.error();
+        if (!a->is_user(SymbolKind::struct_) || !a->symbol->decl->as<TypeDecl>().is_annotation) {
+            note(error(DiagCode::E3070, arg.type->span, std::format("{} is not an annotation", quoted(a)), "not an annotation"),
+                 "an annotation is declared as 'annotation(std::meta::target::...) struct name { ... }' (spec 29)");
+            (void)span;
+            return tc_.error();
+        }
+        return tc_.instance(option, {a});
+    }
+
+    /// The `std::meta::passing` enum of the library, or an error type without it.
+    const Type* passing_type() {
+        auto m = program_.modules.find("std::meta");
+        const Symbol* p = m == program_.modules.end() ? nullptr : m->second->item("std::meta::passing");
+        return p ? tc_.user(p) : tc_.error();
+    }
+
+    /// `f.name`, `a.payload`, `m.parameters`, ...: the parts of the std::meta handles.
     const Type* infer_meta_member(MemberExpr& m, const Type* t, const std::string& name) {
         bool        field = t == tc_.meta_field();
-        const Type* r     = name == "name"                                  ? tc_.static_str()
-                          : name == "index" || (field && name == "offset") ? tc_.builtin("usize")
-                          : field && name == "type"                         ? tc_.type_value()
-                          : !field && name == "payload"                     ? tc_.type_value()
-                          : !field && name == "has_payload"                 ? tc_.bool_()
-                                                                            : nullptr;
+        bool        alt   = t == tc_.meta_alternative();
+        bool        fn    = t == tc_.meta_function();
+        bool        param = t == tc_.meta_parameter();
+        const Type* r     = name == "name"                                                  ? tc_.static_str()
+                          : (field || alt) && (name == "index" || (field && name == "offset")) ? tc_.builtin("usize")
+                          : (field || param) && name == "type"                               ? tc_.type_value()
+                          : alt && name == "payload"                                         ? tc_.type_value()
+                          : alt && name == "has_payload"                                     ? tc_.bool_()
+                          : fn && name == "result"                                           ? tc_.type_value()
+                          : fn && name == "parameters"                                       ? list_of(tc_.meta_parameter())
+                          : fn && (name == "is_mut" || name == "is_static")                  ? tc_.bool_()
+                          : param && name == "passing"                                       ? passing_type()
+                          : param && name == "index"                                         ? tc_.builtin("usize")
+                                                                                             : nullptr;
         if (!r) {
             error(DiagCode::E4070, m.name.span, std::format("{} has no field '{}'", quoted(t), name), "unknown member");
             return set(m, tc_.error());
@@ -2582,7 +3084,30 @@ private:
     const Type* infer_meta_method(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name, std::vector<Expr*>& args) {
         c.callee->type = tc_.error();
         bool field     = t == tc_.meta_field();
-        bool known     = field ? name == "get" : name == "is" || name == "get" || name == "make";
+        bool fn        = t == tc_.meta_function();
+        bool param     = t == tc_.meta_parameter();
+        if (name == "has" || name == "annotation") {   // `f.has<A>()`, `f.annotation<A>()` (spec 29)
+            const auto& seg = me.name.segments.back();
+            if (seg.template_args.size() != 1 || !seg.template_args[0].type || !args.empty()) {
+                error(DiagCode::E4030, c.span, std::format("'{}' takes the annotation as its template argument: '.{}<A>()'", name, name),
+                      "wrong arguments");
+                return set(c, tc_.error());
+            }
+            const Type* r = name == "has" ? tc_.bool_() : option_of_annotation(seg.template_args[0], c.span);
+            if (name == "has") {
+                const Type* a = lower(*seg.template_args[0].type);
+                if (!a->is_unknown() && (!a->is_user(SymbolKind::struct_) || !a->symbol->decl->as<TypeDecl>().is_annotation)) {
+                    error(DiagCode::E3070, seg.template_args[0].type->span, std::format("{} is not an annotation", quoted(a)),
+                          "not an annotation");
+                    return set(c, tc_.error());
+                }
+            }
+            set(c, r);
+            if (me.object->constant && !r->is_unknown()) c.constant = evaluate(c, "");
+            return r;
+        }
+        if (fn && name == "call") return infer_meta_call(c, me, args);
+        bool known     = field ? name == "get" : !fn && !param && (name == "is" || name == "get" || name == "make");
         if (!known) {
             error(DiagCode::E4070, me.name.span, std::format("{} has no method '{}'", quoted(t), name), "unknown method");
             return set(c, tc_.error());
@@ -2635,6 +3160,57 @@ private:
         return set(c, tc_.instance(option, {tc_.reference(lower_owned(alt, *alt->alternative->payload), false)}));
     }
 
+    /// `m.call(value, args...)` (spec 26): checked and compiled like `value.name(args...)`, so it
+    /// is rewritten into that call. `m` must be known at compile time.
+    const Type* infer_meta_call(CallExpr& c, MemberExpr& me, std::vector<Expr*>& args) {
+        const ct::Value* handle = me.object->constant.get();
+        if (!handle || handle->kind != ct::Value::Kind::function) {
+            if (evaluator().unknown() || types::strip_ref(me.object->type)->is_unknown()) return set(c, tc_.error());
+            note(error(DiagCode::E4200, me.object->span, "'.call' needs a std::meta::function that is known at compile time",
+                       "not known at compile time"),
+                 "use the loop variable of a 'for compile_time' loop over std::meta::methods<T>()");
+            return set(c, tc_.error());
+        }
+        Symbol* method = const_cast<Symbol*>(handle->symbol);
+        Span    at     = me.name.span;
+        if (method->is_static) {
+            Path p;
+            p.span = at;
+            PathSegment seg;
+            seg.name = method->name;
+            seg.span = at;
+            p.segments.push_back(std::move(seg));
+            auto callee   = std::make_unique<PathExpr>(at, std::move(p));
+            callee->symbol = method;
+            c.callee      = std::move(callee);
+        } else {
+            if (args.empty()) {
+                error(DiagCode::E4030, c.span, std::format("'{}' is a method: '.call(value, ...)' needs the value first", method->name),
+                      "no value");
+                return set(c, tc_.error());
+            }
+            ExprPtr receiver = std::move(c.args.front());
+            c.args.erase(c.args.begin());
+            if (receiver->kind == ExprKind::unary && receiver->as<UnaryExpr>().op == UnaryOp::mut_marker) {
+                receiver = std::move(receiver->as<UnaryExpr>().operand);
+            }
+            const Type* rt = types::strip_ref(receiver->type);
+            if (!rt->is_unknown() && handle->type_value && rt != handle->type_value) {
+                mismatch(receiver->span, receiver->type, handle->type_value, " (the value whose method is called)");
+                return set(c, tc_.error());
+            }
+            Path p;
+            p.span = at;
+            PathSegment seg;
+            seg.name = method->name;
+            seg.span = at;
+            p.segments.push_back(std::move(seg));
+            auto callee    = std::make_unique<MemberExpr>(Span{receiver->span.file, receiver->span.begin, at.end}, std::move(receiver), std::move(p), false);
+            c.callee       = std::move(callee);
+        }
+        return infer_call(c);
+    }
+
     // --- calls ----------------------------------------------------------------------------
 
     struct Candidate {
@@ -2646,7 +3222,30 @@ private:
         int                                     cost   = 0;
         bool                                    undeducible = false;
         std::string                             undeduced_name;
+        bool                                    mismatch = false;   // an argument is an instance of another template
+        /// Arguments the compiler supplies for `implicit` parameters the call leaves out (spec 31).
+        std::vector<ExprPtr>                    synth;
+        /// The hidden template parameter of each `compile_time` parameter and its argument.
+        std::vector<std::pair<const Symbol*, Expr*>> ct_args;
     };
+
+    /// Whether `at` can be an instance of what the parameter pattern names: `std::span<T>` never
+    /// accepts a `std::span<mut f32>`, so such a template overload is not viable.
+    static bool shape_fits(const TypeExpr& pattern, const Type* at) {
+        if (!at || at->is_unknown() || at->is_untyped()) return true;
+        if (pattern.kind == TypeKind::reference) return shape_fits(*pattern.as<ReferenceType>().inner, types::strip_ref(at));
+        if (pattern.kind != TypeKind::named) return true;
+        const auto&   nt  = pattern.as<NamedType>();
+        const Symbol* sym = nt.symbol;
+        if (!sym || !sym->decl || !sym->decl->is_template || nt.path.segments.empty()) return true;
+        const auto& ta = nt.path.segments.back().template_args;
+        if (sym->name == "span" && sym->module && sym->module->name == "std" && ta.size() == 1 && ta[0].is_mut && ta[0].type &&
+            ta[0].type->kind != TypeKind::reference) {
+            if (Symbol* sm = sym->module->item("std::span_mut")) sym = sm;
+        }
+        at = types::strip_ref(at);
+        return at->is(Kind::user) && at->symbol->template_of == sym;
+    }
 
     /// The template parameter symbol a parameter type is spelled as (`T` or `T&`), if any.
     static const Symbol* param_template_symbol(const TypeExpr& t) {
@@ -2691,6 +3290,36 @@ private:
         return out;
     }
 
+    /// Whether `t` is unknown or built from an unknown type (`std::raw_ptr<node<T>>` in a generic check).
+    static bool deep_unknown(const Type* t) {
+        if (!t) return false;
+        if (t->is_unknown()) return true;
+        if (t->is(Kind::pointer) || t->is(Kind::reference)) return deep_unknown(t->inner);
+        if (t->is(Kind::user)) {
+            for (const Type* a : t->symbol->template_args) {
+                if (deep_unknown(a)) return true;
+            }
+        }
+        return false;
+    }
+
+    /// The template parameters a parameter type mentions stay unknown (an argument whose type is
+    /// not known yet, inside a template's generic check): no "cannot deduce" error.
+    static void unknown_params(const TypeExpr& pattern, const Type* unknown, std::map<const Symbol*, const Type*>& subst) {
+        if (pattern.kind == TypeKind::reference) {
+            unknown_params(*pattern.as<ReferenceType>().inner, unknown, subst);
+            return;
+        }
+        if (pattern.kind != TypeKind::named) return;
+        const auto& nt = pattern.as<NamedType>();
+        if (nt.symbol && nt.symbol->kind == SymbolKind::type_param && !subst.count(nt.symbol)) subst[nt.symbol] = unknown;
+        for (const PathSegment& seg : nt.path.segments) {
+            for (const TemplateArg& a : seg.template_args) {
+                if (a.type) unknown_params(*a.type, unknown, subst);
+            }
+        }
+    }
+
     /// Deduces template parameters by matching a parameter's type against an argument's type:
     /// `std::darray<T>&` against `std::darray<u32>` gives T = u32 (spec 14).
     static void unify(const TypeExpr& pattern, const Type* at, std::map<const Symbol*, const Type*>& subst) {
@@ -2702,10 +3331,22 @@ private:
         if (pattern.kind != TypeKind::named) return;
         const auto&   nt  = pattern.as<NamedType>();
         const Symbol* sym = nt.symbol;
+        if (at->is(Kind::pointer) && !nt.path.segments.empty() && nt.path.segments.back().name == "raw_ptr") {   // std::raw_ptr<mut T>
+            const auto& targs = nt.path.segments.back().template_args;
+            if (!targs.empty() && targs[0].type) unify(*targs[0].type, at->inner, subst);
+            return;
+        }
         if (!sym) return;
         if (sym->kind == SymbolKind::type_param) {
             if (!subst.count(sym)) subst[sym] = at;
             return;
+        }
+        if (!nt.path.segments.empty()) {   // `std::span<mut T>` is the library's span_mut<T> (spec 20)
+            const auto& ta = nt.path.segments.back().template_args;
+            if (sym->name == "span" && sym->module && sym->module->name == "std" && ta.size() == 1 && ta[0].is_mut && ta[0].type &&
+                ta[0].type->kind != TypeKind::reference) {
+                if (Symbol* sm = sym->module->item("std::span_mut")) sym = sm;
+            }
         }
         if (!at->is(Kind::user) || at->symbol->template_of != sym || nt.path.segments.empty()) return;
         const auto& targs = nt.path.segments.back().template_args;
@@ -2720,8 +3361,194 @@ private:
         }
     }
 
+    // --- implicit and compile_time parameters (spec 31) ----------------------------------------
+
+    /// A candidate for a call: missing trailing `implicit` arguments are supplied, and the
+    /// arguments of `compile_time` parameters are noted for call_target.
+    Candidate make_call_candidate(Symbol* s, const std::vector<Expr*>& given, const PathSegment* explicit_args, Span at) {
+        const FunctionDecl*  f    = s->function();
+        std::vector<Expr*>   args = given;
+        std::vector<ExprPtr> synth;
+        if (f && given.size() < f->params.size()) {
+            bool all_implicit = true;
+            for (std::size_t i = given.size(); i < f->params.size(); ++i) all_implicit = all_implicit && f->params[i].is_implicit;
+            if (all_implicit) {
+                const auto* owner = f->is_template ? nullptr : sema::substitution_of(s);
+                for (std::size_t i = given.size(); i < f->params.size(); ++i) {
+                    const Param& p  = f->params[i];
+                    const Type*  pt = owner ? tc_.lower(*p.type, owner) : lower(*p.type);
+                    synth.push_back(implicit_argument(pt, at));
+                    args.push_back(synth.back().get());
+                }
+            }
+        }
+        Candidate c = make_candidate(s, args, explicit_args);
+        c.synth     = std::move(synth);
+        if (f && f->is_template) {
+            std::vector<const Symbol*> syms = template_symbols(*f);
+            for (std::size_t i = 0; i < f->params.size() && i < args.size(); ++i) {
+                if (!f->params[i].is_compile_time) continue;
+                const Symbol* hidden = nullptr;
+                for (std::size_t k = 0; k < f->template_params.size() && k < syms.size(); ++k) {
+                    if (f->template_params[k].name == "$" + f->params[i].name) hidden = syms[k];
+                }
+                c.ct_args.emplace_back(hidden, args[i]);
+            }
+        }
+        return c;
+    }
+
+    /// The call takes over the arguments supplied for its `implicit` parameters (spec 31).
+    static void adopt_implicit(CallExpr& c, const Candidate& chosen) {
+        for (ExprPtr& s : const_cast<Candidate&>(chosen).synth) c.args.push_back(std::move(s));
+    }
+
+    /// The path of the file `span` is in, as the compiler was given it.
+    std::string source_path(Span span) const;
+
+    /// The function being checked, with its namespace and type: `gfx::vulkan::create_pipeline`.
+    std::string current_function_name() const {
+        std::string name = fn_.decl ? fn_.decl->name : fn_.name;
+        std::string prefix;
+        if (fn_.self) {
+            prefix = fn_.self->key();
+        } else if (fn_.decl) {
+            prefix = fn_.decl->ns;
+        }
+        if (name.empty()) return prefix;
+        return prefix.empty() ? name : prefix + "::" + name;
+    }
+
+    /// The symbol of the function being checked (null at file scope and in lambdas).
+    const Symbol* current_function_symbol() const {
+        if (!fn_.decl) return nullptr;
+        if (fn_.self) {
+            auto it = fn_.self->members.find(fn_.decl->name);
+            if (it != fn_.self->members.end()) {
+                for (const Symbol* m : it->second) {
+                    if (m->decl == fn_.decl || m->definition == fn_.decl) return m;
+                }
+            }
+        } else if (module_) {
+            auto it = module_->items.find(fn_.decl->ns.empty() ? fn_.decl->name : fn_.decl->ns + "::" + fn_.decl->name);
+            if (it != module_->items.end()) {
+                for (const Symbol* s : it->second) {
+                    if (s->decl == fn_.decl || s->definition == fn_.decl) return s;
+                }
+            }
+        }
+        for (const Symbol* s : program_.instances) {   // an instance of a function template
+            if (s->decl == fn_.decl) return s;
+        }
+        return nullptr;
+    }
+
+    /// The `std::call_site` value of code at `span` (spec 31): static data computed here.
+    std::shared_ptr<const ct::Value> call_site_value(Span span) {
+        const Symbol* cs = std_item("call_site");
+        if (!cs) return nullptr;
+        LineCol lc = sources_line(span);
+        auto text = [&](std::string s) {
+            ct::Value v;
+            v.kind   = ct::Value::Kind::string;
+            v.type   = tc_.static_str();
+            v.string = std::move(s);
+            return v;
+        };
+        std::string file = source_path(span);
+        if (file.starts_with("./")) file = file.substr(2);
+        std::map<std::string, ct::Value> by_name;
+        by_name.emplace("file", text(file));
+        by_name.emplace("file_name", text(file.substr(file.find_last_of('/') == std::string::npos ? 0 : file.find_last_of('/') + 1)));
+        by_name.emplace("function", text(current_function_name()));
+        by_name.emplace("function_name", text(fn_.decl ? fn_.decl->name : fn_.name));
+        by_name.emplace("namespace_name", text(fn_.self ? fn_.self->ns : fn_.decl ? fn_.decl->ns : std::string()));
+        by_name.emplace("module", text(module_ ? module_->name : std::string()));
+        by_name.emplace("target", text(program_.build_target));
+        by_name.emplace("line", ct::Value::of_integer(lc.line, tc_.builtin("u32")));
+        by_name.emplace("column", ct::Value::of_integer(lc.column, tc_.builtin("u32")));
+        auto v      = std::make_shared<ct::Value>();
+        v->kind     = ct::Value::Kind::aggregate;
+        v->type     = tc_.user(cs);
+        v->location = span;                        // for std::meta::file_annotation
+        v->symbol   = current_function_symbol();   // for std::meta::function_annotation / type_annotation
+        for (const Symbol* m : cs->member_order) {
+            if (m->kind != SymbolKind::field || m->is_static) continue;
+            auto it = by_name.find(m->name);
+            v->elements.push_back(it != by_name.end() ? it->second : ct::Value{});
+        }
+        return v;
+    }
+
+    /// The argument the compiler supplies for an `implicit` parameter of type `pt` at a call at
+    /// `at` (spec 31): the call site itself, or `T::from_call(<call site>)` evaluated now.
+    ExprPtr implicit_argument(const Type* pt, Span at) {
+        auto e  = std::make_unique<SimpleExpr>(ExprKind::default_, at);
+        e->type = pt;
+        const Type*   t  = types::strip_ref(pt);
+        const Symbol* cs = std_item("call_site");
+        std::shared_ptr<const ct::Value> site = call_site_value(at);
+        if (t->is_unknown()) {
+            e->type = tc_.error();
+            return e;
+        }
+        if (cs && t->is(Kind::user) && t->symbol == cs) {
+            e->constant = site;
+            return e;
+        }
+        Symbol* from = nullptr;
+        if (t->is(Kind::user)) {
+            for (Symbol* m : find_methods(t->symbol, "from_call")) {
+                const FunctionDecl* fd = m->function();
+                if (fd && fd->is_static && fd->params.size() == 1) from = m;
+            }
+        }
+        if (!from || !site || !cs) {
+            Diagnostic& d = error(DiagCode::E4250, at,
+                                  std::format("{} can't be supplied for an implicit parameter: it has no "
+                                              "'compile_time static {} from_call(std::call_site where)'",
+                                              quoted(t), types::to_string(t)),
+                                  "argument left out");
+            note(d, "implement std::implicit<T> for the type, or write the argument");
+            e->type = tc_.error();
+            return e;
+        }
+        auto site_expr      = std::make_unique<SimpleExpr>(ExprKind::default_, at);
+        site_expr->type     = tc_.user(cs);
+        site_expr->constant = site;
+        Path path;
+        path.span = at;
+        path.segments.push_back(PathSegment{t->symbol->name, at, false, {}});
+        path.segments.push_back(PathSegment{"from_call", at, false, {}});
+        auto callee    = std::make_unique<PathExpr>(at, std::move(path));
+        callee->symbol = from;
+        auto call      = std::make_unique<CallExpr>(at, std::move(callee));
+        call->args.push_back(std::move(site_expr));
+        infer(*call);
+        e->constant = evaluate(*call, std::format("the implicit argument {} is made at compile time", quoted(t)));
+        if (!e->constant) e->type = tc_.error();
+        implicit_calls_.push_back(std::move(call));
+        return e;
+    }
+    std::vector<ExprPtr> implicit_calls_;   // the `T::from_call(...)` calls evaluated for implicit arguments
+
+    /// The template value argument for a `compile_time` parameter (spec 31): any compile-time value.
+    const Type* compile_time_argument(Expr& arg, std::string_view display) {
+        const Type* t = types::strip_ref(arg.type);
+        if (!t || t->is_unknown() || t->is_untyped()) return tc_.error();
+        std::shared_ptr<const ct::Value> v = arg.constant;
+        if (!v) {
+            if (fn_.generic) return tc_.error();
+            v = evaluate(arg, std::format("the argument of a compile_time parameter of '{}' must be known at compile time", display));
+        }
+        if (!v) return tc_.error();
+        if (v->kind == ct::Value::Kind::boolean) return tc_.value_arg(u128{v->boolean}, t);
+        if (v->kind == ct::Value::Kind::integer && t->is_integer()) return tc_.value_arg(v->integer, t);
+        return tc_.value_arg_of(ct::to_string(*v), t, v);
+    }
+
     Candidate make_candidate(Symbol* s, const std::vector<Expr*>& args, const PathSegment* explicit_args) {
-        Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}};
+        Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}, false, {}, {}};
         const FunctionDecl& f = *c.decl;
         if (f.is_template) {
             // A method template of a class template instance also uses the class's arguments.
@@ -2744,14 +3571,30 @@ private:
                 const Symbol* tp = param_template_symbol(*f.params[i].type);
                 if (!tp) {   // `std::darray<T>&`, `either<L, R>`: deduced from the argument's instance
                     const Type* at = types::strip_ref(args[i]->type);
+                    if (!shape_fits(*f.params[i].type, at)) c.mismatch = true;
                     if (at && !at->is_untyped() && !at->is_unknown()) unify(*f.params[i].type, at, c.subst);
+                    if (at && deep_unknown(at)) unknown_params(*f.params[i].type, tc_.error(), c.subst);   // the generic check
                     continue;
                 }
                 if (c.subst.count(tp)) continue;
                 const Type* at = types::strip_ref(args[i]->type);
                 if (at->is_untyped()) {
-                    c.undeducible    = true;
-                    c.undeduced_name = tp->name;
+                    // A literal for a parameter that a lambda argument returns too takes the lambda's
+                    // result type: `reduce_chunks(data, n, 0.0, map, combine)` with `map` returning f64.
+                    const Type* from_lambda = nullptr;
+                    for (const Expr* other : args) {
+                        const Type* ot = other->type ? types::strip_ref(other->type) : nullptr;
+                        if (!ot || !ot->is(Kind::closure) || ot->args.empty()) continue;
+                        const Type* r = ot->args.back();
+                        bool fits = at == tc_.untyped_float() ? r->is_float() : r->is_integer() || r->is_float();
+                        if (fits && !from_lambda) from_lambda = r;
+                    }
+                    if (from_lambda) {
+                        c.subst[tp] = from_lambda;
+                    } else {
+                        c.undeducible    = true;
+                        c.undeduced_name = tp->name;
+                    }
                 } else if (!at->is(Kind::never)) {
                     c.subst[tp] = at;
                 }
@@ -2804,9 +3647,13 @@ private:
         if (!chosen.decl->is_template) return chosen.symbol;
         std::vector<const Symbol*> syms = template_symbols(*chosen.decl);
         std::vector<const Type*>   args;
+        std::map<const Symbol*, const Type*> subst = chosen.subst;
+        for (const auto& [hidden, arg] : chosen.ct_args) {   // `compile_time` parameters (spec 31)
+            if (hidden) subst[hidden] = compile_time_argument(*arg, display);
+        }
         for (const Symbol* p : syms) {
-            auto it = p ? chosen.subst.find(p) : chosen.subst.end();
-            if (it == chosen.subst.end()) {
+            auto it = p ? subst.find(p) : subst.end();
+            if (it == subst.end()) {
                 std::string name = p ? p->name : std::string("?");
                 error(DiagCode::E4160, span, std::format("cannot deduce template parameter '{}' of '{}'", name, display),
                       "cannot deduce");
@@ -2827,7 +3674,7 @@ private:
                                       std::string_view display) {
         std::vector<Candidate*> arity;
         for (Candidate& c : cands) {
-            if (c.params.size() == args.size()) arity.push_back(&c);
+            if (c.params.size() == args.size() + c.synth.size()) arity.push_back(&c);
         }
         if (arity.empty()) {
             if (cands.size() == 1) {
@@ -2846,11 +3693,15 @@ private:
         std::vector<Candidate*> viable;
         for (Candidate* c : arity) {
             c->cost = 0;
-            bool ok = true;
+            bool ok = !c->mismatch;
             for (std::size_t i = 0; i < args.size() && ok; ++i) {
                 int cost = arg_cost(strip_marker(*args[i]), c->params[i]);
                 if (cost < 0) ok = false;
                 c->cost += std::max(cost, 0);
+            }
+            for (std::size_t i = 0; i < c->synth.size() && ok; ++i) {   // supplied `implicit` arguments (spec 31)
+                if (c->synth[i]->type->is_unknown()) continue;
+                if (arg_cost(*c->synth[i], c->params[args.size() + i]) < 0) ok = false;
             }
             if (ok) viable.push_back(c);
         }
@@ -2892,6 +3743,7 @@ private:
             note(d, std::format("write '{}<u32>(...)' or give a literal a suffix", display));
             return nullptr;
         }
+        for (const ExprPtr& s : chosen->synth) args.push_back(s.get());   // the caller takes them over (adopt_implicit)
         for (std::size_t i = 0; i < args.size(); ++i) check_argument(*args[i], chosen->params[i]);
         return chosen;
     }
@@ -2912,6 +3764,20 @@ private:
                   "remove 'mut'");
         }
         if (marked || mut_ref) require_mutable(place_of(value), value, "pass as a mutable reference");
+        if (param->is(Kind::external) && param->name == "std::format_args") {
+            // A plain literal passed as a std::format_args is an f-string without holes (spec 31).
+            if (value.kind == ExprKind::string_literal && value.as<LiteralExpr>().token_kind == TokenKind::string_literal) {
+                auto&      lit = value.as<LiteralExpr>();
+                FormatPart part;
+                part.text      = lit.value;
+                part.span      = lit.span;
+                lit.token_kind = TokenKind::format_string_literal;
+                lit.format_parts.clear();
+                lit.format_parts.push_back(std::move(part));
+                set(value, tc_.external("std::format_args"));
+            }
+            check_lazy_holes(value);
+        }
         coerce(value, param);
         if (marked) arg.type = value.type;
     }
@@ -2977,6 +3843,9 @@ private:
                 if (pe.path.segments.size() == 2 && pe.path.segments[0].name == "std" && is_arith_builtin(pe.path.segments[1].name)) {
                     return infer_arith(c, pe.path.segments[1].name, args);
                 }
+                if (pe.path.segments.size() == 2 && pe.path.segments[0].name == "std" && is_bit_builtin(pe.path.segments[1].name)) {
+                    return infer_bits(c, pe.path.segments[1].name, args);
+                }
                 if (pe.path.segments.size() == 2 && pe.path.segments[0].name == "std" && pe.path.segments[1].name == "format") {
                     if (const Symbol* str = std_item("string")) return set(c, tc_.user(str));   // allocates (spec 19)
                 }
@@ -2986,6 +3855,18 @@ private:
                 return set(c, tc_.error());   // std::... and unresolved names
             }
             if (s->kind == SymbolKind::alternative && is_std_export(pe)) {
+                if (s->alternative->payload && args.empty()) {   // `std::ok()`: a `void` payload (spec 08, 27)
+                    const Symbol*            templ = s->parent;
+                    std::vector<const Type*> targs(templ->decl->template_params.size(), nullptr);
+                    if (int i = payload_param(s); i >= 0) {
+                        targs[static_cast<std::size_t>(i)] = tc_.void_();
+                        bool done = std::all_of(targs.begin(), targs.end(), [](const Type* x) { return x != nullptr; });
+                        const Type* t = done ? tc_.instance(templ, targs) : tc_.pending(templ, targs);
+                        if (done) pe.symbol = instance_alternative(pe.symbol, t);
+                        callee.type = t;
+                        return set(c, t);
+                    }
+                }
                 if (!s->alternative->payload || args.size() != 1) {
                     error(DiagCode::E4030, c.span,
                           s->alternative->payload
@@ -2999,7 +3880,9 @@ private:
                 }
                 const Type* t = std_alternative_type(pe, args[0]);
                 callee.type   = t;
-                if (t->is(Kind::user)) check_argument(*args[0], lower_owned(pe.symbol, *pe.symbol->alternative->payload));
+                // `std::some(mut place)`: a `std::option<mut T&>` (some_reference checks the place).
+                bool mut_place = args[0]->kind == ExprKind::unary && args[0]->as<UnaryExpr>().op == UnaryOp::mut_marker;
+                if (t->is(Kind::user) && !mut_place) check_argument(*args[0], lower_owned(pe.symbol, *pe.symbol->alternative->payload));
                 return set(c, t);
             }
             if (s->kind == SymbolKind::alternative) {
@@ -3007,6 +3890,7 @@ private:
                 Symbol*     alt     = instance_alternative(pe.symbol, et);
                 pe.symbol           = alt;
                 const Type* payload = alt->alternative->payload ? lower_owned(alt, *alt->alternative->payload) : nullptr;
+                if (payload && payload->is(Kind::void_) && args.empty()) payload = nullptr;   // `maybe<void>::some()`
                 if (payload) {
                     if (args.size() != 1) {
                         error(DiagCode::E4030, c.span,
@@ -3021,14 +3905,26 @@ private:
             }
             if (s->kind == SymbolKind::function || s->kind == SymbolKind::method) {
                 std::vector<Symbol*> overloads;
-                auto&                table = s->kind == SymbolKind::function ? s->module->items : s->parent->members;
-                for (Symbol* o : table[s->name]) {
-                    if (o->kind == s->kind) overloads.push_back(o);
+                if (s->kind == SymbolKind::function) {
+                    // One namespace's overloads, from every module this one can see (a namespace
+                    // may span several modules, spec 30).
+                    for (const Module* m : visible_modules()) {
+                        auto it = m->items.find(s->key());
+                        if (it == m->items.end()) continue;
+                        for (Symbol* o : it->second) {
+                            if (o->kind == s->kind && (m == module_ || !o->is_private)) overloads.push_back(o);
+                        }
+                    }
+                } else {
+                    for (Symbol* o : s->parent->members[s->name]) {
+                        if (o->kind == s->kind) overloads.push_back(o);
+                    }
                 }
                 std::vector<Candidate> cands;
-                for (Symbol* o : overloads) cands.push_back(make_candidate(o, args, &pe.path.segments.back()));
+                for (Symbol* o : overloads) cands.push_back(make_call_candidate(o, args, &pe.path.segments.back(), c.span));
                 const Candidate* chosen = resolve_overload(cands, args, c.span, ast::to_string(pe.path));
                 if (!chosen) return set(c, tc_.error());
+                adopt_implicit(c, *chosen);
                 Symbol* target = call_target(*chosen, c.span, ast::to_string(pe.path));
                 if (!target) return set(c, tc_.error());
                 pe.symbol   = target;
@@ -3186,9 +4082,10 @@ private:
                 return set(c, tc_.error());
             }
             std::vector<Candidate> cands;
-            for (Symbol* m : methods) cands.push_back(make_candidate(m, args, &me.name.segments.back()));
+            for (Symbol* m : methods) cands.push_back(make_call_candidate(m, args, &me.name.segments.back(), c.span));
             const Candidate* chosen = resolve_overload(cands, args, c.span, t->symbol->name + "::" + name);
             if (!chosen) return set(c, tc_.error());
+            adopt_implicit(c, *chosen);
             me.symbol = chosen->symbol;
             use_method(chosen->symbol, me.name.span);
             if (chosen->decl->is_template) {   // a method template (spec 14): its instance
@@ -3203,6 +4100,7 @@ private:
                            "private"),
                      "declared here", chosen->symbol->span);
             }
+            if (chosen->decl->is_move) check_consumed_receiver(*me.object, name, me.name.span);
             if (chosen->decl->is_mut) {
                 Place p = place_of(*me.object);
                 if (p.is_place && !p.is_mutable && !p.is_temporary) {
@@ -3228,7 +4126,9 @@ private:
             return chosen->result;
         }
 
-        infer(callee);
+        // Calling a value: `make()(x)`, `handlers[i](x)` on a lambda or std::function (spec 18).
+        const Type* ct = types::strip_ref(infer(callee));
+        if (ct->is(Kind::closure) || ct->is(Kind::function) || ct->is(Kind::fn_ptr)) return infer_closure_call(c, ct, args);
         for (Expr* a : args) {
             if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
         }
@@ -3422,8 +4322,12 @@ private:
             } else if (cap.symbol) {
                 // Same type as the captured local; reference captures are references.
                 const Type* outer = tc_.error();
-                for (const auto& [sym, ty] : local_types_) {
-                    if (sym->name == cap.name && sym != cap.symbol && sym->span.begin < cap.span.begin) outer = ty;
+                if (auto it = cap.captured ? local_types_.find(cap.captured) : local_types_.end(); it != local_types_.end()) {
+                    outer = it->second;   // the local the resolver found
+                } else {
+                    for (const auto& [sym, ty] : local_types_) {
+                        if (sym->name == cap.name && sym != cap.symbol && sym->span.begin < cap.span.begin) outer = ty;
+                    }
                 }
                 bool ref = cap.kind == CaptureKind::ref || cap.kind == CaptureKind::mut_ref;
                 set_local(cap.symbol, ref ? tc_.reference(types::strip_ref(outer), cap.kind == CaptureKind::mut_ref)
@@ -3530,7 +4434,23 @@ private:
         if (i.is_compile_time) {
             if (std::optional<const Type*> t = infer_if_compile_time(i)) return *t;
         }
-        check_condition(*i.condition, "if");
+        if (i.from_call_else) {
+            // `f(...) else { ... }`: the call must return bool (the condition is `!f(...)`).
+            Expr& call = *i.condition->as<UnaryExpr>().operand;
+            const Type* t = infer(call);
+            const Type* plain = t ? types::strip_ref(t) : nullptr;
+            if (plain && !plain->is_unknown() && !plain->is(Kind::error) && !plain->is(Kind::bool_)) {
+                Diagnostic& d = error(DiagCode::E4252, call.span,
+                                      std::format("'else' needs a call that returns 'bool', but this one returns {}",
+                                                  quoted(t)));
+                note(d, "'f(...) else { ... }' runs the block when the call returns false");
+                infer_block(*i.then_block);
+                return set(i, tc_.void_());
+            }
+            set(*i.condition, tc_.bool_());
+        } else {
+            check_condition(*i.condition, "if");
+        }
         infer_block(*i.then_block);
         if (!i.else_branch) return set(i, tc_.void_());
         infer(*i.else_branch);
@@ -3647,6 +4567,38 @@ private:
         return set(f, tc_.void_());
     }
 
+    static bool is_bit_builtin(const std::string& n) {
+        return n == "trailing_zeros" || n == "leading_zeros" || n == "count_ones" || n == "rotate_left" || n == "rotate_right";
+    }
+
+    /// `std::trailing_zeros(x)`, `leading_zeros`, `count_ones` (a u32: the width for 0) and
+    /// `std::rotate_left(x, n)` / `rotate_right` (spec 16): single instructions on most CPUs.
+    const Type* infer_bits(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
+        bool rotate = name.starts_with("rotate");
+        if (args.size() != (rotate ? 2u : 1u)) {
+            error(DiagCode::E4030, c.span, std::format("'std::{}' takes {}", name, rotate ? "an integer and a count" : "one integer"),
+                  "wrong number of arguments");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        const Type* t = types::strip_ref(args[0]->type);
+        if (t->is_untyped()) {
+            no_context(*args[0], std::format("(the argument of 'std::{}' is an untyped literal)", name));
+            return set(c, tc_.error());
+        }
+        if (!t->is_integer() && !t->is_unknown()) {
+            error(DiagCode::E4013, c.span, std::format("'std::{}' needs an integer, not {}", name, quoted(t)), "not an integer");
+            return set(c, tc_.error());
+        }
+        if (rotate) {
+            coerce(*args[1], tc_.builtin("u32"));
+            return set(c, t);
+        }
+        return set(c, tc_.builtin("u32"));
+    }
+
     static bool is_arith_builtin(const std::string& n) {
         return n == "checked_add" || n == "checked_sub" || n == "checked_mul" || n == "saturating_add" ||
                n == "saturating_sub" || n == "saturating_mul";
@@ -3686,7 +4638,7 @@ private:
     const Type* infer_str_method(CallExpr& c, MemberExpr& me, const std::string& name, const std::vector<Expr*>& args) {
         const Module* m = program_.std_module;
         if (!m) return nullptr;
-        auto it = m->items.find("str_" + name);
+        auto it = m->items.find("std::str_" + name);
         if (it == m->items.end()) return nullptr;
         std::vector<Expr*> all{me.object.get()};
         all.insert(all.end(), args.begin(), args.end());
@@ -3766,10 +4718,219 @@ private:
         return out;
     }
 
+    // --- threads (spec 27): std::sendable and std::shareable ---------------------------------
+
+    /// `unsafe std::sendable(cond)` in a base list: the condition is evaluated per instance.
+    void check_promises(TypeDecl& d, DeclKind kind) {
+        for (ThreadPromise& p : d.promises) {
+            std::string name = ast::to_string(p.path);
+            if (name != "std::sendable" && name != "std::shareable") {
+                note(error(DiagCode::E4232, p.span, std::format("'unsafe' can only promise std::sendable or std::shareable, not '{}'", name),
+                           "not a thread-safety interface"),
+                     "write 'unsafe std::sendable' or 'unsafe std::shareable' (spec 27)");
+                continue;
+            }
+            if (kind == DeclKind::interface) {
+                error(DiagCode::E4232, p.span, "an interface can't promise thread safety; the types implementing it do", "in an interface");
+                continue;
+            }
+            if (!p.condition) {
+                p.value = true;
+                continue;
+            }
+            infer(*p.condition);
+            coerce(*p.condition, tc_.bool_());
+            if (auto v = evaluate(*p.condition, "the condition of a thread-safety promise is evaluated at compile time");
+                v && v->kind == ct::Value::Kind::boolean) {
+                p.value = v->boolean;
+            }
+        }
+    }
+
+    /// Whether a value of type `t` may be moved to another thread (`shareable` false) or used
+    /// through `T&` from several threads at once (`shareable` true), derived from its parts like
+    /// copy-ness (spec 27). `why` says which part isn't, `where` points at it.
+    bool thread_safe(const Type* t, bool shareable, std::string* why = nullptr, std::optional<Span>* where = nullptr, int depth = 0) {
+        if (!t || depth > 40) return true;
+        auto fail = [&](std::string w, std::optional<Span> at = std::nullopt) {
+            if (why && why->empty()) *why = std::move(w);
+            if (where && !*where && at) *where = at;
+            return false;
+        };
+        switch (t->kind) {
+        case Kind::int_: case Kind::float_: case Kind::bool_: case Kind::char_: case Kind::void_: case Kind::never:
+        case Kind::nullptr_: case Kind::static_str: case Kind::fn_ptr: case Kind::range: case Kind::type_value:
+        case Kind::value_arg: case Kind::meta:
+            return true;
+        case Kind::pointer:
+            return fail(std::format("{} is a raw pointer: the compiler can't know who owns the memory or which thread may use it", quoted(t)));
+        case Kind::reference: {
+            bool ok = (t->is_mut && !shareable) ? thread_safe(t->inner, false, why, where, depth + 1)
+                                                : thread_safe(t->inner, true, why, where, depth + 1);
+            return ok;
+        }
+        case Kind::array: return thread_safe(t->inner, shareable, why, where, depth + 1);
+        case Kind::function:
+            return fail(std::format("{} can hold any lambda, so what it captures is unknown; pass the lambda itself (a template "
+                                    "parameter) instead", quoted(t)));
+        case Kind::closure: {
+            const LambdaExpr* l = tc_.lambda_of(t);
+            if (!l) return true;
+            for (const Capture& c : l->captures) {
+                const Type* ct = c.symbol ? type_of_symbol(c.symbol) : nullptr;
+                if (!ct) continue;
+                if ((c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref) && c.captured && thread_local_refs_.contains(c.captured)) {
+                    return fail(std::format("the lambda captures '{}', a reference to a thread_local: another thread would reach this "
+                                            "thread's copy", c.name), c.span);
+                }
+                if (shareable && c.kind == CaptureKind::mut_ref) {
+                    return fail(std::format("the lambda captures '{}' as 'mut &': calls from several threads at once would change "
+                                            "it at the same time", c.name), c.span);
+                }
+                std::string inner;
+                const Type* base = types::strip_ref(ct);
+                bool        ok   = c.kind == CaptureKind::ref     ? thread_safe(base, true, &inner, nullptr, depth + 1)
+                                 : c.kind == CaptureKind::mut_ref ? thread_safe(base, false, &inner, nullptr, depth + 1)
+                                                                  : thread_safe(ct, shareable, &inner, nullptr, depth + 1);
+                if (!ok) {
+                    return fail(std::format("the lambda's capture '{}' has type {}{}", c.name, quoted(base), inner.empty() ? "" : ": " + inner), c.span);
+                }
+            }
+            return true;
+        }
+        case Kind::external: {
+            std::string_view base = t->external_base();
+            if (base == "std::function") return fail(std::format("{} can hold any lambda", quoted(t)));
+            return true;   // std::str, std::format_args: views of immutable text
+        }
+        case Kind::user: break;
+        default: return true;   // unknown, type parameters: checked per instance
+        }
+        const Symbol* s = t->symbol;
+        if (!s || !s->decl) return true;
+        if (s->name == "thread_bound" && s->module && s->module->name == "std") {
+            return fail("'std::thread_bound' keeps a type on the thread that made it");
+        }
+        auto key = std::make_pair(t, shareable);
+        if (auto m = thread_memo_.find(key); m != thread_memo_.end() && m->second) return true;   // or in progress (a cycle)
+        if (s->decl->kind != DeclKind::enum_) {
+            for (const ThreadPromise& p : s->decl->as<TypeDecl>().promises) {
+                if (p.shareable != shareable) continue;
+                if (!p.value) return true;   // not known yet (a generic check)
+                if (*p.value) return true;
+                return fail(std::format("{} promises {} only under a condition that is false here", quoted(t),
+                                        shareable ? "std::shareable" : "std::sendable"), p.span);
+            }
+        }
+        thread_memo_[key] = true;
+        bool ok = true;
+        if (s->decl->kind == DeclKind::enum_) {
+            for (const Symbol* a : s->member_order) {
+                if (!a->alternative || !a->alternative->payload) continue;
+                std::string inner;
+                const Type* pt = lower_owned(a, *a->alternative->payload);
+                if (!thread_safe(pt, shareable, &inner, nullptr, depth + 1)) {
+                    ok = fail(std::format("{}'s alternative '{}' carries {}{}", quoted(t), a->name, quoted(pt), inner.empty() ? "" : ": " + inner),
+                              a->span);
+                    break;
+                }
+            }
+        } else {
+            for (const Symbol* f : s->member_order) {
+                if (f->kind != SymbolKind::field || f->is_static) continue;
+                std::string inner;
+                const Type* ft = lower_owned(f, *f->decl->as<VariableDecl>().type);
+                if (!thread_safe(ft, shareable, &inner, nullptr, depth + 1)) {
+                    ok = fail(std::format("{} isn't {} because its field '{}' is a {}{}", quoted(t),
+                                          shareable ? "std::shareable" : "std::sendable", f->name, quoted(ft),
+                                          inner.empty() || ft->is(Kind::pointer) ? "" : " (" + inner + ")"),
+                              f->span);
+                    break;
+                }
+            }
+            if (ok) {
+                if (const Symbol* b = s->base_class()) ok = thread_safe(tc_.user(b), shareable, why, where, depth + 1);
+            }
+        }
+        thread_memo_[key] = ok;
+        return ok;
+    }
+
+    std::map<std::pair<const Type*, bool>, bool> thread_memo_;
+    std::set<const Symbol*>                      thread_local_refs_;   // local references into a thread_local
+
+    /// Whether `e` names a thread_local (or a part of one, or a reference to one).
+    bool reaches_thread_local(const Expr& e) const {
+        switch (e.kind) {
+        case ExprKind::path: {
+            const Symbol* s = e.as<PathExpr>().symbol;
+            if (!s) return false;
+            if (thread_local_refs_.contains(s)) return true;
+            return s->kind == SymbolKind::global && s->decl && s->decl->kind == DeclKind::variable &&
+                   s->decl->as<VariableDecl>().storage == Storage::thread_local_;
+        }
+        case ExprKind::member: return !e.as<MemberExpr>().arrow && reaches_thread_local(*e.as<MemberExpr>().object);
+        case ExprKind::index: return reaches_thread_local(*e.as<IndexExpr>().object);
+        case ExprKind::unary: {
+            UnaryOp op = e.as<UnaryExpr>().op;
+            return (op == UnaryOp::mut_marker || op == UnaryOp::move) && reaches_thread_local(*e.as<UnaryExpr>().operand);
+        }
+        default: return false;
+        }
+    }
+
+    /// Whether values of `t` borrow (spec 12): references, views, lambdas with reference
+    /// captures, containers of views. The same rule as the ownership checker's.
+    bool view_type(const Type* t, int depth = 0) {
+        if (!t || depth > 40) return false;
+        switch (t->kind) {
+        case Kind::reference: return true;
+        case Kind::array: return view_type(t->inner, depth + 1);
+        case Kind::closure: {
+            const LambdaExpr* l = tc_.lambda_of(t);
+            if (!l) return false;
+            for (const Capture& c : l->captures) {
+                if (c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref) return true;
+                if (c.symbol && view_type(type_of_symbol(c.symbol), depth + 1)) return true;
+            }
+            return false;
+        }
+        case Kind::external: {
+            std::string_view base = t->external_base();
+            return base == "std::str" || base == "std::span" || base == "std::format_args";
+        }
+        case Kind::user: {
+            const Symbol* s = t->symbol;
+            if (s->decl && (s->kind == SymbolKind::struct_ || s->kind == SymbolKind::class_)) {
+                if (s->decl->as<TypeDecl>().is_view) return true;
+                return std::any_of(s->template_args.begin(), s->template_args.end(), [&](const Type* a) { return view_type(a, depth + 1); });
+            }
+            if (s->kind == SymbolKind::enum_) {
+                for (const Symbol* a : s->member_order) {
+                    if (a->alternative && a->alternative->payload && view_type(lower_owned(a, *a->alternative->payload), depth + 1)) return true;
+                }
+            }
+            return false;
+        }
+        default: return false;
+        }
+    }
+
     /// Whether `t` satisfies the constraint `c`; `why` says what is missing.
     bool satisfies(const Type* t, const Type* c, std::string& why) {
+        if (c->is(Kind::external) && (c->name == "std::sendable" || c->name == "std::shareable")) {
+            if (t->is_unknown()) return true;
+            return thread_safe(t, c->name == "std::shareable", &why);
+        }
         t = types::strip_ref(t);
         if (t->is_unknown() || c->is_unknown()) return true;
+        if (c->is(Kind::user) && c->symbol->kind == SymbolKind::interface && c->symbol->ns == "std" &&
+            (c->symbol->name == "formattable" || c->symbol->name == "hashable")) {
+            // std's formattable and hashable are structural for built-in types (spec 14, 19, 20)
+            bool ok = c->symbol->name == "formattable" ? formattable(t) : hashable(t);
+            if (!ok) why = std::format("{} does not implement {}", quoted(t), quoted(c));
+            return ok;
+        }
         if (c->is(Kind::user) && c->symbol->kind == SymbolKind::interface) {
             if (t->is(Kind::user) && (t->symbol == c->symbol || is_ancestor(t->symbol, c->symbol))) return true;
             why = std::format("{} does not implement {}", quoted(t), quoted(c));
@@ -3789,14 +4950,65 @@ private:
             return false;
         }
         if (name == "std::formattable") {
-            if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || is_std_string(t) ||
-                (t->is(Kind::external) && t->name == "std::str") || (t->is_user(SymbolKind::enum_) && !enum_has_payload(t->symbol))) {
-                return true;
-            }
+            if (formattable(t)) return true;
             why = std::format("{} cannot be formatted", quoted(t));
             return false;
         }
         return true;
+    }
+
+    /// What an f-string can print (spec 19): numbers, bools, chars, strings, simple enums, types
+    /// with a `format(mut std::string&)` method (std::formattable), and enums with
+    /// `@std::derive::formattable` whose payloads are formattable.
+    bool formattable(const Type* t) {
+        t = types::strip_ref(t);
+        if (t->is_unknown() || t->is(Kind::type_param)) return true;
+        if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || is_std_string(t) ||
+            (t->is(Kind::external) && t->name == "std::str")) {
+            return true;
+        }
+        if (!t->is(Kind::user)) return false;
+        if (t->symbol->kind == SymbolKind::enum_) {
+            if (!enum_has_payload(t->symbol)) return true;
+            if (!t->symbol->decl || !sema::find_annotation(t->symbol->decl->annotations, "std::derive::formattable")) return false;
+            for (const Symbol* a : t->symbol->member_order) {
+                if (a->alternative && a->alternative->payload && !formattable(lower_owned(a, *a->alternative->payload))) return false;
+            }
+            return true;
+        }
+        return format_method(t->symbol) != nullptr;
+    }
+
+    /// The `void format(mut std::string& out)` method of a type (or a base class), or null.
+    static const Symbol* format_method(const Symbol* type) {
+        for (const Symbol* t = type; t; t = t->base_class()) {
+            auto it = t->members.find("format");
+            if (it == t->members.end()) continue;
+            for (const Symbol* m : it->second) {
+                const FunctionDecl* f = m->function();
+                if (m->kind == SymbolKind::method && f && !m->is_static && f->params.size() == 1) return m;
+            }
+        }
+        return nullptr;
+    }
+
+    /// A std::hash_map key (spec 20): integers, chars, bools, strings, or a type with `u64 hash()`.
+    bool hashable(const Type* t) {
+        t = types::strip_ref(t);
+        if (t->is_unknown() || t->is(Kind::type_param)) return true;
+        if (t->is_integer() || t->is(Kind::char_) || t->is(Kind::bool_) || is_std_string(t) || t->is(Kind::static_str) ||
+            (t->is(Kind::external) && t->name == "std::str")) {
+            return true;
+        }
+        if (!t->is(Kind::user)) return false;
+        for (const Symbol* s = t->symbol; s; s = s->base_class()) {
+            if (auto it = s->members.find("hash"); it != s->members.end()) {
+                for (const Symbol* m : it->second) {
+                    if (m->function() && m->function()->params.empty() && !m->is_static) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Checks the arguments of a template against the constraints of its parameters (E4161).
@@ -3805,6 +5017,25 @@ private:
         bool ok = true;
         for (std::size_t i = 0; i < params.size() && i < args.size(); ++i) {
             for (const Type* c : constraints_of(params[i])) {
+                if (c->is(Kind::external) && (c->name == "std::sendable" || c->name == "std::shareable")) {
+                    bool                shareable = c->name == "std::shareable";
+                    std::string         why;
+                    std::optional<Span> where;
+                    if (args[i]->is_unknown() || thread_safe(args[i], shareable, &why, &where)) continue;
+                    bool lambda = args[i]->is(Kind::closure);
+                    std::string what = lambda ? (shareable ? std::format("'{}' runs the lambda on several threads at once, but it can't be shared between them", display)
+                                                           : std::format("'{}' moves the lambda to another thread, but it can't go there", display))
+                                              : std::format("'{}' needs {} to be {}, but {} isn't", display, params[i]->name, quoted(c), quoted(args[i]));
+                    Diagnostic& d = error(shareable ? DiagCode::E4231 : DiagCode::E4230, span, what,
+                                          shareable ? "not std::shareable" : "not std::sendable");
+                    note(d, why, where);
+                    if (lambda && shareable) {
+                        note(d, "count with a std::atomic, compute per-chunk results with reduce_chunks, or pass mutable data in "
+                                "through the chunk (spec 28)");
+                    }
+                    ok = false;
+                    continue;
+                }
                 std::string why;
                 if (satisfies(args[i], c, why)) continue;
                 Diagnostic& d = error(DiagCode::E4161, span, why, std::format("'{}' needs {} for '{}'", display, quoted(c), params[i]->name));
@@ -3871,10 +5102,12 @@ private:
                 mismatch(f.type->span, var, el, " (the container's elements)");
             }
             if (want_mut) {
-                if (!af->is_mut) {
+                // `std::span<mut T>`: its `operator[]` gives `mut T&` without being `mut` itself (spec 20).
+                bool gives_mut = af->result && af->result->kind == TypeKind::reference && af->result->as<ReferenceType>().is_mut;
+                if (!af->is_mut && !gives_mut) {
                     error(DiagCode::E4022, f.type->span, std::format("{} has no 'mut operator[]' to change its elements", quoted(t)),
                           "cannot change elements");
-                } else {
+                } else if (af->is_mut) {
                     require_mutable(place_of(*f.iterable), *f.iterable, "iterate mutably over");
                 }
             }
@@ -4074,7 +5307,6 @@ private:
         case PatternKind::struct_: {
             auto& sp = p.as<StructPattern>();
             const Symbol* type = nullptr;
-            auto it = module_->items.find(sp.path.segments.back().name);
             if (s->is(Kind::user)) type = s->symbol;
             for (FieldPattern& f : sp.fields) {
                 const Type* ft = tc_.error();
@@ -4085,7 +5317,6 @@ private:
                 }
                 check_pattern(*f.pattern, ft, mut_ref);
             }
-            (void)it;
             return;
         }
         }
@@ -4238,6 +5469,7 @@ private:
     std::set<const Symbol*>                             unknown_values_;
 public:
     std::optional<Span>                                 instance_site_;   // where the instance being checked was written
+    const Symbol*                                       global_symbol_ = nullptr;   // the global check_global_symbol checks
     bool constraints_hold(const std::vector<const Symbol*>& params, const std::vector<const Type*>& args, Span span,
                           std::string_view display) {
         return check_constraints(params, args, span, display);
@@ -4249,6 +5481,7 @@ private:   // compile-time values that depend on a template parameter
     void end_check(const Decl* d);
     bool ensure_function(const Symbol* s);
     std::shared_ptr<const ct::Value> ensure_constant(const Symbol* g);
+    void ensure_field(const Symbol* f);
 
     /// The instance of the function template `templ` for `args` (spec 14), defined after Instantiator.
     Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args);
@@ -4377,10 +5610,9 @@ private:
         auto  sig  = [](const FunctionDecl& f) {
             std::string s = f.name + "(";
             for (const Param& p : f.params) s += ast::to_string(*p.type) + ",";
-            return s + (f.is_mut ? ") mut" : ")");
+            return s + (f.is_mut ? ") mut" : f.is_move ? ") move" : ")");
         };
         for (DeclPtr& mem : source->as<TypeDecl>().members) {
-            if (mem->kind == DeclKind::check) continue;
             if (mem->kind == DeclKind::function) {
                 auto& fn    = mem->as<FunctionDecl>();
                 auto  match = std::find_if(into.begin(), into.end(), [&](const DeclPtr& d) {
@@ -4397,6 +5629,7 @@ private:
 
 public:
     LineCol line_col(Span span) const { return sources_.file(span.file).line_col(span.begin); }
+    std::string source_path(Span span) const { return span.file < sources_.count() ? sources_.file(span.file).path() : std::string(); }
 
     /// Which declarations are being checked or are done (functions and compile_time constants
     /// can be checked early, on demand, when compile-time code needs them).
@@ -4413,6 +5646,8 @@ private:
 };
 
 LineCol Checker::sources_line(Span span) const { return instantiator_ ? instantiator_->line_col(span) : LineCol{}; }
+
+std::string Checker::source_path(Span span) const { return instantiator_ ? instantiator_->source_path(span) : std::string(); }
 
 bool Checker::begin_check(const Decl* d) {
     if (!instantiator_) return true;
@@ -4440,6 +5675,14 @@ std::shared_ptr<const ct::Value> Checker::ensure_constant(const Symbol* g) {
     if (instantiator_->states.count(g->decl)) return g->ct_value;   // in progress (a cycle) or done without a value
     Checker(program_, diags_, instantiator_).check_global_symbol(g);
     return g->ct_value;
+}
+
+void Checker::ensure_field(const Symbol* f) {
+    if (!instantiator_ || !f->decl || instantiator_->states.count(f->decl)) return;
+    Checker c(program_, diags_, instantiator_);
+    c.module_ = f->module;
+    if (const auto* sub = substitution_of(f)) c.subst_ = *sub;
+    c.check_decl(const_cast<Decl&>(*f->decl), f->parent);
 }
 
 // Null only when the template's source did not parse (already reported) or no instantiator is set.
@@ -4475,6 +5718,10 @@ void check_types(sema::Program& program, const SourceManager& sources, Diagnosti
         return s->ct_value->type_value;
     });
     Checker(program, diags, &instantiator).run();
+    // Annotation checks, once per use (spec 29); instances made meanwhile add their own.
+    for (std::size_t i = 0; i < program.annotation_checks.size(); ++i) {
+        Checker(program, diags, &instantiator).run_annotation_check(program.annotation_checks[i]);
+    }
     if (program.build_graph && !diags.has_errors()) Checker(program, diags, &instantiator).run_build();
     // Instances are only made while checking. Later phases see the ones that exist.
     program.types->set_instantiator(nullptr);

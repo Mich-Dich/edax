@@ -43,6 +43,9 @@ std::string s = std::format(f"{count} items");      // allocates: visible throug
 - `{{` and `}}` produce a literal `{` and `}`.
 - The **spec and the types are checked at compile time**.
 - An `f"..."` produces a `std::format_args`, a view type that **doesn't allocate**. `std::println`, `std::eprintln`, `std::format` and `std::panic` take it. Only `std::format` allocates, and it returns `std::string`.
+- `std::format_args` is **move-only**: formatting consumes it; a function passes its parameter on with `move message`.
+- **Lazy holes (spec 31):** an `f"..."` passed to a function's `std::format_args` parameter is evaluated only when (and if) the function formats it, at most once, before it returns. Its holes may not `move`, pass `mut`, or call `mut` or consuming methods (E4251). `std::println`, `std::format` and `std::panic` format at once and have no such restriction.
+- A plain string literal passed as a `std::format_args` is an f-string without holes.
 
 ### File paths
 ```rift

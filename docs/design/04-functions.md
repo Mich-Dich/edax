@@ -12,6 +12,8 @@ void log(std::str message) { std::println(message); }
 ```
 - The return type is always written. `deduce` is only allowed in templates (see 15).
 - No default arguments and no named arguments. Write an overload or pass a struct instead.
+- **`implicit` parameters** come last; a call may leave them out, and the compiler supplies `T::from_call(<the call's site>)` (see 31, 10.1). The value depends only on where the call is, so it can't hide a run-time value.
+- **`compile_time` parameters** take a compile-time argument and are constants in the body; the function is instantiated per distinct value (see 31, 10.3).
 - **Overloading** by parameter types is allowed. A call that matches more than one overload is an error (for example `f(5)` with both `f(u32)` and `f(u64)`; write `f(5u32)`). Overloading on return type alone is not allowed.
 - There are no nested functions; use lambdas (see 18).
 

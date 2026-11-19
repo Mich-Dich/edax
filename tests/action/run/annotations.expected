@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+grid_cell { x: 3, y: -1 }
+visits: 1 2
+true false
+dot circle(2.5) cell(grid_cell { x: 3, y: -1 }) [ circle(1.0)]
+pair<u32> { first: 1, second: 2 } pair<std::str> { first: a, second: b }
+{"id": 7, "temperature": 21}
+true false
+out of range: rpm
+--- stderr

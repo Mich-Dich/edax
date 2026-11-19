@@ -1,1 +1,3 @@
-u32 other_fn();
+namespace other {
+    u32 other_fn();
+}

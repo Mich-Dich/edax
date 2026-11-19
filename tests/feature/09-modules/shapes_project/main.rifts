@@ -2,6 +2,6 @@ import shapes::circle;
 import shapes::geometry;
 
 void main() {
-    shapes::circle::circle c = shapes::circle::circle{ .center = shapes::geometry::point{} };
+    shapes::circle c = shapes::circle{ .center = shapes::point{} };
     f64 a = c.area();
 }

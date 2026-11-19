@@ -75,6 +75,9 @@ std::string describe(T value) {
 3. An importer that uses `larger<u32>` **instantiates and type-checks at its own compile time**. Layout, `sizeof`, `compile_time` evaluation and `deduce` return types are all available there.
 4. Identical instantiations from different files are **merged at link time**. Each unique instantiation ends up in the binary only once.
 
+### Name lookup in template bodies
+Names in a template body are looked up **where the template is written** (see 30), never where it's instantiated. Behaviour that depends on `T` comes from `T`'s members and from the constraints' interfaces, so code at the instantiation site can't change which function a template calls.
+
 ## Rationale
 - **Declared parameters:** in v0.2, `T` appeared from nowhere in examples. `template<type T>` is familiar from C++, and `type` is shorter than `typename`.
 - **Instantiation at compile time:** v0.2 deferred instantiation to link time (ThinLTO). But a file using `std::darray<employee>` needs its size immediately to put it on the stack, and `deduce` needs the return type to type-check the caller. Only the *duplicate machine code* can wait until link time. The header/source split is still kept, because the body travels in the compiled interface.

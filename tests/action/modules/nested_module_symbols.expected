@@ -4,8 +4,8 @@ module shapes::circle
   header: tests/feature/09-modules/shapes_project/shapes/circle.rifth
   source: tests/feature/09-modules/shapes_project/shapes/circle.rifts
   imports: shapes::geometry
-  struct circle
-    field center : shapes::geometry::point
+  struct shapes::circle
+    field center : point
     field radius : f64 = ...
     method area() -> f64  [header, defined in source]
     layout: center radius

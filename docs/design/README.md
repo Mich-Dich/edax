@@ -1,6 +1,6 @@
-# Rift - Language Design (v0.7)
+# Rift - Language Design (v0.12)
 
-> **Status:** Draft v0.7. This folder replaces `docs/design_doc.md` (v0.2).
+> **Status:** Draft v0.12. This folder replaces `docs/design_doc.md` (v0.2).
 > **Lineage:** C++-inspired. Explicit, simple to use, high control.
 > **Files:** `.rifts` = source, `.rifth` = header.
 
@@ -36,6 +36,11 @@ Each file below describes **one concept** and can be read on its own. Every file
 | 24 | [24-build-modes.md](24-build-modes.md) | `debug`, `release`, `release_with_debug_info` and user-defined modes |
 | 25 | [25-build-system.md](25-build-system.md) | `build.rifts`: Rift as the build system, including C/C++ |
 | 26 | [26-metaprogramming.md](26-metaprogramming.md) | Types as values, reflection with `std::meta`, `for compile_time` |
+| 27 | [27-threads.md](27-threads.md) | Threads, `std::sendable`/`std::shareable`, atomics, mutex, condition, channels |
+| 28 | [28-thread-pool.md](28-thread-pool.md) | `std::thread_pool`: tasks, parallel loops, deterministic reductions |
+| 29 | [29-annotations.md](29-annotations.md) | `@annotations`: data, checks and generated members on declarations |
+| 30 | [30-namespaces.md](30-namespaces.md) | `namespace`, name lookup without hijacking, aliases |
+| 31 | [31-logging.md](31-logging.md) | `std::log`, `implicit` and `compile_time` parameters, `std::call_site`, lazy f-strings, file annotations |
 
 A complete program written to these rules is in [`examples/employees.rifts`](../../examples/employees.rifts).
 
@@ -50,6 +55,67 @@ A complete program written to these rules is in [`examples/employees.rifts`](../
 7. **Nothing costs more than it looks.** Allocation, copies of owning types, moves and dynamic dispatch are always visible in the code.
 8. **Control when you ask for it.** Every safe default has a named escape hatch: `+%` wrapping arithmetic, `cast::truncate`, `std::raw_ptr`, `unsafe`.
 9. **Fast, legible compilation.** Each error fits on one screen.
+
+## Changes from v0.11
+
+| Change | Reason |
+|---|---|
+| New: `f(...) else { ... }` after a call that returns `bool` (see 10) | Checks that report a failure read as one statement; the recovery is a block, not a macro argument |
+| New: `std::log::validate` and `std::log::assert` (see 31) | Logged checks the program survives, distinct from the language's `run_time check` |
+| `std::log::fatal` returns instead of panicking (see 31) | A program may reset or retry after a fatal error |
+| New: per-level colors (`std::log::palette`, per sink) and ready-made patterns `std::log::patterns::*` (see 31) | Configurable output without writing patterns by hand |
+
+## Changes from v0.10
+
+| Change | Reason |
+|---|---|
+| New: `std::log` (see 31): compile-time levels per function, type, file and target, sinks owned by one log thread, settings in message order, a panic hook | A logger without macros, in the standard library |
+| New: `implicit` parameters and `std::implicit<T>`; `std::call_site` (see 31, 04) | A call can carry where it is written, through any type, without default arguments |
+| New: `compile_time` parameters (see 31, 15) | A body can decide at compile time from an argument; closes open question 18 |
+| f-strings passed to a function are evaluated only if formatted; `std::format_args` is move-only (see 19) | Removed or filtered log calls cost nothing |
+| File annotations `@a{ ... };` and target `std::meta::target::file` (see 29) | A level (or any setting) stated at the top of a file |
+| Per-file build settings: `g.set_for_files`, `std::build::setting_at` (see 25) | Configure groups of files from build.rifts |
+| `std::meta::function_annotation` / `type_annotation` / `file_annotation`, `std::literal_text`, compile-time `slice`/`find` (see 26, 23, 15) | General tools `std::log` is built from |
+
+## Changes from v0.9
+
+| Change | Reason |
+|---|---|
+| New: annotations `@name{ ... }`, declared as `annotation(targets) struct` (see 29) | Attach data to declarations, check them, generate methods |
+| An annotation's `generate` block adds methods and interfaces to the annotated type | Derive-style code (`@std::derive::formattable`, `hashable`, `ordered`) without macros; answers open questions 13, 27 (partly), 28 |
+| Standard annotations: `@std::deprecated`, `@std::allow`, `@std::must_use`, `@std::inline_always/never`, `@std::cold`, `@std::test` | One syntax for what would otherwise need several special forms |
+| Reflection of methods (`std::meta::methods`, `m.call(...)`), interfaces, template arguments, annotations; `std::meta::name_of` / `from_name` (see 26) | Metaprogramming that covers command tables, serializers and validators |
+| New: C++-style namespaces `namespace a::b { ... }`, separate from modules (see 30, 09) | Names are organized by namespace; files can move without renaming |
+| No argument-dependent lookup, no `using`; an unqualified name found at two levels is an ambiguity error | Adding a declaration can cause an error, never silently change what code calls |
+| Operators only with their types; interfaces only in the type's declaration; template bodies resolve names where they're written | Behaviour belongs to the type; no injection from other modules |
+| Top-level namespaces belong to one project; nothing can be added to `std` | No library can change another library's behaviour |
+| File-local namespace aliases `namespace vk = gfx::vulkan;` | Short names without `using`; closes open questions 12 and 30 |
+
+## Changes from v0.8
+
+| Change | Reason |
+|---|---|
+| Channels: `std::channel<T>` is the channel; it makes the ends (`sender()`, `receiver()`) and closes the channel (`close()`) (see 27) | Creating "a receiver" to get a channel read wrong; closing is now something you do, and doesn't race with thread start-up |
+| `try_send` / `try_receive` that never wait | Polling loops and real-time code must not block |
+| New: `std::thread_pool` with `spawn`, `for_chunks`, `for_index_chunks`, `reduce_chunks` (see 28) | Short tasks shouldn't pay for an OS thread each |
+| Performance guarantees in the spec: lock-free atomics or a compile error, inline one-word mutex, no allocation per message on bounded channels, no allocation in parallel loops, no init check on `thread_local` (see 27, 28) | The design aims for the best possible performance; these are promises, not hopes |
+| `compare_exchange_weak`, `std::cache_aligned<T>`, `std::cache_line_size`, `std::thread::spin_hint()` | Control over the costs that matter in lock-free and parallel code |
+| `reduce_chunks` is deterministic: same result for any number of threads | Reproducible numerical results |
+
+## Changes from v0.7
+
+| Change | Reason |
+|---|---|
+| New: threads in the standard library, `std::thread::spawn` (see 27) | Concurrency was open question 2 |
+| Data races are compile errors: derived interfaces `std::sendable` / `std::shareable`; a borrowing thread is a view and keeps its captures borrowed until it's joined | Built from the existing reference and view rules, with no lifetime syntax |
+| One `spawn`; it returns `std::thread::handle<R>` (owns its captures) or `std::thread::scoped_handle<R>` (borrows) | The captures decide, and the handle's type shows it |
+| Synchronized types (`std::atomic`, `std::mutex`, `std::condition`, channels) are the only types that change through `T&` | Keeps "`T&` means not changed" true everywhere else |
+| Atomics name their memory order on every call; invalid orders are compile errors | No hidden `sequentially_consistent` |
+| `unsafe std::sendable(cond)` in a base list promises thread safety for `std::raw_ptr` wrappers; a `std::thread_bound` field opts out | The compiler can't see through raw pointers |
+| New keyword `thread_local`; `static` requires a `std::shareable` type; `static mut` is always unsafe (see 03) | Globals follow the same thread rules as everything else |
+| Consuming methods: trailing `move` (see 06) | `join()`, `detach()`, `unlock()` need them; closes open question 4 |
+| `void` as a template argument; a `void` payload is no payload (`std::ok()`) (see 02, 08) | `std::thread::handle<void>`, `std::result<void, T>` |
+| `std::shared_ptr` always has an atomic count (see 13) | Closes open question 3; one pointer type instead of two |
 
 ## Changes from v0.6
 

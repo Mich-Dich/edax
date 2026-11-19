@@ -1,0 +1,27 @@
+// spec 10: `f(...) else { ... }` runs the block when the call returns false.
+import std;
+
+bool ready(u32 x) { return x > 2; }
+u32 count(u32 x) { return x; }
+
+struct gate {
+    bool open = false;
+    bool is_open() { return this.open; }
+}
+
+bool step(u32 x) {
+    ready(x) else {
+        return false;
+    }
+    gate{}.is_open() else { return false; }
+    count(x) else { return false; }      //~ error[E4252]: 'else' needs a call that returns 'bool', but this one returns 'u32'
+    return true;
+}
+
+u32 main() {
+    for (u32 i : 0..4) {
+        ready(i) else { continue; }
+    }
+    _ = step(3);
+    return 0;
+}

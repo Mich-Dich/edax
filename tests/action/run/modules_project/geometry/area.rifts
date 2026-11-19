@@ -1,11 +1,13 @@
-u32 of(rect& r) {
-    return r.w * r.h;
-}
+namespace geometry::area {
+    u32 of(rect& r) {
+        return r.w * r.h;
+    }
 
-u32 doubled(rect& r) {
-    return twice(of(r));
-}
+    u32 doubled(rect& r) {
+        return twice(of(r));
+    }
 
-private u32 twice(u32 v) {
-    return v * 2;
+    private u32 twice(u32 v) {
+        return v * 2;
+    }
 }

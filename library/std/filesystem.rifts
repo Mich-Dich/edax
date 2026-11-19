@@ -1,44 +1,95 @@
 // The Rift standard library: module std::filesystem.
 
-class path {
-public:
-    static path from(std::str text) { return path{ .text = std::string::from(text) }; }
+namespace std::filesystem {
+    class path {
+    public:
+        static path from(std::str text) { return path{ .text = std::string::from(text) }; }
 
-    static path relative(std::str text) { return path{ .text = std::string::from(text) }; }
+        static path relative(std::str text) { return path{ .text = std::string::from(text) }; }
 
-    std::str as_str() { return this.text; }
+        std::str as_str() { return this.text; }
 
-    path clone() { return path{ .text = this.text.clone() }; }
+        path clone() { return path{ .text = this.text.clone() }; }
 
-private:
-    std::string text = default;
-}
+        path parent() {
+            std::str text = this.text;
+            mut usize end = text.len();
+            while (end > 0) {
+                end -= 1;
+                if (text.slice(end, end + 1) == "/") {
+                    if (end == 0) { return path::from("/"); }
+                    return path::from(text.slice(0, end));
+                }
+            }
+            return path::from("");
+        }
 
-path operator/(path& dir, std::str name) {
-    mut std::string text = std::string::from(dir.as_str());
-    if (!text.is_empty() && !text.as_str().ends_with("/")) { text.push('/'); }
-    text.push_str(name);
-    return path{ .text = move text };
-}
-
-private extern(std::build::language::c) isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
-
-path executable_dir() {
-    mut std::raw_ptr<mut u8> buffer = nullptr;
-    mut isize n = 0;
-    unsafe {
-        buffer = std::raw::allocate<u8>(4096);
-        n = readlink(c"/proc/self/exe", buffer, 4096);
+    private:
+        std::string text = default;
     }
-    run_time check (n > 0) else "cannot find the executable's directory";
-    mut std::str full = "";
-    unsafe { full = std::raw::str_from(buffer, cast::saturate<usize>(n)); }
-    mut usize end = full.len();
-    while (end > 1) {
-        end -= 1;
-        if (full.slice(end, end + 1) == "/") { break; }
+
+    path operator/(path& dir, std::str name) {
+        mut std::string text = std::string::from(dir.as_str());
+        if (!text.is_empty() && !text.as_str().ends_with("/")) { text.push('/'); }
+        text.push_str(name);
+        return path{ .text = move text };
     }
-    path dir = path::from(full.slice(0, end));
-    unsafe { std::raw::free(buffer); }
-    return dir;
+
+    private extern(std::build::language::c) {
+        i32 mkdir(std::raw_ptr<u8> name, u32 mode);
+        std::raw_ptr<mut i32> __errno_location();
+    }
+
+    std::result<void, std::io_error> create_directories(path& dir) {
+        std::str text = dir.as_str();
+        mut std::string name = default;
+        mut usize i = 0;
+        while (i < text.len()) {
+            // Create each prefix that ends before a '/' (and the whole path at the end).
+            mut usize end = i + 1;
+            while (end < text.len() && text.slice(end, end + 1) != "/") { end += 1; }
+            name.clear();
+            name.push_str(text.slice(0, end));
+            name.push('\0');
+            std::str c_name = name;
+            mut i32 result = 0;
+            mut i32 code = 0;
+            unsafe {
+                result = mkdir(c_name.as_ptr(), 493u32);   // 0755
+                code = *__errno_location();
+            }
+            if (result != 0 && code != 17) {   // EEXIST: a directory, or something in the way
+                return std::error(match (code) {
+                    2 => std::io_error::not_found,
+                    13 => std::io_error::permission_denied,
+                    20 => std::io_error::already_exists,   // ENOTDIR: a file is in the way
+                    _ => std::io_error::other,
+                });
+            }
+            i = end;
+        }
+        return std::ok();
+    }
+
+    private extern(std::build::language::c) isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
+
+    path executable_dir() {
+        mut std::raw_ptr<mut u8> buffer = nullptr;
+        mut isize n = 0;
+        unsafe {
+            buffer = std::raw::allocate<u8>(4096);
+            n = readlink(c"/proc/self/exe", buffer, 4096);
+        }
+        run_time check (n > 0) else "cannot find the executable's directory";
+        mut std::str full = "";
+        unsafe { full = std::raw::str_from(buffer, cast::saturate<usize>(n)); }
+        mut usize end = full.len();
+        while (end > 1) {
+            end -= 1;
+            if (full.slice(end, end + 1) == "/") { break; }
+        }
+        path dir = path::from(full.slice(0, end));
+        unsafe { std::raw::free(buffer); }
+        return dir;
+    }
 }

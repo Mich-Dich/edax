@@ -16,6 +16,9 @@
 #include <cstdlib>
 #include <functional>
 #include <set>
+#include <sstream>
+#include <thread>
+#include <atomic>
 #include <deque>
 #include <algorithm>
 #include <filesystem>
@@ -54,6 +57,8 @@ constexpr std::string_view usage_text =
     "  run <target>          build and run a program of ./build.rifts\n"
     "  test [tests]          build and run the tests of ./build.rifts\n"
     "  emit-llvm <file>      print the LLVM IR the program compiles to\n"
+    "  insights <file>       list what the compiler does implicitly (stack, heap, drops, moves, ...) as JSON\n"
+    "  expand <file> <type>  print a type with the members its annotations generate written out\n"
     "  explain [code|id]     describe a diagnostic code or a warning id, or list all codes\n"
     "\n"
     "options:\n"
@@ -72,6 +77,8 @@ constexpr std::string_view usage_text =
     "  --out-dir=DIR                     where a build.rifts build goes (default: <root>/build)\n"
     "  --bin-dir=DIR                     where a build.rifts build puts its programs (default: <out-dir>/<mode>)\n"
     "  --cc=COMPILER                     linker for build/run (default: $RIFT_CC, else cc)\n"
+    "  --target=PLATFORM                 build for another platform: x86_64-linux-gnu, aarch64-linux-gnu,\n"
+    "                                    riscv64-linux-gnu (links with PLATFORM-gcc, else clang --target)\n"
     "  --all-functions                   generate every function, not only those main reaches (testing)\n"
     "  -h, --help                        show this help\n"
     "  -V, --version                     show the compiler version\n"
@@ -101,7 +108,51 @@ struct Options {
     bool             project = false;          // the command works on build.rifts
     std::string      out_dir;                  // --out-dir: where a project's build goes (default <root>/build)
     std::string      bin_dir;                  // --bin-dir: where a project's programs go (default <out>/<mode>)
+    std::string      target;                   // --target=<platform>: cross compiling (spec 25)
 };
+
+/// Whether `program` can be started through PATH.
+bool on_path(const std::string& program) {
+    const char* path = std::getenv("PATH");
+    if (!path) return false;
+    std::string_view rest = path;
+    while (!rest.empty()) {
+        std::size_t      colon = rest.find(':');
+        std::string_view dir   = rest.substr(0, colon);
+        std::error_code  ec;
+        if (!dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / program, ec)) return true;
+        if (colon == std::string_view::npos) break;
+        rest.remove_prefix(colon + 1);
+    }
+    return false;
+}
+
+/// The C (or C++) compiler and linker driver, as words: --cc, $RIFT_CC, else `cc` for the host;
+/// for another platform `<platform>-gcc` when installed, else `clang --target=<platform>`.
+std::vector<std::string> c_compiler(const Options& opts, bool cpp) {
+    std::string given = opts.cc;
+    if (given.empty()) {
+        const char* env = std::getenv("RIFT_CC");
+        if (env && *env) given = env;
+    }
+    if (!given.empty() && !cpp) {
+        std::vector<std::string> words;
+        std::istringstream       in(given);
+        for (std::string w; in >> w;) words.push_back(w);
+        return words;
+    }
+    if (opts.target.empty()) return {cpp ? "c++" : "cc"};
+    std::string gnu = opts.target + (cpp ? "-g++" : "-gcc");
+    if (on_path(gnu)) return {gnu};
+    return {cpp ? "clang++" : "clang", "--target=" + opts.target};
+}
+
+/// The linker command for build_executable (a shell command line).
+std::string linker_command(const Options& opts) {
+    std::string out;
+    for (const std::string& w : c_compiler(opts, false)) out += (out.empty() ? "" : " ") + w;
+    return out;
+}
 
 constexpr int process_not_found = -1;
 
@@ -212,6 +263,11 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
             }
             continue;
         }
+        if (builds && arg.starts_with("--target=")) {
+            opts.target = std::string(arg.substr(9));
+            if (opts.target.empty()) return usage_error(s, "'--target=' needs a platform, e.g. --target=aarch64-linux-gnu");
+            continue;
+        }
         if (builds && arg.starts_with("--cc=")) {
             opts.cc = std::string(arg.substr(5));
             continue;
@@ -246,6 +302,8 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
             return usage_error(s, std::format("unknown option '{}'", arg));
         } else if (opts.input.empty() && (arg.ends_with(".rifts") || arg.ends_with(".rifth") || !builds)) {
             opts.input = arg;
+        } else if (opts.command == "expand" && !opts.input.empty() && opts.targets.empty()) {
+            opts.targets.emplace_back(arg);   // the type
         } else if (builds && opts.input.empty() && opts.command != "emit-llvm") {
             opts.targets.emplace_back(arg);   // a target of build.rifts
         } else {
@@ -318,6 +376,56 @@ void dump_tokens(std::ostream& out, const SourceFile& file, const std::vector<To
     }
 }
 
+std::string json_string(std::string_view text) {
+    std::string out = "\"";
+    for (char c : text) {
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\t': out += "\\t"; break;
+        case '\r': out += "\\r"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) out += std::format("\\u{:04x}", static_cast<unsigned>(c));
+            else out += c;
+        }
+    }
+    return out + "\"";
+}
+
+/// `riftc insights <file>`: what the compiler does implicitly in the file's code, as JSON for
+/// editors (the VS Code extension's code insights). Every function of the file is generated,
+/// whether `main` reaches it or not.
+ExitCode run_insights(const Options& opts, sema::Program& program, SourceManager& sources, DiagnosticEngine& diags,
+                      DriverStreams& s) {
+    auto setting = [&](const char* name) {
+        auto it = program.mode_settings.find(name);
+        return it == program.mode_settings.end() ? std::string() : it->second;
+    };
+    std::vector<Insight> insights;
+    LlvmOptions          options;
+    options.all_functions = true;
+    options.panic_trap    = setting("panic") == "trap";
+    options.insights      = &insights;
+    generate_llvm_ir(program, sources, diags, options);
+    diags.sort_by_location();
+    render_all(s.err, diags, sources, opts.render);
+    if (diags.has_errors()) return ExitCode::compile_error;
+    s.out << "[\n";
+    for (std::size_t i = 0; i < insights.size(); ++i) {
+        const Insight&    in = insights[i];
+        const SourceFile& f  = sources.file(in.span.file);
+        LineCol           b  = f.line_col(in.span.begin);
+        LineCol           e  = f.line_col(in.span.end);
+        s.out << std::format("  {{\"file\": {}, \"line\": {}, \"column\": {}, \"endLine\": {}, \"endColumn\": {}, \"category\": {}, "
+                             "\"kind\": {}, \"placement\": {}, \"message\": {}, \"detail\": {}}}{}\n",
+                             json_string(f.path()), b.line, b.column, e.line, e.column, json_string(in.category), json_string(in.kind),
+                             json_string(in.placement), json_string(in.message), json_string(in.detail), i + 1 < insights.size() ? "," : "");
+    }
+    s.out << "]\n";
+    return ExitCode::success;
+}
+
 /// The backend: LLVM IR text (emit-llvm), then an executable: the IR is compiled to an object file
 /// for the host and linked with the system linker (--cc, RIFT_CC or cc).
 ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager& sources, DiagnosticEngine& diags,
@@ -327,7 +435,8 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
         return it == program.mode_settings.end() ? std::string() : it->second;
     };
     LlvmOptions llvm_options{opts.all_functions, setting("panic") == "trap",
-                             setting("debug_info") == "full" || setting("debug_info") == "line_tables"};
+                             setting("debug_info") == "full" || setting("debug_info") == "line_tables",
+                             setting("debug_info") == "full"};
     std::string ir = generate_llvm_ir(program, sources, diags, llvm_options);
     diags.sort_by_location();
     render_all(s.err, diags, sources, opts.render);
@@ -351,22 +460,27 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
         exe = temp_dir / input.stem();
     } else if (opts.output.empty()) {
         fs::path root = opts.root.empty() ? input.parent_path() : fs::path(opts.root);
-        exe           = root / "build" / opts.mode / input.stem();
+        exe           = root / "build" / opts.mode / opts.target / input.stem();
     } else {
         exe = opts.output;
     }
     if (!exe.parent_path().empty()) fs::create_directories(exe.parent_path(), ec);
 
-    std::string linker = opts.cc;
-    if (linker.empty()) {
-        const char* env = std::getenv("RIFT_CC");
-        linker          = env && *env ? env : "cc";
-    }
+    std::string linker = linker_command(opts);
     std::string error;
     CodegenOptions codegen;
     codegen.optimization = setting("optimization").empty() ? (opts.mode == "debug" ? "none" : "speed") : setting("optimization");
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
     if (!build_executable(ir, exe.string(), linker, error, codegen)) {
+        if (error.starts_with("the linker")) {
+            s.err << std::format("riftc: error: {}\n", error);
+            if (!opts.target.empty()) {
+                s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
+                                     opts.target, opts.target);
+            }
+            if (!temp_dir.empty()) fs::remove_all(temp_dir, ec);
+            return ExitCode::compile_error;
+        }
         s.err << std::format("riftc: internal compiler error: {}\n", error);
         if (!temp_dir.empty()) fs::remove_all(temp_dir, ec);
         return ExitCode::internal_error;
@@ -430,6 +544,7 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     }
     program.build_mode = opts.mode;
     program.warn_levels = opts.warn;
+    program.build_target = std::filesystem::path(input).stem().string();   // `{target}` without build.rifts (spec 31)
     if (!diags.has_errors() && opts.stop_after >= Phase::types) {
         check_types(program, sources, diags);
         typed = true;
@@ -440,8 +555,18 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     if ((opts.command == "build" || opts.command == "run" || opts.command == "emit-llvm") && !diags.has_errors()) {
         return run_backend(opts, program, sources, diags, s);
     }
+    if (opts.command == "insights" && !diags.has_errors()) {
+        return run_insights(opts, program, sources, diags, s);
+    }
     if (opts.command == "symbols" && resolved && program.entry) {
         print_symbols(s.out, *program.entry, sources);
+    }
+    if (opts.command == "expand" && resolved && !diags.has_errors()) {
+        if (opts.targets.empty()) return usage_error(s, "'expand' takes a file and a type: riftc expand <file> <type>");
+        if (!print_expansion(s.out, program, sources, opts.targets.front())) {
+            s.err << std::format("riftc: error: no type '{}' in '{}' or the modules it imports\n", opts.targets.front(), input);
+            return ExitCode::compile_error;
+        }
     }
     if (opts.command == "typed" && typed && program.entry) {
         if (program.entry->header) ast::print(s.out, program.entry->header->ast, true);
@@ -487,6 +612,37 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
         failed = true;
         return {};
     }
+    // Up to date (spec 25): the executable is newer than every file it was built from, and was
+    // built the same way (mode, settings, libraries, linker, this riftc).
+    fs::path exe_path = opts.bin_dir.empty() ? out / mode / opts.target / t.name : fs::path(opts.bin_dir) / t.name;
+    fs::path stamp    = exe_path;
+    stamp += ".inputs";
+    std::string signature = std::format("mode={} target={} cc={}", mode, opts.target, linker_command(opts));
+    for (const auto& [name, value] : t.settings) signature += std::format(" -D{}={}", name, value ? ct::to_string(*value) : "?");
+    for (const auto& [id, level] : opts.warn) signature += std::format(" --warn={}={}", id, level);
+    for (const std::string& l : libraries) signature += " " + l;
+    for (const std::string& r : extra_roots) signature += " root=" + r;
+    {
+        auto riftc_time = fs::last_write_time("/proc/self/exe", ec);
+        if (!ec) signature += std::format(" riftc={}", riftc_time.time_since_epoch().count());
+        ec.clear();
+    }
+    if (std::ifstream in(stamp); in && fs::exists(exe_path, ec)) {
+        std::string line;
+        bool        fresh = std::getline(in, line) && line == signature;
+        auto        built = fs::last_write_time(exe_path, ec);
+        while (fresh && std::getline(in, line)) {
+            if (line.empty()) continue;
+            std::error_code e2;
+            if (!fs::exists(line, e2) || fs::last_write_time(line, e2) > built) fresh = false;
+        }
+        for (const std::string& l : libraries) {
+            std::error_code e2;
+            if (!l.starts_with("-") && (!fs::exists(l, e2) || fs::last_write_time(l, e2) > built)) fresh = false;
+        }
+        if (fresh) return exe_path.string();
+    }
+    fs::remove(stamp, ec);
     SourceManager    sources;
     DiagnosticEngine diags;
     LoadOptions      load;
@@ -498,6 +654,8 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
     program.build_mode     = mode;
     program.warn_levels    = opts.warn;
     program.build_settings = t.settings;
+    program.file_settings  = t.file_settings;
+    program.build_target   = t.name;
     if (!diags.has_errors()) check_types(program, sources, diags);
     if (!diags.has_errors()) check_ownership(program, diags);
     std::string ir;
@@ -506,28 +664,39 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
         return it == program.mode_settings.end() ? std::string() : it->second;
     };
     if (!diags.has_errors()) ir = generate_llvm_ir(program, sources, diags, LlvmOptions{false, setting("panic") == "trap",
-                                                                         setting("debug_info") == "full" || setting("debug_info") == "line_tables"});
+                                                                         setting("debug_info") == "full" || setting("debug_info") == "line_tables",
+                                                                         setting("debug_info") == "full"});
     diags.sort_by_location();
     render_all(s.err, diags, sources, opts.render);
     if (diags.has_errors()) {
         failed = true;
         return {};
     }
-    fs::path exe = opts.bin_dir.empty() ? out / mode / t.name : fs::path(opts.bin_dir) / t.name;
+    fs::path exe = opts.bin_dir.empty() ? out / mode / opts.target / t.name : fs::path(opts.bin_dir) / t.name;
     fs::create_directories(exe.parent_path(), ec);
-    std::string linker = opts.cc;
-    if (linker.empty()) {
-        const char* env = std::getenv("RIFT_CC");
-        linker          = env && *env ? env : "cc";
-    }
+    std::string linker = linker_command(opts);
+    if (setting("link_time_optimization") == "true") linker += " -flto=auto";   // the C libraries carry LTO code (spec 24)
     CodegenOptions codegen;
     codegen.optimization = setting("optimization").empty() ? "none" : setting("optimization");
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
     std::string error;
     if (!build_executable(ir, exe.string(), linker, error, codegen, libraries)) {
         s.err << std::format("riftc: error: target '{}': {}\n", t.name, error);
+        if (!opts.target.empty() && error.starts_with("the linker")) {
+            s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
+                                 opts.target, opts.target);
+        }
         failed = true;
         return {};
+    }
+    if (std::ofstream st(stamp); st) {   // what the next build compares with
+        st << signature << "\n";
+        for (std::size_t id = 0; id < sources.count(); ++id) {
+            const std::string& path = sources.file(static_cast<FileId>(id)).path();
+            std::error_code    e2;
+            if (!path.starts_with("<") && fs::exists(path, e2)) st << fs::absolute(path, e2).lexically_normal().string() << "\n";
+        }
+        st << fs::absolute(load.build_script, ec).lexically_normal().string() << "\n";
     }
     return exe.string();
 }
@@ -539,31 +708,34 @@ struct CompileCommand {
     std::vector<std::string> arguments;
 };
 
-std::string json_string(std::string_view text) {
-    std::string out = "\"";
-    for (char c : text) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    return out + "\"";
-}
-
 /// Compiles a C/C++ target to `<out>/c/lib<name>.a`. Returns the archive, or empty.
-std::string build_c_target(const std::filesystem::path& root, const std::filesystem::path& out, const ct::BuildGraph& g,
-                           const ct::BuildTarget& t, const std::string& optimization, DriverStreams& s, bool& failed,
-                           std::vector<CompileCommand>* commands) {
+std::string build_c_target(const Options& opts, const std::filesystem::path& root, const std::filesystem::path& out,
+                           const ct::BuildGraph& g, const ct::BuildTarget& t, const std::string& optimization, bool lto,
+                           DriverStreams& s, bool& failed, std::vector<CompileCommand>* commands) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path base = t.base.empty() ? root : fs::path(t.base);
-    fs::path dir  = out / "c" / t.name;
+    fs::path dir  = out / "c" / opts.target / t.name;
     fs::create_directories(dir, ec);
-    bool        cpp      = t.language == "cpp";
-    std::string compiler = cpp ? "c++" : "cc";
+    bool                     cpp      = t.language == "cpp";
+    std::vector<std::string> compiler = c_compiler(opts, cpp);
     std::vector<std::string> objects;
+    struct Job {
+        std::vector<std::string> cmd;
+        std::string              source;
+        std::string              output;   // compiler output
+        int                      status = 0;
+    };
+    std::vector<Job> jobs;   // the objects that are out of date: compiled in parallel
     for (std::size_t i = 0; i < t.sources.size(); ++i) {
         fs::path src = fs::path(t.sources[i]).is_absolute() ? fs::path(t.sources[i]) : base / t.sources[i];
         fs::path obj = dir / (src.stem().string() + "." + std::to_string(i) + ".o");
-        std::vector<std::string> cmd = {compiler, "-c", src.string(), "-o", obj.string(), "-fPIC"};
+        std::vector<std::string> cmd = compiler;
+        for (std::string a : {std::string("-c"), src.string(), std::string("-o"), obj.string(), std::string("-fPIC")}) cmd.push_back(a);
+        if (lto) {   // link_time_optimization() (spec 24): fat objects, so the archive also links without LTO
+            cmd.push_back("-flto=auto");
+            cmd.push_back("-ffat-lto-objects");
+        }
         if (!t.standard.empty()) {
             std::string std_ = t.standard;
             if (std_.starts_with("cpp")) std_ = "c++" + std_.substr(3);
@@ -580,21 +752,29 @@ std::string build_c_target(const std::filesystem::path& root, const std::filesys
         for (std::size_t l : t.links) add_dirs(g.targets[l], true);
         for (const auto& [name, value] : t.defines) cmd.push_back("-D" + name + "=" + value);
         if (commands) commands->push_back(CompileCommand{base.string(), src.string(), cmd});
-        // Up to date: the object is newer than its source (headers are not tracked yet).
-        if (fs::exists(obj, ec) && fs::last_write_time(obj, ec) >= fs::last_write_time(src, ec)) {
-            objects.push_back(obj.string());
-            continue;
-        }
-        std::string output;
-        int status = run_process(cmd, &output);
-        if (status != 0) {
-            s.err << output << std::format("riftc: error: target '{}': compiling '{}' failed\n", t.name, t.sources[i]);
-            failed = true;
-            return {};
-        }
         objects.push_back(obj.string());
+        // Up to date: the object is newer than its source (headers are not tracked yet).
+        if (fs::exists(obj, ec) && fs::last_write_time(obj, ec) >= fs::last_write_time(src, ec)) continue;
+        jobs.push_back(Job{cmd, t.sources[i], {}, 0});
     }
-    fs::path archive = out / "c" / ("lib" + t.name + ".a");
+    {
+        std::atomic<std::size_t> next{0};
+        unsigned                 workers = std::max(1u, std::min<unsigned>(std::thread::hardware_concurrency(), static_cast<unsigned>(jobs.size())));
+        std::vector<std::thread> pool;
+        for (unsigned w = 0; w < workers && !jobs.empty(); ++w) {
+            pool.emplace_back([&] {
+                for (std::size_t j; (j = next.fetch_add(1)) < jobs.size();) jobs[j].status = run_process(jobs[j].cmd, &jobs[j].output);
+            });
+        }
+        for (std::thread& th : pool) th.join();
+    }
+    for (const Job& j : jobs) {
+        if (j.status == 0) continue;
+        s.err << j.output << std::format("riftc: error: target '{}': compiling '{}' failed\n", t.name, j.source);
+        failed = true;
+        return {};
+    }
+    fs::path archive = out / "c" / opts.target / ("lib" + t.name + ".a");
     fs::remove(archive, ec);
     std::vector<std::string> ar = {"ar", "rcs", archive.string()};
     ar.insert(ar.end(), objects.begin(), objects.end());
@@ -855,6 +1035,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
     }
     std::string optimization = program.mode_settings["optimization"];
+    bool        lto          = program.mode_settings["link_time_optimization"] == "true";
     std::vector<CompileCommand> commands;
     std::map<std::size_t, std::string> archives;
     std::set<std::size_t> steps_done;
@@ -867,7 +1048,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                 if (!seen.insert(l).second) continue;
                 const ct::BuildTarget& used = graph.targets[l];
                 if (used.kind == ct::BuildTarget::Kind::c_library) {
-                    if (!archives.count(l)) archives[l] = build_c_target(root, out, graph, used, optimization, s, failed, &commands);
+                    if (!archives.count(l)) archives[l] = build_c_target(opts, root, out, graph, used, optimization, lto, s, failed, &commands);
                     if (!archives[l].empty()) libs.push_back(archives[l]);
                 } else if (used.kind == ct::BuildTarget::Kind::system_library) {
                     if (!used.library_root.empty()) libs.push_back("-L" + (fs::path(used.library_root) / "lib").string());
@@ -884,13 +1065,68 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             if (!run_step(root, graph.steps[st], s)) failed = true;
         }
     };
-    int tests_failed = 0;
+    // The steps of the selected targets run in parallel, each once its inputs that other steps
+    // write are written (spec 25). Their output is printed in the order the graph lists them.
+    if (!opts.compile_commands && !opts.list) {
+        std::vector<std::size_t> todo;
+        for (std::size_t i : selected) {
+            for (std::size_t st : graph.targets[i].steps) {
+                if (std::find(todo.begin(), todo.end(), st) == todo.end()) todo.push_back(st);
+            }
+        }
+        std::sort(todo.begin(), todo.end());
+        auto writes = [&](std::size_t a, std::size_t b) {   // step a writes an input of step b
+            for (const std::string& o : graph.steps[a].outputs) {
+                for (const std::string& in : graph.steps[b].inputs) {
+                    if (fs::path(o).lexically_normal() == fs::path(in).lexically_normal()) return true;
+                }
+            }
+            return false;
+        };
+        std::vector<std::ostringstream> outs(todo.size()), errs(todo.size());
+        std::vector<int>                state(todo.size(), 0);   // 0 waiting, 1 done ok, 2 failed
+        while (std::find(state.begin(), state.end(), 0) != state.end() && !failed) {
+            std::vector<std::size_t> ready;
+            for (std::size_t k = 0; k < todo.size(); ++k) {
+                if (state[k] != 0) continue;
+                bool blocked = false;
+                for (std::size_t j = 0; j < todo.size(); ++j) {
+                    if (j != k && state[j] != 1 && writes(todo[j], todo[k])) blocked = true;
+                }
+                if (!blocked) ready.push_back(k);
+            }
+            if (ready.empty()) {   // a cycle between steps
+                s.err << "riftc: error: the steps' inputs and outputs form a cycle\n";
+                failed = true;
+                break;
+            }
+            std::vector<std::thread> pool;
+            std::vector<char>        ok(todo.size(), 0);
+            for (std::size_t k : ready) {
+                pool.emplace_back([&, k] {
+                    DriverStreams local{outs[k], errs[k]};
+                    ok[k] = run_step(root, graph.steps[todo[k]], local) ? 1 : 0;
+                });
+            }
+            for (std::thread& th : pool) th.join();
+            for (std::size_t k : ready) {
+                s.out << outs[k].str();
+                s.err << errs[k].str();
+                state[k] = ok[k] ? 1 : 2;
+                if (!ok[k]) failed = true;
+                steps_done.insert(todo[k]);
+            }
+        }
+        if (failed) return ExitCode::compile_error;
+    }
+    int         tests_failed = 0;
+    std::size_t tests_run    = 0;
     for (std::size_t i : selected) {
         const ct::BuildTarget& t = graph.targets[i];
         run_steps(i);
         if (failed) return ExitCode::compile_error;
         if (t.kind == ct::BuildTarget::Kind::c_library) {
-            if (!archives.count(i)) archives[i] = build_c_target(root, out, graph, t, optimization, s, failed, &commands);
+            if (!archives.count(i)) archives[i] = build_c_target(opts, root, out, graph, t, optimization, lto, s, failed, &commands);
             if (!archives[i].empty() && opts.command == "build" && !opts.compile_commands) {
                 s.out << std::format("built '{}' ({})\n", archives[i], opts.mode);
             }
@@ -917,9 +1153,28 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             std::vector<std::string> cmd = {exe};
             cmd.insert(cmd.end(), opts.program_args.begin(), opts.program_args.end());
             return static_cast<ExitCode>(run_process(cmd, nullptr));
-        } else {   // test
+        } else {   // test: a program whose main returns 0, or its `@std::test` functions one by one (spec 29)
             std::string output;
-            int status = run_process({exe}, &output);
+            int status = run_process({"env", "RIFT_TEST_LIST=1", exe}, &output);
+            if (status == 0 && output.starts_with("rift-tests:\n")) {
+                std::vector<std::string> test_names;
+                std::istringstream       lines(output.substr(std::string_view("rift-tests:\n").size()));
+                for (std::string line; std::getline(lines, line);) {
+                    if (!line.empty()) test_names.push_back(line);
+                }
+                for (const std::string& name : test_names) {
+                    std::string one;
+                    int         st = run_process({"env", "RIFT_TEST_RUN=" + name, exe}, &one);
+                    s.out << std::format("{} {}::{}\n", st == 0 ? "PASS" : "FAIL", t.name, name);
+                    if (st != 0) {
+                        s.out << one;
+                        ++tests_failed;
+                    }
+                    ++tests_run;
+                }
+                continue;
+            }
+            ++tests_run;
             s.out << std::format("{} {}\n", status == 0 ? "PASS" : "FAIL", t.name);
             if (status != 0) {
                 s.out << output;
@@ -942,7 +1197,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         s.out << std::format("wrote '{}' ({} files)\n", (out / "compile_commands.json").string(), commands.size());
     }
     if (opts.command == "test") {
-        std::size_t total = selected.size();
+        std::size_t total = tests_run;
         s.out << std::format("{} of {} tests passed\n", total - static_cast<std::size_t>(tests_failed), total);
         return tests_failed == 0 ? ExitCode::success : ExitCode::compile_error;
     }
@@ -988,28 +1243,47 @@ std::optional<std::string> diagnostic_doc(std::string_view text, std::string_vie
 /// library's ids come from riftc itself; others from `gfx.rifth` (or `.rifts`) in the current
 /// directory, the project root.
 ExitCode explain_id(std::string_view id, DriverStreams& s) {
-    std::size_t      split  = id.rfind("::");
-    std::string_view module = id.substr(0, split);
-    std::string_view name   = id.substr(split + 2);
+    // An id is the diagnostic's namespace path (spec 23, 30): `gfx::deprecated`, `legacy`.
+    std::size_t      split = id.rfind("::");
+    std::string_view ns    = split == std::string_view::npos ? std::string_view() : id.substr(0, split);
+    std::string_view name  = split == std::string_view::npos ? id : id.substr(split + 2);
     std::optional<std::string> doc;
-    for (const StdModule& m : std_modules()) {
-        if (m.name != module) continue;
-        doc = diagnostic_doc(m.header_text, name);
-        if (!doc) doc = diagnostic_doc(m.source_text, name);
-    }
-    if (!doc && module != "std" && !module.starts_with("std::")) {
-        std::string path(module);
-        for (std::size_t at = path.find("::"); at != std::string::npos; at = path.find("::", at)) path.replace(at, 2, "/");
-        for (const char* ext : {".rifth", ".rifts"}) {
-            std::ifstream in(path + ext);
+    bool in_std = ns == "std" || ns.starts_with("std::");
+    if (in_std) {
+        for (const StdModule& m : std_modules()) {
+            if (!doc) doc = diagnostic_doc(m.header_text, name);
+            if (!doc) doc = diagnostic_doc(m.source_text, name);
+        }
+    } else {
+        // The project's files (the current directory and below), the module named like the namespace first.
+        namespace fs = std::filesystem;
+        std::vector<fs::path> files;
+        std::string           guess(ns);
+        for (std::size_t at = guess.find("::"); at != std::string::npos; at = guess.find("::", at)) guess.replace(at, 2, "/");
+        if (!guess.empty()) {
+            files.push_back(guess + ".rifth");
+            files.push_back(guess + ".rifts");
+        }
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(".", fs::directory_options::skip_permission_denied, ec), end; it != end && !ec;
+             it.increment(ec)) {
+            if (it->is_directory(ec) && (it->path().filename() == "build" || it->path().filename().string().starts_with("."))) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            std::string ext = it->path().extension().string();
+            if (ext == ".rifth" || ext == ".rifts") files.push_back(it->path());
+        }
+        for (const fs::path& f : files) {
+            std::ifstream in(f);
             if (!in) continue;
             std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (!ns.empty() && text.find("namespace " + std::string(ns.substr(0, ns.find("::")))) == std::string::npos) continue;
             doc = diagnostic_doc(text, name);
             if (doc) break;
         }
     }
-    if (!doc) return usage_error(s, std::format("unknown diagnostic id '{}' (no 'compile_time std::diagnostic {}' in module '{}')",
-                                                id, name, module));
+    if (!doc) return usage_error(s, std::format("unknown diagnostic id '{}' (no 'compile_time std::diagnostic {}' found)", id, name));
     s.out << std::format("{} (warning id)\n{}", id, *doc);
     return ExitCode::success;
 }
@@ -1028,6 +1302,7 @@ ExitCode run_explain(std::span<const std::string_view> args, DriverStreams& s) {
     if (args[0].find("::") != std::string_view::npos) return explain_id(args[0], s);
     std::optional<DiagCode> code = code_from_name(args[0]);
     if (!code) {
+        if (!args[0].empty() && !(args[0][0] == 'E' || args[0][0] == 'W') ) return explain_id(args[0], s);   // a global id
         return usage_error(s, std::format("unknown diagnostic code '{}'", args[0]));
     }
     s.out << std::format("{} ({}): {}\n", code_name(*code), to_string(code_severity(*code)),
@@ -1057,11 +1332,16 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
         return run_explain(args.subspan(1), streams);
     }
     if (command == "lex" || command == "parse" || command == "check" || command == "symbols" || command == "typed" ||
-        command == "build" || command == "run" || command == "emit-c" || command == "emit-llvm" || command == "test") {
+        command == "build" || command == "run" || command == "emit-c" || command == "emit-llvm" || command == "test" ||
+        command == "insights" || command == "expand") {
         Options opts;
         opts.command = command;
         if (std::optional<ExitCode> failed = parse_options(args.subspan(1), opts, streams)) {
             return *failed;
+        }
+        if (std::string error; !set_build_target(opts.target, error)) return usage_error(streams, error);
+        if (command == "run" && !target_is_host()) {
+            return usage_error(streams, std::format("a program built for '{}' can't run here; use 'build'", opts.target));
         }
         if (opts.project) return run_project(opts, streams);
         if (command == "test") return usage_error(streams, "'test' runs the tests of build.rifts: run it without a file");

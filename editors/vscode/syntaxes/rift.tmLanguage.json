@@ -29,6 +29,12 @@
       "include": "#import"
     },
     {
+      "include": "#namespace"
+    },
+    {
+      "include": "#annotations"
+    },
+    {
       "include": "#type-declarations"
     },
     {
@@ -231,6 +237,12 @@
       "contentName": "meta.embedded.interpolation.rift",
       "patterns": [
         {
+          "include": "#comments"
+        },
+        {
+          "include": "#interpolation-braces"
+        },
+        {
           "include": "#chars"
         },
         {
@@ -256,6 +268,9 @@
         },
         {
           "include": "#punctuation"
+        },
+        {
+          "include": "#type-usages"
         }
       ]
     },
@@ -377,7 +392,7 @@
     "type-declarations": {
       "patterns": [
         {
-          "comment": "open class / view struct / plain struct, class, interface, enum \u2014 plus base list",
+          "comment": "open class / view struct / plain struct, class, interface, enum — plus base list",
           "match": "\\b(?:(open|view)\\s+)?(struct|class|interface|enum)\\s+([A-Za-z_]\\w*)(?:\\s*(:)(?!:)\\s*([A-Za-z_][\\w\\s:,&]*?))?(?=\\s*(?:\\{|;|$))",
           "captures": {
             "1": {
@@ -546,7 +561,7 @@
       }
     },
     "function-calls": {
-      "comment": "name(  or  name<T>(  \u2014 calls and definitions",
+      "comment": "name(  or  name<T>(  — calls and definitions",
       "match": "\\b([A-Za-z_]\\w*)\\s*(?=(?:<[\\w\\s:,<>&*]*>)?\\s*\\()",
       "captures": {
         "1": {
@@ -669,6 +684,139 @@
         {
           "name": "punctuation.section.brackets.rift",
           "match": "[\\[\\]]"
+        }
+      ]
+    },
+    "interpolation-braces": {
+      "comment": "a `{ ... }` inside a hole (a lambda body, a struct literal): it does not end the hole",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.braces.rift"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.braces.rift"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#interpolation-braces"
+        },
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#chars"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "include": "#casts"
+        },
+        {
+          "include": "#keywords"
+        },
+        {
+          "include": "#builtin-types"
+        },
+        {
+          "include": "#namespaces"
+        },
+        {
+          "include": "#function-calls"
+        },
+        {
+          "include": "#operators"
+        },
+        {
+          "include": "#punctuation"
+        },
+        {
+          "include": "#type-usages"
+        }
+      ]
+    },
+    "namespace": {
+      "patterns": [
+        {
+          "name": "meta.namespace.alias.rift",
+          "match": "\\b(namespace)\\s+([A-Za-z_]\\w*)\\s*(=)\\s*((?:::)?[A-Za-z_]\\w*(?:\\s*::\\s*[A-Za-z_]\\w*)*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.namespace.rift"
+            },
+            "2": {
+              "name": "entity.name.namespace.rift"
+            },
+            "3": {
+              "name": "keyword.operator.assignment.rift"
+            },
+            "4": {
+              "patterns": [
+                {
+                  "name": "punctuation.separator.namespace.rift",
+                  "match": "::"
+                },
+                {
+                  "name": "entity.name.namespace.rift",
+                  "match": "[A-Za-z_]\\w*"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "meta.namespace.rift",
+          "match": "\\b(namespace)\\s+([A-Za-z_]\\w*(?:\\s*::\\s*[A-Za-z_]\\w*)*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.namespace.rift"
+            },
+            "2": {
+              "patterns": [
+                {
+                  "name": "punctuation.separator.namespace.rift",
+                  "match": "::"
+                },
+                {
+                  "name": "entity.name.namespace.rift",
+                  "match": "[A-Za-z_]\\w*"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "patterns": [
+        {
+          "name": "meta.annotation.use.rift",
+          "match": "(@)((?:::)?[A-Za-z_]\\w*(?:\\s*::\\s*[A-Za-z_]\\w*)*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.annotation.rift"
+            },
+            "2": {
+              "name": "entity.name.function.decorator.rift"
+            }
+          }
+        },
+        {
+          "name": "storage.modifier.annotation.rift",
+          "match": "\\bannotation(?=\\s*\\()"
+        },
+        {
+          "name": "keyword.other.generate.rift",
+          "match": "\\bgenerate(?=\\s*[:{])"
+        },
+        {
+          "name": "variable.language.annotated.rift",
+          "match": "\\b(annotated|annotation)\\b(?=\\s*[.)>,;])"
         }
       ]
     }

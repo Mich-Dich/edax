@@ -1,0 +1,15 @@
+// Module shapes::circle declares into namespace shapes: the module is the file, the namespace
+// is where the names live (spec 30).
+namespace shapes {
+    struct circle {
+        f64 radius = 1.0;
+    }
+
+    /// Declared with its operand type: same namespace, same module.
+    circle operator*(circle& c, f64 k);
+
+    f64 area(circle& c);
+
+    /// Also declared by module extra::more: a type comes from one module.
+    struct marker { }
+}

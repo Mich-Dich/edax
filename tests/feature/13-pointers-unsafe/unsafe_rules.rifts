@@ -32,3 +32,9 @@ void pointers(std::raw_ptr<u8> text, std::raw_ptr<node> n) {
     std::raw_ptr<mut u32> bad = q;           //~ error[E4010]
     u32 x = n.value;                         //~ error[E4074]
 }
+
+
+
+
+
+

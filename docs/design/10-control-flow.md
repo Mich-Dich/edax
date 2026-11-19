@@ -22,6 +22,18 @@ if (ptr) { ... }                       // OK: std::raw_ptr in a condition
 if (count > 10) { ... } else if (count) { ... } else { ... }
 ```
 
+### `else` after a call
+A call that returns `bool`, written as a statement, may be followed by an `else` block. The block runs when the call returns false:
+```rift
+std::log::validate(texture.is_valid(), f"texture '{name}' is invalid") else {
+    return false;
+}
+connect(address) else { continue; }
+```
+- It means `if (!f(...)) { ... }`, with the call written first.
+- Braces are required, as for `if`.
+- Only a call may be followed by `else` (error E2039 otherwise); the call must return `bool` (error E4252).
+
 ### `while`
 ```rift
 while (file.has_more()) {
@@ -81,3 +93,4 @@ std::darray<employee> list = match (load(path)) {
 - **No `++`/`--`:** `+= 1` already exists. One way.
 - **Range syntax reused:** v0.2 had both `std::range(0, n)` and `0..=9` in patterns. Now loops and patterns share one syntax.
 - **`,` after every arm:** one rule instead of "comma unless the arm is a block".
+- **`else` after a call:** checks that log or report a failure (`std::log::validate`, see 31) read as one statement, and the recovery is ordinary code in a block, where C++ passed it to a macro as an argument.

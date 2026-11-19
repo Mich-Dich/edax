@@ -26,4 +26,8 @@ sema::Symbol* resolve_function_instance(sema::Program& program, DiagnosticEngine
 /// `riftc symbols`: the merged module interface, members in layout order.
 void print_symbols(std::ostream& out, const sema::Module& module, const SourceManager& sources);
 
+/// `riftc expand <file> <type>` (spec 29): the type as written, followed by every member its
+/// annotations generate, written out. False when the program has no such type.
+bool print_expansion(std::ostream& out, const sema::Program& program, const SourceManager& sources, std::string_view type);
+
 } // namespace rift

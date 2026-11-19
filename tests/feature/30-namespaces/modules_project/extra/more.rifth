@@ -1,0 +1,14 @@
+// Another module of the same project may reopen namespace shapes and add overloads, but a type
+// still comes from one module.
+import shapes::circle;
+import shapes::square;
+
+namespace shapes {
+    f64 area(square& s);
+    struct marker { }
+}
+
+namespace extra {
+    /// An operator for a type of another module: not allowed.
+    shapes::circle operator+(shapes::circle& a, shapes::circle& b);   //~ error[E3066]: 'operator+' is declared away from its operand types
+}

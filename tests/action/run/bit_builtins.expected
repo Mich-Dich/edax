@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+7 56 8 8 18 128
+--- stderr

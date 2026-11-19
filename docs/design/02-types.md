@@ -11,7 +11,7 @@
 | `f32` `f64` | IEEE-754 floats |
 | `bool` | `true` / `false` |
 | `char` | One Unicode scalar value (4 bytes) |
-| `void` | "No value": a return type only |
+| `void` | "No value": a return type, or a template argument used only as a result or payload (`std::thread::handle<void>`, `std::result<void, E>`, see 27) |
 | `never` | The type of expressions that never finish: `return`, `break`, `continue`, `std::panic(...)` |
 
 There is no `int`. Fixed-size arrays are `std::array<T, N>` and growable arrays are `std::darray<T>` (see 20). There are no C-style `T[N]` arrays.

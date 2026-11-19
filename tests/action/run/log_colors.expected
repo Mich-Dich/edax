@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+[90mTRACE[0m trace
+[1;38;2;255;128;0mINFO [0m info
+[4;38;5;208mWARN [0m warn
+[92mINFO [0m default colors
+[]
+[92mlog_colors.rifts[0m two sinks: one colored, one not
+INFO  two sinks: one colored, one not
+--- stderr
+[37;44mERROR[0m error

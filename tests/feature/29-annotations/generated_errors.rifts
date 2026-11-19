@@ -1,0 +1,9 @@
+// feature 29: an error inside generated code is reported at the '@' that generated it.
+import std;
+
+class opaque { }
+
+@std::derive::hashable                                       //~ error[E4070]: 'opaque' has no method 'hash'
+struct key {
+    opaque o;
+}

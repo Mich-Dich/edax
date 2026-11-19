@@ -15,7 +15,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace rift::types {
@@ -44,6 +46,13 @@ enum class SymbolKind {
 
 std::string_view to_string(SymbolKind kind);
 
+/// The std types that are named as members of another std type (`std::thread_pool::options` is
+/// the library's `thread_pool_options`, spec 28). Rift has no nested type declarations; these
+/// names are the standard library's only ones.
+inline bool is_std_nested_type(std::string_view name) {
+    return name == "thread_pool_options" || name == "thread_pool_task" || name == "thread_pool_scoped_task";
+}
+
 enum class LocalKind { variable, value_param, ref_param, binding, loop_variable, capture };
 
 struct Symbol {
@@ -52,6 +61,7 @@ struct Symbol {
     Span        span;                 // where the name is declared
     Module*     module  = nullptr;    // owning module (null for locals)
     Symbol*     parent  = nullptr;    // enclosing type for members / alternatives
+    std::string ns;                   // the namespace it is declared in, "a::b" ("" = global, spec 30)
 
     const ast::Decl* decl       = nullptr;   // declaration (the header one if there is a header)
     const ast::Decl* definition = nullptr;   // the `.rifts` definition with the body, if separate
@@ -89,6 +99,10 @@ struct Symbol {
     bool is_type_value = false;   // a compile_time variable or parameter of type `type`: usable as a type
     const ast::TypeExpr* value_type = nullptr;   // template value parameters: `usize` in `template<usize N>`
     std::shared_ptr<const ct::Value> ct_value;   // the value of a compile_time constant, once evaluated
+
+    /// The name with its namespace: "std::darray", "geometry::vec2", "main". Module items are
+    /// stored under it.
+    [[nodiscard]] std::string key() const { return ns.empty() ? name : ns + "::" + name; }
 
     [[nodiscard]] bool is_type() const {
         return kind == SymbolKind::struct_ || kind == SymbolKind::class_ ||
@@ -137,6 +151,9 @@ struct ModuleFile {
 
 struct Module {
     std::string               name;   // "counter", "shapes::circle"; the entry file's own name too
+    /// The project it belongs to (spec 30): "" for the program's own files, "std" for the
+    /// standard library, else the root directory of the dependency it was loaded from.
+    std::string               project;
     std::optional<ModuleFile> header;
     std::optional<ModuleFile> source;
 
@@ -145,8 +162,18 @@ struct Module {
     bool                 header_imports_std = false;
     bool                 source_imports_std = false;
 
-    std::map<std::string, std::vector<Symbol*>> items;   // module scope (functions may overload)
+    /// Module scope by namespace-qualified name (`Symbol::key`: "std::darray", "main"); functions
+    /// may overload. A module is not a namespace (spec 30): its items live in the namespaces their
+    /// `namespace` blocks say.
+    std::map<std::string, std::vector<Symbol*>> items;
     std::vector<Symbol*>                        item_order;
+    std::set<std::string>                       namespaces;   // every namespace it declares into, with its parents
+
+    /// The first item called `key` ("std::string"), or null.
+    [[nodiscard]] Symbol* item(const std::string& key) const {
+        auto it = items.find(key);
+        return it == items.end() || it->second.empty() ? nullptr : it->second.front();
+    }
 
     std::deque<Symbol> storage;
 
@@ -159,6 +186,39 @@ struct Module {
         return &s;
     }
 };
+
+/// `g.set_for_files(target, pattern, name, value)` in build.rifts (spec 31): a setting for the
+/// files matching a pattern. `files` are absolute, normalized paths.
+struct FileSetting {
+    std::vector<std::string>         files;
+    std::string                      name;
+    std::shared_ptr<const ct::Value> value;
+};
+
+/// Where an annotation can be written (spec 29: `std::meta::target`).
+enum class AnnotationTarget { type, field, function, parameter, alternative, other, file };
+
+/// One use of an annotation whose struct has checks (spec 29): a copy of the checks, resolved
+/// with `annotation` and `annotated` bound to this use. The checker runs it.
+struct AnnotationCheck {
+    AnnotationTarget          target = AnnotationTarget::type;
+    ast::CheckDecl*           check  = nullptr;   // the copy (owned by Program::cloned_decls)
+    const ast::AnnotationUse* use    = nullptr;
+    Module*                   origin = nullptr;   // the annotation's module: the check is its code
+    Symbol*                   handle = nullptr;   // `annotated` for fields, functions, parameters, alternatives
+    const Symbol*             owner  = nullptr;   // the annotated type, or the type/function the member belongs to
+    const Symbol*             member = nullptr;   // the field, method, function or alternative
+    std::size_t               param_index = 0;
+    bool                      done = false;
+};
+
+/// The use of the annotation `key` ("std::deprecated") in `uses`, or null.
+inline const ast::AnnotationUse* find_annotation(const std::vector<ast::AnnotationUse>& uses, std::string_view key) {
+    for (const ast::AnnotationUse& u : uses) {
+        if (u.symbol && u.symbol->key() == key) return &u;
+    }
+    return nullptr;
+}
 
 struct Program {
     std::map<std::string, std::unique_ptr<Module>> modules;   // by module name
@@ -174,8 +234,13 @@ struct Program {
     /// The values of the mode's settings by method name, as text: "optimization" → "speed",
     /// "allow_undefined_behavior" → "false" (spec 24). Empty without the standard library.
     std::map<std::string, std::string>             mode_settings;
+    /// The build target being compiled (`{target}` of a `std::call_site`, spec 31): the target's
+    /// name from build.rifts, or the main file's name without `.rifts`.
+    std::string                                    build_target;
     /// What build.rifts passed to the target being compiled: `std::build::setting<T>(name)`.
     std::map<std::string, std::shared_ptr<const ct::Value>> build_settings;
+    /// What build.rifts passed to some files of that target: `std::build::setting_at<T>(where, name)`.
+    std::vector<FileSetting>                       file_settings;
     /// The graph that build.rifts' `build(g)` fills in; null when compiling ordinary code.
     ct::BuildGraph*                                build_graph = nullptr;
     /// `--warn=id=level` (spec 23): the level of each named diagnostic that is not the default.
@@ -191,8 +256,15 @@ struct Program {
     /// C++, an instance's method is only required to compile when it is called
     /// (`std::darray<std::unique_ptr<T>>` without `clone()`). By the method's declaration.
     std::map<const ast::Decl*, std::vector<Diagnostic>> deferred_errors;
-    /// Copies of resolved declarations: the instances of method templates (spec 14).
+    /// Copies of resolved declarations: the instances of method templates (spec 14), the
+    /// constants that hold annotation values and the copies of annotation checks (spec 29).
     std::deque<std::unique_ptr<ast::Decl>>         cloned_decls;
+    /// The checks of annotations, one entry per use (spec 29), in the order they were made.
+    std::deque<AnnotationCheck>                    annotation_checks;
+    /// The warning ids that `@std::allow` silences in the function being checked (spec 29).
+    std::vector<std::string>                       allowed_warnings;
+    /// Uses that were warned about already (`@std::deprecated`): file, offset, symbol.
+    std::set<std::tuple<FileId, std::uint32_t, const Symbol*>> reported_uses;
 };
 
 } // namespace rift::sema

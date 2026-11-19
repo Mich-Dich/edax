@@ -1,0 +1,39 @@
+// RUN: riftc run %s
+// std::thread::spawn (spec 27): owned and scoped handles, void results, options, atomics, mutex.
+import std;
+u64 sum_to(u64 n) {
+    mut u64 s = 0;
+    for (u64 i : 0..n) { s += i; }
+    return s;
+}
+i32 main() {
+    std::darray<u32> data = default;
+    std::thread::handle<u64> worker = std::thread::spawn([]() { return sum_to(1000); });
+    std::thread::handle<void> printer = std::thread::spawn(std::thread::options{ .name = "printer" }, []() { std::println("hello from a thread"); });
+    printer.join();
+    u64 r = worker.join();
+    std::println(f"result {r}");
+    std::atomic<u64> counter = default;
+    std::thread::scoped_handle<void> a = std::thread::spawn([&counter]() {
+        for (u32 i : 0..100000) { _ = counter.fetch_wrapping_add(1, std::memory_order::relaxed); }
+    });
+    std::thread::scoped_handle<void> b = std::thread::spawn([&counter]() {
+        for (u32 i : 0..100000) { _ = counter.fetch_wrapping_add(1, std::memory_order::relaxed); }
+    });
+    a.join();
+    b.join();
+    std::println(f"counter {counter.load(std::memory_order::acquire)}");
+    std::mutex<std::darray<u32>> shared = std::mutex<std::darray<u32>>::make(default);
+    {
+        std::thread::scoped_handle<void> c = std::thread::spawn([&shared]() {
+            for (u32 i : 0..1000) { shared.lock()->push(i); }
+        });
+        for (u32 i : 0..1000) {
+            mut std::mutex_guard<std::darray<u32>> g = shared.lock();
+            g->push(i);
+        }
+    }
+    std::println(f"pushed {shared.lock()->len()}");
+    std::println(f"cpus {std::thread::available_parallelism() > 0}");
+    return 0;
+}

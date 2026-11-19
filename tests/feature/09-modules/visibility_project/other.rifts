@@ -1,2 +1,5 @@
 import lib;
-u32 other_fn() { return lib::public_fn(); }
+
+namespace other {
+    u32 other_fn() { return lib::public_fn(); }
+}

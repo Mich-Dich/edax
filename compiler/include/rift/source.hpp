@@ -59,6 +59,7 @@ public:
     std::optional<FileId> load(const std::string& path, std::string& error);
 
     [[nodiscard]] const SourceFile& file(FileId id) const { return files_.at(id); }
+    [[nodiscard]] std::size_t       count() const { return files_.size(); }
 
 private:
     std::vector<SourceFile> files_;

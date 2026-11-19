@@ -3,7 +3,7 @@ exit: 0
 Hello from Rift!
 7 apples cost 2.45
 [left    ] [   right] [  mid   ]
-ff FF 11111111 377 +42 3.142
+ff FF 11111111 377 -42 3.142
 gcd(1071, 462) = 21
     0 is nothing
     3 is a few

@@ -5,7 +5,7 @@
 ### Module = header + source
 - `geometry.rifth` (header) + `geometry.rifts` (source) form the module **`geometry`**.
 - Directories become `::` in module names: `shapes/circle.rifth` is module `shapes::circle`, with paths relative to the project root.
-- A module is also a namespace. After `import geometry;` its contents are always used **fully qualified**: `geometry::circle`. There is no `using`.
+- A module is a unit of compilation, **not** a namespace. Its declarations live in the namespaces they're declared in (`namespace geometry { ... }`, see 30) and are always used by their namespace path: `geometry::circle`. There is no `using`; there are file-local namespace aliases (see 30).
 - A `.rifts` automatically sees its own `.rifth`, so you don't import it.
 - Inside a module, declaration order doesn't matter.
 
@@ -15,7 +15,7 @@ import std;                 // the whole standard library
 import std::filesystem;     // only std::filesystem
 import geometry;            // ./geometry.rifth
 ```
-Names stay fully qualified no matter which form you use: `std::filesystem::path`. The narrower import only reduces what the compiler loads.
+`import` names a module by its file path. The names it brings are reached through their namespaces (see 30): `std::filesystem::path`. The narrower import only reduces what the compiler loads.
 
 ### What goes where
 | Item | `.rifth` | `.rifts` |

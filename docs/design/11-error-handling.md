@@ -38,7 +38,7 @@ std::result<employee, parse_error> parse_line(std::str line) {
 `?` on a `std::option` works the same way, but only inside functions that return `std::option`.
 
 ### Unrecoverable errors: panic
-A **panic** prints a message and the source location to stderr, then **aborts** the process. There is no unwinding and destructors don't run.
+A **panic** prints a message and the source location to stderr, then **aborts** the process. There is no unwinding and destructors don't run. A panic in **any** thread aborts the whole process, so joining a thread never fails (see 27).
 
 These things panic:
 

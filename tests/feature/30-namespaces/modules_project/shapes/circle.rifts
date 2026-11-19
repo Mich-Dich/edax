@@ -1,0 +1,7 @@
+namespace shapes {
+    circle operator*(circle& c, f64 k) { return circle{ .radius = c.radius * k }; }
+
+    f64 area(circle& c) { return c.radius * c.radius * pi(); }
+
+    private f64 pi() { return 3.14159; }
+}

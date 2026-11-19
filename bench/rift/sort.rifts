@@ -1,0 +1,19 @@
+// Sort 2M pseudo-random u32 values (xorshift), check the order.
+import std;
+i32 main() {
+    mut std::darray<u32> v = default;
+    mut u32 x = 2463534242;
+    for (u32 i : 0..2000000) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        v.push(x);
+    }
+    v.sort();
+    for (usize i : 1..v.len()) {
+        if (v[i - 1] > v[i]) { std::println("not sorted"); return 1; }
+    }
+    u64 total = cast<u64>(v[0]) + cast<u64>(v[v.len() / 2]) + cast<u64>(v[v.len() - 1]);
+    std::println(f"{total}");
+    return 0;
+}

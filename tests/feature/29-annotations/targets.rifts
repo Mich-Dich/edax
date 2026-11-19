@@ -1,0 +1,28 @@
+// feature 29: where annotations may be written, and what an annotation is.
+import std;
+
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+}
+
+annotation(std::meta::target::type, std::meta::target::function) struct tag { std::static_str text = ""; }
+
+struct not_an_annotation { }
+
+struct sensor {
+    @range{ .min = -40, .max = 125 } i16 temperature;
+    @tag u32 id;                                             //~ error[E3071]: '@tag' can't be written on a field
+}
+
+@range{ .min = 0, .max = 1 }                                 //~ error[E3071]: '@range' can't be written on a type
+struct wrong_target { }
+
+@tag
+@tag                                                         //~ error[E3072]: '@tag' is written twice here
+void twice() { }
+
+@not_an_annotation                                           //~ error[E3070]: 'not_an_annotation' is not an annotation
+void plain() { }
+
+void param(@tag u32 x) { }                                   //~ error[E3071]: '@tag' can't be written on a parameter

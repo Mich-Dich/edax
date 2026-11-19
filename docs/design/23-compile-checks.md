@@ -99,6 +99,9 @@ compile_time void  std::compile_note(std::format_args message);
 compile_time std::source_location std::location_of(<parameter>);
 compile_time std::static_str      std::type_name<T>();
 compile_time bool                 std::is_compile_time(<parameter>);   // block form only, see example 7
+compile_time std::static_str      std::literal_text(<parameter>);      // the argument's literal text: a string literal's
+                                                                       // value, an f-string's text with `{}` for each
+                                                                       // hole, or "" (spec 31)
 ```
 - **Warnings require an id.** An id is a **declared name**, not a string: a `compile_time std::diagnostic` constant, with a doc comment that explains it:
   ```rift
@@ -106,7 +109,7 @@ compile_time bool                 std::is_compile_time(<parameter>);   // block 
   /// Calls that are going away; each warning names the replacement.
   compile_time std::diagnostic deprecated = default;
   ```
-  Its full name is the id: `gfx::deprecated`. A misspelled id is an unknown name (a compile error), and a string where an id belongs is E4213. Users switch warnings per id: `riftc --warn=gfx::deprecated=off|error|on`. An id on an error is optional; `riftc explain <id>` shows the declaration's doc comment (std ids come with riftc; `gfx::deprecated` is looked up in `gfx.rifth`/`.rifts` under the current directory).
+  Its full name is the id: `gfx::deprecated`. A misspelled id is an unknown name (a compile error), and a string where an id belongs is E4213. Users switch warnings per id: `riftc --warn=gfx::deprecated=off|error|on`. An id on an error is optional; `riftc explain <id>` shows the declaration's doc comment (std ids come with riftc; `gfx::deprecated` is looked up in the `.rifth`/`.rifts` files under the current directory that declare namespace `gfx`). The id is the diagnostic's namespace path (see 30), not its module's.
 - Notes emitted during a check are attached to that check's error or warning, in whatever order they're called.
 - A **panic during compile-time evaluation** is a compile error with the panic's message.
 - Check evaluation has a step budget. Exceeding it is an error, which keeps builds fast (principle 9).

@@ -82,11 +82,16 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
 
 ### How riftc uses the settings
 - `optimization()`: LLVM's standard pipeline at `-O2` (`speed`) or `-Os` (`size`); none for `none`.
-- `debug_info()`: `line_tables` and `full` both give DWARF line tables (statement by statement) for every Rift function, enough for a debugger's breakpoints and backtraces. Variable information is not emitted yet.
+- `debug_info()`: `line_tables` gives DWARF 5 line tables (statement by statement) for every Rift function, including the standard library's, enough for a debugger's breakpoints, stepping and backtraces. `full` also describes locals, parameters, `this`, loop variables and `match` bindings with their types, so that a debugger shows variables:
+  - Built-in types are typedefs with their Rift names (`u32`, `f64`) of the matching C type; structs and classes are described from the backend's layout (base class first, then the vtable pointer or fields); simple enums are DWARF enumerations; an enum with payloads is `struct { tag; union { <alternative> ... } payload; }`.
+  - Modules are namespaces (`std::darray<u32>`, `geometry::point`). A function is named `module::type::name` (`std::darray<u32>::push`), and that is also its DWARF linkage name, so debuggers show it as written.
+  - The standard library's files point at `library/std` of the tree riftc was built from (when it still exists, otherwise at `/<std>/...`).
+  - The prologue has no line, as in C/C++ at `-O0`: stepping into a function stops at its first statement with the parameters in place.
+  - Building a value runs its type's field defaults in place (`default`, or fields left out of `T{...}`). Debug info describes that code as an inlined call of `<type>::default` located at the field declarations, the way C++ inlines a constructor, so Step Into walks `std::darray<T>`'s fields in `std.rifts`.
 - `overflow()`, `shifts()`, `panic()`: how `+ - *`, `<< >> bit(n)` and panics are compiled.
 - `bounds()`: the standard library's index checks are written as `if compile_time (std::build::current_mode().bounds() == std::build::bounds::panic) { run_time check ... }`.
 - `run_time_checks()`: applies to the program's own `run_time` checks; the library's index checks follow `bounds()`.
-- `link_time_optimization()` is read but has no effect yet (one LLVM module is compiled per program already).
+- `link_time_optimization()`: a program's Rift code is always one LLVM module; with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.
 - A mode's methods run at compile time without being marked `compile_time`: riftc reads them with its interpreter.
 
 ### Reading the mode in code

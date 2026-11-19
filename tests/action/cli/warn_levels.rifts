@@ -1,4 +1,4 @@
-// RUN: riftc check --diagnostic-format=short --warn=warn_levels::noisy=off --warn=warn_levels::strict=error %s
+// RUN: riftc check --diagnostic-format=short --warn=noisy=off --warn=strict=error %s
 // --warn switches the warnings of checks by their declared id (spec 23): `noisy` is off,
 // `strict` became an error, `plain` stays a warning.
 import std;

@@ -28,6 +28,18 @@ riftc build --list               # targets, modes and options
 Example programs for most features are in [`example/`](example/README.md):
 `cmake --build build --target examples` builds them into `build/example/bin`.
 
+The standard library is built for speed from the start: a SwissTable `hash_map`, a B-tree
+`tree_map`, small-string-optimized `string`, introsort and a stable merge sort. `bench/`
+compares it with libstdc++, Abseil and Boost (`python3 bench/run.py`, see
+[`bench/README.md`](bench/README.md)); it is within ~1.3x of the fastest C++ container on every
+benchmark and ahead on several.
+
+Threads (spec 27, 28): `std::thread::spawn`, `std::atomic`, `std::mutex`, `std::condition`,
+channels, `thread_local` and `std::thread_pool` (work stealing, parallel loops over chunks,
+deterministic reductions). **Data races are compile errors:** the compiler derives
+`std::sendable` / `std::shareable` from a type's fields, and a thread that borrows keeps what it
+borrows borrowed until it is joined. See `example/concurrency.rifts`.
+
 Known limits of 0.1.0: no cross compiling (`--target=`), steps run one after the other,
 `build.rifts` is evaluated on every run, debug info is line tables only, and
 `link_time_optimization()` has no effect yet.
@@ -103,5 +115,7 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 | `tests/run_tests.py` | Test runner for all three suites |
 | `tests/unit/`, `tests/feature/`, `tests/action/` | The test suites |
 | `scripts/test.sh` | Build + test in one command |
-| `examples/` | Example `.rifts` programs |
+| `examples/` | Example `.rifts` programs used in the docs and tests |
+| `example/` | Showcase programs (`--target examples`) |
+| `bench/` | Standard library benchmarks against C++ STL / Abseil / Boost |
 | `docs/design/` | Language specification (v0.7) |

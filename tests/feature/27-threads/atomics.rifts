@@ -1,0 +1,15 @@
+// feature 27: atomics name their memory order, and an order that doesn't fit the operation is a
+// compile error from the library's checks; atomics are always lock-free.
+import std;
+
+void orders() {
+    std::atomic<u32> a = default;
+    u32 x = a.load(std::memory_order::acquire);
+    u32 y = a.load(std::memory_order::release);                  //~ error[E4210]: an atomic load can't use 'release' ordering
+    a.store(1, std::memory_order::release);
+    a.store(1, std::memory_order::acquire_release);              //~ error[E4210]: an atomic store can't use 'acquire_release' ordering
+    _ = a.compare_exchange(0, 1, std::memory_order::acquire_release, std::memory_order::release);   //~ error[E4210]: a failed compare-exchange only reads
+    _ = a.fetch_wrapping_add(1, std::memory_order::relaxed);
+    std::atomic<u128> big = default;                             //~ error[E4210]: is not lock-free on this target
+    std::atomic<f64> real = default;                             //~ error[E4210]: atomics hold an integer, bool, char or std::raw_ptr
+}

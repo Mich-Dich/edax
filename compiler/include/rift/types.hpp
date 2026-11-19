@@ -12,7 +12,7 @@
 //                 (`std::option`, `std::result` and `std::exit_code` are real enums of module std.)
 //   type_param    `T` inside a template; checked only at instantiation, so treated like error
 //   type_value    `type`: the type of types used as compile-time values (spec 26)
-//   meta          `std::meta::field` / `std::meta::alternative`: compile-time-only reflection data
+//   meta          `std::meta::field` / `alternative` / `function` / `parameter`: compile-time-only reflection data
 //   pending       `std::none`, `std::ok(x)`: an alternative of a template enum whose template
 //                 arguments are not all known yet. Like a literal it takes them from context
 //                 (spec 08); `args` holds the known ones and null for the others.
@@ -24,6 +24,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -119,6 +120,12 @@ public:
     /// Where the type being instantiated right now is written (for the type-body checks of 23).
     [[nodiscard]] std::optional<Span> instantiation_site() const { return site_; }
     u128        value_bits(const Type* value_arg) const;
+    /// A template value argument of any compile-time-capable type (a `compile_time` parameter's
+    /// argument, spec 31: enums, `std::static_str`, structs), interned by its source-like text.
+    /// `payload` is the checker's value (a ct::Value), kept opaque here.
+    const Type* value_arg_of(const std::string& text, const Type* of, std::shared_ptr<const void> payload);
+    /// The payload of a value argument made by value_arg_of; null for integer and bool arguments.
+    [[nodiscard]] std::shared_ptr<const void> value_payload(const Type* value_arg) const;
 
     const Type* error() const { return error_; }
     const Type* untyped_int() const { return untyped_int_; }
@@ -133,6 +140,8 @@ public:
     const Type* type_value() const { return type_value_; }
     const Type* meta_field() const { return meta_field_; }
     const Type* meta_alternative() const { return meta_alternative_; }
+    const Type* meta_function() const { return meta_function_; }
+    const Type* meta_parameter() const { return meta_parameter_; }
 
     /// Size and alignment of a sized type (64-bit host). Null-safe; unknown types give {0, 1}.
     Layout layout(const Type* t);
@@ -168,6 +177,8 @@ private:
     ValueArgResolver                                            value_args_;
     std::map<std::pair<u128, const Type*>, const Type*>         value_args_made_;
     std::map<const Type*, u128>                                 value_of_;
+    std::map<std::pair<std::string, const Type*>, const Type*>  rich_values_made_;
+    std::map<const Type*, std::shared_ptr<const void>>          rich_value_of_;
     std::optional<Span>                                         site_;
     std::map<const ast::LambdaExpr*, const Type*>               closures_;
     std::map<std::pair<Kind, std::vector<const Type*>>, const Type*> callables_;
@@ -195,10 +206,15 @@ private:
     const Type* type_value_;
     const Type* meta_field_;
     const Type* meta_alternative_;
+    const Type* meta_function_;
+    const Type* meta_parameter_;
 };
 
 /// Source-like spelling: `u32`, `mut employee&`, `std::raw_ptr<u8>`, `{integer}`.
 std::string to_string(const Type* type);
+/// Like to_string, with every user type's module: `geometry::point`, `std::darray<shapes::circle>`.
+std::string qualified_name(const Type* type);
+std::string type_name(const Type* type, bool qualified);
 
 /// Whether `t` (references removed) is an instance of the std template `name` ("option",
 /// "result"): `std::option<u32>`.

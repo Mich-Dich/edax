@@ -1,0 +1,12 @@
+import std;
+import shapes::circle;
+import extra::more;
+
+void main() {
+    shapes::circle c = shapes::circle{ .radius = 2.0 } * 1.5;
+    f64 a = shapes::area(c);                                // overloads from two modules of one namespace
+    shapes::marker m = default;                             //~ error[E3065]: 'shapes::marker' is declared by two modules
+    shapes::circle::circle old = default;                   //~ error[E3025]: 'shapes::circle' has no member 'circle'
+    shapes::square s = default;                             //~ error[E3023]: declared in module 'shapes::square', which this file does not import
+    f64 p = shapes::pi();                                   //~ error[E3024]: 'shapes::pi' is private to its module
+}

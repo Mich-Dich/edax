@@ -35,7 +35,7 @@ riftc build --compile-commands  # writes compile_commands.json for IDEs (clangd 
 - `--root=DIR` names the project root (default: the current directory) and `--out-dir=DIR` the build directory (default: `<root>/build`).
 - A mode that relaxes a rule prints its note first (see 24). `riftc test` prints `PASS`/`FAIL` per test and fails when one fails.
 - Without `build.rifts`, `riftc build main.rifts` builds that one file as a program in `debug` mode.
-- **Current implementation:** steps run one after the other (not in parallel yet), Rift targets are rebuilt on every build (C objects are reused when newer than their source), and `build.rifts` is evaluated on every run (the recorded inputs are not used for caching yet). `--target=` (cross compiling) is not supported yet.
+- **Current implementation:** steps whose inputs other steps write run after them, all others in parallel; the C files of a target compile in parallel. A Rift target is rebuilt only when one of the files it was built from, its libraries, its mode or settings, or `riftc` itself changed (`<program>.inputs` records them); C objects are reused when newer than their source (headers are not tracked yet). `build.rifts` is evaluated on every run. `--target=` supports 64-bit Linux: `x86_64-linux-gnu`, `aarch64-linux-gnu`, `riscv64-linux-gnu`; it links with `<platform>-gcc` when installed, else `clang --target=<platform>` (which needs the platform's C library).
 - Build output goes to `build/<mode>/` (`build/<mode>/<platform>/` when cross-compiling).
 
 ### Targets
@@ -86,6 +86,7 @@ g.set_mode(vma, std::build::mode::release);           // always optimize this de
   compile_time bool validation = std::build::setting<bool>("vulkan_validation");
   ```
   Reading a setting the build didn't `set` for this target is a compile error, so there are no silently missing `#define`s.
+- **Per-file settings** (spec 31): `g.set_for_files(t, "net/*.rifts", name, value)` passes a value to the files of `t` matching a glob (relative to the directory of the target's root file; a glob that matches nothing is an error). Code reads it with `std::build::setting_at<T>(where, name)`, where `where` is a `std::call_site`: the file's value, else the target's (`g.set`), else `std::none`. Settings hold `bool`, integers and `std::static_str`.
 
 ### Custom steps: tools and generated files
 A step runs a program with **declared** inputs and outputs. The program is either a target of the same build (a Rift tool) or an external program:

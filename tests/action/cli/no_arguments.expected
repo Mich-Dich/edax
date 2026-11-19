@@ -15,6 +15,8 @@ commands:
   run <target>          build and run a program of ./build.rifts
   test [tests]          build and run the tests of ./build.rifts
   emit-llvm <file>      print the LLVM IR the program compiles to
+  insights <file>       list what the compiler does implicitly (stack, heap, drops, moves, ...) as JSON
+  expand <file> <type>  print a type with the members its annotations generate written out
   explain [code|id]     describe a diagnostic code or a warning id, or list all codes
 
 options:
@@ -33,6 +35,8 @@ options:
   --out-dir=DIR                     where a build.rifts build goes (default: <root>/build)
   --bin-dir=DIR                     where a build.rifts build puts its programs (default: <out-dir>/<mode>)
   --cc=COMPILER                     linker for build/run (default: $RIFT_CC, else cc)
+  --target=PLATFORM                 build for another platform: x86_64-linux-gnu, aarch64-linux-gnu,
+                                    riscv64-linux-gnu (links with PLATFORM-gcc, else clang --target)
   --all-functions                   generate every function, not only those main reaches (testing)
   -h, --help                        show this help
   -V, --version                     show the compiler version

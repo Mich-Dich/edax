@@ -1,0 +1,105 @@
+// RUN: riftc run %s
+// Annotations (spec 29): the std derive annotations, a user annotation read by generic code (a
+// small JSON writer), generated members on a template, and a validator generated from field
+// annotations.
+import std;
+
+@std::derive::formattable
+@std::derive::hashable
+@std::derive::ordered
+struct grid_cell {
+    i32 x;
+    i32 y;
+    bool operator==(grid_cell& other) = default;
+}
+
+@std::derive::formattable
+enum shape : u8 {
+    dot,
+    circle(f64),
+    cell(grid_cell),
+}
+
+@std::derive::formattable
+template<type T>
+struct pair {
+    T first;
+    T second;
+}
+
+namespace json {
+    annotation(std::meta::target::field) struct name { std::static_str text; }
+    annotation(std::meta::target::field) struct skip { }
+
+    template<type T>
+    std::string write_object(T& value) {
+        mut std::string out = std::string::from("{");
+        mut bool first = true;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (!f.has<json::skip>()) {
+                compile_time std::static_str key = f.annotation<json::name>().value_or(json::name{ .text = f.name }).text;
+                if (!first) {
+                    out.push_str(", ");
+                }
+                first = false;
+                out.push_str(std::format(f"\"{key}\": {f.get(value)}"));
+            }
+        }
+        out.push_str("}");
+        return out;
+    }
+}
+
+struct sensor_reading {
+    @json::name{ .text = "id" } u32 sensor_id;
+    i16 temperature;
+    @json::skip u64 cache_key = 0;
+}
+
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+}
+
+annotation(std::meta::target::type) struct validated {
+    generate {
+        std::result<void, std::static_str> validate() {
+            for compile_time (std::meta::field f : std::meta::fields<annotated>()) {
+                if compile_time (f.has<range>()) {
+                    compile_time range r = f.annotation<range>().expect("checked by has");
+                    if (cast<i64>(f.get(this)) < r.min || cast<i64>(f.get(this)) > r.max) {
+                        return std::error(f.name);
+                    }
+                }
+            }
+            return std::ok();
+        }
+    }
+}
+
+@validated
+struct motor_command {
+    @range{ .min = -1000, .max = 1000 } i32 rpm;
+    @range{ .min = 0, .max = 100 } u8 duty_percent;
+}
+
+void main() {
+    grid_cell c = grid_cell{ .x = 3, .y = -1 };
+    std::println(f"{c}");
+    mut std::hash_map<grid_cell, u32> visits = default;
+    visits.insert(c, 1);
+    visits.get_or_insert(grid_cell{ .x = 3, .y = -1 }, 0) += 1;
+    std::println(f"visits: {visits.len()} {visits[c]}");
+    std::println(f"{c < grid_cell{ .x = 3, .y = 0 }} {grid_cell{ .x = 4, .y = -9 } < c}");
+    std::println(f"{shape::dot} {shape::circle(2.5)} {shape::cell(c)} [{shape::circle(1.0):>12}]");
+    std::println(f"{pair<u32>{ .first = 1, .second = 2 }} {pair<std::str>{ .first = "a", .second = "b" }}");
+    sensor_reading r = sensor_reading{ .sensor_id = 7, .temperature = 21 };
+    std::println(json::write_object(r));
+    motor_command ok_cmd = motor_command{ .rpm = 500, .duty_percent = 30 };
+    motor_command bad_cmd = motor_command{ .rpm = 5000, .duty_percent = 30 };
+    std::println(f"{ok_cmd.validate().is_ok()} {bad_cmd.validate().is_ok()}");
+    match (bad_cmd.validate()) {
+        std::error(field) => std::println(f"out of range: {field}"),
+        _ => std::println("valid"),
+    }
+}

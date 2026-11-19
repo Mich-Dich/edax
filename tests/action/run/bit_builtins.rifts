@@ -1,0 +1,9 @@
+// RUN: riftc run %s
+// Bit builtins: std::trailing_zeros / leading_zeros / count_ones / rotate_left / rotate_right.
+import std;
+i32 main() {
+    u64 x = 0x80;
+    u8 z = 0;
+    std::println(f"{std::trailing_zeros(x)} {std::leading_zeros(x)} {std::count_ones(0xF0F0u32)} {std::trailing_zeros(z)} {std::rotate_left(0x80000001u32, 4):x} {std::rotate_right(1u8, 1)}");
+    return 0;
+}

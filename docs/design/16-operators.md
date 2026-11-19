@@ -65,7 +65,7 @@ u8  bad  = bit(8);                    // ERROR: 8 >= width of u8
 `std::bitset<N>` is the library type for bit arrays wider than one integer (see 20).
 
 ### Operator overloading
-Allowed for user types with the `operator` keyword, as a method or a free function:
+Allowed for user types with the `operator` keyword, as a method or a free function. A free `operator` function must be declared **in the same namespace and module as one of its operand types**, so only the module that declares a type can define its operators (see 30):
 ```rift
 std::filesystem::path operator/(std::filesystem::path& lhs, std::str rhs) { ... }
 bool operator==(employee& other) = default;

@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+TRACE bind:13 bound texture 4
+true false 2 0 true
+still running
+--- stderr
+ERROR bind:13 texture 0 is invalid
+FATAL checked_index:20 index 7 out of 5

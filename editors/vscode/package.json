@@ -1,22 +1,39 @@
 {
   "name": "rift-language",
   "displayName": "Rift Language",
-  "description": "Syntax highlighting for the Rift programming language (.rifts / .rifth)",
-  "version": "0.3.0",
+  "description": "Rift (.rifts / .rifth): syntax highlighting, build, step-through debugging, and code insights that show what the compiler does implicitly",
+  "version": "0.6.0",
   "publisher": "dominikm",
   "license": "MIT",
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rift",
+    "onDebugResolve:rift",
+    "onDebugDynamicConfigurations:rift",
+    "onDebugInitialConfigurations"
+  ],
+  "extensionDependencies": [
+    "vadimcn.vscode-lldb"
   ],
   "contributes": {
     "languages": [
       {
         "id": "rift",
-        "aliases": ["Rift", "rift"],
-        "extensions": [".rifts", ".rifth"],
+        "aliases": [
+          "Rift",
+          "rift"
+        ],
+        "extensions": [
+          ".rifts",
+          ".rifth"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -27,6 +44,527 @@
         "path": "./syntaxes/rift.tmLanguage.json",
         "embeddedLanguages": {
           "meta.embedded.interpolation.rift": "rift"
+        },
+        "tokenTypes": {
+          "meta.embedded.interpolation.rift": "other",
+          "punctuation.section.interpolation.begin.rift": "other",
+          "punctuation.section.interpolation.end.rift": "other",
+          "constant.character.escape.brace.rift": "string"
+        }
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "rift"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "rift",
+        "label": "Rift (LLDB)",
+        "languages": [
+          "rift"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "A .rifts file to build and debug, or an already built executable.",
+                "default": "${file}"
+              },
+              "target": {
+                "type": "string",
+                "description": "A program target of build.rifts (instead of 'program'). Built with 'riftc build <target>'."
+              },
+              "root": {
+                "type": "string",
+                "description": "The project root that holds build.rifts (default: the workspace folder).",
+                "default": "${workspaceFolder}"
+              },
+              "mode": {
+                "type": "string",
+                "description": "Build mode. 'debug' has full debug info (variables); 'release_with_debug_info' is optimized.",
+                "default": "debug"
+              },
+              "build": {
+                "type": "boolean",
+                "description": "Build with riftc before launching.",
+                "default": true
+              },
+              "buildArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Extra riftc arguments, e.g. [\"-DNAME=VALUE\"].",
+                "default": []
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Command line arguments of the program.",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory of the program.",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Environment variables added to the program's.",
+                "default": {}
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the program's entry point.",
+                "default": false
+              },
+              "terminal": {
+                "type": "string",
+                "enum": [
+                  "integrated",
+                  "external",
+                  "console"
+                ],
+                "description": "Where the program's input and output go.",
+                "default": "integrated"
+              },
+              "sourceMap": {
+                "type": "object",
+                "description": "Source path remapping (CodeLLDB), e.g. for a moved library/std.",
+                "default": {}
+              },
+              "initCommands": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Extra LLDB commands run before the target is created.",
+                "default": []
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "rift",
+            "request": "launch",
+            "name": "Debug current Rift file",
+            "program": "${file}",
+            "args": [],
+            "cwd": "${fileDirname}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Rift: Debug current file",
+            "description": "Build the open .rifts file with riftc and debug it.",
+            "body": {
+              "type": "rift",
+              "request": "launch",
+              "name": "Debug current Rift file",
+              "program": "^\"\\${file}\"",
+              "args": [],
+              "cwd": "^\"\\${fileDirname}\""
+            }
+          },
+          {
+            "label": "Rift: Debug a build.rifts target",
+            "description": "Build one program of build.rifts and debug it.",
+            "body": {
+              "type": "rift",
+              "request": "launch",
+              "name": "Debug ${1:app}",
+              "target": "${1:app}",
+              "args": [],
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "rift.debugFile",
+        "title": "Debug Rift File",
+        "category": "Rift",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "rift.runFile",
+        "title": "Run Rift File",
+        "category": "Rift",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rift.buildFile",
+        "title": "Build Rift File",
+        "category": "Rift"
+      },
+      {
+        "command": "rift.insights.toggle",
+        "title": "Toggle Code Insights",
+        "category": "Rift",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "rift.insights.choose",
+        "title": "Choose Code Insights…",
+        "category": "Rift"
+      },
+      {
+        "command": "rift.insights.refresh",
+        "title": "Refresh Code Insights",
+        "category": "Rift"
+      },
+      {
+        "command": "rift.insights.explain",
+        "title": "Explain Insight",
+        "category": "Rift"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "rift.runFile",
+          "when": "resourceLangId == rift && resourceExtname == .rifts",
+          "group": "navigation@0"
+        },
+        {
+          "command": "rift.debugFile",
+          "when": "resourceLangId == rift && resourceExtname == .rifts",
+          "group": "navigation@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rift.debugFile",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.runFile",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.buildFile",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.insights.toggle",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.insights.choose",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.insights.refresh",
+          "when": "editorLangId == rift"
+        },
+        {
+          "command": "rift.insights.explain",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "rift.insights.toggle",
+          "when": "resourceLangId == rift",
+          "group": "navigation@5"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Rift",
+      "properties": {
+        "rift.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to riftc. Empty: build/compiler/riftc in a workspace folder, else riftc on PATH."
+        },
+        "rift.standardLibraryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Folder with the standard library's source (library/std). Only needed when riftc was built from a checkout that has since moved. Empty: library/std in a workspace folder."
+        },
+        "rift.debug.buildMode": {
+          "type": "string",
+          "default": "debug",
+          "description": "Build mode used for debugging when the launch configuration has no 'mode'."
+        },
+        "rift.debug.stepIntoStandardLibrary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Step Into enters std:: functions (darray::push, string::from, ...), like stepping into a C++ library with sources."
+        },
+        "rift.insights.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show **code insights**: what the compiler does that the source doesn't spell out. Off by default; toggle with *Rift: Toggle Code Insights* (the eye in the editor title). Needs a riftc with the `insights` command."
+        },
+        "rift.insights.virtualLines": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show stack frames and end-of-scope drops as lines of their own above the code (CodeLens). Off: at the end of the line."
+        },
+        "rift.insights.inlineLabels": {
+          "type": "boolean",
+          "default": true,
+          "description": "At the end of each line, a short tag per fact (alloc, drop, move, copy24, tmp, conv, virt, dyn, chk), most important first. Hover a tag for the full explanation and the code it is about. Off: highlights only."
+        },
+        "rift.insights.show.stack": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Stack frames: every slot a function reserves when it is entered (variables of every scope, temporaries, drop flags)."
+        },
+        "rift.insights.show.heap": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Heap memory: calls that may allocate or free, with the call chain to the allocator."
+        },
+        "rift.insights.show.drops": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Drops: destructors that run at the end of a scope (in reverse order) or before return / break / continue."
+        },
+        "rift.insights.show.moves": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Moves: ownership leaving a variable (`move x`, returning a local)."
+        },
+        "rift.insights.show.copies": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Large copies: copy types over 16 bytes used by value."
+        },
+        "rift.insights.show.temporaries": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Temporaries: unnamed stack slots the compiler creates."
+        },
+        "rift.insights.show.conversions": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Implicit conversions: string → str, literal → string, upcasts, integer/pointer → bool in conditions, lambda → std::function."
+        },
+        "rift.insights.show.dispatch": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Dynamic dispatch: virtual and interface calls through a table."
+        },
+        "rift.insights.show.checks": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Run-time checks: overflow, shift and division checks that panic."
+        }
+      }
+    },
+    "problemMatchers": [
+      {
+        "name": "riftc",
+        "owner": "riftc",
+        "source": "riftc",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning|note)(?:\\[([^\\]]+)\\])?: (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
+      }
+    ],
+    "colors": [
+      {
+        "id": "rift.insights.stack.foreground",
+        "description": "Rift code insights: text and underline of 'stack'.",
+        "defaults": {
+          "dark": "#4FC1FFB0",
+          "light": "#0070C1C0",
+          "highContrast": "#4FC1FF",
+          "highContrastLight": "#0070C1"
+        }
+      },
+      {
+        "id": "rift.insights.stack.background",
+        "description": "Rift code insights: highlight of 'stack' ranges.",
+        "defaults": {
+          "dark": "#4FC1FF1C",
+          "light": "#0070C114",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.heap.foreground",
+        "description": "Rift code insights: text and underline of 'heap'.",
+        "defaults": {
+          "dark": "#F48771B0",
+          "light": "#C72E0FC0",
+          "highContrast": "#F48771",
+          "highContrastLight": "#C72E0F"
+        }
+      },
+      {
+        "id": "rift.insights.heap.background",
+        "description": "Rift code insights: highlight of 'heap' ranges.",
+        "defaults": {
+          "dark": "#F487711C",
+          "light": "#C72E0F14",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.drops.foreground",
+        "description": "Rift code insights: text and underline of 'drops'.",
+        "defaults": {
+          "dark": "#C586C0B0",
+          "light": "#AF00DBC0",
+          "highContrast": "#C586C0",
+          "highContrastLight": "#AF00DB"
+        }
+      },
+      {
+        "id": "rift.insights.drops.background",
+        "description": "Rift code insights: highlight of 'drops' ranges.",
+        "defaults": {
+          "dark": "#C586C01C",
+          "light": "#AF00DB14",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.moves.foreground",
+        "description": "Rift code insights: text and underline of 'moves'.",
+        "defaults": {
+          "dark": "#DCDCAAB0",
+          "light": "#795E26C0",
+          "highContrast": "#DCDCAA",
+          "highContrastLight": "#795E26"
+        }
+      },
+      {
+        "id": "rift.insights.moves.background",
+        "description": "Rift code insights: highlight of 'moves' ranges.",
+        "defaults": {
+          "dark": "#DCDCAA1C",
+          "light": "#795E2614",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.copies.foreground",
+        "description": "Rift code insights: text and underline of 'copies'.",
+        "defaults": {
+          "dark": "#CE9178B0",
+          "light": "#A31515C0",
+          "highContrast": "#CE9178",
+          "highContrastLight": "#A31515"
+        }
+      },
+      {
+        "id": "rift.insights.copies.background",
+        "description": "Rift code insights: highlight of 'copies' ranges.",
+        "defaults": {
+          "dark": "#CE91781C",
+          "light": "#A3151514",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.temporaries.foreground",
+        "description": "Rift code insights: text and underline of 'temporaries'.",
+        "defaults": {
+          "dark": "#9CDCFEB0",
+          "light": "#001080C0",
+          "highContrast": "#9CDCFE",
+          "highContrastLight": "#001080"
+        }
+      },
+      {
+        "id": "rift.insights.temporaries.background",
+        "description": "Rift code insights: highlight of 'temporaries' ranges.",
+        "defaults": {
+          "dark": "#9CDCFE1C",
+          "light": "#00108014",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.conversions.foreground",
+        "description": "Rift code insights: text and underline of 'conversions'.",
+        "defaults": {
+          "dark": "#4EC9B0B0",
+          "light": "#267F99C0",
+          "highContrast": "#4EC9B0",
+          "highContrastLight": "#267F99"
+        }
+      },
+      {
+        "id": "rift.insights.conversions.background",
+        "description": "Rift code insights: highlight of 'conversions' ranges.",
+        "defaults": {
+          "dark": "#4EC9B01C",
+          "light": "#267F9914",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.dispatch.foreground",
+        "description": "Rift code insights: text and underline of 'dispatch'.",
+        "defaults": {
+          "dark": "#B5CEA8B0",
+          "light": "#098658C0",
+          "highContrast": "#B5CEA8",
+          "highContrastLight": "#098658"
+        }
+      },
+      {
+        "id": "rift.insights.dispatch.background",
+        "description": "Rift code insights: highlight of 'dispatch' ranges.",
+        "defaults": {
+          "dark": "#B5CEA81C",
+          "light": "#09865814",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
+        }
+      },
+      {
+        "id": "rift.insights.checks.foreground",
+        "description": "Rift code insights: text and underline of 'checks'.",
+        "defaults": {
+          "dark": "#A0A0A0B0",
+          "light": "#6A6A6AC0",
+          "highContrast": "#A0A0A0",
+          "highContrastLight": "#6A6A6A"
+        }
+      },
+      {
+        "id": "rift.insights.checks.background",
+        "description": "Rift code insights: highlight of 'checks' ranges.",
+        "defaults": {
+          "dark": "#A0A0A01C",
+          "light": "#6A6A6A14",
+          "highContrast": "#00000000",
+          "highContrastLight": "#00000000"
         }
       }
     ]

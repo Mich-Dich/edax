@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+logs|/||
+INFO into a new directory
+true
+true
+--- stderr

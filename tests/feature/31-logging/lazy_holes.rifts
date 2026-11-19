@@ -1,0 +1,16 @@
+// feature 31: an f-string passed to a function's std::format_args parameter is evaluated only if
+// the function formats it, so its holes can't change anything; std::format_args is move-only.
+import std;
+
+void maybe(bool on, std::format_args message) { }
+
+u32 main() {
+    mut std::darray<u32> v = default;
+    v.push(1);
+    std::string s = std::string::from("x");
+    maybe(true, f"{v.len()} {s}");
+    maybe(true, f"{v.pop().value_or(0)}");            //~ error[E4251]: an f-string hole can't call a mut method
+    maybe(true, f"{std::format(f"{move s}")}");       //~ error[E4251]: an f-string hole can't move a value
+    std::println(f"{v.pop().value_or(0)}");           // std::println formats at once: allowed
+    return 0;
+}

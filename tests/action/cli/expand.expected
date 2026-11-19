@@ -1,0 +1,36 @@
+exit: 0
+--- stdout
+// motor_command as written in tests/action/cli/expand.rifts, with the members its annotations generate (spec 29)
+@validated
+@std::derive::hashable
+struct motor_command {
+    @range{ .min = -1000, .max = 1000 } i32 rpm;
+    @range{ .min = 0, .max = 100 } u8 duty_percent;
+}
+
+// generated:
+
+    // by @validated
+    bool valid() {
+        for compile_time (std::meta::field f : std::meta::fields<motor_command>()) {
+            if compile_time (f.has<range>()) {
+                compile_time range r = f.annotation<range>().expect("checked by has");
+                if (cast<i64>(f.get(this)) < r.min || cast<i64>(f.get(this)) > r.max) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // by @std::derive::hashable
+    u64 hash() override {
+        mut u64 h = std::hash_seed();
+        for compile_time (std::meta::field f : std::meta::fields<motor_command>()) {
+            h = std::hash_combine(h, std::hash(f.get(this)));
+        }
+        return h;
+    }
+
+// implements: std::hashable
+--- stderr

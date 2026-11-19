@@ -33,7 +33,7 @@ namespace rift::ct {
 __extension__ typedef __int128 i128;
 
 struct Value {
-    enum class Kind { void_, integer, floating, boolean, character, string, type, aggregate, enumeration, list, field, alternative };
+    enum class Kind { void_, integer, floating, boolean, character, string, type, aggregate, enumeration, list, field, alternative, function, parameter };
 
     Kind               kind      = Kind::void_;
     const types::Type* type      = nullptr;   // the Rift type of the value
@@ -43,9 +43,11 @@ struct Value {
     char32_t           character = 0;
     std::string        string;                 // strings: the bytes
     const types::Type* type_value = nullptr;   // type: the type it denotes; field/alternative: the reflected type
-    const sema::Symbol* symbol   = nullptr;   // enumeration: its alternative; field: the field; alternative: the alternative
+    const sema::Symbol* symbol   = nullptr;   // enumeration: its alternative; field: the field; alternative: the alternative;
+                                               // function: the method; parameter: the function it belongs to
     std::vector<Value> elements;               // aggregate: fields in declaration order; list; enumeration: 0 or 1 payload
     std::optional<Span> location;              // a std::source_location: the code it names (spec 23)
+    std::size_t         index = 0;             // parameter: its position
 
     static Value of_integer(u128 bits, const types::Type* t);
     static Value of_bool(bool b, const types::Type* t);
@@ -69,6 +71,7 @@ struct BuildTarget {
     std::vector<std::pair<std::string, bool>> include_dirs;     // dir, shared with linkers
     std::vector<std::pair<std::string, std::string>> defines;
     std::map<std::string, std::shared_ptr<const Value>> settings;
+    std::vector<sema::FileSetting>           file_settings;     // `g.set_for_files(t, pattern, name, value)`
     const sema::Symbol*                      mode = nullptr;    // `g.set_mode(t, ...)`
     Span                                     span;              // the call that added it
     std::vector<std::size_t>                 steps;             // `g.depends_on(t, s)`
@@ -128,6 +131,8 @@ struct Hooks {
     /// Makes sure a function's body is checked (on demand: it may be declared later). False if
     /// it cannot be (for example because checking it is in progress: a cycle).
     std::function<bool(const sema::Symbol* function)> check_function;
+    /// Makes sure a field's default value is checked (a struct declared later or elsewhere).
+    std::function<void(const sema::Symbol* field)> check_field;
     /// The value of a `compile_time` constant (global or local), evaluating it if needed. Null
     /// when it has no value (an error was reported, or it depends on a template parameter).
     std::function<std::shared_ptr<const Value>(const sema::Symbol* constant)> constant_value;
@@ -141,6 +146,15 @@ struct Hooks {
     /// The fields of a struct/class that are visible to code in the checker's current module
     /// (spec 26: reflection respects privacy).
     std::function<std::vector<const sema::Symbol*>(const types::Type* t)> visible_fields;
+    /// The methods of a type that code in the checker's current module can call: no destructors,
+    /// operators or method templates (spec 26).
+    std::function<std::vector<const sema::Symbol*>(const types::Type* t)> visible_methods;
+    /// `std::implements<T, I>()`: whether `t` satisfies the interface or constraint `iface`
+    /// (user interfaces, std::comparable, std::sendable, ...).
+    std::function<bool(const types::Type* t, const types::Type* iface)> implements;
+    /// Whether values of `t` borrow something (a reference, a view, a lambda with reference
+    /// captures, spec 12).
+    std::function<bool(const types::Type* t)> is_view;
 };
 
 class Evaluator {
@@ -166,6 +180,9 @@ public:
         std::function<bool(const sema::Symbol* param)> parameter_known;
         /// Where the argument of a parameter of `function` is written (`std::location_of(param)`).
         std::function<std::optional<Span>(const sema::Symbol* param)> parameter_site;
+        /// The text of a literal argument (`std::literal_text(param)`, spec 31): a string literal's
+        /// value, or an f-string's text with `{}` for each hole; none for other arguments.
+        std::function<std::optional<std::string>(const sema::Symbol* param)> parameter_text;
         /// Report nothing; give up silently instead (`compile_time run_time` checks).
         bool quiet = false;
         /// Where `std::compile_error` / `std::compile_warning` report (the call of an entry check).

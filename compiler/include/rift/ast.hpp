@@ -127,6 +127,7 @@ struct PathSegment {
 struct Path {
     std::vector<PathSegment> segments;
     Span                     span;
+    bool                     global = false;   // `::name`: starts at the global namespace (spec 30)
 };
 
 // --- types --------------------------------------------------------------------------------
@@ -300,6 +301,16 @@ struct StructLiteralExpr : Expr {
     StructLiteralExpr(Span s, TypePtr t) : Expr(ExprKind::struct_literal, s), type(std::move(t)) {}
 };
 
+/// `@range{ .min = 0, .max = 100 }` or `@json::skip` before a declaration, field, parameter or
+/// enum alternative (spec 29).
+struct AnnotationUse {
+    Path      path;                     // the annotation, as written
+    Span      span;                     // from '@' to the end
+    ExprPtr   value;                    // `A{ ... }` (without braces: `A{}`, every field takes its default)
+    SymbolRef symbol       = nullptr;   // the annotation struct (name resolution)
+    SymbolRef value_symbol = nullptr;   // a compile_time constant holding the value (name resolution)
+};
+
 enum class CaptureKind { copy, move, ref, mut_ref, init };
 
 struct Capture {
@@ -313,10 +324,18 @@ struct Capture {
 
 struct Param {
     bool        is_mut = false;   // `mut T x` (by-value mutable); `mut T&` sets ReferenceType::is_mut
+    /// `implicit T x` (spec 31): a call may leave the argument out; the compiler supplies
+    /// `T::from_call(<call site>)`.
+    bool        is_implicit = false;
+    /// `compile_time T x` (spec 31): the argument is a compile-time value and a constant in the
+    /// body. The parser adds a hidden template value parameter `$x` for it, so the function is
+    /// instantiated per distinct value.
+    bool        is_compile_time = false;
     TypePtr     type;
     std::string name;
     Span        span;
     SymbolRef   symbol = nullptr;
+    std::vector<AnnotationUse> annotations;   // `@name{...}` before the type (spec 29)
 };
 
 struct LambdaExpr : Expr {
@@ -329,6 +348,7 @@ struct LambdaExpr : Expr {
 
 struct IfExpr : Expr {
     bool     is_compile_time = false;
+    bool     from_call_else  = false;  // `f(...) else { ... }`: condition is `!f(...)` (spec 10)
     int      taken = -1;              // `if compile_time`: 0 = then, 1 = else, 2 = neither (set by the checker)
     ExprPtr  condition;
     BlockPtr then_block;
@@ -402,7 +422,7 @@ struct SimplePattern : Pattern {   // wildcard, error
 
 // --- statements ---------------------------------------------------------------------------
 
-enum class Storage { local, compile_time, static_ };
+enum class Storage { local, compile_time, static_, thread_local_ };
 
 /// `[mut] T name = init;`, `compile_time T name = init;`
 struct VariableStmt : Stmt {
@@ -507,10 +527,14 @@ struct Decl : Node<DeclKind> {
     std::string                name;
     Span                       name_span;
     std::string                doc;          // from `///` comments
+    std::string                ns;           // the enclosing `namespace a::b { }` of a file-scope declaration ("" = global, spec 30)
     bool                       is_private = false;   // file-scope `private`
     Access                     access     = Access::none;   // class member section
     bool                       is_template = false;
     std::vector<TemplateParam> template_params;
+    std::vector<AnnotationUse> annotations;   // `@name{...}` written before it (spec 29)
+    /// Set on members an annotation's `generate` block added (spec 29): the annotation use.
+    const AnnotationUse*       generated_by = nullptr;
     /// The parameters' symbols from the latest resolution of this declaration (name resolution).
     mutable std::vector<SymbolRef> template_param_symbols;
     using Node::Node;
@@ -529,6 +553,7 @@ struct FunctionDecl : Decl {
     bool               is_override     = false;
     bool               is_abstract     = false;
     bool               is_mut          = false;   // trailing `mut`
+    bool               is_move         = false;   // trailing `move`: consumes `this` (spec 06, 27)
     bool               is_compile_time = false;
     bool               is_run_time     = false;
     bool               is_unsafe       = false;
@@ -552,11 +577,33 @@ struct VariableDecl : Decl {
     VariableDecl(DeclKind k, Span s) : Decl(k, s) {}
 };
 
+/// `unsafe std::sendable(condition)` in a base list (spec 27): a thread-safety promise the
+/// compiler can't check.
+struct ThreadPromise {
+    bool                shareable = false;   // std::shareable (else std::sendable)
+    Path                path;                // as written
+    ExprPtr             condition;           // may be null: unconditional
+    Span                span;
+    std::optional<bool> value;               // the condition's value, once evaluated (per instance)
+};
+
 /// struct, class and interface share one node.
+/// `generate : interfaces { members }` in an annotation (spec 29).
+struct GenerateBlock {
+    Span                 span;
+    std::vector<TypePtr> bases;
+    std::vector<DeclPtr> members;
+};
+
 struct TypeDecl : Decl {
     bool                 is_open = false;
     bool                 is_view = false;
+    /// `annotation(std::meta::target::field, ...) struct` (spec 29): the targets as written.
+    bool                 is_annotation = false;
+    std::vector<Path>    annotation_targets;
+    std::unique_ptr<GenerateBlock> generate;
     std::vector<TypePtr> bases;
+    std::vector<ThreadPromise> promises;     // `unsafe std::sendable(...)` bases
     std::vector<DeclPtr> members;
     TypeDecl(DeclKind k, Span s) : Decl(k, s) {}
 };
@@ -566,6 +613,7 @@ struct EnumAlternative {
     Span        span;
     TypePtr     payload;   // may be null
     ExprPtr     value;     // explicit tag, may be null
+    std::vector<AnnotationUse> annotations;   // spec 29
 };
 
 struct EnumDecl : Decl {
@@ -581,9 +629,27 @@ struct CheckDecl : Decl {
 };
 
 /// One parsed source file.
+/// `namespace vk = gfx::vulkan;` (spec 30): a file-local short name for a namespace.
+struct NamespaceAlias {
+    std::string name;
+    Span        span;     // the alias name
+    Path        target;
+    std::string ns;       // the namespace block it is written in
+};
+
+/// One `namespace a::b {` opening (spec 30), for ownership and name-conflict checks.
+struct NamespaceBlock {
+    std::string path;     // "a::b"
+    Span        span;     // the written path
+};
+
 struct File {
-    FileId               file = 0;
-    std::vector<DeclPtr> decls;
+    FileId                      file = 0;
+    std::vector<DeclPtr>        decls;
+    std::vector<NamespaceAlias> aliases;
+    std::vector<NamespaceBlock> namespaces;
+    /// `@a{ ... };` after the imports: annotations of the file itself (spec 31).
+    std::vector<AnnotationUse>  annotations;
 };
 
 } // namespace rift::ast

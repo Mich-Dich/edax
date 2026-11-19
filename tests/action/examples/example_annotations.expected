@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+shop::item { name: tea, price_cents: 450, stock: 12 }
+tea < saw: false
+sold 3 of tea
+name        cents     
+tea         450       
+saw         2199      
+cash card(4242) voucher(SPRING)
+tools true
+2 sales
+unknown command 'refund'
+--- stderr

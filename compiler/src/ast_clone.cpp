@@ -25,7 +25,8 @@ template <typename T> std::unique_ptr<T> Cloner::opt(const std::unique_ptr<T>& p
 
 Path Cloner::path(const Path& p) {
     Path out;
-    out.span = p.span;
+    out.span   = p.span;
+    out.global = p.global;
     for (const PathSegment& s : p.segments) {
         PathSegment seg;
         seg.name              = s.name;
@@ -271,6 +272,7 @@ ExprPtr Cloner::expr(const Expr& e) {
         const auto& i         = e.as<IfExpr>();
         auto        out       = std::make_unique<IfExpr>(i.span);
         out->is_compile_time  = i.is_compile_time;
+        out->from_call_else   = i.from_call_else;
         out->condition        = opt(i.condition);
         out->then_block       = opt(i.then_block);
         out->else_branch      = opt(i.else_branch);
@@ -321,6 +323,7 @@ std::unique_ptr<FunctionDecl> Cloner::function(const FunctionDecl& f) {
     out->name            = f.name;
     out->name_span       = f.name_span;
     out->doc             = f.doc;
+    out->ns              = f.ns;
     out->is_private      = f.is_private;
     out->access          = f.access;
     out->result          = opt(f.result);
@@ -329,6 +332,7 @@ std::unique_ptr<FunctionDecl> Cloner::function(const FunctionDecl& f) {
     out->is_override     = f.is_override;
     out->is_abstract     = f.is_abstract;
     out->is_mut          = f.is_mut;
+    out->is_move         = f.is_move;
     out->is_compile_time = f.is_compile_time;
     out->is_run_time     = f.is_run_time;
     out->is_unsafe       = f.is_unsafe;
@@ -339,11 +343,13 @@ std::unique_ptr<FunctionDecl> Cloner::function(const FunctionDecl& f) {
     out->is_defaulted    = f.is_defaulted;
     for (const Param& p : f.params) {
         Param copy;
-        copy.is_mut = p.is_mut;
-        copy.type   = opt(p.type);
-        copy.name   = p.name;
-        copy.span   = p.span;
-        copy.symbol = fresh(p.symbol);
+        copy.is_mut          = p.is_mut;
+        copy.is_implicit     = p.is_implicit;
+        copy.is_compile_time = p.is_compile_time;
+        copy.type            = opt(p.type);
+        copy.name            = p.name;
+        copy.span            = p.span;
+        copy.symbol          = fresh(p.symbol);
         out->params.push_back(std::move(copy));
     }
     out->body = opt(f.body);

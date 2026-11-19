@@ -75,6 +75,7 @@ view struct str {
 - A type with a field of a view type must itself be declared `view`.
 - A template instantiated with a reference or view argument is a view type: `std::darray<std::str>` and `std::option<employee&>` can be locals but can't be returned (except by the rule above) or stored in fields.
 - `std::static_str` (string literals) is **not** a view. It points to static memory and can be stored anywhere.
+- **A view passed into a view keeps its borrow:** a function returning a view that has exactly one view parameter returns something that borrows what that parameter borrows. A view passed to a `mut` method of a view object (`parts.push(word)`) borrows for as long as that object is used. This is how a borrowing thread keeps its captures borrowed until it is joined (see 27).
 
 ## Rationale
 - **Nothing costs more than it looks:** in v0.2, copying an `employee` silently allocated a new `std::string`. Now every allocation is either a visible `.clone()` or a constructor/factory call.

@@ -1,58 +1,68 @@
 // The Rift standard library: module std::build. The graph's methods and the functions below are
 // carried out by riftc's compile-time interpreter; their bodies are never run.
 
-class graph {
-public:
-    compile_time std::build::target add_executable(std::build::rift_target t) mut { return std::build::target{}; }
-    compile_time std::build::target add_library(std::build::rift_target t) mut { return std::build::target{}; }
-    compile_time std::build::target add_test(std::build::rift_target t) mut { return std::build::target{}; }
-    compile_time std::build::target add_c_library(std::build::c_target t) mut { return std::build::target{}; }
-    compile_time void link(std::build::target user, std::build::target used) mut { }
-    compile_time void add_sources(std::build::target t, std::static_str file) mut { }
-    compile_time void add_include_dir(std::build::target t, std::static_str dir, std::build::visibility v) mut { }
-    compile_time void define(std::build::target t, std::static_str name, std::static_str value) mut { }
-    compile_time void add_mode(type mode) mut { }
-    compile_time void set_mode(std::build::target t, type mode) mut { }
+namespace std::build {
+    class graph {
+    public:
+        compile_time std::build::target add_executable(std::build::rift_target t) mut { return std::build::target{}; }
+        compile_time std::build::target add_library(std::build::rift_target t) mut { return std::build::target{}; }
+        compile_time std::build::target add_test(std::build::rift_target t) mut { return std::build::target{}; }
+        compile_time std::build::target add_c_library(std::build::c_target t) mut { return std::build::target{}; }
+        compile_time void link(std::build::target user, std::build::target used) mut { }
+        compile_time void add_sources(std::build::target t, std::static_str file) mut { }
+        compile_time void add_include_dir(std::build::target t, std::static_str dir, std::build::visibility v) mut { }
+        compile_time void define(std::build::target t, std::static_str name, std::static_str value) mut { }
+        compile_time void add_mode(type mode) mut { }
+        compile_time void set_mode(std::build::target t, type mode) mut { }
+
+        template<type T>
+        compile_time T option(std::static_str name, T fallback, std::static_str help) mut { return fallback; }
+
+        template<type T>
+        compile_time void set(std::build::target t, std::static_str name, T value) mut { }
+
+        template<type T>
+        compile_time void set_for_files(std::build::target t, std::static_str pattern, std::static_str name, T value) mut { }
+
+        compile_time std::static_str env(std::static_str name) { return ""; }
+        compile_time std::span<std::build::path> glob(std::static_str pattern) { std::compile_error("provided by riftc"); }
+        compile_time void add_sources(std::build::target t, std::span<std::build::path> files) mut { }
+        compile_time std::build::program find_program(std::static_str name) { return std::build::program{}; }
+        compile_time std::build::path output_path(std::build::path file) { return file; }
+        compile_time std::build::step add_step(std::build::step_spec spec) mut { return std::build::step{}; }
+        compile_time void add_argument(std::build::step s, std::static_str argument) mut { }
+        compile_time void add_argument(std::build::step s, std::build::path argument) mut { }
+        compile_time void add_input(std::build::step s, std::build::path file) mut { }
+        compile_time void add_output(std::build::step s, std::build::path file) mut { }
+        compile_time void depends_on(std::build::target t, std::build::step s) mut { }
+        compile_time std::build::target add_system_library(std::build::system_library lib) mut { return std::build::target{}; }
+        compile_time std::build::project dependency(std::build::git source) mut { return std::build::project{}; }
+        compile_time std::build::project dependency(std::build::local source) mut { return std::build::project{}; }
+        compile_time std::span<std::build::path> glob_in(std::build::project p, std::static_str pattern) { std::compile_error("provided by riftc"); }
+        compile_time std::build::target target_of(std::build::project p, std::static_str name) { return std::build::target{}; }
+        compile_time std::static_str host() { return ""; }
+        compile_time std::static_str target_platform() { return ""; }
+    }
+
+    struct path {
+        compile_time std::static_str stem() { return ""; }
+        compile_time std::static_str extension() { return ""; }
+        compile_time std::build::path with_extension(std::static_str extension) { return this; }
+    }
 
     template<type T>
-    compile_time T option(std::static_str name, T fallback, std::static_str help) mut { return fallback; }
+    compile_time T setting(std::static_str name) {
+        std::compile_error("std::build::setting is provided by riftc");
+    }
 
     template<type T>
-    compile_time void set(std::build::target t, std::static_str name, T value) mut { }
+    compile_time std::option<T> setting_at(std::call_site where, std::static_str name) {
+        std::compile_error("std::build::setting_at is provided by riftc");
+    }
 
-    compile_time std::static_str env(std::static_str name) { return ""; }
-    compile_time std::span<std::build::path> glob(std::static_str pattern) { std::compile_error("provided by riftc"); }
-    compile_time void add_sources(std::build::target t, std::span<std::build::path> files) mut { }
-    compile_time std::build::program find_program(std::static_str name) { return std::build::program{}; }
-    compile_time std::build::path output_path(std::build::path file) { return file; }
-    compile_time std::build::step add_step(std::build::step_spec spec) mut { return std::build::step{}; }
-    compile_time void add_argument(std::build::step s, std::static_str argument) mut { }
-    compile_time void add_argument(std::build::step s, std::build::path argument) mut { }
-    compile_time void add_input(std::build::step s, std::build::path file) mut { }
-    compile_time void add_output(std::build::step s, std::build::path file) mut { }
-    compile_time void depends_on(std::build::target t, std::build::step s) mut { }
-    compile_time std::build::target add_system_library(std::build::system_library lib) mut { return std::build::target{}; }
-    compile_time std::build::project dependency(std::build::git source) mut { return std::build::project{}; }
-    compile_time std::build::project dependency(std::build::local source) mut { return std::build::project{}; }
-    compile_time std::span<std::build::path> glob_in(std::build::project p, std::static_str pattern) { std::compile_error("provided by riftc"); }
-    compile_time std::build::target target_of(std::build::project p, std::static_str name) { return std::build::target{}; }
-    compile_time std::static_str host() { return ""; }
-    compile_time std::static_str target_platform() { return ""; }
-}
+    compile_time bool mode_is(type mode) { return false; }
 
-struct path {
-    compile_time std::static_str stem() { return ""; }
-    compile_time std::static_str extension() { return ""; }
-    compile_time std::build::path with_extension(std::static_str extension) { return this; }
-}
-
-template<type T>
-compile_time T setting(std::static_str name) {
-    std::compile_error("std::build::setting is provided by riftc");
-}
-
-compile_time bool mode_is(type mode) { return false; }
-
-compile_time std::build::mode::settings& current_mode() {
-    std::compile_error("std::build::current_mode is provided by riftc");
+    compile_time std::build::mode::settings& current_mode() {
+        std::compile_error("std::build::current_mode is provided by riftc");
+    }
 }

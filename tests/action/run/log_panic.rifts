@@ -1,0 +1,16 @@
+// RUN: riftc run %s
+// A panic is logged as a fatal record and every sink is flushed before the process aborts
+// (spec 31). The console sink leaves the panic to the runtime, which prints it on stderr.
+import std;
+
+u32 divide(u32 a, u32 b) { return a / b; }
+
+u32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make(), std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
+    std::log::info("before the panic");
+    u32 zero = 0;
+    std::println(f"{divide(1, zero)}");
+    std::log::info("never");
+    return 0;
+}

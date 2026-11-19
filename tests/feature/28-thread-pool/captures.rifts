@@ -1,0 +1,10 @@
+// feature 28: a parallel loop's body runs on several threads at once, so it must be
+// std::shareable: no 'mut &' captures.
+import std;
+
+void count(std::thread_pool& pool, usize n) {
+    mut u64 total = 0;
+    pool.for_index_chunks(n, 1024, [mut &total](usize from, usize to) { total += cast<u64>(to - from); });   //~ error[E4231]: runs the lambda on several threads at once
+    std::atomic<u64> counted = default;
+    pool.for_index_chunks(n, 1024, [&counted](usize from, usize to) { _ = counted.fetch_wrapping_add(cast<u64>(to - from), std::memory_order::relaxed); });
+}

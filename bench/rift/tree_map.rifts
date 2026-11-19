@@ -1,0 +1,31 @@
+// tree_map<u32, u32>: 1M random inserts, 2M lookups, ordered walk.
+import std;
+i32 main() {
+    mut std::tree_map<u32, u32> m = default;
+    mut u32 x = 2463534242;
+    for (u32 i : 0..1000000) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        m.insert(x, i);
+    }
+    mut u32 found = 0;
+    mut u32 y = 2463534242;
+    for (u32 i : 0..1000000) {
+        y ^= y << 13;
+        y ^= y >> 17;
+        y ^= y << 5;
+        if (m.contains(y)) { found += 1; }
+        if (m.contains(y +% 1)) { found += 1; }
+    }
+    mut u64 walk = 0;
+    mut u32 previous = 0;
+    mut bool sorted = true;
+    for (std::map_entry<u32, u32> e : m.entries()) {
+        if (e.key < previous) { sorted = false; }
+        previous = e.key;
+        walk +%= cast<u64>(e.value);
+    }
+    std::println(f"{m.len()} {found} {walk} {sorted}");
+    return 0;
+}

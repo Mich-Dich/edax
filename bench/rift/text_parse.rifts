@@ -1,0 +1,18 @@
+// Split a 1M-line CSV text and parse numbers.
+import std;
+i32 main() {
+    mut std::string text = default;
+    for (u32 i : 0..1000000) {
+        text.push_str(std::format(f"{i},{i % 97},name{i % 13}\n"));
+    }
+    mut u64 sum = 0;
+    mut usize lines = 0;
+    for (std::str line : text.as_str().split('\n')) {
+        if (line.is_empty()) { continue; }
+        std::darray<std::str> parts = line.split(',');
+        sum += parts[0].parse<u64>().value_or(0) + parts[1].parse<u64>().value_or(0);
+        if (parts[2].starts_with("name1")) { lines += 1; }
+    }
+    std::println(f"{sum} {lines}");
+    return 0;
+}

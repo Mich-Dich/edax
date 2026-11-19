@@ -1,0 +1,60 @@
+// RUN: riftc run %s
+// Namespaces (spec 30): nested and reopened blocks, lookup through the enclosing namespaces,
+// `::` for the global namespace, aliases, operators and templates declared in a namespace.
+import std;
+
+u32 scale() { return 1; }
+
+namespace geo {
+    struct vec2 {
+        f64 x = 0.0;
+        f64 y = 0.0;
+        f64 length_squared() { return this.x * this.x + this.y * this.y; }
+    }
+
+    vec2 operator+(vec2& a, vec2& b) { return vec2{ .x = a.x + b.x, .y = a.y + b.y }; }
+
+    enum shape : u8 {
+        dot,
+        circle(f64),
+    }
+
+    /// A template: its body finds `twice` where it is written, in geo.
+    template<type T>
+    T doubled(T value) { return twice(value); }
+
+    f64 twice(f64 v) { return v * 2.0; }
+}
+
+namespace geo::detail {
+    f64 area(shape s) {
+        return match (s) {
+            shape::dot => 0.0,
+            shape::circle(r) => 3.0 * r * r,
+        };
+    }
+}
+
+namespace geo {
+    // Reopened: sees everything declared in geo and geo::detail.
+    f64 total(vec2 v) { return v.length_squared() + detail::area(shape::circle(1.0)); }
+}
+
+namespace app {
+    u32 scale() { return 10; }
+    u32 both() { return app::scale() + ::scale(); }
+}
+
+namespace d = geo::detail;
+
+void main() {
+    geo::vec2 a = geo::vec2{ .x = 1.0, .y = 2.0 };
+    geo::vec2 b = a + geo::vec2{ .x = 2.0, .y = 2.0 };
+    std::println(f"{b.x} {b.y} {geo::total(b)}");
+    std::println(f"{d::area(geo::shape::circle(2.0))} {d::area(geo::shape::dot)}");
+    std::println(f"{geo::doubled<f64>(1.5)} {app::both()} {scale()}");
+    mut std::darray<geo::vec2> list = default;
+    list.push(a);
+    list.push(b);
+    std::println(f"{list.len()} {list[1].x}");
+}

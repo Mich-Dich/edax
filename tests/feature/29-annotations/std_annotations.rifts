@@ -1,0 +1,57 @@
+// feature 29: the standard library's annotations that the compiler acts on.
+import std;
+
+/// Kept for old callers.
+compile_time std::diagnostic legacy = default;
+
+@std::deprecated{ .message = "use new_api()" }
+void old_api() { }
+
+@std::deprecated
+struct old_point { i32 x = 0; }
+
+struct point {
+    @std::deprecated{ .message = "use y" } i32 x = 0;
+    i32 y = 0;
+}
+
+enum mode : u8 {
+    fast,
+    @std::deprecated{ .message = "use fast" } quick,
+}
+
+@std::must_use
+u32 compute() { return 1; }
+
+@std::must_use
+struct token { u32 id = 0; }
+
+token make_token() { return token{}; }
+
+@std::allow{ .id = std::deprecated }
+void quiet() {
+    old_api();
+}
+
+@std::inline_always
+u32 tiny() { return 1; }
+
+@std::cold
+void error_path() { }
+
+void uses() {
+    old_api();                                               //~ warning[W4210]: 'old_api' is deprecated: use new_api()
+    old_point p = default;                                   //~ warning[W4210]: 'old_point' is deprecated
+    point q = default;
+    i32 v = q.x;                                             //~ warning[W4210]: 'x' is deprecated: use y
+    mode m = mode::quick;                                    //~ warning[W4210]: 'quick' is deprecated: use fast
+    compute();                                               //~ error[E4150]: the result of 'compute' must be used
+    _ = compute();
+    make_token();                                            //~ error[E4150]: the 'token' returned here must be used
+    u32 t = tiny();
+    error_path();
+}
+
+@std::test                                                   //~ error[E4210]: a test takes no parameters, but 'not_a_test' has 1
+u32 not_a_test(u32 x) { return x; }
+//~^^ error[E4210]: a test returns nothing, but 'not_a_test' returns a value

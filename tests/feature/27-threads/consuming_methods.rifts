@@ -1,0 +1,17 @@
+// feature 06/27: a method ending in 'move' consumes 'this'; it needs a value the caller owns.
+import std;
+
+class ticket {
+public:
+    u32 id = 0;
+    u32 redeem() move { return this.id; }
+}
+
+struct wallet { ticket t = default; }
+
+void spend(ticket& borrowed, ticket owned, mut wallet& w) {
+    u32 a = owned.redeem();
+    u32 b = ticket{ .id = 3 }.redeem();         // a temporary
+    u32 c = borrowed.redeem();                  //~ error[E4220]: 'redeem' consumes the object it is called on, but 'borrowed' is a reference
+    u32 d = w.t.redeem();                       //~ error[E4220]: it is part of another value
+}

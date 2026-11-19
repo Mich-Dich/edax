@@ -1,0 +1,25 @@
+// feature 30: who may declare what. A name is a namespace or a declaration, never both; nothing
+// can be added to std; a free operator lives with one of its operand types.
+import std;
+
+namespace std {                                   //~ error[E3061]: namespace 'std' belongs to the standard library
+    u32 helper() { return 0; }
+}
+
+namespace gfx {
+    struct window { u32 id = 0; }                 //~ error[E3062]: 'gfx::window' is both a namespace and a struct
+    namespace window { }
+}
+
+namespace math {
+    struct vec { f64 x = 0.0; }
+    vec operator*(vec& v, f64 k) { return vec{ .x = v.x * k }; }
+}
+
+namespace other {
+    math::vec operator+(math::vec& a, math::vec& b) { return a; }   //~ error[E3066]: 'operator+' is declared away from its operand types
+}
+
+void main() {
+    math::vec v = math::vec{ .x = 1.0 } * 2.0;
+}

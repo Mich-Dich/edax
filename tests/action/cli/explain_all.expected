@@ -53,6 +53,12 @@ E2030  error    malformed format string
 E2031  error    a check says when it runs: 'compile_time' or 'run_time'
 E2032  error    a block-form check is 'compile_time' only
 E2033  error    'extern' names its language: 'extern(std::build::language::c)'
+E2034  error    malformed namespace block or alias
+E2035  error    malformed annotation declaration or generate block
+E2036  error    'implicit' and 'compile_time' parameters belong to function declarations
+E2037  error    implicit parameters come after every ordinary parameter
+E2038  error    a file annotation stands after the imports and before the first declaration
+E2039  error    'else' after something that isn't a call
 E3001  error    cannot find module
 E3002  error    import cycle
 E3003  error    module has no header and cannot be imported
@@ -96,6 +102,19 @@ E3047  error    not a base class of this class
 E3048  error    'abstract' methods are 'virtual' and have no body
 E3049  error    destructor name does not match the class
 E3050  error    lambda uses a local it does not capture
+E3060  error    name found in more than one enclosing namespace
+E3061  error    namespace belongs to another project
+E3062  error    a name is either a namespace or a declaration, not both
+E3063  error    a library declares its names in a namespace
+E3064  error    invalid namespace alias
+E3065  error    name declared by two modules in the same namespace
+E3066  error    a free operator is declared with one of its operand types
+E3070  error    not an annotation
+E3071  error    annotation written on a target it doesn't allow
+E3072  error    the same annotation twice on one declaration
+E3073  error    annotations are written in the header
+E3074  error    a generate block on a type that can't have generated methods
+E3075  error    a generated member conflicts with another member
 E4001  error    value has no type from context
 E4002  error    literal does not fit in its type
 E4003  error    an integer literal never becomes a float
@@ -144,6 +163,7 @@ E4160  error    cannot deduce template argument
 E4161  error    template argument does not satisfy the constraint
 E4162  error    a constrained template uses something its constraints don't provide
 E4170  error    format spec does not fit the value's type
+E4171  error    value can't be printed in an f-string
 E4180  error    wrong number of template arguments
 E4190  error    '?' needs a std::result or std::option
 E4191  error    '?' does not fit the function's return type
@@ -157,6 +177,14 @@ E4213  error    a diagnostic id must be a declared 'std::diagnostic'
 E4215  error    a build mode allows undefined behaviour without saying so
 E4216  error    build.rifts has no build function
 E4214  error    a method of a template instance that does not compile is used
+E4220  error    a consuming ('move') method needs a value the caller owns
+E4230  error    a value that can't be moved to another thread
+E4231  error    a value that can't be shared between threads
+E4232  error    a thread-safety promise ('unsafe std::sendable') is not allowed here
+E4240  error    an annotation's field has a type that compile-time code can't hold
+E4250  error    the type of an implicit parameter must implement std::implicit<T>
+E4251  error    an f-string hole can't change anything (it may never be evaluated)
+E4252  error    'else' after a call that doesn't return 'bool'
 E5001  error    value of a non-copy type would be copied implicitly
 E5002  error    use of a moved value
 E5010  error    references cannot be stored in fields
@@ -167,6 +195,7 @@ E5015  error    a std::function cannot hold a lambda with reference captures
 E5020  error    the same value is passed as 'mut' and as another argument
 E5021  error    container changed while a loop borrows it
 E5022  error    value changed while a reference to it is in use
+E5023  error    value used while something borrows it mutably
 E5030  error    type cannot be cloned
 E6001  error    not supported by code generation yet
 E6002  error    the program has no 'main' function

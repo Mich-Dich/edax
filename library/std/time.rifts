@@ -1,0 +1,80 @@
+// The Rift standard library: module std::time.
+
+namespace std::time {
+    private struct timespec {
+        i64 seconds = 0;
+        i64 nanos = 0;
+    }
+
+    private extern(std::build::language::c) i32 clock_gettime(i32 clock, std::raw_ptr<mut timespec> out);
+
+    // `struct tm` of C: nine ints, then (glibc) a long and a pointer.
+    private struct calendar {
+        i32 second = 0;
+        i32 minute = 0;
+        i32 hour = 0;
+        i32 day = 0;
+        i32 month = 0;
+        i32 year = 0;
+        i32 weekday = 0;
+        i32 yearday = 0;
+        i32 dst = 0;
+        i64 gmtoff = 0;
+        u64 zone = 0;
+    }
+
+    private extern(std::build::language::c) std::raw_ptr<u8> localtime_r(std::raw_ptr<i64> seconds, std::raw_ptr<mut calendar> out);
+
+    private compile_time i32 clock_monotonic = 1;
+    private compile_time i32 clock_realtime = 0;
+
+    struct wall_time {
+        static wall_time now() {
+            mut timespec t = default;
+            unsafe { _ = clock_gettime(clock_realtime, mut &t); }
+            return wall_time{ .seconds = t.seconds, .nanos = cast::saturate<u32>(t.nanos) };
+        }
+
+        civil_time local() {
+            mut calendar c = default;
+            i64 s = this.seconds;
+            unsafe { _ = localtime_r(&s, mut &c); }
+            return civil_time{
+                .year = c.year + 1900,
+                .month = cast::saturate<u8>(c.month + 1),
+                .day = cast::saturate<u8>(c.day),
+                .hour = cast::saturate<u8>(c.hour),
+                .minute = cast::saturate<u8>(c.minute),
+                .second = cast::saturate<u8>(c.second),
+                .microsecond = this.nanos / 1000,
+            };
+        }
+    }
+
+    struct duration {
+        static duration nanoseconds(u64 n) { return duration{ .nanos = n }; }
+        static duration microseconds(u64 n) { return duration{ .nanos = std::saturating_mul(n, 1000) }; }
+        static duration milliseconds(u64 n) { return duration{ .nanos = std::saturating_mul(n, 1000000) }; }
+        static duration seconds(u64 n) { return duration{ .nanos = std::saturating_mul(n, 1000000000) }; }
+
+        u64 as_nanoseconds() { return this.nanos; }
+        u64 as_microseconds() { return this.nanos / 1000; }
+        u64 as_milliseconds() { return this.nanos / 1000000; }
+        f64 as_seconds() { return cast::round<f64>(this.nanos) / 1000000000.0; }
+    }
+
+    struct instant {
+        static instant now() {
+            mut timespec t = default;
+            unsafe { _ = clock_gettime(clock_monotonic, mut &t); }
+            return instant{ .nanos = cast::saturate<u64>(t.seconds) * 1000000000 + cast::saturate<u64>(t.nanos) };
+        }
+
+        duration elapsed() { return instant::now().since(this); }
+
+        duration since(instant earlier) {
+            if (earlier.nanos >= this.nanos) { return duration{}; }
+            return duration{ .nanos = this.nanos - earlier.nanos };
+        }
+    }
+}

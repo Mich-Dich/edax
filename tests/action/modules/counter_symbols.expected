@@ -4,7 +4,7 @@ module counter
   header: tests/feature/09-modules/counter_project/counter.rifth
   source: tests/feature/09-modules/counter_project/counter.rifts
   imports: std
-  class counter
+  class counter::counter
     public method get() -> u32  [header, defined in source]
     public method inc() mut -> void  [header, defined in source]
     public static method starting_at(u32) -> counter  [header, defined in source]
@@ -12,10 +12,10 @@ module counter
     private field value : u32 = ...
     private field history : u32 = ...
     layout: value history
-  enum mode : u8
+  enum counter::mode : u8
     up
     down
-  compile_time default_step : u32
-  fn twice(u32) -> u32  [header, defined in source]
-  private fn step(u32) -> u32
+  compile_time counter::default_step : u32
+  fn counter::twice(u32) -> u32  [header, defined in source]
+  private fn counter::step(u32) -> u32
 --- stderr

@@ -17,7 +17,7 @@
   std::shared_ptr<config> s = std::shared_ptr<config>::make(load_config());
   std::shared_ptr<config> s2 = s.clone();                                               // count + 1
   ```
-- Access: `*p` and `p->member` (the smart pointers define `operator*`, see 16). A `mut std::unique_ptr<T>` allows changes to the pointee. A `std::shared_ptr<T>` gives **read-only** access to its pointee; shared mutation needs a thread-safe wrapper such as `std::shared_ptr<std::mutex<T>>` (see 22).
+- Access: `*p` and `p->member` (the smart pointers define `operator*`, see 16). A `mut std::unique_ptr<T>` allows changes to the pointee. A `std::shared_ptr<T>` gives **read-only** access to its pointee; shared mutation needs a synchronized type such as `std::shared_ptr<std::mutex<T>>` (see 27). Its reference count is always atomic, so a `shared_ptr` can be cloned from any thread; there is no second, single-threaded variant.
 - Smart pointers to interfaces (`std::unique_ptr<printable>`) are fat pointers (see 07).
 - A `std::unique_ptr<circle>` converts implicitly to a `std::unique_ptr<shape>` when `circle` derives from `shape` (likewise `shared_ptr` and `weak_ptr`), like `circle&` → `shape&`. Destroying it runs `circle`'s destructor: the destructor of an `open` class is virtual (see 07).
 - `std::shared_ptr<T>::weak()` makes a `std::weak_ptr<T>`; `shared.owners()` is the number of owners.
@@ -45,7 +45,8 @@ if (p) {                         // OK: contextual bool
 1. Dereferencing a `std::raw_ptr`, and pointer arithmetic (`.offset(n)`)
 2. `cast::reinterpret<T>(x)` (see 17)
 3. Calling an `unsafe` function, including all `extern` functions
-4. Accessing a `static mut` that isn't a thread-safe type (see 03)
+4. Accessing a `static mut` (see 03)
+5. Promising thread safety the compiler can't check: `class x : unsafe std::sendable` (see 27)
 
 Functions whose callers must follow a contract are declared `unsafe`:
 ```rift
@@ -66,6 +67,14 @@ set of compiler intrinsics in `std::raw`; all of them require `unsafe`:
 | `std::raw::drop(p)` | Destroys the value at `*p` in place |
 | `std::raw::copy(to, from, n)` | Copies `n` values bit by bit; the ranges may overlap |
 | `std::raw::str_from(p, n)` | The `n` bytes at `p` as a `std::str` (the caller vouches that they are UTF-8) |
+| `std::raw::atomic_load(p, order)`, `atomic_store(p, v, order)`, `atomic_exchange(p, v, order)` | Atomic access to an integer, `bool`, `char` or raw pointer at `p` (spec 27); `p` may be a `std::raw_ptr<T>`: synchronized types change through immutable references |
+| `std::raw::atomic_compare_exchange(p, expected, desired, success, failure, weak)` | If `*p == *expected`, stores `desired` and returns `true`; otherwise writes the value found to `*expected` and returns `false` |
+| `std::raw::atomic_fetch_add/sub/and/or/xor(p, v, order)` | Read-modify-write (wrapping); returns the old value |
+| `std::raw::atomic_fence(order)` | A fence |
+| `std::raw::futex_wait(p, expected)`, `futex_wake(p, count)` | Sleep while the `u32` at `p` is `expected`; wake up to `count` sleepers (spurious wake-ups possible). What the library's mutex, condition, channels and thread pool sleep on |
+| `std::raw::spin_hint()` | `pause` (x86) / `yield` (ARM) in a busy-wait loop |
+
+A memory order that is not a compile-time value makes the operation sequentially consistent (always correct); the library's checks make every order a constant.
 
 `std::raw::array<T, N>` is `N` values of `T` stored inline, the storage of `std::array` and
 `std::bitset` (`N` is a compile-time `usize`, e.g. `(N + 63) / 64`). It has no methods; the library

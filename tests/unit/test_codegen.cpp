@@ -34,7 +34,7 @@ bool contains(const std::string& text, const std::string& part) { return text.fi
 TEST_CASE("codegen: a program gets a C main that calls the Rift main") {
     Generated g = generate("u32 main() { return 0; }");
     CHECK_EQ(g.codes, std::string());
-    CHECK(contains(g.ir, "define i32 @r_4main4main()"));
+    CHECK(contains(g.ir, "define internal i32 @r_4main4main()"));
     CHECK(contains(g.ir, "define i32 @main(i32 %0, ptr %1)"));
     CHECK(contains(g.ir, "call i32 @rift_exit_status("));
 }
@@ -45,20 +45,20 @@ TEST_CASE("codegen: only functions reachable from main are generated") {
     CHECK(!contains(g.ir, "@r_4main6unused"));
 }
 
-TEST_CASE("codegen: names are length-prefixed per module, type and overload") {
-    Generated g = generate({{"main.rifts", "import geo::shapes;\nu32 main() { return geo::shapes::f(1u32) + geo::shapes::f(true); }\n"},
-                            {"geo/shapes.rifth", "u32 f(u32 x);\nu32 f(bool b);\n"},
-                            {"geo/shapes.rifts", "u32 f(u32 x) { return x; }\nu32 f(bool b) { return 0; }\n"}});
+TEST_CASE("codegen: names are length-prefixed per module, namespace, type and overload") {
+    Generated g = generate({{"main.rifts", "import geo::shapes;\nu32 main() { return geo::f(1u32) + geo::f(true); }\n"},
+                            {"geo/shapes.rifth", "namespace geo {\nu32 f(u32 x);\nu32 f(bool b);\n}\n"},
+                            {"geo/shapes.rifts", "namespace geo {\nu32 f(u32 x) { return x; }\nu32 f(bool b) { return 0; }\n}\n"}});
     CHECK_EQ(g.codes, std::string());
-    CHECK(contains(g.ir, "@r_3geo6shapes1f_0("));
-    CHECK(contains(g.ir, "@r_3geo6shapes1f_1("));
+    CHECK(contains(g.ir, "@r_3geo6shapes3geo1f_0("));
+    CHECK(contains(g.ir, "@r_3geo6shapes3geo1f_1("));
 }
 
 TEST_CASE("codegen: methods take their object by pointer") {
     Generated g = generate("struct c { u32 v = 0; void inc() mut { this.v += 1; } }\n"
                            "u32 main() { mut c x = c{}; x.inc(); return x.v; }");
     CHECK_EQ(g.codes, std::string());
-    CHECK(contains(g.ir, "define void @r_4main1c3inc(ptr"));
+    CHECK(contains(g.ir, "define internal void @r_4main1c3inc(ptr"));
     CHECK(contains(g.ir, "call void @r_4main1c3inc(ptr"));
 }
 
@@ -82,9 +82,9 @@ TEST_CASE("codegen: operands with side effects are evaluated left to right") {
 TEST_CASE("codegen: missing main and unsupported constructs are errors") {
     CHECK_EQ(generate("u32 helper() { return 0; }").codes, std::string("E6002"));
     CHECK_EQ(generate("void main() { auto f = [](u32 x) { return x; }; }").codes, std::string());   // lambdas generate
-    CHECK_EQ(generate("import std;\nvoid main() { std::mutex<u32> m = default; }").codes, std::string("E6001"));
+    CHECK_EQ(generate("extern(std::build::language::cpp) void f();\nvoid main() { unsafe { f(); } }").codes, std::string("E6001"));
     // Unsupported code that main never reaches is fine.
-    CHECK_EQ(generate("import std;\nvoid unused() { std::mutex<u32> m = default; }\nvoid main() { }").codes,
+    CHECK_EQ(generate("extern(std::build::language::cpp) void f();\nvoid unused() { unsafe { f(); } }\nvoid main() { }").codes,
              std::string());
 }
 
@@ -146,7 +146,7 @@ TEST_CASE("driver: emit-llvm prints the module") {
     std::filesystem::path src = write_program("tiny.rifts", "void main() { }\n");
     DriverRun r = drive({"emit-llvm", src.string()});
     CHECK_EQ(r.status, 0);
-    CHECK(contains(r.out, "define void @r_4tiny4main()"));
+    CHECK(contains(r.out, "define internal void @r_4tiny4main()"));
     CHECK(contains(r.out, "define i32 @main(i32 %0, ptr %1)"));
     std::filesystem::remove_all(src.parent_path());
 }

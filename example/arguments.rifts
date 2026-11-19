@@ -1,0 +1,58 @@
+
+import std;
+
+
+// FORWARD DECLARATIONS ================================================================================================
+
+// MACROS ==========================================================================================================
+
+// TYPES ===========================================================================================================
+
+enum app_error : u8 {
+    none = 0,
+    argument_error,
+}
+
+// CONSTANTS =======================================================================================================
+
+
+// Value of an argument should be asigned by the parser
+
+std::array<std::cl_arg::argument_spec> specs = {
+
+    [required = 0]       // says the the argument at a certain position must be THIS, else error
+    {
+        .long_name = "",
+        .short_name = "",
+        .value = std::filesystem::path(),     // from default the type should be deduced, here a path
+        .help_test = "a long explanation of what this argument does and what it needs",
+    },
+
+    [position=0]       // says the the argument at a certain position must be THIS, else error
+    {
+        .long_name = "",
+        .short_name = "",
+        .value = 0u32,                      // from default the type should be deduced, here a u32
+        .help_test = "a long explanation of what this argument does and what it needs",
+    }
+};
+
+// STATIC VARIABLES ================================================================================================
+
+// FUNCTION IMPLEMENTATION =========================================================================================
+
+app_error main(std::span<std::str> args) {
+
+    std::span<> std::cl_arg::parse(args);
+
+    // whatever
+
+}
+
+// CLASS IMPLEMENTATION ============================================================================================
+
+// CLASS PUBLIC ====================================================================================================
+
+// CLASS PROTECTED =================================================================================================
+
+// CLASS PRIVATE ===================================================================================================

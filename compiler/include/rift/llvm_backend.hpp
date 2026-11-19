@@ -19,6 +19,19 @@
 
 namespace rift {
 
+/// Something the compiler does that the source does not spell out (or only hints at): a stack
+/// slot, a heap allocation, a drop at the end of a scope, a move, a copy, a temporary, an implicit
+/// conversion, a virtual call, a run-time check. `riftc insights` lists them for editors.
+struct Insight {
+    std::string category;    // stack, heap, drops, moves, copies, temporaries, conversions, dispatch, checks
+    std::string kind;        // finer: frame, alloc, free, drop, move, copy, ...
+    Span        span;        // where it happens
+    std::string placement;   // "range": highlight span; "above": a line of its own above span's line;
+                             // "after": text at the end of span's line
+    std::string message;     // one line
+    std::string detail;      // more, for a hover (Markdown)
+};
+
 struct LlvmOptions {
     /// Generate every non-template function in the entry module, not only those reachable from
     /// `main`. For testing the backend on code that is never run.
@@ -27,6 +40,11 @@ struct LlvmOptions {
     bool panic_trap = false;
     /// The mode's debug_info() is not `none`: DWARF line tables for every Rift function.
     bool debug_info = false;
+    /// The mode's debug_info() is `full`: also locals, parameters, `this` and their types, so
+    /// that a debugger can show variables (needs debug_info).
+    bool debug_variables = false;
+    /// When set, the backend lists what it does implicitly here (`riftc insights`).
+    std::vector<Insight>* insights = nullptr;
 };
 
 /// How the object code is made (the mode's settings, spec 24).
@@ -42,6 +60,13 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
 
 /// Compiles LLVM IR text to an object file for the host and links an executable at `out_path`
 /// with `linker` (for example "cc"). Returns false and sets `error` on failure.
+/// Compiles for `platform` (an LLVM triple such as "aarch64-linux-gnu", spec 25 `--target=`);
+/// empty: the host. False with `error` set when riftc can't compile for it.
+bool set_build_target(const std::string& platform, std::string& error);
+
+/// Whether programs built for the current target can run here.
+bool target_is_host();
+
 bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
                       const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});
 

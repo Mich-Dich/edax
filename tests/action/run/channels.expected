@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+1090 bytes
+true false
+true false
+false 7 true
+woke with 42
+--- stderr

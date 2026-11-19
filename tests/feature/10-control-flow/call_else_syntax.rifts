@@ -1,0 +1,6 @@
+// spec 10: only a call may be followed by 'else'.
+u32 main() {
+    bool b = true;
+    b else { return 1; }      //~ error[E2039]: 'else' without 'if': only a call may be followed by 'else { ... }'
+    return 0;
+}

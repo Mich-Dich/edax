@@ -1,0 +1,26 @@
+// feature 29: an annotation's checks run at every place it is written, with `annotation` (its
+// value there) and `annotated` (what it is written on); failures are reported at the '@'.
+import std;
+
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+    compile_time check (annotation.min <= annotation.max)
+        else f"@range: min ({annotation.min}) is larger than max ({annotation.max})";
+    compile_time check {
+        compile_time type t = annotated.type;
+        if (!std::is_integer<t>()) {
+            std::compile_error(f"@range works on integer fields; '{annotated.name}' is a {std::type_name<t>()}");
+        }
+    }
+}
+
+annotation(std::meta::target::field) struct holds_string {
+    std::string text;                                        //~ error[E4240]: an annotation's field can't be 'std::string'
+}
+
+struct sensor {
+    @range{ .min = -40, .max = 125 } i16 temperature;
+    @range{ .min = 10, .max = 1 } u8 level;                  //~ error[E4210]: @range: min (10) is larger than max (1)
+    @range{ .min = 0, .max = 1 } f64 ratio;                  //~ error[E4210]: @range works on integer fields; 'ratio' is a f64
+}

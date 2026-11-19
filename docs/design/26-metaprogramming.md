@@ -6,7 +6,7 @@ Metaprogramming in Rift is **ordinary compile-time code** (see 15). There is no 
 2. **Reflection:** `std::meta` describes a type's fields and alternatives.
 3. **`for compile_time`:** a loop that is written once and copied once per element, so each copy can work with a different type.
 
-Together they cover generic printing, comparison, hashing, serialization and enum ↔ string conversion. Generating *new declarations* (types, fields, functions) is not part of this version (see 22).
+Together they cover generic printing, comparison, hashing, serialization and enum ↔ string conversion. **Annotations** (see 29) attach data to declarations, check them, and generate methods for annotated types. Generating whole new declarations (types, free functions) is not part of this version (see 22).
 
 ## Rules
 
@@ -38,6 +38,15 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::fields<T>()` | `std::span<std::meta::field>`: the fields of a struct or class, in declaration order |
 | `std::meta::alternatives<T>()` | `std::span<std::meta::alternative>`: the alternatives of an enum, in declaration order |
 | `std::meta::is_struct<T>()`, `is_class<T>()`, `is_enum<T>()` | `bool` |
+| `std::meta::result_of<F>()` | `type`: what calling the lambda or callable type `F` returns (`std::thread::spawn` uses it to name `handle<R>`) |
+| `std::meta::is_view<T>()` | `bool`: whether `T` borrows (a reference, a view, a lambda with reference captures, see 12) |
+| `std::meta::methods<T>()` | `std::span<std::meta::function>`: the methods of a type (visible ones, see privacy below), including generated ones (see 29) |
+| `std::meta::interfaces<T>()` | `std::span<type>`: the interfaces `T` implements, directly or through its bases |
+| `std::meta::template_args<T>()` | `std::span<type>`: the type arguments of a template instance (`std::darray<u32>` → `u32`); empty for other types |
+| `std::meta::annotation<A, T>()`, `std::meta::has_annotation<A, T>()` | Annotation `A` on type `T` (see 29) |
+| `std::meta::function_annotation<A>(where)`, `type_annotation<A>(where)`, `file_annotation<A>(where)` | `std::option<A>`: annotation `A` on the function a `std::call_site` is in, on that function's type, or on its file (see 31) |
+| `std::meta::name_of(value)` | `std::static_str`: the name of the enum alternative `value` holds. Works at run time too |
+| `std::meta::from_name<E>(text)` | `std::option<E>`: the payload-free alternative of `E` called `text`. Works at run time too |
 | `std::is_integer<T>()`, `std::is_float<T>()`, `std::is_same<A, B>()`, `std::size_of<T>()`, `std::align_of<T>()`, `std::type_name<T>()` | As in 15 and 23 |
 
 ```rift
@@ -54,7 +63,22 @@ struct alternative {           // std::meta::alternative
     bool            has_payload;
     type            payload;   // the payload's type; `void` when there is none
 }
+
+struct function {              // std::meta::function
+    std::static_str                 name;
+    type                            result;
+    std::span<std::meta::parameter> parameters;   // without `this`
+    bool                            is_mut;       // ends with `mut` (see 06)
+    bool                            is_static;
+}
+
+struct parameter {             // std::meta::parameter
+    std::static_str name;
+    type            type;
+    std::meta::passing passing;   // by_value, by_reference, by_mut_reference
+}
 ```
+Every handle (`field`, `alternative`, `function`, `parameter`) also has `annotation<A>()` and `has<A>()` (see 29).
 
 **Using a field.** `f.get(value)` is a reference to that field of `value`. With `mut` it is a mutable reference, written like any other mutable reference argument (see 04):
 ```rift
@@ -69,9 +93,11 @@ mut u32& b = f.get(mut person);
 | `a.get(value)` | `std::option<P&>`: the payload if `value` holds this alternative (only when `has_payload`) |
 | `a.make()` / `a.make(payload)` | A new value of the enum holding this alternative |
 
-- `f` and `a` must be **compile-time values** (a `for compile_time` loop variable, a `compile_time` constant). The type of `f.get(value)` depends on which field `f` is, so the compiler must know it.
+**Using a method.** `m.call(value, args...)` calls the method `m` on `value`. It is checked and compiled like the call `value.name(args...)`, so the arguments follow the method's parameters. For a `mut` method, write `m.call(mut value, ...)`; for a `static` one, `m.call(args...)`.
+
+- `f`, `a` and `m` must be **compile-time values** (a `for compile_time` loop variable, a `compile_time` constant). The type of `f.get(value)` depends on which field `f` is, so the compiler must know it.
 - **Privacy is respected.** `std::meta::fields<T>()` lists the fields that are visible where the call is written (see 06, 09). A generic function in another module sees the public fields of a class, and every field of a struct. There is no reflective way around `private`.
-- Reflection is read-only. It cannot add, remove or rename fields, alternatives or functions.
+- Reflection is read-only. It cannot add, remove or rename fields, alternatives or functions. Adding methods to a type is done with an annotation's `generate` block (see 29), on the type's own declaration.
 
 ### `for compile_time`
 ```rift
@@ -118,6 +144,7 @@ bool fields_equal(T& a, T& b) {
 Each copy compares one field with that field's own `!=`. A field type without `!=` is a compile error that points at this line and names the field's type.
 
 ### 3. Enum ↔ string
+The standard library has this built in: `std::meta::name_of(value)` and `std::meta::from_name<E>(text)`. Written by hand, it is:
 ```rift
 template<type E>
 std::static_str name_of(E value) {
@@ -151,6 +178,30 @@ player_id next = 0;
 counter_type(max_players) other = 0;   // ERROR: a type value is used as a type through a name
 ```
 
+### 5. Calling every method with a given annotation
+```rift
+annotation(std::meta::target::function) struct command { std::static_str word; }
+
+class shell {
+public:
+    @command{ .word = "status" } void show_status();
+    @command{ .word = "reset" }  void reset() mut;
+}
+
+bool dispatch(mut shell& sh, std::str input) {
+    for compile_time (std::meta::function m : std::meta::methods<shell>()) {
+        if compile_time (m.has<command>()) {
+            if (input == m.annotation<command>().expect("has").word) {
+                if compile_time (m.is_mut) { m.call(mut sh); } else { m.call(sh); }
+                return true;
+            }
+        }
+    }
+    return false;
+}
+```
+The command table is built from the methods themselves: adding a command is adding one annotated method, and nothing else has to be kept in sync.
+
 ## Rationale
 - **Ordinary compile-time code, not macros:** metaprograms use the same syntax, types and error messages as the rest of the language. A reader who knows Rift can read them, and the compiler can check them like any other code.
 - **`type` as a value:** one more value kind instead of a second language for type computations. Functions such as `counter_type` read like normal code.
@@ -159,4 +210,5 @@ counter_type(max_players) other = 0;   // ERROR: a type value is used as a type 
 - **`for compile_time` mirrors `if compile_time`:** the same word says "decided by the compiler", and both type-check each copy or branch on its own.
 - **Template-argument form for `std::meta`:** consistent with the traits of 15 (`std::is_integer<T>()`).
 - **Privacy:** reflection that could read private fields would make `private` advisory. Listing only visible fields keeps 06 and 09 true.
-- **No declaration generation yet:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types. Generating types adds hard questions (names, headers, error locations); see 22.
+- **Only methods are generated, and only through annotations:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types, plus derive-style methods on a type its author marked (see 29). Generating whole types or free functions adds hard questions (names, headers, error locations); see 22.
+- **Methods as handles with `m.call(...)`:** the reflected call is checked like a written one, so reflection never bypasses types, `mut` or privacy.

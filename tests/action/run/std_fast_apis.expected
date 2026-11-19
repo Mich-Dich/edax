@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+cap>=100 true len 0
+sorted true min -477 max 494
+desc 494 -477
+contains true false
+truncated 5
+fig pear kiwi date plum apple 
+a 13 total 16 len 3
+first 0
+last 99
+place 42
+--- stderr

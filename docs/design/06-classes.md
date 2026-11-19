@@ -23,6 +23,7 @@ C++-style labels: `public:`, `protected:`, `private:`. Public and protected memb
   ```
 - A non-`mut` method cannot call a `mut` method on `this`.
 - **`static` methods** have no `this` and are called as `counter::starting_at(5)`.
+- A method that **consumes** the object ends with **`move`**: `R join() move;`. It takes ownership of `this`, so it can be called only on an owned value (a local, a by-value parameter or a temporary), and the variable counts as moved afterwards (see 12, 27).
 
 ### Construction
 - `T{ .field = value }` is allowed **wherever every field without a default is visible**. Outside the class's own module, private fields therefore always take their defaults.

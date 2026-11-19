@@ -1,0 +1,26 @@
+// feature 31: `compile_time` parameters: a constant in the body, instantiated per value.
+import std;
+
+enum level : u8 { low, high }
+
+u32 pick(compile_time level l) {
+    if compile_time (l == level::high) {
+        return 2;
+    } else {
+        return 1;
+    }
+}
+
+u32 size_of_line(implicit compile_time std::call_site where) {
+    compile_time u32 line = where.line;
+    return line;
+}
+
+u32 main() {
+    level runtime = level::high;
+    u32 a = pick(level::low);
+    u32 b = pick(level::high);
+    u32 c = pick(runtime);                            //~ error[E4200]: 'runtime' is not a compile-time value
+    u32 d = size_of_line();
+    return a + b + d;
+}

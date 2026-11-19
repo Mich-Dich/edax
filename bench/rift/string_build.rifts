@@ -1,0 +1,17 @@
+// Build a string from 5M appends, and many short strings.
+import std;
+i32 main() {
+    mut std::string s = default;
+    for (u32 i : 0..5000000) {
+        s.push_str("ab");
+        s.push('c');
+    }
+    mut usize total = 0;
+    for (u32 i : 0..2000000) {
+        mut std::string t = std::string::from("key");
+        t.push('x');
+        total += t.len();
+    }
+    std::println(f"{s.len()} {total}");
+    return 0;
+}

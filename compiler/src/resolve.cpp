@@ -1,5 +1,6 @@
 #include "rift/resolve.hpp"
 
+#include "rift/ast_clone.hpp"
 #include "rift/ast_printer.hpp"
 
 #include <algorithm>
@@ -16,6 +17,8 @@ using sema::Program;
 using sema::Symbol;
 using sema::SymbolKind;
 using sema::LocalKind;
+using sema::AnnotationTarget;
+using sema::AnnotationCheck;
 
 namespace sema {
 std::string_view to_string(SymbolKind kind) {
@@ -45,10 +48,11 @@ namespace {
 std::string params_sig(const FunctionDecl& f) {
     std::string s = "(";
     for (std::size_t i = 0; i < f.params.size(); ++i) {
-        s += (i ? ", " : "") + to_string(*f.params[i].type);
+        s += (i ? ", " : "") + std::string(f.params[i].is_implicit ? "implicit " : "") +
+             (f.params[i].is_compile_time ? "compile_time " : "") + to_string(*f.params[i].type);
     }
     s += ")";
-    return f.is_mut ? s + " mut" : s;
+    return f.is_mut ? s + " mut" : f.is_move ? s + " move" : s;
 }
 
 std::string result_sig(const FunctionDecl& f) { return f.result ? to_string(*f.result) : ""; }
@@ -120,6 +124,30 @@ std::optional<std::string> closest(std::string_view name, const std::vector<std:
     return best;
 }
 
+std::string join_ns(const std::string& ns, const std::string& name) { return ns.empty() ? name : ns + "::" + name; }
+
+std::string item_key(const Decl& d) { return join_ns(d.ns, d.name); }
+
+/// "a::b" → {"a::b", "a", ""}: the namespaces searched for an unqualified name (spec 30).
+std::vector<std::string> enclosing_levels(const std::string& ns) {
+    std::vector<std::string> out;
+    std::string              cur = ns;
+    while (!cur.empty()) {
+        out.push_back(cur);
+        std::size_t p = cur.rfind("::");
+        cur           = p == std::string::npos ? "" : cur.substr(0, p);
+    }
+    out.push_back("");
+    return out;
+}
+
+/// A key as written in messages: a global name gets its `::` ("::version") so it reads as one.
+std::string global_display(const std::string& key) {
+    return key.find("::") == std::string::npos ? "::" + key : key;
+}
+
+std::string ns_display(const std::string& ns) { return ns.empty() ? "the global namespace" : "namespace '" + ns + "'"; }
+
 bool is_builtin_type_name(std::string_view name) {
     std::optional<TokenKind> k = keyword_kind(name);
     return k && (is_type_keyword(*k) || *k == TokenKind::kw_type);
@@ -154,10 +182,19 @@ struct FunctionContext {
 
 class Resolver {
 public:
-    Resolver(Program& program, DiagnosticEngine& diags) : program_(program), diags_(diags) {}
+    Resolver(Program& program, DiagnosticEngine& diags) : program_(program), diags_(diags) {
+        for (auto& [name, m] : program_.modules) {
+            if (name == "std" || name.starts_with("std::")) std_modules_.push_back(m.get());
+        }
+    }
+
+    /// The namespace that the code being resolved is written in (instances: their template's).
+    void set_namespace(std::string ns) { ns_ = std::move(ns); }
 
     void run() {
         for (auto& [name, m] : program_.modules) collect(*m);
+        check_namespaces();
+        for (auto& [name, m] : program_.modules) process_annotations(*m);
         for (auto& [name, m] : program_.modules) resolve_bases(*m);
         for (auto& [name, m] : program_.modules) check_hierarchy(*m);
         for (auto& [name, m] : program_.modules) resolve_bodies(*m);
@@ -175,6 +212,8 @@ public:
         Symbol* sym    = m.make(kind, d.name, d.name_span);
         sym->decl      = &d;
         sym->in_header = false;
+        sym->ns        = ns_;
+        d.ns           = ns_;
         symbol_of_[&d] = sym;
         TemplateScope ts(*this, d);
         params = template_params_.back();
@@ -183,6 +222,7 @@ public:
             for (EnumAlternative& alt : e.alternatives) {
                 Symbol* a      = m.make(SymbolKind::alternative, alt.name, alt.span);
                 a->parent      = sym;
+                a->ns          = sym->ns;
                 a->alternative = &alt;
                 sym->members[alt.name].push_back(a);
                 sym->member_order.push_back(a);
@@ -192,9 +232,24 @@ public:
                 if (alt.payload) resolve_type(*alt.payload);
                 if (alt.value) resolve_expr(*alt.value);
             }
+            annotate_type(m, d, sym, false);
             return sym;
         }
         for (const DeclPtr& mem : d.as<TypeDecl>().members) add_member(m, sym, *mem, false);
+        annotate_type(m, d, sym, false);
+        for (const TypePtr& base : d.as<TypeDecl>().bases) {   // generated interfaces of the instance
+            if (!pre_resolved_.count(base.get())) continue;
+            const Symbol* b = base->kind == TypeKind::named ? base->as<NamedType>().symbol : nullptr;
+            if (b && b->is_type() && b->kind != SymbolKind::type_param) sym->bases.push_back(const_cast<Symbol*>(b));
+            else sym->has_opaque_base = true;
+        }
+        for (ThreadPromise& p : d.as<TypeDecl>().promises) {
+            if (p.condition) {
+                scopes_.emplace_back();
+                resolve_expr(*p.condition);
+                scopes_.pop_back();
+            }
+        }
         for (const DeclPtr& mem : d.as<TypeDecl>().members) resolve_decl(*mem, sym);
         return sym;
     }
@@ -206,6 +261,7 @@ public:
         Symbol*   sym  = m.make(SymbolKind::function, d.name, d.name_span);
         sym->decl      = &d;
         sym->in_header = false;
+        sym->ns        = ns_;
         TemplateScope ts(*this, d);
         params = template_params_.back();
         resolve_function(d, nullptr);
@@ -231,6 +287,14 @@ private:
 
     void collect(Module& m) {
         module_ = &m;
+        for (const std::optional<sema::ModuleFile>* f : {&m.header, &m.source}) {
+            if (!*f) continue;
+            for (const ast::NamespaceBlock& b : (*f)->ast.namespaces) {
+                for (const std::string& level : enclosing_levels(b.path)) {
+                    if (!level.empty()) m.namespaces.insert(level);
+                }
+            }
+        }
         if (m.header) {
             check_header(m);
             for (const DeclPtr& d : m.header->ast.decls) {
@@ -323,6 +387,7 @@ private:
                          : d.kind == DeclKind::class_  ? SymbolKind::class_
                                                        : SymbolKind::interface;
             sym = m.make(k, d.name, d.name_span);
+            sym->ns = d.ns;
             for (const DeclPtr& mem : d.as<TypeDecl>().members) {
                 add_member(m, sym, *mem, from_header);
             }
@@ -333,6 +398,7 @@ private:
             for (const EnumAlternative& alt : d.as<EnumDecl>().alternatives) {
                 Symbol* a      = m.make(SymbolKind::alternative, alt.name, alt.span);
                 a->parent      = sym;
+                a->ns          = d.ns;
                 a->alternative = &alt;
                 a->in_header   = from_header;
                 sym->members[alt.name].push_back(a);
@@ -342,10 +408,11 @@ private:
         }
         }
         sym->decl       = &d;
+        sym->ns         = d.ns;
         sym->definition = from_header ? nullptr : &d;
         sym->in_header  = from_header;
         sym->is_private = d.is_private || (!from_header && m.header.has_value());
-        m.items[d.name].push_back(sym);
+        m.items[item_key(d)].push_back(sym);
         m.item_order.push_back(sym);
         symbol_of_[&d] = sym;
         return sym;
@@ -363,6 +430,7 @@ private:
         bool    is_fn = mem.kind == DeclKind::function;
         Symbol* sym   = m.make(is_fn ? SymbolKind::method : SymbolKind::field, mem.name, mem.name_span);
         sym->parent     = type;
+        sym->ns         = type->ns;
         sym->decl       = &mem;
         sym->definition = from_header ? nullptr : &mem;
         sym->in_header  = from_header;
@@ -428,7 +496,7 @@ private:
         case DeclKind::check: return;
         case DeclKind::function: {
             const auto&          fn    = d.as<FunctionDecl>();
-            std::vector<Symbol*> cands = header_items(m, d.name);
+            std::vector<Symbol*> cands = header_items(m, item_key(d));
             std::erase_if(cands, [](Symbol* s) { return s->kind != SymbolKind::function; });
             auto match = std::find_if(cands.begin(), cands.end(), [&](Symbol* s) {
                 return params_sig(*s->function()) == params_sig(fn);
@@ -461,12 +529,12 @@ private:
         case DeclKind::struct_:
         case DeclKind::class_: {
             SymbolKind k    = d.kind == DeclKind::struct_ ? SymbolKind::struct_ : SymbolKind::class_;
-            Symbol*    same = header_item(m, d.name, k);
+            Symbol*    same = header_item(m, item_key(d), k);
             if (same) {
                 merge_type(m, same, d.as<TypeDecl>());
                 return;
             }
-            std::vector<Symbol*> other = header_items(m, d.name);
+            std::vector<Symbol*> other = header_items(m, item_key(d));
             if (!other.empty()) {
                 note(error(DiagCode::E3014, d.name_span,
                            std::format("'{}' is a {} here but a {} in the header", d.name,
@@ -482,7 +550,7 @@ private:
         }
         case DeclKind::interface:
         case DeclKind::enum_: {
-            std::vector<Symbol*> other = header_items(m, d.name);
+            std::vector<Symbol*> other = header_items(m, item_key(d));
             if (!other.empty()) {
                 note(error(DiagCode::E3018, d.name_span,
                            std::format("'{}' is already complete in the header", d.name), "defined again"),
@@ -495,7 +563,7 @@ private:
         }
         case DeclKind::variable:
         case DeclKind::field: {
-            std::vector<Symbol*> other = header_items(m, d.name);
+            std::vector<Symbol*> other = header_items(m, item_key(d));
             if (!other.empty()) {
                 note(error(DiagCode::E3010, d.name_span, std::format("'{}' is already defined in the header", d.name),
                            "defined again"),
@@ -653,16 +721,18 @@ private:
 
     struct FileScope {
         Resolver& r;
-        Module*   saved_module;
-        bool      saved_header;
+        Module*     saved_module;
+        bool        saved_header;
+        std::string saved_ns;
         FileScope(Resolver& res, Module* m, bool header)
-            : r(res), saved_module(res.module_), saved_header(res.in_header_) {
+            : r(res), saved_module(res.module_), saved_header(res.in_header_), saved_ns(res.ns_) {
             r.module_    = m;
             r.in_header_ = header;
         }
         ~FileScope() {
             r.module_    = saved_module;
             r.in_header_ = saved_header;
+            r.ns_        = saved_ns;
         }
         FileScope(const FileScope&)            = delete;
         FileScope& operator=(const FileScope&) = delete;
@@ -707,21 +777,683 @@ private:
         return nullptr;
     }
 
-    Module* visible_module(const std::string& name) const {
-        for (Module* m : module_->header_imports) {
-            if (m->name == name) return m;
-        }
+    // --- namespaces (spec 30) ------------------------------------------------------------
+
+    /// The modules whose declarations this file can name: itself, its imports, and the standard
+    /// library's modules after `import std;`. A module is not a namespace: their names are found
+    /// under the namespaces they declare.
+    std::vector<Module*> visible_modules() const {
+        std::vector<Module*> out{module_};
+        auto add = [&](Module* m) {
+            if (std::find(out.begin(), out.end(), m) == out.end()) out.push_back(m);
+        };
+        for (Module* m : module_->header_imports) add(m);
         if (!in_header_) {
-            for (Module* m : module_->source_imports) {
-                if (m->name == name) return m;
+            for (Module* m : module_->source_imports) add(m);
+        }
+        if (std_visible()) {
+            for (Module* m : std_modules_) add(m);
+        }
+        return out;
+    }
+
+    struct Found {
+        std::vector<Symbol*> symbols;          // visible declarations called `key`
+        bool                 hidden = false;   // a private one of another module exists
+    };
+
+    Found find_items(const std::string& key) const {
+        Found f;
+        for (Module* m : visible_modules()) {
+            auto it = m->items.find(key);
+            if (it == m->items.end()) continue;
+            for (Symbol* s : it->second) {
+                if (m != module_ && s->is_private) f.hidden = true;
+                else f.symbols.push_back(s);
             }
         }
+        return f;
+    }
+
+    /// A loaded module that declares `key` but is not imported by this file (for E3023), or null.
+    const Module* unimported_owner(const std::string& key) const {
+        std::vector<Module*> visible = visible_modules();
+        for (auto& [name, m] : program_.modules) {
+            if (std::find(visible.begin(), visible.end(), m.get()) != visible.end()) continue;
+            if (auto it = m->items.find(key); it != m->items.end() && !it->second.front()->is_private) return m.get();
+        }
         return nullptr;
+    }
+
+    bool report_unimported(const std::string& key, Span span) {
+        const Module* owner = unimported_owner(key);
+        if (!owner) return false;
+        note(error(DiagCode::E3023, span, std::format("'{}' is declared in module '{}', which this file does not import", key, owner->name),
+                   "not imported"),
+             std::format("add 'import {};'", owner->name));
+        return true;
+    }
+
+    bool namespace_visible(const std::string& ns) const {
+        if (ns.empty()) return true;
+        for (Module* m : visible_modules()) {
+            if (m->namespaces.count(ns)) return true;
+        }
+        return false;
+    }
+
+    /// The names declared directly in `ns` that this file can see.
+    std::vector<std::string> names_in(const std::string& ns) const {
+        std::vector<std::string> out;
+        std::string prefix = ns.empty() ? "" : ns + "::";
+        for (Module* m : visible_modules()) {
+            for (const auto& [key, syms] : m->items) {
+                if (!key.starts_with(prefix) || key.find("::", prefix.size()) != std::string::npos) continue;
+                if (m != module_ && syms.front()->is_private) continue;
+                out.push_back(key.substr(prefix.size()));
+            }
+            for (const std::string& n : m->namespaces) {
+                if (n.starts_with(prefix) && n.size() > prefix.size() && n.find("::", prefix.size()) == std::string::npos) {
+                    out.push_back(n.substr(prefix.size()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /// `namespace vk = gfx::vulkan;` of the current file, visible in the block it is written in.
+    const ast::NamespaceAlias* find_alias(const std::string& name) const {
+        const auto& f = in_header_ ? module_->header : module_->source;
+        if (!f) return nullptr;
+        for (const ast::NamespaceAlias& a : f->ast.aliases) {
+            if (a.name == name && (a.ns.empty() || ns_ == a.ns || ns_.starts_with(a.ns + "::"))) return &a;
+        }
+        return nullptr;
+    }
+
+    /// Reports one name declared in one namespace by two different modules (once per name).
+    void check_one_module(const std::vector<Symbol*>& syms, const std::string& key, Span use) {
+        bool all_functions = std::all_of(syms.begin(), syms.end(), [](const Symbol* s) { return s->kind == SymbolKind::function; });
+        if (all_functions) return;   // overloads may come from several modules of the namespace
+        for (Symbol* s : syms) {
+            if (s->module == syms.front()->module) continue;
+            if (!clash_reported_.insert(key).second) return;
+            Diagnostic& e = error(DiagCode::E3065, use,
+                                  std::format("'{}' is declared by two modules, '{}' and '{}'", key,
+                                              syms.front()->module->name, s->module->name),
+                                  "declared twice");
+            note(e, "one declaration", syms.front()->span);
+            note(e, "the other declaration", s->span);
+            note(e, "a name in a namespace comes from one module; rename one of them or move it into another namespace");
+            return;
+        }
+    }
+
+    struct Unqualified {
+        Symbol* symbol       = nullptr;
+        bool    reported     = false;   // an ambiguity was reported
+        bool    is_namespace = false;   // the name is a namespace (or an alias of one)
+        bool    hidden       = false;
+    };
+
+    /// An unqualified name: the enclosing namespaces from the innermost out to the global one.
+    /// A name found at more than one level is ambiguous (spec 30, rule 3).
+    Unqualified lookup_unqualified(const std::string& name, Span span, bool global, bool report) {
+        Unqualified out;
+        std::vector<std::string> levels = global ? std::vector<std::string>{""} : enclosing_levels(ns_);
+        std::vector<std::pair<std::string, std::vector<Symbol*>>> hits;
+        for (const std::string& level : levels) {
+            std::string key = join_ns(level, name);
+            Found       f   = find_items(key);
+            out.hidden      = out.hidden || f.hidden;
+            if (!f.symbols.empty()) {
+                if (report) check_one_module(f.symbols, key, span);
+                hits.emplace_back(key, std::move(f.symbols));
+            }
+            if (namespace_visible(key)) out.is_namespace = true;
+        }
+        if (!global && find_alias(name)) out.is_namespace = true;
+        if (hits.size() > 1) {
+            if (report) {
+                Diagnostic& e = error(DiagCode::E3060, span,
+                                      std::format("'{}' is both {}; write the one you mean", name,
+                                                  [&] {
+                                                      std::string list;
+                                                      for (std::size_t i = 0; i < hits.size(); ++i) {
+                                                          list += (i == 0 ? "" : i + 1 == hits.size() ? " and " : ", ") +
+                                                                  ("'" + global_display(hits[i].first) + "'");
+                                                      }
+                                                      return list;
+                                                  }()),
+                                      "ambiguous");
+                for (const auto& [key, syms] : hits) note(e, std::format("'{}' is declared here", global_display(key)), syms.front()->span);
+                note(e, "an unqualified name is searched in every enclosing namespace; one found at two levels is an error, never silently the inner one");
+            }
+            out.reported = true;
+            return out;
+        }
+        if (!hits.empty()) out.symbol = hits.front().second.front();
+        return out;
+    }
+
+    /// Checks the file's namespace aliases: they name a visible namespace and shadow nothing.
+    void check_aliases() {
+        const auto& f = in_header_ ? module_->header : module_->source;
+        if (!f) return;
+        std::set<std::string> seen;
+        for (const ast::NamespaceAlias& a : f->ast.aliases) {
+            std::string saved = ns_;
+            ns_               = a.ns;
+            std::string target;
+            for (const PathSegment& seg : a.target.segments) target = join_ns(target, seg.name);
+            if (!seen.insert(a.name).second) {
+                error(DiagCode::E3064, a.span, std::format("alias '{}' is declared twice in this file", a.name), "declared again");
+            } else if (!namespace_visible(target)) {
+                Found       it = find_items(target);
+                Diagnostic& e  = error(DiagCode::E3064, a.target.span,
+                                       it.symbols.empty() ? std::format("'{}' is not a namespace this file can see", target)
+                                                          : std::format("'{}' is a {}, not a namespace", target,
+                                                                        sema::to_string(it.symbols.front()->kind)),
+                                       "not a namespace");
+                note(e, it.symbols.empty() ? "an alias names a namespace declared by this file or a module it imports"
+                                           : "aliases shorten namespaces; a type alias is 'compile_time type name = T;' (spec 26)");
+            } else {
+                for (const std::string& level : enclosing_levels(a.ns)) {
+                    std::string key = join_ns(level, a.name);
+                    Found       it  = find_items(key);
+                    if (!it.symbols.empty() || namespace_visible(key)) {
+                        Diagnostic& e = error(DiagCode::E3064, a.span,
+                                              std::format("alias '{}' has the same name as {} '{}'", a.name,
+                                                          it.symbols.empty() ? "the namespace" : sema::to_string(it.symbols.front()->kind),
+                                                          key),
+                                              "shadows a visible name");
+                        if (!it.symbols.empty()) note(e, "declared here", it.symbols.front()->span);
+                        note(e, "aliases never shadow: choose another name");
+                        break;
+                    }
+                }
+            }
+            ns_ = saved;
+        }
+    }
+
+    /// Program-wide namespace rules (spec 30, rules 1 and 6).
+    void check_namespaces() {
+        std::map<std::string, const Module*> declared;   // every namespace, by one module declaring it
+        for (auto& [name, m] : program_.modules) {
+            for (const std::string& n : m->namespaces) declared.emplace(n, m.get());
+        }
+        // Each top-level namespace belongs to one project (spec 30, rule 6).
+        std::map<std::string, std::pair<const Module*, Span>> owner;
+        for (auto& [name, m] : program_.modules) {
+            if (m->project == "std") continue;
+            for (const std::optional<sema::ModuleFile>* f : {&m->header, &m->source}) {
+                if (!*f) continue;
+                for (const ast::NamespaceBlock& b : (*f)->ast.namespaces) {
+                    std::string top = b.path.substr(0, b.path.find("::"));
+                    if (top == "std") continue;
+                    auto [it, fresh] = owner.emplace(top, std::make_pair(m.get(), b.span));
+                    if (fresh || it->second.first->project == m->project) continue;
+                    auto project_name = [](const Module* x) { return x->project.empty() ? std::string("this program") : "'" + x->project + "'"; };
+                    Diagnostic& e = error(DiagCode::E3061, b.span,
+                                          std::format("namespace '{}' is declared by two projects: {} and {}", top,
+                                                      project_name(it->second.first), project_name(m.get())),
+                                          "another project's namespace");
+                    note(e, "declared here first", it->second.second);
+                    note(e, "a top-level namespace belongs to one project; rename one of them");
+                }
+            }
+        }
+        for (auto& [name, m] : program_.modules) {
+            bool is_std = name == "std" || name.starts_with("std::");
+            if (!is_std && !m->project.empty()) {   // a library: everything in a namespace (spec 30)
+                for (Symbol* s : m->item_order) {
+                    if (!s->ns.empty() || s->is_private) continue;
+                    note(error(DiagCode::E3063, s->span,
+                               std::format("library module '{}' declares '{}' in the global namespace", m->name, s->name),
+                               "not in a namespace"),
+                         "a library puts its names in a namespace of its own: 'namespace name { ... }' (spec 30)");
+                }
+            }
+            for (const std::optional<sema::ModuleFile>* f : {&m->header, &m->source}) {
+                if (!*f) continue;
+                for (const ast::NamespaceBlock& b : (*f)->ast.namespaces) {
+                    if (!is_std && (b.path == "std" || b.path.starts_with("std::"))) {
+                        note(error(DiagCode::E3061, b.span,
+                                   "namespace 'std' belongs to the standard library; declarations can't be added to it",
+                                   "not this project's namespace"),
+                             "put your declarations in a namespace of your own");
+                    }
+                }
+            }
+            for (Symbol* s : m->item_order) {
+                if (is_std && s->ns.empty()) {
+                    error(DiagCode::E3063, s->span,
+                          std::format("the standard library declares '{}' in the global namespace", s->name),
+                          "not in a namespace");
+                }
+                if (auto it = declared.find(s->key()); it != declared.end()) {
+                    Diagnostic& e = error(DiagCode::E3062, s->span,
+                                          std::format("'{}' is both a namespace and a {}", s->key(), sema::to_string(s->kind)),
+                                          "also a namespace");
+                    note(e, std::format("module '{}' declares the namespace '{}'", it->second->name, s->key()));
+                    note(e, "a name is either a namespace or a declaration in its parent, never both");
+                }
+            }
+        }
     }
 
     bool std_visible() const {
         return module_->header_imports_std || (!in_header_ && module_->source_imports_std);
     }
+
+    // --- annotations (spec 29) ---------------------------------------------------------------
+
+    struct AnnotationContext {
+        Symbol* value  = nullptr;   // `annotation`: the constant holding this use's value
+        Symbol* type   = nullptr;   // `annotated` when it is a type
+        Symbol* handle = nullptr;   // `annotated` when it is a field, function, parameter or alternative
+    };
+
+    struct GeneratedOrigin {
+        Module*     module = nullptr;   // where the annotation is declared
+        bool        header = false;
+        std::string ns;
+        Symbol*     value  = nullptr;
+    };
+
+    static std::string_view target_word(AnnotationTarget t) {
+        switch (t) {
+        case AnnotationTarget::type: return "type";
+        case AnnotationTarget::field: return "field";
+        case AnnotationTarget::function: return "function";
+        case AnnotationTarget::parameter: return "parameter";
+        case AnnotationTarget::alternative: return "alternative";
+        case AnnotationTarget::other: return "other";
+        case AnnotationTarget::file: return "file";
+        }
+        return "";
+    }
+
+    static std::string_view target_display(AnnotationTarget t) {
+        switch (t) {
+        case AnnotationTarget::type: return "a type";
+        case AnnotationTarget::field: return "a field";
+        case AnnotationTarget::function: return "a function";
+        case AnnotationTarget::parameter: return "a parameter";
+        case AnnotationTarget::alternative: return "an enum alternative";
+        case AnnotationTarget::other: return "a variable";
+        case AnnotationTarget::file: return "a file";
+        }
+        return "";
+    }
+
+    void process_annotations(Module& m) {
+        for (bool header : {true, false}) {
+            auto& f = header ? m.header : m.source;
+            if (!f) continue;
+            FileScope fs(*this, &m, header);
+            if (!f->ast.annotations.empty()) {   // `@a{ ... };` (spec 31): only in a .rifts
+                ns_ = "";
+                if (header) {
+                    note(error(DiagCode::E3073, f->ast.annotations.front().span,
+                               "a file annotation describes the code of a .rifts file, not a header", "in a header"),
+                         "write it at the top of the .rifts file");
+                } else {
+                    for (AnnotationUse& u : f->ast.annotations) use_annotation(u, AnnotationTarget::file);
+                }
+            }
+            for (DeclPtr& d : f->ast.decls) {
+                ns_        = d->ns;
+                auto    it = symbol_of_.find(d.get());
+                Symbol* s  = it == symbol_of_.end() ? nullptr : it->second;
+                // The .rifts part of something declared in the header: annotations belong to the
+                // declaration (spec 29).
+                bool part = !header && m.header && s && s->decl != d.get();
+                if (part) {
+                    reject_annotations_in_source(*d);
+                    continue;
+                }
+                switch (d->kind) {
+                case DeclKind::function: annotate_function(*d, s, nullptr); break;
+                case DeclKind::struct_:
+                case DeclKind::class_:
+                case DeclKind::interface:
+                case DeclKind::enum_:
+                    if (s) annotate_type(m, *d, s, header);
+                    break;
+                case DeclKind::variable:
+                    for (AnnotationUse& u : d->annotations) use_annotation(u, AnnotationTarget::other);
+                    break;
+                default: break;
+                }
+            }
+        }
+    }
+
+    void reject_annotations_in_source(Decl& d) {
+        auto reject = [&](std::vector<AnnotationUse>& uses) {
+            if (uses.empty()) return;
+            note(error(DiagCode::E3073, uses.front().span, "annotations are written on the declaration in the header",
+                       "not in the .rifts"),
+                 "the .rifts doesn't repeat them (spec 29)");
+        };
+        reject(d.annotations);
+        if (d.kind == DeclKind::function) {
+            for (Param& p : d.as<FunctionDecl>().params) reject(p.annotations);
+        }
+        if (d.kind == DeclKind::struct_ || d.kind == DeclKind::class_) {
+            for (DeclPtr& mem : d.as<TypeDecl>().members) {
+                auto it = symbol_of_.find(mem.get());
+                // private members added in the .rifts are declared there
+                if (it != symbol_of_.end() && it->second->decl == mem.get()) {
+                    annotate_member(*mem, it->second);
+                } else {
+                    reject(mem->annotations);
+                    if (mem->kind == DeclKind::function) {
+                        for (Param& p : mem->as<FunctionDecl>().params) reject(p.annotations);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A type's annotations, its generated members, and the annotations of its members.
+    void annotate_type(Module& m, Decl& d, Symbol* type, bool header) {
+        std::set<const Symbol*> seen;
+        for (AnnotationUse& u : d.annotations) {
+            Symbol* a = use_annotation(u, AnnotationTarget::type);
+            if (!a) continue;
+            if (!seen.insert(a).second) {
+                duplicate(u);
+                continue;
+            }
+            add_checks(u, a, AnnotationTarget::type, type, type, 0);
+            if (a->decl->as<TypeDecl>().generate) generate_members(m, d, type, u, a, header);
+        }
+        if (d.kind == DeclKind::enum_) {
+            for (EnumAlternative& alt : d.as<EnumDecl>().alternatives) {
+                std::set<const Symbol*> alt_seen;
+                Symbol* as = nullptr;
+                if (auto it = type->members.find(alt.name); it != type->members.end()) as = it->second.front();
+                for (AnnotationUse& u : alt.annotations) {
+                    Symbol* a = use_annotation(u, AnnotationTarget::alternative);
+                    if (!a) continue;
+                    if (!alt_seen.insert(a).second) {
+                        duplicate(u);
+                        continue;
+                    }
+                    if (as) add_checks(u, a, AnnotationTarget::alternative, type, as, 0);
+                }
+            }
+            return;
+        }
+        for (DeclPtr& mem : d.as<TypeDecl>().members) {
+            if (mem->generated_by) continue;
+            auto it = symbol_of_.find(mem.get());
+            annotate_member(*mem, it == symbol_of_.end() ? nullptr : it->second);
+        }
+    }
+
+    void annotate_member(Decl& mem, Symbol* s) {
+        if (mem.kind == DeclKind::function) {
+            annotate_function(mem, s, s ? s->parent : nullptr);
+            return;
+        }
+        if (mem.kind != DeclKind::field) return;
+        std::set<const Symbol*> seen;
+        for (AnnotationUse& u : mem.annotations) {
+            Symbol* a = use_annotation(u, AnnotationTarget::field);
+            if (!a) continue;
+            if (!seen.insert(a).second) {
+                duplicate(u);
+                continue;
+            }
+            if (s) add_checks(u, a, AnnotationTarget::field, s->parent, s, 0);
+        }
+    }
+
+    void annotate_function(Decl& d, Symbol* s, const Symbol* owner) {
+        std::set<const Symbol*> seen;
+        for (AnnotationUse& u : d.annotations) {
+            Symbol* a = use_annotation(u, AnnotationTarget::function);
+            if (!a) continue;
+            if (!seen.insert(a).second) {
+                duplicate(u);
+                continue;
+            }
+            if (s) add_checks(u, a, AnnotationTarget::function, owner ? owner : s, s, 0);
+        }
+        auto& params = d.as<FunctionDecl>().params;
+        for (std::size_t i = 0; i < params.size(); ++i) {
+            std::set<const Symbol*> pseen;
+            for (AnnotationUse& u : params[i].annotations) {
+                Symbol* a = use_annotation(u, AnnotationTarget::parameter);
+                if (!a) continue;
+                if (!pseen.insert(a).second) {
+                    duplicate(u);
+                    continue;
+                }
+                if (s) add_checks(u, a, AnnotationTarget::parameter, owner ? owner : s, s, i);
+            }
+        }
+    }
+
+    void duplicate(const AnnotationUse& u) {
+        note(error(DiagCode::E3072, u.span, std::format("'@{}' is written twice here", ast::to_string(u.path)), "again"),
+             "an annotation stands at most once on a declaration");
+    }
+
+    /// Resolves the annotation a use names, checks where it is written, and makes the constant
+    /// that holds its value (resolved here, where the values are written).
+    Symbol* use_annotation(AnnotationUse& u, AnnotationTarget target) {
+        if (u.symbol) return u.symbol;   // done already (a type and its header/source)
+        Symbol* a = lookup_path(u.path, Want::type, u.path.span);
+        if (!a) return nullptr;
+        if (a->kind != SymbolKind::struct_ || !a->decl->as<TypeDecl>().is_annotation) {
+            note(error(DiagCode::E3070, u.path.span, std::format("'{}' is not an annotation", ast::to_string(u.path)),
+                       "not an annotation"),
+                 "an annotation is declared as 'annotation(std::meta::target::...) struct name { ... }' (spec 29)");
+            return nullptr;
+        }
+        std::vector<std::string> allowed;
+        bool                     ok = false;
+        for (const Path& p : a->decl->as<TypeDecl>().annotation_targets) {
+            std::string word = p.segments.empty() ? "" : p.segments.back().name;
+            allowed.push_back(word);
+            ok = ok || word == target_word(target);
+        }
+        if (!ok) {
+            std::string list;
+            for (std::size_t i = 0; i < allowed.size(); ++i) list += (i ? ", " : "") + allowed[i];
+            note(error(DiagCode::E3071, u.path.span,
+                       std::format("'@{}' can't be written on {}", ast::to_string(u.path), target_display(target)),
+                       "wrong target"),
+                 std::format("its targets are: {}", list));
+            return nullptr;
+        }
+        u.symbol = a;
+        // `compile_time A annotation = A{ ... };`
+        auto vd       = std::make_unique<VariableDecl>(DeclKind::variable, u.span);
+        vd->name      = "annotation";
+        vd->name_span = u.span;
+        vd->ns        = ns_;
+        vd->storage   = Storage::compile_time;
+        Path tp;
+        tp.span = u.path.span;
+        for (const PathSegment& seg : u.path.segments) {
+            PathSegment c;
+            c.name = seg.name;
+            c.span = seg.span;
+            tp.segments.push_back(std::move(c));
+        }
+        tp.global      = u.path.global;
+        auto type      = std::make_unique<NamedType>(u.path.span, std::move(tp));
+        type->symbol   = a;
+        vd->type       = std::move(type);
+        vd->init       = std::move(u.value);
+        resolve_expr(*vd->init);
+        Symbol* v      = module_->make(SymbolKind::global, "annotation", u.span);
+        v->decl        = vd.get();
+        v->definition  = vd.get();
+        v->ns          = ns_;
+        v->is_private  = true;
+        u.value_symbol = v;
+        program_.cloned_decls.push_back(std::move(vd));
+        return a;
+    }
+
+    /// The file an annotation is declared in: its code (checks, generated members) is resolved there.
+    static bool declared_in_header(const Symbol* a) { return a->in_header; }
+
+    /// Copies the checks of annotation `a` for one use, resolved with `annotation` and `annotated`.
+    void add_checks(AnnotationUse& u, Symbol* a, AnnotationTarget target, const Symbol* owner, const Symbol* member,
+                    std::size_t param_index) {
+        const auto& ad = a->decl->as<TypeDecl>();
+        // Checks of an annotated template run per instance; the generic template has none.
+        for (const Symbol* o = owner; o; o = o->parent) {
+            if (o->decl && o->decl->is_template && !o->template_of) return;
+        }
+        std::vector<const Decl*> checks;   // in the declaration, and in the .rifts block of a header's annotation
+        for (const DeclPtr& mem : ad.members) checks.push_back(mem.get());
+        if (a->source_block) {
+            for (const DeclPtr& mem : a->source_block->as<TypeDecl>().members) checks.push_back(mem.get());
+        }
+        for (const Decl* mem : checks) {
+            if (mem->kind != DeclKind::check) continue;
+            const auto& original = mem->as<CheckDecl>();
+            auto        copy     = std::make_unique<CheckDecl>(original.span);
+            copy->name           = original.name;
+            copy->name_span      = original.name_span;
+            ast::Cloner cl([&](const Symbol& o) { return a->module->make(o.kind, o.name, o.span); });
+            const Check& k        = original.check;
+            Check&       c        = copy->check;
+            c.is_compile_time     = k.is_compile_time;
+            c.is_run_time         = k.is_run_time;
+            c.compile_modes       = k.compile_modes;
+            c.run_modes           = k.run_modes;
+            c.compile_modes_span  = k.compile_modes_span;
+            c.run_modes_span      = k.run_modes_span;
+            if (k.condition) c.condition = cl.expr(*k.condition);
+            if (k.message) c.message = cl.expr(*k.message);
+            if (k.block) c.block = cl.block(*k.block);
+            AnnotationCheck ac;
+            ac.target      = target;
+            ac.check       = copy.get();
+            ac.use         = &u;
+            ac.origin      = a->module;
+            ac.owner       = owner;
+            ac.member      = member;
+            ac.param_index = param_index;
+            AnnotationContext ctx{u.value_symbol, nullptr, nullptr};
+            if (target == AnnotationTarget::type) {
+                ctx.type = const_cast<Symbol*>(owner);
+            } else {
+                static const char* spelling[] = {"", "field", "function", "parameter", "alternative", ""};
+                auto hd       = std::make_unique<VariableDecl>(DeclKind::variable, u.span);
+                hd->name      = "annotated";
+                hd->name_span = u.span;
+                hd->storage   = Storage::compile_time;
+                Path hp;
+                hp.span = u.span;
+                for (std::string_view part : {std::string_view("std"), std::string_view("meta"),
+                                              std::string_view(spelling[static_cast<int>(target)])}) {
+                    PathSegment ps;
+                    ps.name = std::string(part);
+                    ps.span = u.span;
+                    hp.segments.push_back(std::move(ps));
+                }
+                hd->type     = std::make_unique<NamedType>(u.span, std::move(hp));
+                Symbol* h    = a->module->make(SymbolKind::global, "annotated", u.span);
+                h->decl      = hd.get();
+                h->is_private = true;
+                ac.handle    = h;
+                ctx.handle   = h;
+                program_.cloned_decls.push_back(std::move(hd));
+            }
+            {
+                FileScope fs(*this, a->module, declared_in_header(a) && a->module->header.has_value());
+                ns_                                    = a->ns;
+                std::optional<AnnotationContext> saved = actx_;
+                actx_                                  = ctx;
+                FunctionContext saved_fn               = fn_;
+                fn_                                    = FunctionContext{};
+                declared_later_.clear();
+                if (c.block) collect_declarations(*c.block);
+                scopes_.emplace_back();
+                resolve_check(c);
+                scopes_.pop_back();
+                fn_   = saved_fn;
+                actx_ = saved;
+            }
+            program_.annotation_checks.push_back(ac);
+            program_.cloned_decls.push_back(std::move(copy));
+        }
+    }
+
+    /// Adds the members of `a`'s generate block to the annotated type, as if its author had
+    /// written them (spec 29). Interfaces go into the base list.
+    void generate_members(Module& m, Decl& d, Symbol* type, AnnotationUse& u, Symbol* a, bool header) {
+        if (d.kind == DeclKind::enum_ || d.kind == DeclKind::interface) {
+            if (d.kind == DeclKind::interface) {
+                note(error(DiagCode::E3074, u.span, std::format("'@{}' generates members, but an interface has no method bodies",
+                                                                ast::to_string(u.path)),
+                           "on an interface"),
+                     "write it on a struct, class or enum");
+                return;
+            }
+        }
+        const GenerateBlock& g      = *a->decl->as<TypeDecl>().generate;
+        bool                 origin_header = declared_in_header(a) && a->module->header.has_value();
+        ast::Cloner          cl([&](const Symbol& o) { return a->module->make(o.kind, o.name, o.span); });
+        if (d.kind == DeclKind::enum_) {
+            if (a->key() == "std::derive::formattable") return;   // the compiler prints such enums (spec 29)
+            note(error(DiagCode::E3074, u.span, std::format("'@{}' generates methods, but enums have no methods",
+                                                            ast::to_string(u.path)),
+                       "on an enum"),
+                 "write it on a struct or class");
+            return;
+        }
+        auto& td = d.as<TypeDecl>();
+        for (const TypePtr& base : g.bases) {
+            TypePtr copy = cl.type(*base);
+            {
+                FileScope fs(*this, a->module, origin_header);
+                ns_ = a->ns;
+                resolve_type(*copy);
+            }
+            pre_resolved_.insert(copy.get());
+            td.bases.push_back(std::move(copy));
+        }
+        for (const DeclPtr& mem : g.members) {
+            std::unique_ptr<FunctionDecl> fn = cl.function(mem->as<FunctionDecl>());
+            fn->access       = d.kind == DeclKind::struct_ ? Access::none : (mem->access == Access::none ? Access::public_ : mem->access);
+            fn->generated_by = &u;
+            fn->ns           = d.ns;
+            // Same signature as a written member, or as another generated one: an error naming both.
+            if (auto it = type->members.find(fn->name); it != type->members.end()) {
+                for (Symbol* other : it->second) {
+                    const FunctionDecl* of = other->function();
+                    if (!of || params_sig(*of) != params_sig(*fn)) continue;
+                    Diagnostic& e = error(DiagCode::E3075, u.span,
+                                          std::format("'@{}' generates '{}', which '{}' already has", ast::to_string(u.path),
+                                                      describe_generated(*fn), type->name),
+                                          "conflicting member");
+                    note(e, other->decl->generated_by ? "also generated here" : "written here",
+                         other->decl->generated_by ? other->decl->generated_by->span : other->span);
+                    fn.reset();
+                    break;
+                }
+                if (!fn) continue;
+            }
+            Symbol* sym     = add_member(m, type, *fn, header);
+            sym->definition = fn.get();
+            generated_[fn.get()] = GeneratedOrigin{a->module, origin_header, a->ns, u.value_symbol};
+            td.members.push_back(std::move(fn));
+        }
+    }
+
+    static std::string describe_generated(const FunctionDecl& f) { return f.name + params_sig(f); }
 
     // --- phase B and C: bases and class hierarchies --------------------------------------
 
@@ -731,9 +1463,10 @@ private:
                 continue;
             }
             FileScope     fs(*this, &m, t->in_header);
+            ns_ = t->ns;
             TemplateScope ts(*this, *t->decl, /*resolve_constraints=*/false);   // phase D reports those
             for (const TypePtr& base : t->decl->as<TypeDecl>().bases) {
-                resolve_type(*base);
+                if (!pre_resolved_.count(base.get())) resolve_type(*base);   // generated bases are resolved where written
                 const Symbol* b = base->kind == TypeKind::named ? base->as<NamedType>().symbol : nullptr;
                 if (b && b->is_type() && b->kind != SymbolKind::type_param) {
                     t->bases.push_back(const_cast<Symbol*>(b));
@@ -921,15 +1654,38 @@ private:
     void resolve_bodies(Module& m) {
         if (m.header) {
             FileScope fs(*this, &m, true);
-            for (const DeclPtr& d : m.header->ast.decls) resolve_decl(*d, nullptr);
+            check_aliases();
+            for (const DeclPtr& d : m.header->ast.decls) {
+                ns_ = d->ns;
+                resolve_decl(*d, nullptr);
+            }
         }
         if (m.source) {
             FileScope fs(*this, &m, false);
-            for (const DeclPtr& d : m.source->ast.decls) resolve_decl(*d, nullptr);
+            check_aliases();
+            for (const DeclPtr& d : m.source->ast.decls) {
+                ns_ = d->ns;
+                resolve_decl(*d, nullptr);
+            }
         }
     }
 
     void resolve_decl(Decl& d, Symbol* self) {
+        if (auto g = generated_.find(&d); g != generated_.end()) {
+            // A member an annotation generated: its code is the annotation's, so names are found
+            // where the annotation is written; `this` is the annotated type (spec 29).
+            FileScope fs(*this, g->second.module, g->second.header);
+            ns_                                  = g->second.ns;
+            std::optional<AnnotationContext> saved = actx_;
+            actx_                                = AnnotationContext{g->second.value, self, nullptr};
+            resolve_function(d.as<FunctionDecl>(), self);
+            actx_ = saved;
+            return;
+        }
+        if (d.kind == DeclKind::check && self && self->decl && self->decl->kind == DeclKind::struct_ &&
+            self->decl->as<TypeDecl>().is_annotation) {
+            return;   // an annotation's checks run once per use, with `annotation` and `annotated` (spec 29)
+        }
         TemplateScope ts(*this, d);
         switch (d.kind) {
         case DeclKind::import: return;
@@ -942,7 +1698,10 @@ private:
             scopes_.pop_back();
             return;
         }
-        case DeclKind::function: resolve_function(d.as<FunctionDecl>(), self); return;
+        case DeclKind::function:
+            resolve_function(d.as<FunctionDecl>(), self);
+            if (!self && d.as<FunctionDecl>().is_operator) check_operator_home(d.as<FunctionDecl>());
+            return;
         case DeclKind::variable:
         case DeclKind::field: {
             auto& v = d.as<VariableDecl>();
@@ -955,6 +1714,13 @@ private:
         case DeclKind::interface: {
             auto    it = symbol_of_.find(&d);
             Symbol* t  = it == symbol_of_.end() ? nullptr : it->second;
+            for (ThreadPromise& p : d.as<TypeDecl>().promises) {   // `unsafe std::sendable(cond)` (spec 27)
+                if (p.condition) {
+                    scopes_.emplace_back();
+                    resolve_expr(*p.condition);
+                    scopes_.pop_back();
+                }
+            }
             for (const DeclPtr& mem : d.as<TypeDecl>().members) resolve_decl(*mem, t);
             return;
         }
@@ -991,6 +1757,32 @@ private:
             scopes_.pop_back();
         }
         fn_ = saved;
+    }
+
+    /// A free `operator` function lives with one of its operand types: same namespace, same
+    /// module (spec 16, 30). So only the module that declares a type defines its operators.
+    void check_operator_home(const FunctionDecl& fn) {
+        std::vector<const Symbol*> types;
+        for (const Param& p : fn.params) {
+            const TypeExpr* t = p.type.get();
+            if (t->kind == TypeKind::reference) t = t->as<ReferenceType>().inner.get();
+            if (t->kind != TypeKind::named) continue;
+            const Symbol* s = t->as<NamedType>().symbol;
+            if (!s || !s->is_type()) return;   // unresolved (already reported) or a template parameter: decided per instance
+            if (s->kind == SymbolKind::type_param) return;
+            if (s->module == module_ && s->ns == ns_) return;
+            types.push_back(s);
+        }
+        if (types.empty()) return;   // only built-in operand types: the checker reports that
+        std::sort(types.begin(), types.end());
+        types.erase(std::unique(types.begin(), types.end()), types.end());
+        Diagnostic& e = error(DiagCode::E3066, fn.name_span,
+                              std::format("'operator{}' is declared away from its operand types", fn.name),
+                              "not with its operand types");
+        for (const Symbol* t : types) {
+            note(e, std::format("'{}' is declared in {} of module '{}'", t->key(), ns_display(t->ns), t->module->name), t->span);
+        }
+        note(e, "a free operator is declared in the same namespace and module as one of its operand types; or make it a method");
     }
 
     // --- locals ---------------------------------------------------------------------------
@@ -1041,21 +1833,26 @@ private:
 
     std::vector<std::string> value_candidates() const {
         std::vector<std::string> out;
-        for (const Scope& s : scopes_) {
-            for (const auto& [n, sym] : s.names) out.push_back(n);
+        for (const Scope& sc : scopes_) {
+            for (const auto& [n, sym] : sc.names) out.push_back(n);
         }
-        for (const auto& [n, syms] : module_->items) out.push_back(n);
+        for (const std::string& level : enclosing_levels(ns_)) {
+            for (std::string& n : names_in(level)) out.push_back(std::move(n));
+        }
         return out;
     }
 
     std::vector<std::string> type_candidates() const {
         std::vector<std::string> out = {"bool", "char", "void", "never", "i8", "i16", "i32", "i64", "i128", "isize",
                                         "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64"};
-        for (const auto& [n, syms] : module_->items) {
-            if (!syms.empty() && syms.front()->is_type()) out.push_back(n);
+        for (const std::string& level : enclosing_levels(ns_)) {
+            for (std::string& n : names_in(level)) {
+                Found f = find_items(join_ns(level, n));
+                if (!f.symbols.empty() && f.symbols.front()->is_type()) out.push_back(std::move(n));
+            }
         }
-        for (const auto& level : template_params_) {
-            for (Symbol* s : level) out.push_back(s->name);
+        for (const auto& lv : template_params_) {
+            for (Symbol* sym : lv) out.push_back(sym->name);
         }
         return out;
     }
@@ -1103,8 +1900,8 @@ private:
             if (auto found = it->names.find(name); found != it->names.end()) return !found->second->is_type_value;
         }
         if (Symbol* tp = find_template_param(name)) return tp->kind == SymbolKind::value_param;
-        if (auto it = module_->items.find(name); it != module_->items.end()) {
-            return it->second.front()->kind == SymbolKind::global && !it->second.front()->is_type_value;
+        if (Symbol* item = lookup_unqualified(name, p.span, p.global, false).symbol) {
+            return item->kind == SymbolKind::global && !item->is_type_value;
         }
         return false;
     }
@@ -1137,6 +1934,8 @@ private:
     }
 
     bool member_visible(const Symbol* mem) const {
+        // Generated members see the private parts of the type they were written for (spec 29).
+        if (actx_ && actx_->type && (mem->parent == actx_->type || is_ancestor(actx_->type, mem->parent))) return true;
         if (mem->access == Access::private_ && mem->parent->module != module_) return false;
         if (mem->access == Access::protected_ && mem->parent->module != module_) {
             return fn_.self_type && (fn_.self_type == mem->parent || is_ancestor(fn_.self_type, mem->parent));
@@ -1156,41 +1955,55 @@ private:
         return sym;
     }
 
-    Symbol* lookup_single(PathSegment& seg, Want want, Span span) {
+    Symbol* lookup_single(PathSegment& seg, Want want, Span span, bool global = false) {
         const std::string& name = seg.name;
-        if (want == Want::type) {
-            // A local compile_time `type` constant or a `type` parameter used as a type (spec 26).
-            for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-                if (auto found = it->names.find(name); found != it->names.end()) {
-                    if (found->second->is_type_value) return found->second;
-                    break;
+        if (!global && actx_ && (name == "annotation" || name == "annotated")) {   // inside an annotation (spec 29)
+            Symbol* s = name == "annotation" ? actx_->value : actx_->type ? actx_->type : actx_->handle;
+            if (s) return check_want(s, want, span, name);
+        }
+        if (!global) {
+            if (want == Want::type) {
+                // A local compile_time `type` constant or a `type` parameter used as a type (spec 26).
+                for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+                    if (auto found = it->names.find(name); found != it->names.end()) {
+                        if (found->second->is_type_value) return found->second;
+                        break;
+                    }
                 }
+            } else if (Symbol* local = lookup_local(name, span)) {
+                return local;
             }
             if (Symbol* tp = find_template_param(name)) {
                 return check_want(tp, want, span, name);
             }
-            if (auto it = module_->items.find(name); it != module_->items.end()) {
-                return check_want(it->second.front(), want, span, name);
-            }
-            if (visible_module(name)) {
-                error(DiagCode::E3022, span, std::format("'{}' is a module, not a type", name), "module");
-                return nullptr;
-            }
-            suggest(error(DiagCode::E3021, span, std::format("cannot find type '{}'", name), "unknown type"), name,
-                    type_candidates());
+        }
+        Unqualified u = lookup_unqualified(name, span, global, true);
+        if (u.reported) return nullptr;
+        if (u.symbol) return check_want(u.symbol, want, span, name);
+        std::string_view what = want == Want::type ? "type" : "value";
+        if (u.is_namespace || name == "std") {
+            note(error(DiagCode::E3022, span, std::format("'{}' is a namespace, not a {}", name, what), "namespace"),
+                 std::format("name something in it: '{}::...'", name));
             return nullptr;
         }
-        if (Symbol* local = lookup_local(name, span)) {
-            return local;
+        if (program_.modules.count(name) && name != module_->name) {
+            note(error(DiagCode::E3022, span, std::format("'{}' is a module, not a {}", name, what), "module"),
+                 "a module is a file; its names are reached through the namespaces it declares (spec 30)");
+            return nullptr;
         }
-        if (Symbol* tp = find_template_param(name)) {
-            return check_want(tp, want, span, name);
+        if (!u.hidden) {
+            for (const std::string& level : global ? std::vector<std::string>{""} : enclosing_levels(ns_)) {
+                if (report_unimported(join_ns(level, name), span)) return nullptr;
+            }
         }
-        if (auto it = module_->items.find(name); it != module_->items.end()) {
-            return check_want(it->second.front(), want, span, name);
+        if (u.hidden) {
+            note(error(DiagCode::E3024, span, std::format("'{}' is private to its module", name), "private"),
+                 "only items declared in a module's .rifth can be used from other modules");
+            return nullptr;
         }
-        if (visible_module(name) || name == "std") {
-            error(DiagCode::E3022, span, std::format("'{}' is a module, not a value", name), "module");
+        if (want == Want::type) {
+            suggest(error(DiagCode::E3021, span, std::format("cannot find type '{}'", name), "unknown type"), name,
+                    type_candidates());
             return nullptr;
         }
         if (fn_.self_type) {
@@ -1210,6 +2023,16 @@ private:
             note(e, std::format("'{}' is declared later in this function; move the declaration up", name), later->second);
         } else {
             suggest(e, name, value_candidates());
+            if (!ns_.empty() || global) {
+                note(e, std::format("searched {}", [&] {
+                         std::string list;
+                         std::vector<std::string> levels = global ? std::vector<std::string>{""} : enclosing_levels(ns_);
+                         for (std::size_t i = 0; i < levels.size(); ++i) {
+                             list += (i ? ", " : "") + (levels[i].empty() ? std::string("the global namespace") : "'" + levels[i] + "'");
+                         }
+                         return list;
+                     }()));
+            }
         }
         return nullptr;
     }
@@ -1245,43 +2068,15 @@ private:
         walk_block(block);
     }
 
-    /// `std::name...`: items of the built-in std module (library/std), plus the alternatives of
-    /// `option` and `result`, which std exports directly (`std::ok`, spec 08). Names the library
-    /// does not declare yet stay opaque (null, no error): the compiler knows them itself.
-    Symbol* lookup_std(Path& path, Want want, Span span) {
-        Module* stdm = program_.std_module;
-        auto&   segs = path.segments;
-        if (!stdm || segs.size() < 2) return nullptr;
-        const std::string& name = segs[1].name;
-        if (auto it = stdm->items.find(name); it != stdm->items.end()) {
-            return lookup_members(it->second.front(), path, 2, want, span);
-        }
-        if (segs.size() == 2) {
-            if (Symbol* alt = std_export(name)) return check_want(alt, want, span, "std::" + name);
-        }
-        // `std::filesystem::path`: an item of the library module `std::filesystem`;
-        // `std::build::mode::debug`: of `std::build::mode` (the longest module name wins).
-        for (std::size_t n = segs.size() - 1; n >= 2; --n) {
-            std::string module = "std";
-            for (std::size_t i = 1; i < n; ++i) module += "::" + segs[i].name;
-            auto m = program_.modules.find(module);
-            if (m == program_.modules.end()) continue;
-            if (auto it = m->second->items.find(segs[n].name); it != m->second->items.end()) {
-                return lookup_members(it->second.front(), path, n + 1, want, span);
-            }
-        }
-        return nullptr;
-    }
-
     /// The four alternatives exported directly in `std::` (spec 08), or null.
     Symbol* std_export(const std::string& name) const {
         Module* stdm = program_.std_module;
         std::string_view owner = name == "some" || name == "none" ? "option" : name == "ok" || name == "error" ? "result" : "";
         if (!stdm || owner.empty()) return nullptr;
-        auto it = stdm->items.find(std::string(owner));
-        if (it == stdm->items.end()) return nullptr;
-        auto alt = it->second.front()->members.find(name);
-        return alt == it->second.front()->members.end() ? nullptr : alt->second.front();
+        Symbol* type = stdm->item("std::" + std::string(owner));
+        if (!type) return nullptr;
+        auto alt = type->members.find(name);
+        return alt == type->members.end() ? nullptr : alt->second.front();
     }
 
     /// Walks `T::member::...` from a type symbol.
@@ -1303,6 +2098,19 @@ private:
             }
             bool    opaque = false;
             Symbol* mem    = find_member(base, name, opaque);
+            if (!mem && base->module && base->module->name == "std") {
+                // A few std types have types of their own (`std::thread_pool::options`, spec 28):
+                // the library declares them as `thread_pool_options` and so on.
+                std::string inner = base->name + "_" + name;
+                if (sema::is_std_nested_type(inner)) {
+                    if (Symbol* nested = base->module->item(join_ns(base->ns, inner)); nested && nested->is_type()) {
+                        display += "::" + name;
+                        base = nested;
+                        ++i;
+                        continue;
+                    }
+                }
+            }
             if (!mem) {
                 if (opaque) return nullptr;
                 Diagnostic& e = error(DiagCode::E3025, seg,
@@ -1342,74 +2150,138 @@ private:
     Symbol* lookup_path(Path& path, Want want, Span span) {
         resolve_template_args(path);
         auto& segs = path.segments;
-        if (segs.size() == 1) {
+        if (segs.size() == 1 && !path.global) {
             if (is_builtin_type_name(segs[0].name)) return nullptr;   // `u32`, also as a type value
             return lookup_single(segs[0], want, span);
         }
-        const std::string& first = segs[0].name;
-        if (is_builtin_type_name(first)) {
+        if (segs.size() == 1) return lookup_single(segs[0], want, span, /*global=*/true);
+        if (!path.global && is_builtin_type_name(segs[0].name)) {
             return nullptr;   // `u32::max`: built-in members come with the type checker
         }
-        if (first == "std") {
-            if (!std_visible()) {
-                if (std_reported_.insert(segs[0].span.file).second) {
-                    note(error(DiagCode::E3023, segs[0].span, "the standard library is not imported", "'std' not imported"),
-                         "add 'import std;' at the top of the file (reported once per file)");
-                }
-                return nullptr;
-            }
-            return lookup_std(path, want, span);
+        // `vk::device` with `namespace vk = gfx::vulkan;`: the path is rewritten to its full form,
+        // so later phases see `gfx::vulkan::device` (spec 30).
+        bool shadowed = false;   // an alias that collides with a real name (reported) is not used
+        for (const std::string& level : enclosing_levels(ns_)) {
+            shadowed = shadowed || namespace_visible(join_ns(level, segs[0].name)) || !find_items(join_ns(level, segs[0].name)).symbols.empty();
         }
-        if (Symbol* tp = find_template_param(first)) {
-            (void)tp;
+        if (!path.global && !shadowed) {
+            if (const ast::NamespaceAlias* a = find_alias(segs[0].name)) {
+                std::vector<PathSegment> full;
+                for (const PathSegment& t : a->target.segments) {
+                    PathSegment c;
+                    c.name = t.name;
+                    c.span = segs[0].span;
+                    full.push_back(std::move(c));
+                }
+                for (std::size_t i = 1; i < segs.size(); ++i) full.push_back(std::move(segs[i]));
+                segs        = std::move(full);
+                path.global = true;
+            }
+        }
+        const std::string& first = segs[0].name;
+        if (!path.global && find_template_param(first)) return nullptr;   // `T::make`: depends on the instance
+        if (first == "std" && !std_visible()) {
+            if (std_reported_.insert(segs[0].span.file).second) {
+                note(error(DiagCode::E3023, segs[0].span, "the standard library is not imported", "'std' not imported"),
+                     "add 'import std;' at the top of the file (reported once per file)");
+            }
             return nullptr;
         }
-        if (auto it = module_->items.find(first); it != module_->items.end()) {
-            return lookup_members(it->second.front(), path, 1, want, span);
-        }
-        // Longest prefix that names an imported module: `shapes::circle::circle`.
-        for (std::size_t k = segs.size() - 1; k >= 1; --k) {
-            std::string name;
-            for (std::size_t j = 0; j < k; ++j) name += (j ? "::" : "") + segs[j].name;
-            Module* mod = visible_module(name);
-            if (!mod && program_.modules.count(name)) {
-                note(error(DiagCode::E3023, segs[0].span, std::format("module '{}' is not imported here", name),
-                           "not imported"),
-                     std::format("add 'import {};'", name));
-                return nullptr;
-            }
-            if (!mod) continue;
-            const std::string& item_name = segs[k].name;
-            auto               it        = mod->items.find(item_name);
-            Symbol*            item      = nullptr;
-            bool               hidden    = false;
-            if (it != mod->items.end()) {
-                for (Symbol* s : it->second) {
-                    if (s->is_private) hidden = true;
-                    else if (!item) item = s;
+
+        // Every enclosing namespace where the path starts (qualified names are looked up where
+        // they say; the first name is found like an unqualified one, spec 30).
+        struct Match {
+            std::string level;
+            std::size_t k   = 0;         // segs[0..k] name the declaration
+            Symbol*     sym = nullptr;   // null: only the namespace segs[0] exists here
+        };
+        std::vector<Match>       matches;
+        std::vector<std::string> levels = path.global ? std::vector<std::string>{""} : enclosing_levels(ns_);
+        for (const std::string& level : levels) {
+            std::vector<std::string> prefixes;
+            std::string              q = level;
+            for (const PathSegment& seg : segs) prefixes.push_back(q = join_ns(q, seg.name));
+            Match m{level};
+            bool  any = false;
+            for (std::size_t k = segs.size(); k-- > 0;) {
+                Found f = find_items(prefixes[k]);
+                if (!f.symbols.empty()) {
+                    check_one_module(f.symbols, prefixes[k], segs[0].span);
+                    m.k   = k;
+                    m.sym = f.symbols.front();
+                    any   = true;
+                    break;
                 }
             }
-            if (!item) {
-                if (hidden) {
-                    note(error(DiagCode::E3024, segs[k].span,
-                               std::format("'{}' is private to module '{}'", item_name, name), "private"),
-                         "only items declared in the module's .rifth can be used from other modules");
-                } else {
-                    std::vector<std::string> names;
-                    for (const auto& [n, syms] : mod->items) {
-                        if (!syms.front()->is_private) names.push_back(n);
+            if (any || namespace_visible(prefixes[0])) matches.push_back(m);
+        }
+        if (matches.size() > 1) {
+            Diagnostic& e = error(DiagCode::E3060, segs[0].span,
+                                  std::format("'{}' is both '{}' and '{}'; write the full name", first,
+                                              global_display(join_ns(matches[0].level, first)),
+                                              global_display(join_ns(matches[1].level, first))),
+                                  "ambiguous");
+            note(e, "a leading '::' starts at the global namespace: '::" + ast::to_string(path) + "'");
+            return nullptr;
+        }
+        if (matches.empty()) {
+            for (const std::string& level : levels) {
+                std::string q = level;
+                for (const PathSegment& seg : segs) {
+                    q = join_ns(q, seg.name);
+                    if (report_unimported(q, segs[0].span)) return nullptr;
+                }
+            }
+            // `geometry::vec::vec2`: a module path used like a namespace (before spec 30).
+            for (std::size_t k = segs.size() - 1; k >= 1; --k) {
+                std::string name;
+                for (std::size_t j = 0; j < k; ++j) name = join_ns(name, segs[j].name);
+                auto mod = program_.modules.find(name);
+                if (mod == program_.modules.end()) continue;
+                Diagnostic& e = error(DiagCode::E3020, segs[0].span,
+                                      std::format("'{}' is a module, not a namespace", name), "module path");
+                note(e, "a module is a file; 'import' loads it, and its names are reached through the namespaces it declares (spec 30)");
+                for (const auto& [key, syms] : mod->second->items) {
+                    if (key == segs[k].name || key.ends_with("::" + segs[k].name)) {
+                        note(e, std::format("that module declares it {}: write '{}'",
+                                            syms.front()->ns.empty() ? "in the global namespace" : "in namespace '" + syms.front()->ns + "'",
+                                            key));
+                        break;
                     }
-                    suggest(error(DiagCode::E3020, segs[k].span,
-                                  std::format("cannot find '{}' in module '{}'", item_name, name), "not found"),
-                            item_name, names);
                 }
                 return nullptr;
             }
-            return lookup_members(item, path, k + 1, want, span);
+            suggest(error(DiagCode::E3020, segs[0].span, std::format("cannot find '{}' in this scope", first),
+                          "not a namespace, type or enum"),
+                    first, value_candidates());
+            return nullptr;
         }
-        suggest(error(DiagCode::E3020, segs[0].span, std::format("cannot find '{}' in this scope", first),
-                      "not a module, type or enum"),
-                first, value_candidates());
+        const Match& m = matches.front();
+        if (m.sym) {
+            if (m.k + 1 == segs.size()) return check_want(m.sym, want, span, join_ns(m.level, ast::to_string(path)));
+            return lookup_members(m.sym, path, m.k + 1, want, span);
+        }
+        // Only namespaces: find how far they go, then report the missing name.
+        std::string ns = join_ns(m.level, first);
+        std::size_t k  = 1;
+        while (k + 1 < segs.size() && namespace_visible(join_ns(ns, segs[k].name))) ns = join_ns(ns, segs[k++].name);
+        if (ns == "std" || ns.starts_with("std::")) {
+            if (segs.size() == 2) {
+                if (Symbol* alt = std_export(segs[1].name)) return check_want(alt, want, span, "std::" + segs[1].name);
+            }
+            return nullptr;   // names the compiler provides itself (`std::println`, `std::meta::fields`)
+        }
+        const std::string& missing = segs[k].name;
+        Found f = find_items(join_ns(ns, missing));
+        if (!f.hidden && report_unimported(join_ns(ns, missing), segs[k].span)) return nullptr;
+        if (f.hidden) {
+            note(error(DiagCode::E3024, segs[k].span, std::format("'{}::{}' is private to its module", ns, missing), "private"),
+                 "only items declared in a module's .rifth can be used from other modules");
+        } else {
+            Diagnostic& e = error(DiagCode::E3020, segs[k].span, std::format("cannot find '{}' in namespace '{}'", missing, ns),
+                                  "not found");
+            suggest(e, missing, names_in(ns));
+        }
         return nullptr;
     }
 
@@ -1420,6 +2292,37 @@ private:
         case TypeKind::named: {
             auto& nt  = t.as<NamedType>();
             nt.symbol = lookup_path(nt.path, Want::type, nt.span);
+            // `annotated` in a generated member of a template type is the instance: the template
+            // with its own parameters as arguments (spec 29).
+            if (actx_ && actx_->type && nt.symbol == actx_->type && nt.path.segments.size() == 1 &&
+                nt.path.segments[0].name == "annotated" && nt.symbol->decl && nt.symbol->decl->is_template &&
+                !template_params_.empty() && nt.path.segments[0].template_args.empty()) {
+                for (Symbol* p : template_params_.back()) {
+                    TemplateArg arg;
+                    arg.span = nt.span;
+                    Path pp;
+                    pp.span = nt.span;
+                    PathSegment ps;
+                    ps.name = p->name;
+                    ps.span = nt.span;
+                    pp.segments.push_back(std::move(ps));
+                    if (p->kind == SymbolKind::type_param) {
+                        auto at   = std::make_unique<NamedType>(nt.span, std::move(pp));
+                        at->symbol = p;
+                        arg.type  = std::move(at);
+                    } else {
+                        auto pe   = std::make_unique<PathExpr>(nt.span, std::move(pp));
+                        pe->symbol = p;
+                        arg.value = std::move(pe);
+                    }
+                    nt.path.segments[0].template_args.push_back(std::move(arg));
+                }
+                nt.path.segments[0].has_template_args = true;
+                // In an instance, the copy is not the template: name the template itself.
+                if (Symbol* templ = nt.symbol->module ? nt.symbol->module->item(nt.symbol->key()) : nullptr; templ && templ->is_type()) {
+                    nt.symbol = templ;
+                }
+            }
             check_template_arity(nt.path, nt.symbol, nt.span);
             return;
         }
@@ -1872,6 +2775,12 @@ private:
     std::vector<Scope>                    scopes_;
     FunctionContext                       fn_;
     std::set<FileId>                      std_reported_;
+    std::vector<Module*>                  std_modules_;     // the standard library's modules
+    std::optional<AnnotationContext>      actx_;            // inside an annotation's checks or generated members
+    std::map<const Decl*, GeneratedOrigin> generated_;      // generated members → where their code is written
+    std::set<const TypeExpr*>             pre_resolved_;    // generated interfaces, resolved where written
+    std::string                           ns_;              // namespace of the code being resolved
+    std::set<std::string>                 clash_reported_;  // E3065 once per name
     std::set<const Symbol*>               mismatched_;     // header functions with a mismatching definition
     std::multimap<std::string, Span>      declared_later_;   // locals of the current function   // "std not imported" once per file
 };
@@ -1885,7 +2794,7 @@ std::string fn_line(const Symbol& s) {
     out += f.is_static && s.parent ? "static " : "";
     out += f.is_virtual ? "virtual " : "";
     out += f.is_destructor ? "destructor " : s.parent ? "method " : "fn ";
-    out += s.name + params_sig(f);
+    out += (s.parent ? s.name : s.key()) + params_sig(f);
     if (f.result) out += " -> " + to_string(*f.result);
     out += f.is_override ? " override" : "";
     out += f.is_abstract ? " abstract" : "";
@@ -1914,14 +2823,109 @@ void resolve_program(Program& program, DiagnosticEngine& diags) { Resolver(progr
 
 Symbol* resolve_instance(Program& program, DiagnosticEngine& diags, const Symbol* templ, Decl& decl,
                          std::vector<Symbol*>& params) {
-    bool from_header = !templ->definition && !templ->source_block && templ->in_header;
-    return Resolver(program, diags).build_instance(*templ->module, from_header, decl, params);
+    bool     from_header = !templ->definition && !templ->source_block && templ->in_header;
+    Resolver r(program, diags);
+    r.set_namespace(templ->ns);   // names in a template resolve where it is written (spec 14, 30)
+    return r.build_instance(*templ->module, from_header, decl, params);
 }
 
 Symbol* resolve_function_instance(Program& program, DiagnosticEngine& diags, const Symbol* templ,
                                   FunctionDecl& decl, std::vector<Symbol*>& params) {
-    bool from_header = !templ->definition && templ->in_header;
-    return Resolver(program, diags).build_function_instance(*templ->module, from_header, decl, params);
+    bool     from_header = !templ->definition && templ->in_header;
+    Resolver r(program, diags);
+    r.set_namespace(templ->ns);
+    return r.build_function_instance(*templ->module, from_header, decl, params);
+}
+
+namespace {
+
+std::string source_text(const SourceManager& sources, Span span) {
+    std::string_view text = sources.file(span.file).text();
+    if (span.end > text.size() || span.begin > span.end) return {};
+    // From the start of the line, so the first line keeps its indentation.
+    std::size_t begin = span.begin;
+    while (begin > 0 && (text[begin - 1] == ' ' || text[begin - 1] == '\t')) --begin;
+    return std::string(text.substr(begin, span.end - begin));
+}
+
+/// Removes the common indentation of the lines of `text` and indents them by `indent`.
+std::string reindent(const std::string& text, std::string_view indent) {
+    std::vector<std::string> lines;
+    std::size_t              at = 0;
+    while (at <= text.size()) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        lines.push_back(text.substr(at, end - at));
+        at = end + 1;
+    }
+    std::size_t common = std::string::npos;
+    for (const std::string& l : lines) {
+        std::size_t n = l.find_first_not_of(" \t");
+        if (n != std::string::npos) common = std::min(common, n);
+    }
+    if (common == std::string::npos) common = 0;
+    std::string out;
+    for (const std::string& l : lines) {
+        if (l.find_first_not_of(" \t") == std::string::npos) {
+            out += "\n";
+            continue;
+        }
+        out += std::string(indent) + l.substr(common) + "\n";
+    }
+    return out;
+}
+
+/// `text` with the word `annotated` replaced by `name` (the generated code names its type).
+std::string replace_annotated(std::string text, const std::string& name) {
+    const std::string word = "annotated";
+    for (std::size_t at = text.find(word); at != std::string::npos; at = text.find(word, at)) {
+        bool left  = at == 0 || !(std::isalnum(static_cast<unsigned char>(text[at - 1])) || text[at - 1] == '_');
+        bool right = at + word.size() >= text.size() ||
+                     !(std::isalnum(static_cast<unsigned char>(text[at + word.size()])) || text[at + word.size()] == '_');
+        if (left && right) {
+            text.replace(at, word.size(), name);
+            at += name.size();
+        } else {
+            at += word.size();
+        }
+    }
+    return text;
+}
+
+} // namespace
+
+bool print_expansion(std::ostream& out, const Program& program, const SourceManager& sources, std::string_view type) {
+    const Symbol* found = nullptr;
+    for (const auto& [name, m] : program.modules) {
+        for (const Symbol* s : m->item_order) {
+            if (!s->is_type()) continue;
+            if (s->key() == type || (s->name == type && m.get() == program.entry)) found = found ? found : s;
+        }
+    }
+    if (!found) return false;
+    out << "// " << found->key() << " as written in " << sources.file(found->decl->span.file).path()
+        << ", with the members its annotations generate (spec 29)\n";
+    std::string written = source_text(sources, found->decl->span);
+    out << reindent(written, "");
+    if (found->source_block) out << "\n" << reindent(source_text(sources, found->source_block->span), "");
+    bool any = false;
+    for (const Symbol* m : found->member_order) {
+        const ast::AnnotationUse* by = m->decl ? m->decl->generated_by : nullptr;
+        if (!by) continue;
+        if (!any) out << "\n// generated:\n";
+        any = true;
+        std::string text = replace_annotated(source_text(sources, m->decl->span), found->name);
+        out << "\n    // by @" << ast::to_string(by->path) << "\n" << reindent(text, "    ");
+    }
+    // Interfaces the annotations add.
+    const auto& td = found->decl->kind == DeclKind::struct_ || found->decl->kind == DeclKind::class_ ? &found->decl->as<TypeDecl>() : nullptr;
+    if (td) {
+        std::string bases;
+        for (const Symbol* b : found->bases) bases += (bases.empty() ? "" : ", ") + b->key();
+        if (!bases.empty()) out << "\n// implements: " << bases << "\n";
+    }
+    if (!any) out << "\n// (no generated members)\n";
+    return true;
 }
 
 void print_symbols(std::ostream& out, const Module& m, const SourceManager& sources) {
@@ -1944,11 +2948,11 @@ void print_symbols(std::ostream& out, const Module& m, const SourceManager& sour
         case SymbolKind::global: {
             const auto& v = s->decl->as<VariableDecl>();
             out << "  " << priv << (v.storage == Storage::compile_time ? "compile_time " : "static ")
-                << (v.is_mut ? "mut " : "") << s->name << " : " << to_string(*v.type) << '\n';
+                << (v.is_mut ? "mut " : "") << s->key() << " : " << to_string(*v.type) << '\n';
             break;
         }
         case SymbolKind::enum_: {
-            out << "  " << priv << "enum " << s->name << " : " << to_string(*s->decl->as<EnumDecl>().tag_type) << '\n';
+            out << "  " << priv << "enum " << s->key() << " : " << to_string(*s->decl->as<EnumDecl>().tag_type) << '\n';
             for (const Symbol* a : s->member_order) {
                 out << "    " << a->name;
                 if (a->alternative->payload) out << '(' << to_string(*a->alternative->payload) << ')';
@@ -1960,7 +2964,7 @@ void print_symbols(std::ostream& out, const Module& m, const SourceManager& sour
         case SymbolKind::class_:
         case SymbolKind::interface: {
             const auto& t = s->decl->as<TypeDecl>();
-            out << "  " << priv << (t.is_open ? "open " : "") << sema::to_string(s->kind) << ' ' << s->name;
+            out << "  " << priv << (t.is_open ? "open " : "") << sema::to_string(s->kind) << ' ' << s->key();
             if (!t.bases.empty()) out << " : " << bases_sig(t);
             out << '\n';
             std::vector<std::string> layout;

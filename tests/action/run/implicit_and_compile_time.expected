@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+direct: implicit_and_compile_time.rifts:69:5 in main (main, namespace '', module implicit_and_compile_time, target implicit_and_compile_time)
+relayed: implicit_and_compile_time.rifts:70:5 in main (main, namespace '', module implicit_and_compile_time, target implicit_and_compile_time)
+zone main at line 71
+slow path, fast path
+file: level 3
+function: level 5
+type: level 7
+method: level 9
+--- stderr

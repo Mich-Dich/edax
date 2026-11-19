@@ -26,6 +26,8 @@ TypeContext::TypeContext() {
     type_value_      = make(Type{Kind::type_value, 0, false, false, nullptr, nullptr, false, "type", {}});
     meta_field_      = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::field", {}});
     meta_alternative_ = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::alternative", {}});
+    meta_function_    = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::function", {}});
+    meta_parameter_   = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::parameter", {}});
     builtins_["type"] = type_value_;
     builtins_["bool"]  = bool_t_;
     builtins_["char"]  = char_t_;
@@ -139,10 +141,18 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
             // still unknown (inside a template that is not instantiated) make it unknown too.
             std::vector<const Type*> args;
             const auto& seg_args = segs.back().template_args;
+            // `std::span<mut T>` (spec 20, 27): the library's `span_mut<T>`, a view with mutable elements.
+            if (s->name == "span" && s->module && s->module->name == "std" && seg_args.size() == 1 && seg_args[0].is_mut &&
+                seg_args[0].type && seg_args[0].type->kind != ast::TypeKind::reference) {
+                if (const sema::Symbol* sm = s->module->item("std::span_mut")) s = sm;
+            }
             for (std::size_t i = 0; i < seg_args.size(); ++i) {
                 const TemplateArg& a = seg_args[i];
                 if (a.type) {
-                    args.push_back(lower(*a.type, subst));
+                    const Type* arg = lower(*a.type, subst);
+                    // `std::option<mut T&>`: the `mut` belongs to the reference argument
+                    if (a.is_mut && arg->is(Kind::reference)) arg = reference(arg->inner, true);
+                    args.push_back(arg);
                     continue;
                 }
                 // A value argument (spec 14): evaluated by the checker once per written argument.
@@ -180,6 +190,8 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
         std::string spelling = ast::to_string(nt.path);
         if (spelling == "std::meta::field") return meta_field_;
         if (spelling == "std::meta::alternative") return meta_alternative_;
+        if (spelling == "std::meta::function") return meta_function_;
+        if (spelling == "std::meta::parameter") return meta_parameter_;
         const Type*              ext = external(spelling);
         std::vector<const Type*> args;
         for (const TemplateArg& a : segs.back().template_args) {
@@ -263,6 +275,19 @@ const ast::LambdaExpr* TypeContext::lambda_of(const Type* closure) const {
     return it == lambdas_.end() ? nullptr : it->second;
 }
 
+const Type* TypeContext::value_arg_of(const std::string& text, const Type* of, std::shared_ptr<const void> payload) {
+    auto key = std::make_pair(text, of);
+    if (auto it = rich_values_made_.find(key); it != rich_values_made_.end()) return it->second;
+    const Type* t     = make(Type{Kind::value_arg, 0, false, false, nullptr, of, false, text, {}});
+    rich_value_of_[t] = std::move(payload);
+    return rich_values_made_[key] = t;
+}
+
+std::shared_ptr<const void> TypeContext::value_payload(const Type* t) const {
+    auto it = rich_value_of_.find(t);
+    return it == rich_value_of_.end() ? nullptr : it->second;
+}
+
 u128 TypeContext::value_bits(const Type* t) const {
     auto it = value_of_.find(t);
     return it == value_of_.end() ? 0 : it->second;
@@ -281,7 +306,12 @@ const std::vector<const Type*>* TypeContext::external_args(const Type* t) const 
     return it == external_args_.end() ? nullptr : &it->second;
 }
 
-std::string to_string(const Type* t) {
+std::string to_string(const Type* t) { return type_name(t, false); }
+
+std::string qualified_name(const Type* t) { return type_name(t, true); }
+
+std::string type_name(const Type* t, bool qualified) {
+    auto to_string = [qualified](const Type* x) { return type_name(x, qualified); };
     if (!t) return "?";
     switch (t->kind) {
     case Kind::reference: return (t->is_mut ? "mut " : "") + to_string(t->inner) + "&";
@@ -298,7 +328,16 @@ std::string to_string(const Type* t) {
     case Kind::pending: {
         // Standard-library types are written `std::option<u32>`; instances show their arguments.
         const sema::Symbol* s = t->symbol;
-        std::string out = (s->module && s->module->name == "std" ? "std::" : "") + s->name;
+        std::string name = s->name;
+        if (s->ns == "std" && sema::is_std_nested_type(name)) {
+            name = "thread_pool::" + name.substr(std::string_view("thread_pool_").size());   // written as a member type
+        }
+        // Names are written with their namespace (spec 30): `std::darray`, `geometry::vec2`.
+        std::string out = (s->ns.empty() ? "" : s->ns + "::") + name;
+        const sema::Symbol* templ = s->template_of ? s->template_of : s;
+        if (templ->name == "span_mut" && templ->module && templ->module->name == "std" && s->template_args.size() == 1) {
+            return "std::span<mut " + to_string(s->template_args[0]) + ">";   // how it is written (spec 20)
+        }
         const std::vector<const Type*>& args = t->kind == Kind::pending ? t->args : s->template_args;
         if (!args.empty()) {
             out += '<';

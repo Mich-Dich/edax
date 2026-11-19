@@ -2,6 +2,7 @@
 #include "rift/lexer.hpp"
 
 #include "rift/ast_printer.hpp"
+#include "rift/ast_clone.hpp"
 
 #include <format>
 #include <optional>
@@ -23,6 +24,7 @@ struct Modifiers {
     std::string                doc;
     bool                       is_private      = false;
     bool                       is_static       = false;
+    bool                       is_thread_local = false;
     bool                       is_compile_time = false;
     bool                       is_run_time     = false;
     bool                       is_unsafe       = false;
@@ -34,6 +36,10 @@ struct Modifiers {
     std::string                abi;
     bool                       is_template     = false;
     std::vector<TemplateParam> template_params;
+    std::vector<AnnotationUse> annotations;          // `@name{...}` (spec 29)
+    bool                       is_annotation   = false;   // `annotation(targets)` before `struct`
+    std::vector<Path>          annotation_targets;
+    Span                       annotation_span;
 };
 
 struct TypeOptions {
@@ -110,7 +116,9 @@ bool is_literal(TokenKind k) {
     }
 }
 
-bool starts_type(TokenKind k) { return k == TokenKind::identifier || is_type_keyword(k) || k == TokenKind::kw_type; }
+bool starts_type(TokenKind k) {
+    return k == TokenKind::identifier || is_type_keyword(k) || k == TokenKind::kw_type || k == TokenKind::colon_colon;
+}
 
 bool starts_expression(TokenKind k) {
     if (is_literal(k) || starts_type(k)) {
@@ -193,6 +201,9 @@ public:
                 advance();   // always make progress
             }
         }
+        f.aliases     = std::move(aliases_);
+        f.namespaces  = std::move(ns_blocks_);
+        f.annotations = std::move(file_annotations_);
         return f;
     }
 
@@ -507,6 +518,7 @@ private:
         m.doc   = take_doc();
         while (true) {
             switch (cur().kind) {
+            case TokenKind::at: m.annotations.push_back(parse_annotation_use()); continue;
             case TokenKind::kw_template: parse_template_header(m); continue;
             case TokenKind::kw_private:
                 if (ctx != MemberContext::top_level) {
@@ -515,10 +527,15 @@ private:
                 m.is_private = true;
                 break;
             case TokenKind::kw_static: m.is_static = true; break;
+            case TokenKind::kw_thread_local: m.is_thread_local = true; break;
             case TokenKind::kw_compile_time: m.is_compile_time = true; break;
             case TokenKind::kw_run_time: m.is_run_time = true; break;
             case TokenKind::kw_unsafe: m.is_unsafe = true; break;
             case TokenKind::identifier:   // `open` is a keyword only before `class` (spec 01, 07)
+                if (cur().text == "annotation" && peek(1).kind == TokenKind::l_paren && ctx == MemberContext::top_level) {
+                    parse_annotation_targets(m);
+                    continue;
+                }
                 if (cur().text == "open" && (peek(1).kind == TokenKind::kw_class || peek(1).kind == TokenKind::kw_struct ||
                                              peek(1).kind == TokenKind::kw_view)) {
                     m.is_open = true;
@@ -575,6 +592,95 @@ private:
             }
         }
         expect_close(TokenKind::r_paren, open);
+    }
+
+    /// A path copied by its names (annotation paths have no template arguments).
+    static Path copy_path(const Path& p) {
+        Path out;
+        out.span   = p.span;
+        out.global = p.global;
+        for (const PathSegment& seg : p.segments) {
+            PathSegment c;
+            c.name = seg.name;
+            c.span = seg.span;
+            out.segments.push_back(std::move(c));
+        }
+        return out;
+    }
+
+    /// `@path` or `@path{ .field = value, ... }` (spec 29). The value is kept as the struct literal
+    /// `path{ ... }`.
+    AnnotationUse parse_annotation_use() {
+        AnnotationUse u;
+        Span          start = advance().span;   // @
+        if (!at(TokenKind::identifier) && !at(TokenKind::colon_colon)) fail_unexpected("an annotation name after '@'");
+        u.path    = parse_type_path();
+        auto type = std::make_unique<NamedType>(u.path.span, copy_path(u.path));
+        if (at(TokenKind::l_brace)) {
+            u.value = parse_struct_literal(u.path.span, std::move(type));
+        } else {
+            u.value = std::make_unique<StructLiteralExpr>(u.path.span, std::move(type));
+        }
+        u.span        = from(start);
+        u.value->span = u.span;
+        return u;
+    }
+
+    /// `annotation(std::meta::target::field, ...)` before `struct` (spec 29).
+    void parse_annotation_targets(Modifiers& m) {
+        m.annotation_span = advance().span;   // annotation
+        m.is_annotation   = true;
+        Span open         = advance().span;   // (
+        if (!at(TokenKind::r_paren)) {
+            do {
+                m.annotation_targets.push_back(parse_type_path());
+            } while (accept(TokenKind::comma));
+        }
+        expect_close(TokenKind::r_paren, open);
+        m.annotation_span = from(m.annotation_span);
+        if (m.annotation_targets.empty()) {
+            report(DiagCode::E2035, m.annotation_span, "an annotation names where it may be written",
+                   "no targets")
+                .notes.push_back(Note{"write e.g. 'annotation(std::meta::target::field) struct name { ... }'", std::nullopt});
+        }
+    }
+
+    /// `generate : interfaces { members }` inside an annotation (spec 29).
+    void parse_generate(TypeDecl& decl) {
+        auto g  = std::make_unique<GenerateBlock>();
+        g->span = advance().span;   // generate
+        if (accept(TokenKind::colon)) {
+            do {
+                g->bases.push_back(parse_type({}));
+            } while (accept(TokenKind::comma));
+        }
+        if (!at(TokenKind::l_brace)) fail_unexpected("'{' to start the generate block");
+        Span   open   = advance().span;
+        Access access = Access::public_;
+        while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
+            std::size_t before = pos_;
+            try {
+                if (!parse_access_label(MemberContext::class_, access)) {
+                    DeclPtr d = parse_member(MemberContext::class_, access);
+                    if (d->kind != DeclKind::function) {
+                        report(DiagCode::E2035, d->name_span, "a generate block adds methods only, not fields or checks",
+                               "not a method")
+                            .notes.push_back(Note{"generated fields would change a type's layout from far away (spec 29)", std::nullopt});
+                    } else {
+                        g->members.push_back(std::move(d));
+                    }
+                }
+            } catch (const ParseError&) {
+                synchronize(false);
+            }
+            if (pos_ == before) advance();
+        }
+        expect_close(TokenKind::r_brace, open);
+        g->span = from(g->span);
+        if (decl.generate) {
+            report(DiagCode::E2035, g->span, "an annotation has at most one generate block", "second block");
+        }
+        decl.generate = std::move(g);
     }
 
     Modifiers finish_modifiers(Modifiers& m) {
@@ -697,6 +803,89 @@ private:
     }
 
     void parse_top_level(std::vector<DeclPtr>& out) {
+        std::size_t first = out.size();
+        parse_top_level_decl(out);
+        std::string ns = current_namespace();
+        for (std::size_t i = first; i < out.size(); ++i) {
+            if (out[i]->ns.empty()) out[i]->ns = ns;
+        }
+    }
+
+    std::string current_namespace() const {
+        std::string out;
+        for (const std::string& n : ns_stack_) out += (out.empty() ? "" : "::") + n;
+        return out;
+    }
+
+    /// `namespace a::b { ... }` or the alias `namespace vk = gfx::vulkan;` (spec 30).
+    void parse_namespace(std::vector<DeclPtr>& out) {
+        Span start = advance().span;   // namespace
+        Path path;
+        Span path_start = cur().span;
+        do {
+            PathSegment seg;
+            seg.span = cur().span;
+            seg.name = expect_identifier("a namespace name");
+            path.segments.push_back(std::move(seg));
+        } while (accept(TokenKind::colon_colon));
+        path.span = from(path_start);
+        if (accept(TokenKind::eq)) {
+            NamespaceAlias alias;
+            alias.span = path.span;
+            alias.ns   = current_namespace();
+            if (path.segments.size() != 1) {
+                report(DiagCode::E2034, path.span, "an alias name is a single name", "not a single name");
+            }
+            alias.name = path.segments.front().name;
+            Span target_start = cur().span;
+            if (accept(TokenKind::colon_colon)) alias.target.global = true;
+            do {
+                PathSegment seg;
+                seg.span = cur().span;
+                seg.name = expect_identifier("a namespace name");
+                alias.target.segments.push_back(std::move(seg));
+            } while (accept(TokenKind::colon_colon));
+            alias.target.span = from(target_start);
+            expect(TokenKind::semicolon, "after the namespace alias");
+            aliases_.push_back(std::move(alias));
+            return;
+        }
+        if (at(TokenKind::semicolon)) {
+            fail(DiagCode::E2034, cur().span, "a namespace is a block: 'namespace name { ... }'", "expected '{'");
+        }
+        if (!at(TokenKind::l_brace)) fail_unexpected("'{' after the namespace name");
+        Span open = advance().span;   // {
+        std::size_t depth = ns_stack_.size();
+        for (const PathSegment& seg : path.segments) ns_stack_.push_back(seg.name);
+        ns_blocks_.push_back(NamespaceBlock{current_namespace(), path.span});
+        (void)start;
+        while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
+            std::size_t before = pos_;
+            try {
+                if (at(TokenKind::kw_import)) {
+                    report(DiagCode::E2034, cur().span, "imports are written at file scope, not inside a namespace",
+                           "move this import to the top of the file");
+                }
+                parse_top_level(out);
+                stray_code_reported_ = false;
+            } catch (const ParseError&) {
+                synchronize(/*top_level=*/false);
+            }
+            if (pos_ == before) advance();
+        }
+        ns_stack_.resize(depth);
+        expect_close(TokenKind::r_brace, open);
+        if (at(TokenKind::semicolon)) {
+            report(DiagCode::E2009, cur().span, "unnecessary ';' after a namespace block", "remove this ';'");
+            advance();
+        }
+    }
+
+    void parse_top_level_decl(std::vector<DeclPtr>& out) {
+        if (at(TokenKind::kw_namespace)) {
+            parse_namespace(out);
+            return;
+        }
         if (at_check_start()) {
             out.push_back(parse_check_decl());
             return;
@@ -708,6 +897,19 @@ private:
         }
         if (m.is_extern && at(TokenKind::l_brace)) {
             parse_extern_block(m, out);
+            return;
+        }
+        if (!m.annotations.empty() && at(TokenKind::semicolon)) {   // `@a{ ... };`: annotates the file (spec 31)
+            Span semi = advance().span;
+            bool late = !ns_stack_.empty() || std::any_of(out.begin(), out.end(), [](const DeclPtr& d) {
+                            return d->kind != DeclKind::import;
+                        });
+            if (late) {
+                report(DiagCode::E2038, Span{id_, m.annotations.front().span.begin, semi.end},
+                       "a file annotation stands after the imports and before the first declaration", "too late")
+                    .notes.push_back(Note{"move it to the top of the file, after the imports", std::nullopt});
+            }
+            for (AnnotationUse& u : m.annotations) file_annotations_.push_back(std::move(u));
             return;
         }
         out.push_back(parse_top_level_item(m));
@@ -797,6 +999,11 @@ private:
         d.is_private      = m.is_private;
         d.is_template     = m.is_template;
         d.template_params = std::move(m.template_params);
+        d.annotations     = std::move(m.annotations);
+        if (m.is_annotation && d.kind != DeclKind::struct_) {
+            report(DiagCode::E2035, m.annotation_span, "an annotation is a struct: 'annotation(...) struct name { ... }'",
+                   "not before a struct");
+        }
     }
 
     DeclPtr parse_type_decl(Modifiers& m, DeclKind kind) {
@@ -804,12 +1011,30 @@ private:
         apply_common(*decl, m);
         decl->is_open = m.is_open;
         decl->is_view = m.is_view;
+        if (kind == DeclKind::struct_) {
+            decl->is_annotation      = m.is_annotation;
+            decl->annotation_targets = std::move(m.annotation_targets);
+        }
         std::string_view what = kind == DeclKind::struct_ ? "struct" : kind == DeclKind::class_ ? "class" : "interface";
         advance();
         decl->name_span = cur().span;
         decl->name      = expect_identifier(std::format("a {} name", what));
         if (accept(TokenKind::colon)) {
             do {
+                if (at(TokenKind::kw_unsafe)) {   // `unsafe std::sendable(cond)`: a promise (spec 27)
+                    ThreadPromise p;
+                    p.span = cur().span;
+                    advance();
+                    p.path      = parse_type_path();
+                    p.shareable = !p.path.segments.empty() && p.path.segments.back().name == "shareable";
+                    if (accept(TokenKind::l_paren)) {
+                        p.condition = parse_expr();
+                        expect(TokenKind::r_paren, "')' after the condition");
+                    }
+                    p.span = from(p.span);
+                    decl->promises.push_back(std::move(p));
+                    continue;
+                }
                 decl->bases.push_back(parse_type({}));
             } while (accept(TokenKind::comma));
         }
@@ -826,6 +1051,11 @@ private:
             std::size_t before = pos_;
             try {
                 if (parse_access_label(ctx, access)) {
+                    continue;
+                }
+                if (decl->is_annotation && at(TokenKind::identifier) && cur().text == "generate" &&
+                    (peek(1).kind == TokenKind::colon || peek(1).kind == TokenKind::l_brace)) {
+                    parse_generate(*decl);
                     continue;
                 }
                 decl->members.push_back(parse_member(ctx, access));
@@ -923,6 +1153,10 @@ private:
             fn->access      = access;
             fn->is_operator = true;
             fn->result      = std::move(type);
+            if (m.is_mut && fn->result && fn->result->kind == TypeKind::reference) {   // `mut T& operator[](usize i)`
+                fn->result->as<ReferenceType>().is_mut = true;
+                m.is_mut                               = false;
+            }
             advance();
             fn->name_span = cur().span;
             if (accept(TokenKind::l_bracket)) {
@@ -959,6 +1193,11 @@ private:
             fn->name      = std::move(name);
             fn->name_span = name_span;
             fn->result    = std::move(type);
+            // `mut T& at(...)`: the function returns a mutable reference.
+            if (m.is_mut && fn->result && fn->result->kind == TypeKind::reference) {
+                fn->result->as<ReferenceType>().is_mut = true;
+                m.is_mut                               = false;
+            }
             return finish_function(std::move(fn), m, ctx);
         }
 
@@ -969,9 +1208,17 @@ private:
         var->access    = access;
         var->name      = std::move(name);
         var->name_span = name_span;
-        var->storage   = m.is_compile_time ? Storage::compile_time : m.is_static ? Storage::static_ : Storage::local;
+        var->storage   = m.is_compile_time ? Storage::compile_time
+                       : m.is_thread_local ? Storage::thread_local_
+                       : m.is_static       ? Storage::static_
+                                           : Storage::local;
+        if (m.is_thread_local && (is_field || m.is_static || m.is_compile_time)) {
+            report(DiagCode::E2001, m.start, "'thread_local' is a storage of its own: a file-scope variable, one copy per thread",
+                   "not here");
+        }
         var->type      = std::move(type);
-        var->is_mut    = m.is_mut;
+        var->is_mut    = apply_mut(*var->type, m.is_mut);   // `mut T& field` in a view: a mutable reference
+        if (!var->is_mut) m.is_mut = false;
 
         if (ctx == MemberContext::interface) {
             fail(DiagCode::E2001, name_span, "interfaces cannot have fields", "only method signatures are allowed");
@@ -1030,6 +1277,7 @@ private:
         fn->is_extern       = m.is_extern;
         fn->abi             = m.abi;
         fn->params          = parse_params();
+        check_special_params(*fn);
         parse_function_tail(*fn, ctx);
         fn->span = from(m.start);
         return fn;
@@ -1038,6 +1286,7 @@ private:
     /// `[mut] [override] [abstract] ( ; | = default ; | { body } )`
     void parse_function_tail(FunctionDecl& fn, MemberContext ctx) {
         fn.is_mut = accept(TokenKind::kw_mut);
+        if (!fn.is_mut) fn.is_move = accept(TokenKind::kw_move);
         while (true) {
             if (at(TokenKind::kw_override)) {
                 if (fn.is_virtual) {
@@ -1086,6 +1335,39 @@ private:
         reject_semicolon_after_brace("function");
     }
 
+    /// `implicit` parameters come last; each `compile_time` parameter gets a hidden template value
+    /// parameter `$name`, so the function is instantiated per distinct compile-time argument
+    /// (spec 31).
+    void check_special_params(FunctionDecl& fn) {
+        bool implicit_seen = false;
+        for (Param& p : fn.params) {
+            if (p.is_implicit) {
+                implicit_seen = true;
+            } else if (implicit_seen) {
+                report(DiagCode::E2037, p.span, "implicit parameters come after every ordinary parameter",
+                       "move this parameter before the implicit ones");
+            }
+            if (!p.is_compile_time || !p.type) continue;
+            TemplateParam tp;
+            tp.is_type    = false;
+            tp.name       = "$" + p.name;
+            tp.span       = p.span;
+            tp.value_type = ast::Cloner([](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); }).type(*p.type);
+            fn.template_params.push_back(std::move(tp));
+            fn.is_template = true;
+        }
+    }
+
+    /// Lambdas and function types have no `implicit` or `compile_time` parameters.
+    void reject_special_params(const std::vector<Param>& params) {
+        for (const Param& p : params) {
+            if (p.is_implicit || p.is_compile_time) {
+                report(DiagCode::E2036, p.span, "'implicit' and 'compile_time' parameters belong to function declarations",
+                       "not allowed in a lambda");
+            }
+        }
+    }
+
     std::vector<Param> parse_params() {
         std::vector<Param> params;
         Span               open = expect(TokenKind::l_paren).span;
@@ -1105,6 +1387,17 @@ private:
     Param parse_param() {
         Param p;
         Span  start = cur().span;
+        while (at(TokenKind::at)) p.annotations.push_back(parse_annotation_use());
+        // `implicit` and `compile_time` (spec 31), in either order.
+        // `implicit` is a contextual keyword: a type named `implicit` is `implicit x)` / `implicit x,`.
+        while ((at(TokenKind::identifier) && cur().text == "implicit" &&
+                !(peek(1).kind == TokenKind::identifier &&
+                  (peek(2).kind == TokenKind::comma || peek(2).kind == TokenKind::r_paren || peek(2).kind == TokenKind::eq))) ||
+               at(TokenKind::kw_compile_time)) {
+            if (at(TokenKind::kw_compile_time)) p.is_compile_time = true;
+            else p.is_implicit = true;
+            advance();
+        }
         bool  mut   = accept(TokenKind::kw_mut);
         TypeOptions opts;
         opts.allow_auto = true;
@@ -1158,7 +1451,12 @@ private:
         while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
             EnumAlternative alt;
             alt.span = cur().span;
-            alt.name = expect_identifier("an enum alternative");
+            while (at(TokenKind::at)) alt.annotations.push_back(parse_annotation_use());
+            if (at(TokenKind::kw_type)) {   // `std::meta::target::type` (spec 29): written after `::` like any name
+                alt.name = std::string(advance().text);
+            } else {
+                alt.name = expect_identifier("an enum alternative");
+            }
             if (at(TokenKind::l_paren)) {
                 Span popen  = advance().span;
                 alt.payload = parse_type({});
@@ -1220,6 +1518,7 @@ private:
     Path parse_type_path() {
         Path path;
         Span start = cur().span;
+        if (accept(TokenKind::colon_colon)) path.global = true;   // `::name` (spec 30)
         while (true) {
             PathSegment seg;
             seg.span = cur().span;
@@ -1340,7 +1639,7 @@ private:
     }
 
     bool looks_like_declaration() {
-        if (!at(TokenKind::identifier)) {
+        if (!at(TokenKind::identifier) && !at(TokenKind::colon_colon)) {
             return false;
         }
         return lookahead([&] {
@@ -1446,6 +1745,23 @@ private:
             }
             block.statements.push_back(std::make_unique<ExprStmt>(from(start), std::move(expr)));
             return;
+        }
+        if (at(TokenKind::kw_else) && expr->kind == ExprKind::call) {
+            // `f(...) else { ... }` (spec 10): the block runs when the call returns false.
+            advance();
+            auto node            = std::make_unique<IfExpr>(start);
+            node->from_call_else = true;
+            Span call_span       = expr->span;
+            node->condition      = std::make_unique<UnaryExpr>(call_span, UnaryOp::logical_not, std::move(expr));
+            node->then_block     = parse_body("else");
+            node->span           = from(start);
+            block.statements.push_back(std::make_unique<ExprStmt>(from(start), std::move(node)));
+            reject_semicolon_after_brace("'else' block");
+            return;
+        }
+        if (at(TokenKind::kw_else)) {
+            fail(DiagCode::E2039, cur().span, "'else' without 'if': only a call may be followed by 'else { ... }'",
+                 "this 'else' follows an expression that isn't a call");
         }
         if (at(TokenKind::r_brace)) {
             block.tail = std::move(expr);
@@ -1655,6 +1971,7 @@ private:
     Path parse_expr_path(bool member) {
         Path path;
         Span start = cur().span;
+        if (!member && accept(TokenKind::colon_colon)) path.global = true;   // `::name` (spec 30)
         while (true) {
             PathSegment seg;
             seg.span = cur().span;
@@ -1947,6 +2264,7 @@ private:
         case TokenKind::underscore:
             fail(DiagCode::E2029, cur().span, "'_' is not a value",
                  "'_' only works in patterns and in '_ = expr;'");
+        case TokenKind::colon_colon:
         case TokenKind::identifier: {
             Path path = parse_expr_path(false);
             if (at(TokenKind::l_brace)) {
@@ -2154,6 +2472,7 @@ private:
         }
         expect_close(TokenKind::r_bracket, open);
         node->params = parse_params();
+        reject_special_params(node->params);
         if (accept(TokenKind::arrow)) {
             node->result = parse_type({});
         }
@@ -2268,6 +2587,10 @@ private:
     Span                     prev_span_;
     int                      speculating_ = 0;
     bool                     stray_code_reported_ = false;
+    std::vector<std::string>    ns_stack_;    // the open `namespace` blocks (spec 30)
+    std::vector<NamespaceAlias> aliases_;
+    std::vector<AnnotationUse>  file_annotations_;   // `@a{ ... };` at the top of the file (spec 31)
+    std::vector<NamespaceBlock> ns_blocks_;
     Diagnostic               scratch_{DiagCode::E2001, Severity::error, {}, {}, {}, {}};
 };
 

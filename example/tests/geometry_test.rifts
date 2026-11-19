@@ -3,9 +3,9 @@ import std;
 import geometry::vec;
 
 i32 main() {
-    geometry::vec::vec2 a = geometry::vec::vec2{ .x = 3.0, .y = 4.0 };
+    geometry::vec2 a = geometry::vec2{ .x = 3.0, .y = 4.0 };
     run_time check (a.length() == 5.0) else "|(3, 4)| is 5";
-    run_time check (a - a == geometry::vec::vec2{}) else "a - a is zero";
+    run_time check (a - a == geometry::vec2{}) else "a - a is zero";
     run_time check ((a * 2.0).x == 6.0) else "scaling";
     run_time check (a.dot(-a) == -25.0) else "dot product";
     return 0;

@@ -1,4 +1,4 @@
-// A program using the counter module: everything is fully qualified.
+// A program using the counter module: its names are in namespace counter (spec 30).
 import std;
 import counter;
 

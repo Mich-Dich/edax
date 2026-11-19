@@ -71,17 +71,18 @@ TEST_CASE("resolve: overloads by parameter types") {
 
 TEST_CASE("resolve: header and source merge into one symbol") {
     Project p({{"main.rifts", "import lib;\nvoid main() { u32 x = lib::f(1); }\n"},
-               {"lib.rifth", "u32 f(u32 x);\nclass c {\npublic:\n    u32 get();\n}\n"},
-               {"lib.rifts", "u32 f(u32 x) { return x; }\nclass c {\npublic:\n    u32 get() { return this.v; }\n"
-                             "private:\n    u32 v = 0;\n}\n"}});
+               {"lib.rifth", "namespace lib {\nu32 f(u32 x);\nclass c {\npublic:\n    u32 get();\n}\n}\n"},
+               {"lib.rifts", "namespace lib {\nu32 f(u32 x) { return x; }\nclass c {\npublic:\n    u32 get() { return this.v; }\n"
+                             "private:\n    u32 v = 0;\n}\n}\n"}});
     REQUIRE_EQ(p.codes(), std::string());
     sema::Module& lib = p.module("lib");
-    REQUIRE_EQ(lib.items.at("f").size(), 1u);
-    sema::Symbol* f = lib.items.at("f").front();
+    REQUIRE_EQ(lib.items.at("lib::f").size(), 1u);
+    sema::Symbol* f = lib.items.at("lib::f").front();
+    CHECK_EQ(f->ns, std::string("lib"));
     CHECK(f->in_header);
     CHECK(f->definition != nullptr);
     CHECK(f->definition != f->decl);
-    sema::Symbol* c = lib.items.at("c").front();
+    sema::Symbol* c = lib.items.at("lib::c").front();
     REQUIRE_EQ(c->member_order.size(), 2u);
     CHECK_EQ(c->member_order[0]->name, std::string("get"));
     CHECK_EQ(c->member_order[1]->name, std::string("v"));
@@ -101,8 +102,8 @@ TEST_CASE("resolve: imports") {
     CHECK_EQ(Project({{"main.rifts", "import x;\n"}, {"x.rifts", "void f() { }\n"}}).codes(), std::string("E3003"));
     CHECK_EQ(Project({{"main.rifts", "import a;\n"}, {"a.rifth", "import b;\n"}, {"b.rifth", "import a;\n"}}).codes(),
              std::string("E3002"));
-    CHECK_EQ(Project({{"main.rifts", "import d::e;\nvoid f() { u32 x = d::e::g(); }\n"}, {"d/e.rifth", "u32 g();\n"},
-                      {"d/e.rifts", "u32 g() { return 0; }\n"}})
+    CHECK_EQ(Project({{"main.rifts", "import d::e;\nvoid f() { u32 x = d::g(); }\n"}, {"d/e.rifth", "namespace d {\nu32 g();\n}\n"},
+                      {"d/e.rifts", "namespace d {\nu32 g() { return 0; }\n}\n"}})
                  .codes(),
              std::string());
 }
@@ -110,8 +111,8 @@ TEST_CASE("resolve: imports") {
 TEST_CASE("resolve: modules must be imported where they are used") {
     Project p({{"main.rifts", "import a;\nvoid f() { u32 x = b::g(); }\n"},
                {"a.rifth", "import b;\n"},
-               {"b.rifth", "u32 g();\n"},
-               {"b.rifts", "u32 g() { return 0; }\n"}});
+               {"b.rifth", "namespace b {\nu32 g();\n}\n"},
+               {"b.rifts", "namespace b {\nu32 g() { return 0; }\n}\n"}});
     CHECK_EQ(p.codes(), std::string("E3023"));
 }
 

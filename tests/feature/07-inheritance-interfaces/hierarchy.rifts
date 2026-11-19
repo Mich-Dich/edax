@@ -34,6 +34,9 @@ public:
     std::string describe() override {
         return this.shape::describe();
     }
+    void format(mut std::string& out) override {   // std::formattable (spec 19)
+        out.push_str("circle");
+    }
 }
 
 struct cube : solid {

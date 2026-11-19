@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+ok 1964 1964 first true
+last 2999
+xy
+--- stderr

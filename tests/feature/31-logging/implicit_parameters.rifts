@@ -1,0 +1,28 @@
+// feature 31: `implicit` parameters (supplied by the compiler at each call), std::implicit<T>.
+import std;
+
+void here(std::str message, implicit std::call_site where) { }
+void forward(u32 n, implicit std::call_site where) {
+    here("forwarded", where);
+}
+
+struct tag : std::implicit<tag> {
+    std::static_str name = "";
+    compile_time static tag from_call(std::call_site where) override {
+        return tag{ .name = where.function_name };
+    }
+}
+void tagged(implicit tag t) { }
+
+void plain(implicit u32 x) { }
+
+
+u32 main() {
+    here("a");
+    here("b", std::call_site{});
+    forward(1);
+    tagged();
+    plain();                                          //~ error[E4250]: 'u32' can't be supplied for an implicit parameter
+    plain(3);
+    return 0;
+}

@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+scaled 300000.0
+sum 499995000.0 same true
+tree 2096128 expected 2096128
+indices 1000000
+compressed 10 45 threads 4
+--- stderr

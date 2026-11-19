@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+hello from a thread
+result 499500
+counter 200000
+pushed 2000
+cpus true
+--- stderr

@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+22 23 aaaaaaaaaaaaaaaaaaaaaa
+23 23 aaaaaaaaaaaaaaaaaaaaaaa
+24 46 aaaaaaaaaaaaaaaaaaaaaaaa
+héllo wörld ✓€ 20 true false true
+[] true 0
+exactly twenty-three b! 23 23
+exactly twenty-three b!? 24
+[] 0
+--- stderr

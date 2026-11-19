@@ -1,0 +1,124 @@
+// concurrency: threads, the thread pool, channels, mutexes and atomics (spec 27, 28).
+// Data races are compile errors: a thread that borrows keeps what it borrows borrowed until it
+// is joined, and only synchronized types (std::atomic, std::mutex, channels) change through `T&`.
+import std;
+
+/// A statistic that several threads update at once: behind a mutex, which owns it.
+struct stats {
+    u32 batches = 0;
+    u64 largest = 0;
+}
+
+/// Counted from every thread without a lock.
+private static std::atomic<u64> items_seen = default;
+
+u64 checksum(std::span<u64> values) {
+    mut u64 sum = 0;
+    for (u64 v : values) {
+        sum = sum *% 31u64 +% v;
+    }
+    return sum;
+}
+
+/// Splitting borrowed data over two threads: `left` is a view, so the thread borrows and
+/// `spawn` returns a scoped handle; the function can't return before the thread is joined.
+u64 two_halves(std::span<u64> values) {
+    usize half = values.len() / 2;
+    std::span<u64> left  = values.slice(0, half);
+    std::span<u64> right = values.slice(half, values.len());
+    std::thread::scoped_handle<u64> other = std::thread::spawn([left]() { return checksum(left); });
+    u64 mine = checksum(right);
+    return other.join() +% mine;
+}
+
+/// A pipeline: a producer, three workers and a collector, connected by channels.
+u64 pipeline() {
+    std::channel<u64> jobs    = std::channel<u64>::bounded(8);     // room for 8: the producer waits when it is full
+    std::channel<u64> squares = std::channel<u64>::unbounded();
+    std::mutex<stats> shared  = std::mutex<stats>::make(stats{});
+    {
+        mut std::darray<std::thread::scoped_handle<void>> workers = default;
+        for (u32 w : 0..3) {
+            std::channel_receiver<u64> input  = jobs.receiver();
+            std::channel_sender<u64>   output = squares.sender();
+            workers.push(std::thread::spawn([move input, move output, &shared]() {
+                for (u64 n : input) {                      // until `jobs` is closed and empty
+                    _ = output.send(n * n);
+                    _ = items_seen.fetch_wrapping_add(1, std::memory_order::relaxed);
+                    mut std::mutex_guard<stats> s = shared.lock();
+                    s->batches += 1;
+                    if (n > s->largest) {
+                        s->largest = n;
+                    }
+                }
+            }));
+        }
+        std::channel_sender<u64> submit = jobs.sender();
+        for (u64 n : 1..=100) {
+            _ = submit.send(n);
+        }
+        jobs.close();
+        // u64 peek = shared.lock()->largest;   // fine: the workers borrow `shared` only to read it (a mutex synchronizes)
+    }   // `workers` is destroyed here: every worker is joined
+    std::channel_receiver<u64> results = squares.receiver();
+    mut u64 total = 0;
+    for (u32 i : 0..100) {
+        total += results.receive().expect("a worker stopped early");
+    }
+    stats s = *shared.lock();
+    std::println(f"pipeline: {s.batches} jobs, largest {s.largest}");
+    return total;
+}
+
+/// The thread pool: a parallel loop that changes disjoint chunks, and a deterministic reduction.
+void pool_work(std::thread_pool& pool) {
+    mut std::darray<f64> samples = default;
+    for (u32 i : 0..100000) {
+        samples.push(cast::round<f64>(i % 1000) * 0.5);
+    }
+    pool.for_chunks(samples.as_mut_span(), 4096, [](std::span<mut f64> part) {
+        for (mut f64& x : part) {
+            x = x * 2.0 + 1.0;
+        }
+    });
+    f64 total = pool.reduce_chunks(samples.as_span(), 4096, 0.0,
+        [](std::span<f64> part) {
+            mut f64 sum = 0.0;
+            for (f64 v : part) {
+                sum += v;
+            }
+            return sum;
+        },
+        [](f64 a, f64 b) { return a + b; });
+    std::println(f"pool: {pool.thread_count()} threads, sum {total}");
+
+    // A task that owns its data can outlive the function that started it.
+    std::thread_pool::task<u64> squares = pool.spawn([]() {
+        mut u64 s = 0;
+        for (u64 i : 0..1000) {
+            s += i * i;
+        }
+        return s;
+    });
+    std::println(f"pool: task gave {squares.join()}");
+}
+
+i32 main() {
+    mut std::darray<u64> values = default;
+    for (u64 i : 0..10000) {
+        values.push(i);
+    }
+    std::println(f"halves: {two_halves(values.as_span()) == checksum(values.as_span().slice(0, 5000)) +% checksum(values.as_span().slice(5000, 10000))}");
+    std::println(f"pipeline: sum of squares {pipeline()}");
+    std::println(f"atomic: {items_seen.load(std::memory_order::acquire)} items seen");
+
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4, .name = "example" });
+    pool_work(pool);
+
+    // A data race doesn't compile:
+    // mut u32 counter = 0;
+    // std::thread::scoped_handle<void> a = std::thread::spawn([mut &counter]() { counter += 1; });
+    // std::thread::scoped_handle<void> b = std::thread::spawn([mut &counter]() { counter += 1; });
+    //   error[E5023]: 'counter' is already borrowed mutably by 'a'
+    return 0;
+}

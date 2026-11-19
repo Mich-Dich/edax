@@ -1,0 +1,17 @@
+// feature 31: std::format_args is move-only: formatting consumes it, so its holes run at most once.
+import std;
+
+void twice(std::format_args message) {
+    std::println(move message);
+    std::println(message);                            //~ error[E5002]: 'message' is used after it was moved
+}
+
+void copied(std::format_args message) {
+    std::println(message);                            //~ error[E5001]: 'message' has type 'std::format_args', which is not a copy type
+}
+
+u32 main() {
+    twice(f"a {1u32}");
+    copied("b");
+    return 0;
+}

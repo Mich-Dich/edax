@@ -33,6 +33,7 @@ token u = token::end;
 - Several values go into a struct payload: `circle(circle_data)`.
 - Explicit tag values (`= 3`) are only allowed for enums without payloads.
 - Enums are copy types if every payload is a copy type.
+- An alternative whose payload type is `void` (through a template argument) has no payload: `std::ok()` for a `std::result<void, E>` (see 27).
 
 ### Matching
 `match` on an enum must be exhaustive (see 10):

@@ -1,0 +1,18 @@
+// feature 31: the checks std::log makes when the program is compiled.
+import std;
+
+private compile_time std::log::pattern bad = std::log::pattern::from("[{levle}] {message}");      //~ error[E4210]: std::log::pattern: unknown field: '{levle}'
+private compile_time std::log::pattern bad_spec = std::log::pattern::from("{level:x5} {message}"); //~ error[E4210]: std::log::pattern: a spec is an alignment and a width
+private compile_time std::log::pattern open = std::log::pattern::from("{level");                    //~ error[E4210]: std::log::pattern: a '{' without '}'
+private compile_time std::log::pattern good = std::log::pattern::from("{{{level:<5}}} {file_name}:{line} {message}");
+
+struct mesh { u32 id = 0; }
+
+u32 main() {
+    u32 count = 3;
+    std::log::info(f"loaded {count} meshes\n");      //~ warning[W4210]: the message ends with '\n'; sinks add the line break
+    std::log::warn("");                               //~ error[E4210]: std::log: the message is empty
+    std::log::error(f"{mesh{}}");                     //~ error[E4171]: 'mesh' can't be printed in an f-string
+    std::log::info(f"loaded {count} meshes");
+    return 0;
+}

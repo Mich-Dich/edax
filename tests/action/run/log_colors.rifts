@@ -1,0 +1,29 @@
+// RUN: riftc run %s
+// Colors per level (std::log::palette) and the ready-made patterns (spec 31).
+import std;
+
+u32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    std::log::palette colors = std::log::palette{
+        .info = std::log::style{ .foreground = std::log::color::rgb(std::log::rgb{ .r = 255, .g = 128, .b = 0 }), .bold = true },
+        .warn = std::log::style{ .foreground = std::log::color::indexed(208u8), .underline = true },
+        .error = std::log::style{ .foreground = std::log::color::white, .background = std::log::color::blue },
+    };
+    std::log::sink_id console = logs.add(std::log::console::make_with(std::log::colors::always), std::log::sink_options{
+        .pattern = std::log::patterns::minimal,
+        .palette = colors,
+    });
+    std::log::trace("trace");
+    std::log::info("info");
+    std::log::warn("warn");
+    std::log::error("error");
+    logs.set_palette(console, std::log::default_palette);
+    std::log::info("default colors");
+    logs.set_pattern(console, std::log::pattern::from("{color}{file_name}{/color} {message}"));
+    logs.flush();
+    // The ready-made patterns are valid.
+    std::println(f"[{std::log::pattern::problem(std::log::patterns::minimal.text)}{std::log::pattern::problem(std::log::patterns::standard.text)}{std::log::pattern::problem(std::log::patterns::source.text)}{std::log::pattern::problem(std::log::patterns::engine.text)}{std::log::pattern::problem(std::log::patterns::detailed.text)}{std::log::pattern::problem(std::log::patterns::file.text)}]");
+    _ = logs.add(std::log::console::make_with(std::log::colors::off), std::log::sink_options{ .pattern = std::log::patterns::minimal });
+    std::log::info("two sinks: one colored, one not");
+    return 0;
+}

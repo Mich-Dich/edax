@@ -1,0 +1,5 @@
+exit: 134
+--- stdout
+INFO before the panic
+--- stderr
+tests/action/run/log_panic.rifts:6:35: panic: division by zero

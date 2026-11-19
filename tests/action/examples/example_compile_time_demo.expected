@@ -16,7 +16,7 @@ warning[W4210]: old_api() is going away; call set_pin() instead
     |
 111 |     old_api();
     |     ^^^^^^^^^
-    = note: warning id: compile_time_demo::legacy
+    = note: warning id: legacy
     |
  57 |         std::compile_warning(legacy, "old_api() is going away; call set_pin() instead");
     |         -------------------------------------------------------------------------------

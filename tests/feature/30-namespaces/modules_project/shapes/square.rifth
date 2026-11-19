@@ -1,0 +1,6 @@
+// A second module reopens namespace shapes.
+namespace shapes {
+    struct square {
+        f64 side = 1.0;
+    }
+}

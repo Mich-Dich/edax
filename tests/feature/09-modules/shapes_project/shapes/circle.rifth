@@ -1,8 +1,11 @@
-// Directories become '::' in module names: this is module shapes::circle.
+// Directories become '::' in module paths: this is module shapes::circle. Its names live in
+// namespace shapes, like those of shapes::geometry (a namespace spans files, spec 30).
 import shapes::geometry;
 
-struct circle {
-    shapes::geometry::point center;
-    f64 radius = 1.0;
-    f64 area();
+namespace shapes {
+    struct circle {
+        point center;
+        f64 radius = 1.0;
+        f64 area();
+    }
 }

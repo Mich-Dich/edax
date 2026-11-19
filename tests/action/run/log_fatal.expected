@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+WARN log_fatal.rifts:17 starting
+INFO log_fatal.rifts:22 succeeded on attempt 2
+--- stderr
+FATAL log_fatal.rifts:8 attempt 0 failed, resetting
+FATAL log_fatal.rifts:8 attempt 1 failed, resetting

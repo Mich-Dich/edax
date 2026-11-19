@@ -1,0 +1,25 @@
+// feature 26: reflected methods are compile-time handles; `m.call(...)` is checked like the
+// call it stands for.
+import std;
+
+struct counter {
+    u32 n = 0;
+    void add(u32 k) mut { this.n += k; }
+    u32 get() { return this.n; }
+}
+
+struct plain { }
+
+void use(mut counter& c) {
+    for compile_time (std::meta::function m : std::meta::methods<counter>()) {
+        if compile_time (m.name == "add") {
+            m.call(mut c, 2);
+            m.call(mut c, true);                         //~ error[E4010]
+        }
+        if compile_time (m.name == "get") {
+            u32 v = m.call(c);
+        }
+        bool h = m.has<plain>();                         //~ error[E3070]: 'plain' is not an annotation
+    }
+    std::meta::function first = std::meta::methods<counter>()[0];   //~ error[E4202]
+}

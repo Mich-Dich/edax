@@ -1,0 +1,56 @@
+// feature 30: namespace blocks, unqualified lookup through the enclosing namespaces, ambiguity
+// instead of hiding, `::` for the global namespace, and file-local aliases.
+import std;
+
+u32 version() { return 1; }
+
+namespace app {
+    std::str name() { return "app"; }
+
+    namespace cli {
+        void print_help() {
+            std::println(name());                 // app::name: found one level out
+            u32 v = version();                    // ::version: found in the global namespace
+        }
+    }
+}
+
+// Reopening a namespace adds to it; `a::b` is short for two nested blocks.
+namespace app::cli {
+    u32 width() { return 80; }
+}
+
+namespace app {
+    u32 log(std::str text) { return 0; }
+    namespace net {
+        u32 log(std::str text) { return 1; }
+        void connect() {
+            u32 a = log("connecting");            //~ error[E3060]: 'log' is both 'app::net::log' and 'app::log'
+            u32 b = app::log("connecting");       // a qualified name is exact
+            u32 c = app::net::log("connecting");
+            u32 w = cli::width();                 // app::cli, found from inside app
+        }
+    }
+}
+
+namespace tools {
+    u32 version() { return 2; }
+    void report() {
+        u32 v = version();                        //~ error[E3060]: 'version' is both 'tools::version' and '::version'
+        u32 g = ::version();                      // the global one
+        u32 t = tools::version();
+    }
+}
+
+namespace vk = app::cli;                          // a file-local alias
+namespace bad = app::name;                        //~ error[E3064]: 'app::name' is a function, not a namespace
+namespace tools = app;                            //~ error[E3064]: alias 'tools' has the same name as the namespace 'tools'
+
+void main() {
+    vk::print_help();
+    u32 w = vk::width();
+    app::cli::print_help();
+    print_help();                                 //~ error[E3020]: cannot find 'print_help' in this scope
+    u32 x = app::cli::missing();                  //~ error[E3020]: cannot find 'missing' in namespace 'app::cli'
+    u32 y = app;                                  //~ error[E3022]: 'app' is a namespace, not a value
+}

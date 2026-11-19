@@ -1,0 +1,31 @@
+// RUN: riftc expand %s motor_command
+// riftc expand (spec 29): a type with the members its annotations generate, written out.
+import std;
+
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+}
+
+annotation(std::meta::target::type) struct validated {
+    generate {
+        bool valid() {
+            for compile_time (std::meta::field f : std::meta::fields<annotated>()) {
+                if compile_time (f.has<range>()) {
+                    compile_time range r = f.annotation<range>().expect("checked by has");
+                    if (cast<i64>(f.get(this)) < r.min || cast<i64>(f.get(this)) > r.max) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }
+}
+
+@validated
+@std::derive::hashable
+struct motor_command {
+    @range{ .min = -1000, .max = 1000 } i32 rpm;
+    @range{ .min = 0, .max = 100 } u8 duty_percent;
+}

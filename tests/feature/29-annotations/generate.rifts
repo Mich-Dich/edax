@@ -1,0 +1,26 @@
+// feature 29: generated members, and where they can't go.
+import std;
+
+annotation(std::meta::target::type) struct greeter {
+    generate {
+        std::static_str greet() { return "hello"; }
+    }
+}
+
+@greeter
+struct fine { }
+
+@greeter                                                     //~ error[E3075]: '@greeter' generates 'greet()', which 'clash' already has
+struct clash {
+    std::static_str greet() { return "mine"; }
+}
+
+@greeter                                                     //~ error[E3074]: enums have no methods
+enum choice : u8 { a, b }
+
+@greeter                                                     //~ error[E3074]: an interface has no method bodies
+interface shape { }
+
+void main() {
+    std::static_str s = fine{}.greet();
+}

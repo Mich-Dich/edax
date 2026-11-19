@@ -1,0 +1,122 @@
+// annotations: data, checks and generated methods on declarations, and code that reads them
+// through reflection (specs 26, 29, 30).
+import std;
+
+namespace shop {
+    /// Where a field goes in the printed report; checked where it is written.
+    annotation(std::meta::target::field) struct column {
+        std::static_str title;
+        u32 width = 10;
+        compile_time check (annotation.width >= 4 && annotation.width <= 40)
+            else f"@column: width {annotation.width} is not between 4 and 40";
+    }
+
+    /// A shell command, found by `run_command` through the methods' annotations.
+    annotation(std::meta::target::function) struct command { std::static_str word; }
+
+    /// Things a shop sells: printable, hashable, ordered by their fields.
+    @std::derive::formattable
+    @std::derive::hashable
+    @std::derive::ordered
+    struct item {
+        @column{ .title = "name", .width = 12 } std::static_str name;
+        @column{ .title = "cents" } u32 price_cents;
+        u32 stock = 0;
+        bool operator==(item& other) = default;
+    }
+
+    @std::derive::formattable
+    enum payment : u8 {
+        cash,
+        card(u32),
+        voucher(std::static_str),
+    }
+
+    enum category : u8 { food, tools, books }
+
+    /// `text` followed by spaces up to `width` characters.
+    void put_padded(mut std::string& out, std::str text, u32 width) {
+        out.push_str(text);
+        for (usize i : text.len()..cast<usize>(width)) {
+            out.push(' ');
+        }
+    }
+
+    /// A table row for any struct: the fields with `@column`, in their widths.
+    template<type T>
+    std::string row(T& value) {
+        mut std::string out = default;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (f.has<column>()) {
+                compile_time column c = f.annotation<column>().expect("checked by has");
+                put_padded(mut out, std::format(f"{f.get(value)}"), c.width);
+            }
+        }
+        return out;
+    }
+
+    template<type T>
+    std::string header() {
+        mut std::string out = default;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (f.has<column>()) {
+                compile_time column c = f.annotation<column>().expect("checked by has");
+                put_padded(mut out, c.title, c.width);
+            }
+        }
+        return out;
+    }
+
+    class register_shell {
+    public:
+        u32 sales = 0;
+        @command{ .word = "sell" }   void sell() mut { this.sales += 1; }
+        @command{ .word = "report" } void report() { std::println(f"{this.sales} sales"); }
+    }
+
+    /// The command table is the annotated methods themselves.
+    bool run_command(mut register_shell& sh, std::str word) {
+        for compile_time (std::meta::function m : std::meta::methods<register_shell>()) {
+            if compile_time (m.has<command>()) {
+                if (word == m.annotation<command>().expect("checked by has").word) {
+                    if compile_time (m.is_mut) { m.call(mut sh); } else { m.call(sh); }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+}
+
+namespace s = shop;   // a file-local alias (spec 30)
+
+void main() {
+    s::item tea = s::item{ .name = "tea", .price_cents = 450, .stock = 12 };
+    s::item saw = s::item{ .name = "saw", .price_cents = 2199 };
+    std::println(f"{tea}");
+    std::println(f"tea < saw: {tea < saw}");
+
+    mut std::hash_map<s::item, u32> sold = default;
+    sold.get_or_insert(tea, 0) += 2;
+    sold.get_or_insert(tea, 0) += 1;
+    std::println(f"sold {sold[tea]} of {tea.name}");
+
+    std::println(s::header<s::item>());
+    std::println(s::row(tea));
+    std::println(s::row(saw));
+
+    std::println(f"{s::payment::cash} {s::payment::card(4242)} {s::payment::voucher("SPRING")}");
+    std::println(f"{std::meta::name_of(s::category::tools)} {std::meta::from_name<s::category>("books").is_some()}");
+
+    mut s::register_shell sh = default;
+    mut std::darray<std::str> words = default;
+    words.push("sell");
+    words.push("sell");
+    words.push("report");
+    words.push("refund");
+    for (std::str word : words) {
+        if (!s::run_command(mut sh, word)) {
+            std::println(f"unknown command '{word}'");
+        }
+    }
+}

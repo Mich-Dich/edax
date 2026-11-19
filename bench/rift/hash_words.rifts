@@ -1,0 +1,21 @@
+// hash_map<std::string, u32>: count 2M words drawn from 50k distinct ones.
+import std;
+i32 main() {
+    mut std::darray<std::string> words = default;
+    for (u32 i : 0..50000) { words.push(std::format(f"word{i * 7919}")); }
+    mut std::hash_map<std::string, u32> counts = default;
+    mut u32 x = 2463534242;
+    for (u32 i : 0..2000000) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        std::string& w = words[cast<usize>(x % 50000)];
+        match (counts.get_mut(w)) {
+            std::some(c) => { c += 1; },
+            std::none => { counts.insert(w.clone(), 1); },
+        }
+    }
+    std::string first = std::string::from("word0");
+    std::println(f"{counts.len()} {counts[first]}");
+    return 0;
+}

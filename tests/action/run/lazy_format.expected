@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+noisy(5) ran
+once 5 text 4
+noisy(4) ran
+counter 4, doubled 8
+a plain literal
+noisy(2) ran
+logged: taken: 2
+--- stderr

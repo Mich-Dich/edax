@@ -1,0 +1,38 @@
+
+import std;
+
+
+private compile_time std::log::pattern console_pattern = std::log::pattern::from(
+    "{color}[{time}.{millis}]{/color} [{color}{target} {level:<5} {thread} - {file_name}:{function_name}:{line}{/color}] {message}");
+
+private compile_time std::log::pattern file_pattern = std::log::pattern::from(
+    "[{date} {time}.{millis}] [{target} {level:<5} {thread}] {file}:{line} {message}");
+
+
+std::exit_code main(std::span<std::str> args) {
+
+    std::thread::set_current_name("main");
+    std::log::info(f"starting with {args.len()} arguments");                 // kept until a sink exists
+
+    mut std::log::session logs = std::log::start(std::log::options{ .queue_capacity = 16 * 1024 });
+    _ = logs.add(std::log::console::make(), std::log::sink_options{
+        .min_level = std::log::level::trace,
+        .pattern   = console_pattern,
+    });
+    std::log::file_options file_options = std::log::file_options{
+        .path     = std::filesystem::executable_dir() / "logs" / "gluttony.log",
+        .flush_at = std::log::level::warn,
+    };
+    _ = logs.add(std::log::file::create(file_options).expect("can't open the log file"), std::log::sink_options{ .pattern = file_pattern });
+
+    std::log::trace("testing");
+    std::log::debug("testing");
+    std::log::info("testing");
+    std::log::warn("testing");
+    std::log::error("testing");
+
+    std::log::trace(f"location {std::filesystem::executable_dir().as_str()}");
+    std::log::fatal("testing");
+
+    return std::exit_code::success;
+}

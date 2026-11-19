@@ -1,0 +1,56 @@
+// The Rift standard library: module std::time, durations and a monotonic clock (spec 20, 27).
+
+namespace std::time {
+    /// A length of time, in nanoseconds.
+    struct duration {
+        u64 nanos = 0;
+
+        static duration nanoseconds(u64 n);
+        static duration microseconds(u64 n);
+        static duration milliseconds(u64 n);
+        static duration seconds(u64 n);
+
+        u64 as_nanoseconds();
+        u64 as_microseconds();
+        u64 as_milliseconds();
+        f64 as_seconds();
+    }
+
+    /// A date and time of day on the local calendar (spec 31).
+    struct civil_time {
+        i32 year = 1970;
+        u8  month = 1;         // 1..12
+        u8  day = 1;           // 1..31
+        u8  hour = 0;
+        u8  minute = 0;
+        u8  second = 0;
+        u32 microsecond = 0;   // 0..999999
+    }
+
+    /// A point on the wall clock (the system's real time, which can jump): for timestamps,
+    /// never for measuring durations (spec 31).
+    struct wall_time {
+        i64 seconds = 0;       // since 1970-01-01 00:00:00 UTC
+        u32 nanos = 0;
+
+        /// Now.
+        static wall_time now();
+
+        /// The date and time in the local time zone.
+        civil_time local();
+    }
+
+    /// A point on the monotonic clock: for measuring how long something takes.
+    struct instant {
+        u64 nanos = 0;
+
+        /// Now.
+        static instant now();
+
+        /// The time since this instant.
+        duration elapsed();
+
+        /// The time from `earlier` to this instant (zero if `earlier` is later).
+        duration since(instant earlier);
+    }
+}

@@ -1,0 +1,30 @@
+exit: 0
+--- stdout
+with_capacity: len 0 capacity 100
+after 100 pushes: capacity 100
+reserve(10) keeps 100
+truncate(3): len 3 capacity 100 last 2
+shrink_to_fit: capacity 3
+resize(6, 9): 0 1 2 9 9 9 capacity 6
+resize(2, 0): len 2
+swap_remove(0) = 0, now 1, len 1
+strings: hi hi! hi
+strings after truncate: 1 hi capacity 1
+empty: capacity 0
+sort 0: true true 0
+sort 1: true true 1
+sort 15: true true 15
+sort 16: true true 16
+sort 17: true true 17
+sort 100: true true 100
+sort 5000: true true 5000
+stable: true
+string capacity 64 len 0
+reserve(8) keeps 64: abc
+map: 500 999000 false true 14 true
+names: 1
+bits: 3
+split: 4 [a] [bb] [] [c]
+split multibyte: 3
+parse: 3.25 1.0 true
+--- stderr

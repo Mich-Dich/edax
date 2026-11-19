@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+expensive(1) ran
+all: INFO |main|logging.rifts:31|before the session
+all: DEBUG|run|logging.rifts:21|worker 1 runs
+all: TRACE|verbose|logging.rifts:26|worker 2: trace through a function override
+all: DEBUG|main|logging.rifts:42|lazy: 1
+all: WARN |main|logging.rifts:44|only the first sink
+all: ERROR|main|logging.rifts:45|both sinks
+all: ERROR|main|logging.rifts:47|first sink only again
+problems: [ ERROR ] {both sinks}
+history keeps 307 lines
+--- stderr

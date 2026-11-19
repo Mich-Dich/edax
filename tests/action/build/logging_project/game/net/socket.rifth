@@ -1,0 +1,5 @@
+import std;
+
+namespace net {
+    void connect();
+}

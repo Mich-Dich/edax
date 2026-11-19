@@ -1,0 +1,10 @@
+// build.rifts of a test project for spec 31: compile-time log levels per target and per file,
+// and the -Dlog_level option.
+import std;
+
+compile_time void build(mut std::build::graph& g) {
+    std::build::target game = g.add_executable(std::build::rift_target{ .name = "game", .root = "game/main.rifts" });
+    std::log::add_options(mut g, game);
+    std::log::set_level(mut g, game, std::log::level::info);
+    std::log::set_level(mut g, game, "net/*.rifts", std::log::level::trace);
+}

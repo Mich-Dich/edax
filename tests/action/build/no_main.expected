@@ -1,0 +1,11 @@
+exit: 1
+--- stdout
+--- stderr
+error[E6002]: the program has no 'main' function
+ --> tests/action/build/no_main.rifts:1:1
+  |
+1 | // RUN: riftc build %s -o %t/prog
+  | ^ no 'main'
+  = note: a program starts at 'void main()' or 'u32 main()' in the entry file
+
+1 error, 0 warnings

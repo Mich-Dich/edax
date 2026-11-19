@@ -1,0 +1,5 @@
+// RUN: riftc build %s -o %t/prog
+// Front-end errors stop the build before code generation.
+void main() {
+    u32 x = true;
+}

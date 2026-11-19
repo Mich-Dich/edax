@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+targets:
+  app                  program (app/main.rifts)
+  m                    system library
+  geo                  target of a dependency
+  csrc                 C library
+modes:
+  debug, release, release_with_debug_info
+--- stderr

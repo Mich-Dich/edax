@@ -1,0 +1,7 @@
+import std;
+i32 main() {
+    u32 count = 33;
+    u8 bit_index = 9;
+    std::println(f"{1u32 << count} {bit(bit_index) & 0xffu8}");
+    return 0;
+}

@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+wrote '%t/compile_commands.json' (1 files)
+--- stderr

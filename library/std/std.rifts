@@ -1930,6 +1930,9 @@ namespace std {
                 if ((*n).leaf) { return; }
                 n = *bt_child(n, 0);
             }
+            if (group_empty(group) != 0) { return no_slot; }
+            step +%= 1;
+            g = (g +% step) & groups;
         }
     }
 

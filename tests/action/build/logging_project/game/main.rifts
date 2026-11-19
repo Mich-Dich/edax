@@ -1,0 +1,14 @@
+import std;
+import game::net::socket;
+
+u32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make(), std::log::sink_options{
+        .pattern = std::log::pattern::from("{level:<5} {target} {module} {namespace}::{function_name}: {message}"),
+    });
+    std::log::debug("main: debug is below the target's level");
+    std::log::info("main: info");
+    std::log::warn("main: warn");
+    net::connect();
+    return 0;
+}

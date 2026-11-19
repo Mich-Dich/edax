@@ -1,0 +1,8 @@
+import std;
+
+namespace net {
+    void connect() {
+        std::log::trace("net: trace (this file's level is trace)");
+        std::log::info("net: info");
+    }
+}

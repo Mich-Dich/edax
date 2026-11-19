@@ -1,0 +1,10 @@
+import std;
+import geo::area;
+extern(std::build::language::c) {
+    f64 sqrt(f64 x);
+    i32 add_c(i32 a, i32 b);
+}
+i32 main() {
+    unsafe { std::println(f"{geo::area::square(7)} {sqrt(2.0):.3} {add_c(2, 3)}"); }
+    return 0;
+}

@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+2 2
+--- stderr
+note: building in mode 'embedded' (base: debug): shift counts are masked, panics trap

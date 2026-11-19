@@ -1,0 +1,2 @@
+// build.rifts without a build function.
+import std;

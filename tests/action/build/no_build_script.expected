@@ -1,0 +1,5 @@
+exit: 2
+--- stdout
+--- stderr
+riftc: error: no build.rifts in 'tests/action/build': name a .rifts file, or write a build.rifts (spec 25)
+Run 'riftc --help' for usage.

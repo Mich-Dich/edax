@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+WARN  game game::main ::main: main: warn
+TRACE game game::net::socket net::connect: net: trace (this file's level is trace)
+INFO  game game::net::socket net::connect: net: info
+--- stderr

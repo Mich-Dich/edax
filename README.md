@@ -51,7 +51,7 @@ Requires:
 - CMake ≥ 3.25
 - Ninja (recommended) or Make
 - Clang 18+ or GCC 14+, with `-std=c++2c` support
-- LLVM 18 development files (`llvm-18-dev`, plus `libzstd-dev` for its CMake exports); the backend emits LLVM IR
+- LLVM 18, 19, 20 or 21 development files (e.g. `llvm-20-dev`, plus `libzstd-dev` for its CMake exports); the backend emits LLVM IR. CMake takes the first of 18, 20, 21, 19 it finds; `-DRIFT_LLVM_VERSION=21` or `-DLLVM_DIR=...` picks one
 - Python 3.10+ (test runner only)
 - To link Rift programs: a system linker driver such as GCC or Clang as `cc` (or set `RIFT_CC` / `--cc=`)
 

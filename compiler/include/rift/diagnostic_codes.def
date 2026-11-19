@@ -201,14 +201,6 @@ RIFT_DIAG(E4213, error,   "a diagnostic id must be a declared 'std::diagnostic'"
 RIFT_DIAG(E4215, error,   "a build mode allows undefined behaviour without saying so")
 RIFT_DIAG(E4216, error,   "build.rifts has no build function")
 RIFT_DIAG(E4214, error,   "a method of a template instance that does not compile is used")
-RIFT_DIAG(E4220, error,   "a consuming ('move') method needs a value the caller owns")
-RIFT_DIAG(E4230, error,   "a value that can't be moved to another thread")
-RIFT_DIAG(E4231, error,   "a value that can't be shared between threads")
-RIFT_DIAG(E4232, error,   "a thread-safety promise ('unsafe std::sendable') is not allowed here")
-RIFT_DIAG(E4240, error,   "an annotation's field has a type that compile-time code can't hold")
-RIFT_DIAG(E4250, error,   "the type of an implicit parameter must implement std::implicit<T>")
-RIFT_DIAG(E4251, error,   "an f-string hole can't change anything (it may never be evaluated)")
-RIFT_DIAG(E4252, error,   "'else' after a call that doesn't return 'bool'")
 
 // --- ownership and references ---------------------------------------------------------------
 RIFT_DIAG(E5001, error,   "value of a non-copy type would be copied implicitly")

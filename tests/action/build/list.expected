@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+targets:
+  mathc                C library
+  core                 library (core/util.rifts)
+  app                  program (app/main.rifts)
+  shifter              program (app/shifter.rifts)
+  util_test            test (tests/util_test.rifts)
+modes:
+  debug, release, release_with_debug_info, profile, fast, embedded
+options:
+  -Dverbose=<bool>  Print more (now true)
+--- stderr

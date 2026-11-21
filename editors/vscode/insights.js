@@ -12,6 +12,11 @@ const cp = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
+// .ed files are "edax", .edh files "edax-header" (a language each, so each gets its own file icon).
+const EDAX_LANGUAGES = ["edax", "edax-header"];
+const EDAX_SELECTOR = EDAX_LANGUAGES.map((language) => ({ language }));
+function isEdax(doc) { return !!doc && EDAX_LANGUAGES.includes(doc.languageId); }
+
 const CATEGORIES = [
     { id: "stack", label: "Stack frames", icon: "layers", description: "Every slot a function reserves on entry, whichever scope declares it" },
     { id: "heap", label: "Heap memory", icon: "database", description: "Calls that may allocate or free heap memory, and through what" },
@@ -52,12 +57,12 @@ class InsightsController {
 
         context.subscriptions.push(
             this.status, this.lensEmitter, this.hintEmitter,
-            vscode.languages.registerInlayHintsProvider({ language: "edax" }, {
+            vscode.languages.registerInlayHintsProvider(EDAX_SELECTOR, {
                 onDidChangeInlayHints: this.hintEmitter.event,
                 provideInlayHints: (doc, range) => this.inlayHints(doc, range),
             }),
             ...this.rangeTypes.values(),
-            vscode.languages.registerCodeLensProvider({ language: "edax" }, {
+            vscode.languages.registerCodeLensProvider(EDAX_SELECTOR, {
                 onDidChangeCodeLenses: this.lensEmitter.event,
                 provideCodeLenses: (doc) => this.codeLenses(doc),
             }),
@@ -65,8 +70,8 @@ class InsightsController {
             vscode.commands.registerCommand("edax.insights.choose", () => this.choose()),
             vscode.commands.registerCommand("edax.insights.refresh", () => this.refreshVisible(true)),
             vscode.commands.registerCommand("edax.insights.explain", (item) => this.explain(item)),
-            vscode.workspace.onDidSaveTextDocument((doc) => { if (doc.languageId === "edax") this.refresh(doc, true); }),
-            vscode.workspace.onDidChangeTextDocument((e) => { if (e.document.languageId === "edax" && e.contentChanges.length) this.lensEmitter.fire(); }),
+            vscode.workspace.onDidSaveTextDocument((doc) => { if (isEdax(doc)) this.refresh(doc, true); }),
+            vscode.workspace.onDidChangeTextDocument((e) => { if (isEdax(e.document) && e.contentChanges.length) this.lensEmitter.fire(); }),
             vscode.window.onDidChangeVisibleTextEditors(() => this.refreshVisible(false)),
             vscode.window.onDidChangeActiveTextEditor(() => this.updateStatus()),
             vscode.workspace.onDidChangeConfiguration((e) => {
@@ -117,7 +122,7 @@ class InsightsController {
 
     updateStatus() {
         const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.languageId !== "edax") { this.status.hide(); return; }
+        if (!editor || !isEdax(editor.document)) { this.status.hide(); return; }
         const on = this.enabled(editor.document);
         const entry = this.cache.get(editor.document.uri.fsPath);
         this.status.text = on ? (entry && entry.error ? "$(eye) Insights $(warning)" : "$(eye) Insights") : "$(eye-closed) Insights";
@@ -129,7 +134,7 @@ class InsightsController {
 
     refreshVisible(force) {
         for (const editor of vscode.window.visibleTextEditors) {
-            if (editor.document.languageId === "edax") this.refresh(editor.document, force);
+            if (isEdax(editor.document)) this.refresh(editor.document, force);
         }
         this.updateStatus();
     }
@@ -399,4 +404,4 @@ function dropsTitle(list) {
     return `${where}: drop ${names.join(", ")}${freeing.length ? " · frees heap" : ""}`;
 }
 
-module.exports = { InsightsController, CATEGORIES };
+module.exports = { InsightsController, CATEGORIES, EDAX_SELECTOR, isEdax };

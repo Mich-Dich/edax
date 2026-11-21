@@ -11,7 +11,7 @@ const cp = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const { InsightsController } = require("./insights");
+const { InsightsController, EDAX_SELECTOR, isEdax } = require("./insights");
 
 const CODELLDB = "vadimcn.vscode-lldb";
 
@@ -39,7 +39,7 @@ function activate(context) {
             if (file) await buildProgram({ program: file }, folderOf(file));
         }),
     );
-    context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: "edax" }, new EdaxDefinitionProvider()));
+    context.subscriptions.push(vscode.languages.registerDefinitionProvider(EDAX_SELECTOR, new EdaxDefinitionProvider()));
     new InsightsController(context, { compilerPath, output });
 }
 
@@ -152,7 +152,7 @@ class EdaxDebugConfigurationProvider {
             return undefined;
         }
         for (const doc of vscode.workspace.textDocuments) {
-            if (doc.languageId === "edax" && doc.isDirty) await doc.save();
+            if (isEdax(doc) && doc.isDirty) await doc.save();
         }
 
         let program = config.program;

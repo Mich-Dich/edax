@@ -2,11 +2,11 @@
   "name": "edax-language",
   "displayName": "Edax Language",
   "description": "Edax (.ed / .edh): syntax highlighting, build, step-through debugging, and code insights that show what the compiler does implicitly",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "dominikm",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
     "Programming Languages",
@@ -15,6 +15,7 @@
   "main": "./extension.js",
   "activationEvents": [
     "onLanguage:edax",
+    "onLanguage:edax-header",
     "onDebugResolve:edax",
     "onDebugDynamicConfigurations:edax",
     "onDebugInitialConfigurations"
@@ -31,10 +32,27 @@
           "edax"
         ],
         "extensions": [
-          ".ed",
+          ".ed"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/ed.svg",
+          "dark": "./icons/ed.svg"
+        }
+      },
+      {
+        "id": "edax-header",
+        "aliases": [
+          "Edax Header"
+        ],
+        "extensions": [
           ".edh"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/edh.svg",
+          "dark": "./icons/edh.svg"
+        }
       }
     ],
     "grammars": [
@@ -51,11 +69,28 @@
           "punctuation.section.interpolation.end.edax": "other",
           "constant.character.escape.brace.edax": "string"
         }
+      },
+      {
+        "language": "edax-header",
+        "scopeName": "source.edax.header",
+        "path": "./syntaxes/edax-header.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.interpolation.edax": "edax"
+        },
+        "tokenTypes": {
+          "meta.embedded.interpolation.edax": "other",
+          "punctuation.section.interpolation.begin.edax": "other",
+          "punctuation.section.interpolation.end.edax": "other",
+          "constant.character.escape.brace.edax": "string"
+        }
       }
     ],
     "breakpoints": [
       {
         "language": "edax"
+      },
+      {
+        "language": "edax-header"
       }
     ],
     "debuggers": [
@@ -63,7 +98,8 @@
         "type": "edax",
         "label": "Edax (LLDB)",
         "languages": [
-          "edax"
+          "edax",
+          "edax-header"
         ],
         "configurationAttributes": {
           "launch": {
@@ -216,7 +252,7 @@
       },
       {
         "command": "edax.insights.choose",
-        "title": "Choose Code Insights…",
+        "title": "Choose Code Insights\u2026",
         "category": "Edax"
       },
       {
@@ -258,15 +294,15 @@
         },
         {
           "command": "edax.insights.toggle",
-          "when": "editorLangId == edax"
+          "when": "editorLangId =~ /^edax(-header)?$/"
         },
         {
           "command": "edax.insights.choose",
-          "when": "editorLangId == edax"
+          "when": "editorLangId =~ /^edax(-header)?$/"
         },
         {
           "command": "edax.insights.refresh",
-          "when": "editorLangId == edax"
+          "when": "editorLangId =~ /^edax(-header)?$/"
         },
         {
           "command": "edax.insights.explain",
@@ -276,7 +312,7 @@
       "editor/title": [
         {
           "command": "edax.insights.toggle",
-          "when": "resourceLangId == edax",
+          "when": "resourceLangId =~ /^edax(-header)?$/",
           "group": "navigation@5"
         }
       ]
@@ -352,7 +388,7 @@
         "edax.insights.show.conversions": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Implicit conversions: string → str, literal → string, upcasts, integer/pointer → bool in conditions, lambda → std::function."
+          "markdownDescription": "Implicit conversions: string \u2192 str, literal \u2192 string, upcasts, integer/pointer \u2192 bool in conditions, lambda \u2192 std::function."
         },
         "edax.insights.show.dispatch": {
           "type": "boolean",
@@ -568,5 +604,10 @@
         }
       }
     ]
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1C1F24",
+    "theme": "dark"
   }
 }

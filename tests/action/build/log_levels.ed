@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/logging_project --out-dir=%t game
+// Compile-time log levels from build.ed (spec 31): info for the target, trace for net/*.ed.

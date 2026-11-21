@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/engine_project --out-dir=%t --mode=fast app
+// A user mode that wraps on overflow and turns bounds checks off says so (spec 24).

@@ -6,7 +6,7 @@ What happens to a log call after it is made: it becomes a record, the log thread
 
 ### Records and patterns
 A sink receives a **record**:
-```rift
+```edax
 namespace std::log {
     view struct record {
         std::log::level      level;
@@ -22,7 +22,7 @@ namespace std::log {
 ```
 
 A **pattern** turns a record into one line. It uses the f-string syntax of 19 with record fields as names:
-```rift
+```edax
 private compile_time std::log::pattern console_pattern = std::log::pattern::from(
     "{color}[{time}.{millis}] [{target} {level:<5} {thread}]{/color} {file_name}:{line} {message}");
 ```
@@ -33,7 +33,7 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
 | `{time}`, `{date}`, `{millis}`, `{micros}` | `hh:mm:ss`, `yyyy-mm-dd`, `000`–`999`, `000000`–`999999` (local time) |
 | `{thread}`, `{thread_id}` | The thread's name (its id if it has none), the id |
 | `{target}`, `{module}`, `{namespace}` | Build target (`renderer`), module (`renderer::vulkan::pipeline`), namespace (`gfx::vulkan`) |
-| `{file}`, `{file_name}` | The file as riftc was given it, the file name only |
+| `{file}`, `{file_name}` | The file as edaxc was given it, the file name only |
 | `{function}`, `{function_name}` | `gfx::vulkan::create_pipeline`, `create_pipeline` |
 | `{line}`, `{column}` | Numbers |
 | `{color}`, `{/color}` | Start and end of the level's color. Sinks without color drop them |
@@ -42,7 +42,7 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
 - **`std::log::pattern::from(std::static_str)`** is `compile_time run_time` and checks its text with a `compile_time run_time check` entry (see [Checks](../../language/errors/checks.md)). An unknown field or a bad spec in a literal is a compile error at the literal:
   ```
   error: std::log::pattern: unknown field: '{levle}' (fields: message, level, time, ...)
-   --> app/main.rifts:12:62
+   --> app/main.ed:12:62
   ```
 - **Ready-made patterns** in `std::log::patterns`:
 
@@ -50,10 +50,10 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
   |---|---|
   | `minimal` | `INFO  loaded 12 meshes` |
   | `standard` (the default) | `[14:33:10.887] [INFO ] main: loaded 12 meshes` |
-  | `source` | `[14:33:10.887] [INFO ] scene.rifts:42 loaded 12 meshes` |
-  | `engine` | `[14:33:10.887] [renderer INFO  main - scene.rifts:load:42] loaded 12 meshes` |
-  | `detailed` | `[2026-11-19 14:33:10.887412] [renderer INFO  main] gfx::load (src/scene.rifts:42) loaded 12 meshes` |
-  | `file` | `[2026-11-19 14:33:10.887] [renderer INFO  main] src/scene.rifts:42 loaded 12 meshes` (no colors) |
+  | `source` | `[14:33:10.887] [INFO ] scene.ed:42 loaded 12 meshes` |
+  | `engine` | `[14:33:10.887] [renderer INFO  main - scene.ed:load:42] loaded 12 meshes` |
+  | `detailed` | `[2026-11-19 14:33:10.887412] [renderer INFO  main] gfx::load (src/scene.ed:42) loaded 12 meshes` |
+  | `file` | `[2026-11-19 14:33:10.887] [renderer INFO  main] src/scene.ed:42 loaded 12 meshes` (no colors) |
 
   All but `file` wrap the time and level in `{color}` ... `{/color}`.
 - A pattern owns its text (a `std::string`). Built at compile time it lives in static memory (see [Compile-Time Evaluation](../../language/compile-time/compile-time.md)), so a pattern can be a `compile_time` constant.
@@ -62,7 +62,7 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
 - Sinks add the line break.
 
 **Structured fields.** Every hole of the message is also in `record.fields`, as a `std::log::field`:
-```rift
+```edax
 namespace std::log {
     view struct field {
         std::static_str name;      // the hole's expression as written: `count`, `mesh.name`, `elapsed.as_milliseconds()`
@@ -73,7 +73,7 @@ namespace std::log {
 `std::log::info(f"loaded {count} meshes in {ms} ms")` gives the fields `count` and `ms`. The names come from the compiler (they are static data); the values are the text already formatted for the message, so fields cost no extra formatting. Sinks that write machine-readable logs use them.
 
 ### Sinks
-```rift
+```edax
 namespace std::log {
     interface sink {
         bool colored();                                    // whether `{color}` is written
@@ -91,7 +91,7 @@ namespace std::log {
 ```
 
 **Colors per level.** A sink that writes colors (`colored()`) renders `{color}` with its `palette`, one `style` per level:
-```rift
+```edax
 namespace std::log {
     enum color : u8 {
         none,                                                       // the terminal's own color
@@ -118,7 +118,7 @@ namespace std::log {
     }
 }
 ```
-```rift
+```edax
 _ = logs.add(std::log::console::make(), std::log::sink_options{
     .pattern = std::log::patterns::engine,
     .palette = std::log::palette{ .info = std::log::style{ .foreground = std::log::color::rgb(std::log::rgb{ .r = 255, .g = 128, .b = 0 }) } },
@@ -138,7 +138,7 @@ The standard library provides:
 Any other destination (network, GUI, an engine plugin) is a type implementing `std::log::sink`.
 
 **Rotation** of a file sink is set with `.rotation`:
-```rift
+```edax
 namespace std::log {
     struct size_rotation {
         u64 max_bytes;          // start a new file when the current one would grow past this
@@ -154,7 +154,7 @@ namespace std::log {
 Rotation happens on the log thread between two records, so a record is never split across files.
 
 ### The session
-```rift
+```edax
 mut std::log::session logs = std::log::start(std::log::options{
     .queue_capacity = 16 * 1024,                     // records
     .when_full      = std::log::when_full::wait,     // or drop
@@ -181,8 +181,8 @@ std::log::sink_id console = logs.add(std::log::console::make(), std::log::sink_o
 ## Examples
 
 ### A program's `main`
-```rift
-// app/main.rifts
+```edax
+// app/main.ed
 import std;
 import engine;
 

@@ -1,18 +1,18 @@
 # Standard library benchmarks
 
-Rift's standard library is meant to be the fast option out of the box: no "use Boost/Abseil
-when it matters". These benchmarks keep it honest by running the same workload in Rift and in
+Edax's standard library is meant to be the fast option out of the box: no "use Boost/Abseil
+when it matters". These benchmarks keep it honest by running the same workload in Edax and in
 C++ (libstdc++, and Abseil / Boost where they have a competing container).
 
 ```
-python3 bench/run.py [--riftc build/compiler/riftc] [--runs 3] [filter...]
+python3 bench/run.py [--edaxc build/compiler/edaxc] [--runs 3] [filter...]
 ```
 
-- `rift/<name>.rifts` is built with `riftc build --mode=release`.
+- `edax/<name>.ed` is built with `edaxc build --mode=release`.
 - `cpp/<name>.cpp` or `cpp/<name>.<impl>.cpp` (`impl` = `std`, `absl`, `boost`) is built with
   `c++ -O2 -std=c++20 -DNDEBUG` (Abseil via `pkg-config`). Missing libraries skip that row.
-- Every program prints a checksum; the runner fails if Rift and C++ disagree.
-- The table shows the best wall-clock time over `--runs` and Rift relative to the fastest C++.
+- Every program prints a checksum; the runner fails if Edax and C++ disagree.
+- The table shows the best wall-clock time over `--runs` and Edax relative to the fastest C++.
 
 Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 
@@ -29,7 +29,7 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 
 ## Results (v0.1 + std optimization, x86-64, GCC 14 for C++)
 
-| Benchmark | Rift (s) | C++ (s) | Rift / fastest |
+| Benchmark | Edax (s) | C++ (s) | Edax / fastest |
 |---|---|---|---|
 | hash_int | 0.235 | absl 0.226, boost 0.187, std 0.766 | 1.26x |
 | hash_words | 0.058 | absl 0.056, boost 0.068, std 0.122 | 1.03x |
@@ -43,5 +43,5 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 Before the optimization pass: `hash_int` 1.90x, `string_build` 2.22x, `tree_map` 141x (a sorted
 array), and `sort` was an O(n²) insertion sort.
 
-Rift's maps are always seeded per process (hash-flooding resistance) and every access is
+Edax's maps are always seeded per process (hash-flooding resistance) and every access is
 checked; the C++ versions do neither, so a small gap remains on `hash_int` and `tree_map`.

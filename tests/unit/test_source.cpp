@@ -1,10 +1,10 @@
-#include "rift/source.hpp"
-#include "rift_test.hpp"
+#include "edax/source.hpp"
+#include "edax_test.hpp"
 
-using namespace rift;
+using namespace edax;
 
 TEST_CASE("source: line and column of offsets") {
-    SourceFile f("a.rifts", "ab\ncd\n\nx");
+    SourceFile f("a.ed", "ab\ncd\n\nx");
     CHECK_EQ(f.line_count(), 4u);
     CHECK_EQ(f.line_col(0).line, 1u);
     CHECK_EQ(f.line_col(0).column, 1u);
@@ -15,19 +15,19 @@ TEST_CASE("source: line and column of offsets") {
 }
 
 TEST_CASE("source: line text strips newline and carriage return") {
-    SourceFile f("a.rifts", "first\r\nsecond\nlast");
+    SourceFile f("a.ed", "first\r\nsecond\nlast");
     CHECK_EQ(f.line_text(1), std::string_view("first"));
     CHECK_EQ(f.line_text(2), std::string_view("second"));
     CHECK_EQ(f.line_text(3), std::string_view("last"));
 }
 
 TEST_CASE("source: columns count code points, not bytes") {
-    SourceFile f("a.rifts", "\"é\" x");   // é is 2 bytes
+    SourceFile f("a.ed", "\"é\" x");   // é is 2 bytes
     CHECK_EQ(f.line_col(5).column, 5u);   // byte 5 is 'x'
 }
 
 TEST_CASE("source: offset past the end clamps") {
-    SourceFile f("a.rifts", "abc");
+    SourceFile f("a.ed", "abc");
     CHECK_EQ(f.line_col(100).column, 4u);
 }
 
@@ -62,6 +62,6 @@ TEST_CASE("utf8: encode round-trips") {
 TEST_CASE("source manager: load reports missing files") {
     SourceManager sm;
     std::string   error;
-    CHECK(!sm.load("/definitely/not/here.rifts", error).has_value());
+    CHECK(!sm.load("/definitely/not/here.ed", error).has_value());
     CHECK(!error.empty());
 }

@@ -1,6 +1,6 @@
 # Strings
 
-Rift has one owning string type and two non-owning ones. All three hold UTF-8.
+Edax has one owning string type and two non-owning ones. All three hold UTF-8.
 
 ## Rules
 
@@ -21,7 +21,7 @@ All three hold UTF-8.
 | `std::str` → `std::string` | `std::string::from(s)` (allocates) |
 | `std::static_str` → `std::string` | Implicit, **with a compiler warning** |
 
-```rift
+```edax
 std::str      a = "hello";                         // OK
 std::string   b = std::string::from("hello");      // OK: allocation is visible
 std::string   c = "hello";                         // WARNING: implicit allocation of std::string from a literal

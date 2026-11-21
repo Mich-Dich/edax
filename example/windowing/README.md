@@ -5,9 +5,9 @@ built the way a game engine is: an application that owns the window system, the 
 main window, a stack of layers it drives, and settings kept in the project's `config/` directory.
 
 ```bash
-riftc run --root=example windowing                  # from the repository root
-riftc run --root=example windowing -- path/to/project   # with a project directory
-riftc build --root=example windowing                # -> example/build/debug/windowing
+edaxc run --root=example windowing                  # from the repository root
+edaxc run --root=example windowing -- path/to/project   # with a project directory
+edaxc build --root=example windowing                # -> example/build/debug/windowing
 ```
 
 The project directory (the first argument, else the executable's directory) holds
@@ -22,7 +22,7 @@ library is an error value and a log line, not a crash or a link error.
 ## How it is organized
 
 ```
-main.rifts                 entry point: logging, the project directory, the application, its layers
+main.ed                 entry point: logging, the project directory, the application, its layers
 engine/application         the application: window system, renderer, main window, layers, the loop
 engine/layer               the layer interface, the layer stack, what layers see (context, commands)
 engine/renderer            the OpenGL share group, the GL functions, the asset loader thread
@@ -91,11 +91,11 @@ main window and the inspectors are green, the sandbox is red: that's sharing, vi
   window`; `begin_frame()` exists only on a `gl_window`.
 - **A current context is a value**: `wnd::opengl::frame` is a view that borrows the window; GL code
   takes the frame (or `wnd::opengl::current`) as proof that a context is current. `present()` is a
-  consuming method (`move`). Reading `i.refreshes` *before* `begin_frame()` in `tools_layer.rifts` is the
+  consuming method (`move`). Reading `i.refreshes` *before* `begin_frame()` in `tools_layer.ed` is the
   borrow checker at work: the frame borrows `i` mutably.
 - **Bindings are data, actions are types**: `@wnd::default_key` annotations on enum alternatives,
   read by reflection (`std::meta::alternatives`) in `bindings<A>::defaults()`; two actions on the
-  same default key is a compile error (try the commented line in `game/actions.rifth`).
+  same default key is a compile error (try the commented line in `game/actions.edh`).
 - **Reflection-built function tables**: `gl::functions` and `vk::instance_functions` are structs
   whose field names are the C functions; `for compile_time` over `std::meta::fields` loads them.
 - **Threads**: the checkerboard is made on a `std::thread` and sent through a `std::channel`;

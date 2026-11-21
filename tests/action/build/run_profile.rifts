@@ -1,2 +1,0 @@
-// RUN: riftc run --root=%S/engine_project --out-dir=%t --mode=profile -Dverbose=false app
-// A mode derived from release_with_debug_info is a release mode; -D sets an option.

@@ -1,0 +1,12 @@
+// build.ed of a test project for spec 31: compile-time log levels per target and per file,
+// and the -Dlog_level option.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target game = g.add_executable(std::build::edax_target{ .name = "game", .root = "game/main.ed" });
+        std::log::add_options(mut g, game);
+        std::log::set_level(mut g, game, std::log::level::info);
+        std::log::set_level(mut g, game, "net/*.ed", std::log::level::trace);
+    }
+}

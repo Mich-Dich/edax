@@ -1,8 +1,8 @@
 # SIMD
 
-SIMD (single instruction, multiple data) runs one operation on several values at once. In Rift it is part of the language: **vector types** that behave like numbers, **masks** for per-lane conditions, and **blocks** that walk an array in vector-sized steps, including the leftover elements at the end. Nothing is hidden: the type says how many lanes of which number, the operators say what is computed, and `riftc simd-report` says which instructions it became.
+SIMD (single instruction, multiple data) runs one operation on several values at once. In Edax it is part of the language: **vector types** that behave like numbers, **masks** for per-lane conditions, and **blocks** that walk an array in vector-sized steps, including the leftover elements at the end. Nothing is hidden: the type says how many lanes of which number, the operators say what is computed, and `edaxc simd-report` says which instructions it became.
 
-```rift
+```edax
 void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
     run_time check (a.len() == result.len() && b.len() == result.len()) else "add_arrays: lengths differ";
     for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
@@ -33,7 +33,7 @@ The common ones have built-in short names, reserved like `i32`: `<type>x<lanes>`
 - Vectors are **copy types**. They are passed in registers where the target has registers of that width.
 
 ### 2. Creating vectors
-```rift
+```edax
 f32x8 zeros = default;
 f32x8 twos  = f32x8::splat(2.0);                          // the same value in every lane
 f32x8 ramp  = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];   // a list literal (see Tuples and List Literals)
@@ -69,7 +69,7 @@ A list literal must have exactly `N` elements.
 
 ### 4. Masks
 A comparison gives a **`std::simd::mask<N>`**: one yes/no per lane.
-```rift
+```edax
 std::simd::mask<8> hot = temperatures > f32x8::splat(80.0);
 if (hot.any()) {
     std::log::warn(f"{hot.count()} sensors over 80 °C");
@@ -102,7 +102,7 @@ f32x8 limited = hot.select(f32x8::splat(80.0), temperatures);    // 80 where hot
 All loads and stores accept any alignment. `std::darray` and `std::array` of number types align their elements to the cache line, so vector loads from them never straddle one.
 
 **Blocks** walk a range in steps of `N` and handle the end, so no remainder loop is ever written:
-```rift
+```edax
 for (std::simd::block<8> at : std::simd::blocks<8>(n)) { ... }
 ```
 - `std::simd::blocks<N>(n)` is a stream (see [Control Flow](../basics/control-flow.md)) of `std::simd::block<N>` values covering `0..n`. Every block is full (`N` elements) except possibly the last one.
@@ -112,9 +112,9 @@ for (std::simd::block<8> at : std::simd::blocks<8>(n)) { ... }
 - **What it compiles to:** a loop over the full blocks with plain vector loads and stores, followed by **one** step with masked loads and stores (native on AVX-512 and SVE; a short sequence elsewhere). There is no per-block branch in the full-block loop.
 
 ### 6. Choosing widths and CPU levels
-- **The build decides the instruction set.** The target platform (see [Rift as a Build System](../../build/build-system.md)) has a CPU level, such as `x86_64_v2` (SSE4.2), `x86_64_v3` (AVX2, FMA) or `x86_64_v4` (AVX-512), or `armv8` / `armv9` with SVE. `std::simd::native_lanes<T>()` follows it.
+- **The build decides the instruction set.** The target platform (see [Edax as a Build System](../../build/build-system.md)) has a CPU level, such as `x86_64_v2` (SSE4.2), `x86_64_v3` (AVX2, FMA) or `x86_64_v4` (AVX-512), or `armv8` / `armv9` with SVE. `std::simd::native_lanes<T>()` follows it.
 - **One binary for several CPU levels:** `@std::simd::multiversion` compiles a function once per listed level and picks the best one for the running CPU at the first call:
-  ```rift
+  ```edax
   @std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v2, std::build::cpu::x86_64_v3, std::build::cpu::x86_64_v4] }
   void blur_row(std::span<f32> input, std::span<mut f32> output) {
       compile_time usize w = std::simd::native_lanes<f32>();      // 4, 8 or 16, per version
@@ -133,22 +133,22 @@ for (std::simd::block<8> at : std::simd::blocks<8>(n)) { ... }
 
 ### 8. Raw intrinsics
 Every instruction of the target is also available under its vendor's name, for the cases the portable operations don't cover:
-```rift
+```edax
 unsafe {
     u8x32 shuffled = std::simd::x86::mm256_shuffle_epi8(bytes, table);     // _mm256_shuffle_epi8
     u8x16 looked_up = std::simd::arm::vqtbl1q_u8(table, idx);               // NEON vqtbl1q_u8
 }
 ```
-- The names are the vendor's names without leading underscores, so their manuals apply directly. They take and return Rift vector types (`__m256` is `f32x8`, `__m256i` an integer vector of 256 bits).
+- The names are the vendor's names without leading underscores, so their manuals apply directly. They take and return Edax vector types (`__m256` is `f32x8`, `__m256i` an integer vector of 256 bits).
 - They're `unsafe`, and using one the build's CPU level doesn't include is a compile error at the call (`std::build::target_has_cpu_feature(...)` lets code test for it in `if compile_time`).
 
 ### 9. Seeing what happens
-`riftc simd-report <file> [<function>]` lists, per function, every vector type with its hardware form (`f32x16: 2 × ymm`), every operation that was split or emulated, the masked tail steps, the multiversion copies, and the loops `@std::simd::must_vectorize` checked.
+`edaxc simd-report <file> [<function>]` lists, per function, every vector type with its hardware form (`f32x16: 2 × ymm`), every operation that was split or emulated, the masked tail steps, the multiversion copies, and the loops `@std::simd::must_vectorize` checked.
 
 ## Examples
 
 ### 1. The C++ example, side by side
-```rift
+```edax
 void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
     run_time check (a.len() == result.len() && b.len() == result.len()) else "add_arrays: lengths differ";
     for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
@@ -156,7 +156,7 @@ void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
     }
 }
 ```
-| C++ | Rift |
+| C++ | Edax |
 |---|---|
 | `__m256 va = _mm256_loadu_ps(&a[i]);` | `a.load(at)`: the type `f32x8` says 8 floats, the span checks the bounds |
 | `_mm256_add_ps(va, vb)` | `+` |
@@ -165,7 +165,7 @@ void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
 | Unchecked pointers, sizes passed separately | Spans; one length check per block, none in the remainder loop |
 
 The same loop for whatever the target's widest register is:
-```rift
+```edax
 compile_time usize w = std::simd::native_lanes<f32>();
 for (std::simd::block<w> at : std::simd::blocks<w>(result.len())) {
     result.store(at, a.load(at) + b.load(at));
@@ -174,7 +174,7 @@ for (std::simd::block<w> at : std::simd::blocks<w>(result.len())) {
 
 ### 2. Written out by hand
 Blocks are a convenience, not magic. The same loop with single loads and stores:
-```rift
+```edax
 mut usize i = 0;
 while (i + 8 <= result.len()) {
     (f32x8::load(a, i) + f32x8::load(b, i)).store(mut result, i);
@@ -186,7 +186,7 @@ for (usize k : i..result.len()) {
 ```
 
 ### 3. Clamping with a mask
-```rift
+```edax
 void limit(std::span<mut f32> samples, f32 ceiling) {
     f32x8 top = f32x8::splat(ceiling);
     for (std::simd::block<8> at : std::simd::blocks<8>(samples.len())) {
@@ -197,7 +197,7 @@ void limit(std::span<mut f32> samples, f32 ceiling) {
 ```
 
 ### 4. A dot product
-```rift
+```edax
 f32 dot(std::span<f32> a, std::span<f32> b) {
     run_time check (a.len() == b.len()) else "dot: lengths differ";
     mut f32x8 sum = default;
@@ -209,7 +209,7 @@ f32 dot(std::span<f32> a, std::span<f32> b) {
 ```
 
 ### 5. Parallel and vectorized
-```rift
+```edax
 void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor) {
     pool.for_chunks(samples.as_mut_span(), 16 * 1024, [factor](std::span<mut f32> part) {
         f32x8 f = f32x8::splat(factor);
@@ -222,7 +222,7 @@ void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor
 Threads split the data into chunks (see [Thread Pool](../../stdlib/concurrency/thread-pool.md)); each chunk runs as vector code.
 
 ### 6. Finding the first match
-```rift
+```edax
 std::option<usize> find_byte(std::span<u8> text, u8 wanted) {
     u8x32 w = u8x32::splat(wanted);
     for (std::simd::block<32> at : std::simd::blocks<32>(text.len())) {

@@ -1,0 +1,33 @@
+// RUN: edaxc run %s
+// A container of raw pointers: indexing returns a reference to the element (the place that holds
+// the pointer), lambdas and functions take `std::raw_ptr<T>&` parameters by address, and a
+// reference return of `*p` for a pointer-typed `*p` is the place, not the pointer's target.
+import std;
+struct item { u64 handle = 0; }
+
+unsafe std::raw_ptr<mut item>& first(std::darray<std::raw_ptr<mut item>>& list) {
+    return list[0];
+}
+
+std::exit_code main() {
+    unsafe {
+        std::raw_ptr<mut item> a = std::raw::allocate<item>(1);
+        std::raw_ptr<mut item> b = std::raw::allocate<item>(1);
+        std::raw::write(a, item{ .handle = 7 });
+        std::raw::write(b, item{ .handle = 9 });
+        mut std::darray<std::raw_ptr<mut item>> items = default;
+        items.push(a);
+        items.push(b);
+        std::raw_ptr<mut item> got = items[1];
+        std::println(f"index: {(*got).handle}");
+        for (std::raw_ptr<mut item> p : items) {
+            std::println(f"loop: {(*p).handle}");
+        }
+        std::println(f"reference return: {(*first(items)).handle}");
+        items.retain([a](std::raw_ptr<mut item>& other) { return other != a; });
+        std::println(f"retain kept {items.len()}, the other one: {items[0] == b}");
+        std::raw::free(a);
+        std::raw::free(b);
+    }
+    return std::exit_code::success;
+}

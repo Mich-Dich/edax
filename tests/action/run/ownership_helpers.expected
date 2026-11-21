@@ -7,7 +7,7 @@ b a 2 1
 7 4
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
- --> tests/action/run/ownership_helpers.rifts:4:36
+ --> tests/action/run/ownership_helpers.ed:4:36
   |
 4 | struct holder { std::string text = ""; std::darray<u32> list; }
   |                                    ^^ allocates

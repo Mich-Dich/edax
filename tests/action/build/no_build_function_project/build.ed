@@ -1,0 +1,2 @@
+// build.ed without a build function.
+import std;

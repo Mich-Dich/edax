@@ -3,7 +3,7 @@
 ## Rules
 
 ### Format strings: `f"..."`
-```rift
+```edax
 std::println(f"{e.name:<20} {e.age:>3} {e.salary:>10.2}");
 std::string s = std::format(f"{count} items");      // allocates: visible through the function
 ```
@@ -16,7 +16,7 @@ std::string s = std::format(f"{count} items");      // allocates: visible throug
 
 ### Lazy holes
 An `f"..."` passed to a function's `std::format_args` parameter is **evaluated when the function formats it**, not at the call: at most once, on the calling thread, before the function returns. If the function never formats it, its holes are never evaluated.
-```rift
+```edax
 std::log::debug(f"tree: {tree.dump()}");   // dump() runs only if the record is formatted
 ```
 - `std::format_args` is a view (it can't outlive the call, so everything its holes read is alive) and **move-only**: `std::println`, `std::format` and `std::panic` consume it, and passing it on is `move message`.
@@ -25,7 +25,7 @@ std::log::debug(f"tree: {tree.dump()}");   // dump() runs only if the record is 
 
 ### Making a type printable
 A type is `std::formattable` (see [Core Utilities](../core/utilities.md)) when it has a method
-```rift
+```edax
 void format(mut std::formatter& out);
 ```
 - `out.write(text) mut` appends text; `out.spec()` returns the hole's `std::format_spec` (alignment, width, precision, radix, sign) for types that use them.

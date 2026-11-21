@@ -14,7 +14,7 @@ exit: 1
     (var raw : std::raw_ptr<mut u8> (nullptr))))
 --- stderr
 error[E2008]: comparison operators cannot be chained
- --> tests/action/parse/templates.rifts:5:15
+ --> tests/action/parse/templates.ed:5:15
   |
 5 |     _ = a < b > c;
   |               ^ second operator

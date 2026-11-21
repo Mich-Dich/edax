@@ -3,4 +3,4 @@ exit: 134
 verbose
 42 15
 --- stderr
-tests/action/build/engine_project/app/main.rifts:10:21: panic: integer overflow in '+' (u32)
+tests/action/build/engine_project/app/main.ed:10:21: panic: integer overflow in '+' (u32)

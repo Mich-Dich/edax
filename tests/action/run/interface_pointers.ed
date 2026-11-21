@@ -1,0 +1,46 @@
+// RUN: edaxc run %s
+// Interface references passed, returned and converted to an extended interface; smart pointers
+// to interfaces own and destroy the object through its table (spec 07, 13).
+import std;
+interface named { std::string name(); }
+interface printable : named { std::string to_text(); }
+struct point : printable {
+    i32 x = 0;
+    std::string name() override { return std::string::from("point"); }
+    std::string to_text() override { return std::format(f"({this.x})"); }
+}
+class label : printable {
+public:
+    std::string text = std::string::from("");
+    std::string name() override { return std::string::from("label"); }
+    std::string to_text() override { return this.text.clone(); }
+    ~label() { std::println(f"drop {this.text}"); }
+}
+void show(named& n) { std::println(f"name {n.name()}"); }
+printable& pass(printable& p) { return p; }
+named& as_named(printable& p) { return p; }
+view struct holder { printable& item; }
+void print_all(std::span<std::unique_ptr<printable>> items) {
+    for (std::unique_ptr<printable>& item : items) { std::println(item->to_text()); }
+}
+i32 main() {
+    point p = point{ .x = 3 };
+    printable& r = p;
+    show(r);
+    printable& again = pass(r);
+    std::println(again.to_text());
+    std::unique_ptr<printable> u = std::unique_ptr<label>::make(label{ .text = std::string::from("hi") });
+    std::println(u->to_text());
+    show(*u);
+    mut std::darray<std::unique_ptr<printable>> items = default;
+    items.push(std::unique_ptr<point>::make(point{ .x = 7 }));
+    items.push(move u);
+    for (std::unique_ptr<printable>& item : items) { std::println(item->to_text()); }
+    print_all(items.as_span());
+    std::println(as_named(*items[0]).name());
+    holder h = holder{ .item = p };
+    std::println(f"{h.item.to_text()} {h.item.name()}");
+    std::shared_ptr<named> s = std::shared_ptr<point>::make(point{ .x = 1 });
+    std::println(s->name());
+    return 0;
+}

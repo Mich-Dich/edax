@@ -1,7 +1,7 @@
 # Annotations
 
 An **annotation** attaches compile-time information to a declaration:
-```rift
+```edax
 @std::derive::formattable
 struct sensor_reading {
     @json::name{ .text = "id" } u32 sensor_id;
@@ -23,7 +23,7 @@ An annotation can never change code it isn't written on. Every effect starts at 
 ## Rules
 
 ### 1. Declaring an annotation
-```rift
+```edax
 annotation(std::meta::target::field) struct range {
     i64 min;
     i64 max;
@@ -38,20 +38,20 @@ annotation(std::meta::target::field) struct range {
 | `function` | a function or method |
 | `parameter` | a function parameter |
 | `alternative` | an enum alternative |
-| `file` | a `.rifts` file: `@name{ ... };` after the imports (section 7) |
+| `file` | a `.ed` file: `@name{ ... };` after the imports (section 7) |
 
 - Fields must be compile-time-capable types: numbers, `bool`, `char`, `std::static_str`, `type`, simple enums, other structs of these, `std::span`s of these.
 - An annotation is otherwise a normal struct: it has a namespace (see [Namespaces](../organization/namespaces.md)), it can be `private` to its module, and it can have default field values.
 
 ### 2. Writing an annotation
-```rift
+```edax
 @range{ .min = 0, .max = 100 }       // with values: the T{...} form of 03
 @json::skip                          // all fields have defaults: just the name
 ```
 - An annotation stands directly before what it annotates: before the declaration (type, function, method), before the field's type, before the parameter's type, or before the alternative's name.
 - The values are compile-time values (see [Compile-Time Evaluation](compile-time.md)).
 - Several annotations may stand on one declaration, each with its own `@`. The same annotation twice on one declaration is an error.
-- Annotations belong to the declaration, so they're written where the declaration is written. For a declaration in a `.rifth`, that's the header (see [Headers, Sources and Modules](../organization/modules.md)); the `.rifts` doesn't repeat them.
+- Annotations belong to the declaration, so they're written where the declaration is written. For a declaration in a `.edh`, that's the header (see [Headers, Sources and Modules](../organization/modules.md)); the `.ed` doesn't repeat them.
 - Writing an annotation on a target it doesn't allow is an error naming the allowed targets.
 - **On a statement**, only `@std::allow` may be written: `@std::allow{ .id = gfx::deprecated } draw_quad(1.0, 2.0);` silences that warning for that statement alone.
 
@@ -64,7 +64,7 @@ Reflection (see [Metaprogramming](metaprogramming.md)) can ask any declaration f
 | `f.annotation<A>()` on a `std::meta::field`, `function`, `parameter` or `alternative` | `std::option<A>` |
 | `f.has<A>()` (and `std::meta::has_annotation<A, T>()` for types) | `bool` |
 
-```rift
+```edax
 for compile_time (std::meta::field f : std::meta::fields<T>()) {
     if compile_time (!f.has<json::skip>()) {
         compile_time std::static_str key = f.annotation<json::name>().value_or(json::name{ .text = f.name }).text;
@@ -82,7 +82,7 @@ An annotation may contain `compile_time` checks (see [Checks](../errors/checks.m
 | `annotation` | The annotation's value as written at that place: `annotation.min` |
 | `annotated` | What it's written on: a `type` value (target `type`), or a `std::meta::field` / `function` / `parameter` / `alternative` / `file` |
 
-```rift
+```edax
 annotation(std::meta::target::field) struct range {
     i64 min;
     i64 max;
@@ -101,7 +101,7 @@ A failed check is reported **at the annotation**, in the user's code, with a not
 
 ### 5. Generating members
 An annotation with target `type` may contain one **`generate` block**. Its contents are added to every type the annotation is written on, **as if the type's author had written them in the type**:
-```rift
+```edax
 annotation(std::meta::target::type) struct hashable {
     generate : std::hashable {
         u64 hash() override {
@@ -120,7 +120,7 @@ annotation(std::meta::target::type) struct hashable {
 - **Conflicts are errors:** a generated member with the same signature as a written one, or as one from another annotation, is an error that names both.
 - **Generic types:** on a template type, the block is generated per instance, and `annotated` is the instance.
 - **Errors in generated code** are reported at the `@` that caused it, with a note into the `generate` block.
-- **You can see the result:** `riftc expand <file> <type>` prints the type with every generated member written out.
+- **You can see the result:** `edaxc expand <file> <type>` prints the type with every generated member written out.
 - **Headers and modules:** the generated members are part of the type's interface. They're in the compiled module interface (see [Headers, Sources and Modules](../organization/modules.md)) because the annotation is on the declaration. Importers see them without seeing the annotation's code.
 
 ### 6. Annotations in the standard library
@@ -131,33 +131,33 @@ annotation(std::meta::target::type) struct hashable {
 | `@std::derive::ordered` | type | Generates `operator<=>` comparing fields in declaration order (like `operator== = default` in 16, for `<=>`) |
 | `@std::deprecated{ .message = "..." }` | type, function, field, alternative | A warning at every use, at the use, with the message. Id `std::deprecated` (see [Checks](../errors/checks.md)) |
 | `@std::allow{ .id = gfx::deprecated }` | function, statement | Silences one warning id inside that function, or in that one statement |
-| `@std::plugin_entry` | class | The class a Rift plugin provides (see [Dynamic Libraries and Plugins](../../stdlib/system/dynamic-libraries.md)) |
+| `@std::plugin_entry` | class | The class a Edax plugin provides (see [Dynamic Libraries and Plugins](../../stdlib/system/dynamic-libraries.md)) |
 | `@std::simd::multiversion{ .levels = [...] }` | function | Compiled once per CPU level; the best one is chosen at the first call (see [SIMD](../simd/simd.md)) |
 | `@std::simd::must_vectorize` | function | Every plain `for` loop in it must become vector code, or the build fails with the reason |
 | `@std::check_result` | function | The function returns `bool` and reports its own failure; a call to it may be followed by `else { ... }` (see [Control Flow](../basics/control-flow.md)) |
 | `@std::must_use` | function, type | Ignoring the result is an error (as for `std::result`, see [Error Handling](../errors/error-handling.md)). Discard with `_ =` |
 | `@std::inline_always`, `@std::inline_never` | function | Overrides the optimizer's inlining decision |
 | `@std::cold` | function | The function is rarely called (error paths). The optimizer moves it, and branches to it, out of the hot path |
-| `@std::test` | function | A test: `riftc test` finds and runs every `@std::test` function of the test targets (see [Rift as a Build System](../../build/build-system.md)). The function takes no parameters and returns `void` |
+| `@std::test` | function | A test: `edaxc test` finds and runs every `@std::test` function of the test targets (see [Edax as a Build System](../../build/build-system.md)). The function takes no parameters and returns `void` |
 
-The `derive` annotations are ordinary annotations with `generate` blocks, written in Rift. They're in `std` because they're needed often, not because they're special.
+The `derive` annotations are ordinary annotations with `generate` blocks, written in Edax. They're in `std` because they're needed often, not because they're special.
 
 ### 7. File annotations
 An annotation followed by `;` at file scope **annotates the file**:
-```rift
+```edax
 import std;
 
 @std::log::level_override{ .level = std::log::level::trace };
 ```
 - File annotations stand after the imports and before the first declaration.
-- Only in `.rifts` files: they describe the code written in that file. A header can't have them.
+- Only in `.ed` files: they describe the code written in that file. A header can't have them.
 - The annotation must allow the target `std::meta::target::file` (see above).
 - Compile-time code reads them with `std::meta::file_annotation<A>(where)`, where `where` is a `std::call_site` in that file (see [Functions](../functions/functions.md), [Metaprogramming](metaprogramming.md)).
 - An annotation's checks run for a file annotation like for any other target; `annotated` is then a `std::meta::file` with the file's `name` and `module`.
 
 ### 8. Wrapping a function body
 An annotation with target `function` may contain one **`wrap` block**. It replaces the body of every function the annotation is written on; inside it, **`std::meta::wrapped_body()`** runs the function's own body and gives its result:
-```rift
+```edax
 annotation(std::meta::target::function) struct timed {
     std::static_str label = "";
 
@@ -182,12 +182,12 @@ std::result<scene, load_error> load_scene(std::str path) { ... }
 - The `wrap` block sees `annotation` and `annotated` (a `std::meta::function`), but not the parameters: it can't change the arguments the body sees.
 - Several wrapping annotations on one function nest in the order they're written: the first is the outermost.
 - Entry checks of the function (see [Checks](../errors/checks.md)) run before any `wrap` block.
-- `riftc expand <file> <function>` shows the function with every `wrap` applied.
+- `edaxc expand <file> <function>` shows the function with every `wrap` applied.
 
 ## Examples
 
 ### 1. One line instead of a hand-written method
-```rift
+```edax
 @std::derive::formattable
 @std::derive::hashable
 struct grid_cell {
@@ -200,7 +200,7 @@ mut std::hash_map<grid_cell, u32> visits = default;       // grid_cell is a key 
 ```
 
 ### 2. A JSON writer driven by annotations
-```rift
+```edax
 namespace json {
     annotation(std::meta::target::field) struct name { std::static_str text; }
     annotation(std::meta::target::field) struct skip { }
@@ -219,7 +219,7 @@ namespace json {
     }
 }
 ```
-```rift
+```edax
 struct sensor_reading {
     @json::name{ .text = "id" } u32 sensor_id;
     i16 temperature;
@@ -229,7 +229,7 @@ struct sensor_reading {
 ```
 
 ### 3. Validation generated from field annotations
-```rift
+```edax
 annotation(std::meta::target::type) struct validated {
     generate {
         std::result<void, std::static_str> validate() {
@@ -255,7 +255,7 @@ struct motor_command {
 Each `@range` checks at compile time that its field is an integer (section 4); `@validated` generates one `validate()` method that checks the values at run time.
 
 ### 4. Tests
-```rift
+```edax
 @std::test
 void parses_negative_numbers() {
     run_time check ("-12".parse<i32>().value_or(0) == -12) else "parse failed";
@@ -265,9 +265,9 @@ void parses_negative_numbers() {
 ## Rationale
 - **Annotations are structs:** no new kind of thing to learn. They're declared, namespaced and documented like any type, and their values are written with the `T{...}` syntax everyone already knows.
 - **Three capabilities, all visible:** data, checks and generated members. All of them start at an `@` on the declaration they affect, so reading a declaration tells you everything that applies to it. There is no global registration, no hidden pre-processing step, and an annotation can't reach code it isn't written on.
-- **`generate` writes members, not text:** the block is real Rift code, type-checked once in the annotation and again per use, with normal error messages. It extends a type its author chose to extend, and can't create new names elsewhere: Rift doesn't generate whole types or free functions, so every name has a written declaration.
+- **`generate` writes members, not text:** the block is real Edax code, type-checked once in the annotation and again per use, with normal error messages. It extends a type its author chose to extend, and can't create new names elsewhere: Edax doesn't generate whole types or free functions, so every name has a written declaration.
 - **No fields from `generate`:** generated fields would change layouts based on code far away and break the merge rules of 09. Methods are enough for derive-style uses.
-- **`riftc expand`:** generated code you can't see is generated code you can't trust or debug.
+- **`edaxc expand`:** generated code you can't see is generated code you can't trust or debug.
 - **`wrap` sees the body, not the arguments:** tracing, timing and profiling need code before and after a call; they never need to change what the function computes. Hiding the parameters keeps a wrapped function's behaviour readable from its own body.
 - **Only `@std::allow` on statements:** silencing one warning on one line is useful; arbitrary statement annotations would invite code generation inside function bodies.
 - **Built-in behaviour as library annotations:** deprecation, warning control, inlining and test discovery would otherwise each need their own syntax. As annotations they share one form, and `std::deprecated` is an ordinary annotation with a check.

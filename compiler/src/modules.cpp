@@ -1,16 +1,16 @@
-#include "rift/modules.hpp"
+#include "edax/modules.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/lexer.hpp"
-#include "rift/parser.hpp"
-#include "rift/std_library.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/lexer.hpp"
+#include "edax/parser.hpp"
+#include "edax/std_library.hpp"
 
 #include <filesystem>
 #include <format>
 #include <map>
 #include <system_error>
 
-namespace rift {
+namespace edax {
 
 namespace fs = std::filesystem;
 
@@ -46,12 +46,12 @@ public:
         module->name       = name;
 
         fs::path header = entry_path, source = entry_path;
-        header.replace_extension(".rifth");
-        source.replace_extension(".rifts");
-        if (entry_path.extension() == ".rifth" || is_file(header)) {
+        header.replace_extension(".edh");
+        source.replace_extension(".ed");
+        if (entry_path.extension() == ".edh" || is_file(header)) {
             load_file(*module, header, /*is_header=*/true);
         }
-        if (entry_path.extension() == ".rifts" || is_file(source)) {
+        if (entry_path.extension() == ".ed" || is_file(source)) {
             load_file(*module, source, /*is_header=*/false);
         }
 
@@ -129,7 +129,7 @@ private:
                 if (name == module.name) {
                     diags_.report(DiagCode::E3004, imp->span,
                                   std::format("module '{}' imports itself", name), "remove this import")
-                        .notes.push_back(Note{"a .rifts file sees its own .rifth automatically", std::nullopt});
+                        .notes.push_back(Note{"a .ed file sees its own .edh automatically", std::nullopt});
                     continue;
                 }
                 if (sema::Module* target = load_module(name, *imp)) {
@@ -179,7 +179,7 @@ private:
         program_.modules.emplace(module->name, std::move(module));
     }
 
-    // The standard library is built into riftc (library/std/std.rifth) and loaded once.
+    // The standard library is built into edaxc (library/std/std.edh) and loaded once.
     void load_std() {
         if (program_.std_module) return;
         for (const StdModule& m : std_modules()) {
@@ -210,7 +210,7 @@ private:
                 diags_.report(DiagCode::E3002, imp.span, std::format("import cycle: {}{}", chain, name),
                               "this import closes the cycle")
                     .notes.push_back(Note{"module imports must form an acyclic graph, counting the "
-                                          "imports of both .rifth and .rifts files",
+                                          "imports of both .edh and .ed files",
                                           std::nullopt});
                 return nullptr;
             }
@@ -224,21 +224,21 @@ private:
         fs::path base = root_;
         for (const std::string& extra : extra_roots_) {   // a dependency's module (spec 25)
             fs::path h = fs::path(root_) / rel;
-            h += ".rifth";
+            h += ".edh";
             fs::path e = fs::path(extra) / rel;
-            e += ".rifth";
+            e += ".edh";
             if (!is_file(h) && is_file(e)) base = extra;
         }
         fs::path header = base / rel;
-        header += ".rifth";
+        header += ".edh";
         fs::path source = base / rel;
-        source += ".rifts";
+        source += ".ed";
         if (!is_file(header)) {
             if (is_file(source)) {
                 diags_.report(DiagCode::E3003, imp.path.span,
                               std::format("module '{}' has no header and cannot be imported", name),
                               std::format("found {} but no {}", display_path(source), display_path(header)))
-                    .notes.push_back(Note{"a .rifts without a .rifth is a standalone file, like a program's main",
+                    .notes.push_back(Note{"a .ed without a .edh is a standalone file, like a program's main",
                                           std::nullopt});
             } else {
                 diags_.report(DiagCode::E3001, imp.path.span, std::format("cannot find module '{}'", name),
@@ -296,4 +296,4 @@ sema::Program load_program(const std::string& entry_path, const LoadOptions& opt
     return Loader(root_or_default(entry_path, options.root), sources, diags, options.extra_roots).run(entry_path, options.build_script);
 }
 
-} // namespace rift
+} // namespace edax

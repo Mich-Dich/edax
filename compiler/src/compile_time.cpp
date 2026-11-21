@@ -1,8 +1,8 @@
-#include "rift/llvm_backend.hpp"
-#include "rift/compile_time.hpp"
+#include "edax/llvm_backend.hpp"
+#include "edax/compile_time.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/source.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/source.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -12,11 +12,11 @@
 #include <algorithm>
 #include <format>
 
-#ifndef RIFT_VERSION
-#define RIFT_VERSION "0.0.0-dev"
+#ifndef EDAX_VERSION
+#define EDAX_VERSION "0.0.0-dev"
 #endif
 
-namespace rift::ct {
+namespace edax::ct {
 
 using namespace ast;
 using sema::Symbol;
@@ -35,8 +35,8 @@ u128 unsigned_max(int bits) { return bits >= 128 ? ~u128{0} : (u128{1} << bits) 
 double round_f32(double v) { return static_cast<double>(static_cast<float>(v)); }
 
 std::string signed_text(i128 v) {
-    if (v >= 0) return rift::to_string(static_cast<u128>(v));
-    return "-" + rift::to_string(static_cast<u128>(-(v + 1)) + 1);
+    if (v >= 0) return edax::to_string(static_cast<u128>(v));
+    return "-" + edax::to_string(static_cast<u128>(-(v + 1)) + 1);
 }
 
 // Thrown to abandon an evaluation: after an error was reported, or (unknown) silently.
@@ -90,7 +90,7 @@ std::string to_string(const Value& v) {
     switch (v.kind) {
     case Value::Kind::void_: return "()";
     case Value::Kind::integer:
-        return v.type && v.type->is_signed ? signed_text(v.as_signed()) : rift::to_string(v.integer);
+        return v.type && v.type->is_signed ? signed_text(v.as_signed()) : edax::to_string(v.integer);
     case Value::Kind::floating: return std::format("{}", v.floating);
     case Value::Kind::boolean: return v.boolean ? "true" : "false";
     case Value::Kind::character: {
@@ -409,7 +409,7 @@ struct Evaluator::Impl {
             Value       i  = eval(*ix.index);
             if (o.kind != Value::Kind::list) not_constant(e.span, "only lists can be indexed at compile time");
             if (i.integer >= o.elements.size()) {
-                failed(ix.index->span, std::format("index {} is out of bounds for a list of {} elements", rift::to_string(i.integer),
+                failed(ix.index->span, std::format("index {} is out of bounds for a list of {} elements", edax::to_string(i.integer),
                                                    o.elements.size()),
                        "out of bounds");
             }
@@ -420,7 +420,7 @@ struct Evaluator::Impl {
             const Type* t = type_of(e);
             Value       n = eval(*e.as<BitExpr>().operand);
             if (!t->is_integer() || n.integer >= static_cast<u128>(t->bits)) {
-                failed(e.span, std::format("bit({}) is out of range for {}", rift::to_string(n.integer), types::to_string(t)),
+                failed(e.span, std::format("bit({}) is out of range for {}", edax::to_string(n.integer), types::to_string(t)),
                        "out of range");
             }
             return integer(u128{1} << static_cast<int>(n.integer), t);
@@ -1091,7 +1091,7 @@ struct Evaluator::Impl {
             Value from = eval(*c.args[0]);
             Value to   = eval(*c.args[1]);
             if (from.integer > to.integer || to.integer > o.string.size()) {
-                failed(c.span, std::format("slice {}..{} of a text of {} bytes", rift::to_string(from.integer), rift::to_string(to.integer),
+                failed(c.span, std::format("slice {}..{} of a text of {} bytes", edax::to_string(from.integer), edax::to_string(to.integer),
                                            o.string.size()),
                        "out of bounds");
             }
@@ -1337,7 +1337,7 @@ struct Evaluator::Impl {
             }
             return annotation_of(uses, a, false, c);
         }
-        if (name == "meta::compiler_version") return string_value(RIFT_VERSION);   // what a plugin was built with
+        if (name == "meta::compiler_version") return string_value(EDAX_VERSION);   // what a plugin was built with
         const auto& seg = c.callee->as<PathExpr>().path.segments.back();
         auto arg = [&](std::size_t i) -> const Type* {
             if (i >= seg.template_args.size() || !seg.template_args[i].type) unknown();
@@ -1556,7 +1556,7 @@ struct Evaluator::Impl {
         return false;
     }
 
-    // A setting from build.rifts' program as a value of this program's type `want` (spec 25).
+    // A setting from build.ed' program as a value of this program's type `want` (spec 25).
     Value setting_value(const Value& v, const Type* want, const std::string& name, Span at) {
         std::string had = v.type ? types::to_string(types::strip_ref(v.type)) : "?";
         if (want && had == types::to_string(want)) {
@@ -1606,7 +1606,7 @@ struct Evaluator::Impl {
         return {sym->key(), sym->name};
     }
 
-    // The value build.rifts gave a setting for the file of `where` (empty: the target's), or null.
+    // The value build.ed gave a setting for the file of `where` (empty: the target's), or null.
     std::shared_ptr<const Value> setting_for(const std::string& name, const std::string& file) {
         namespace fs = std::filesystem;
         std::error_code ec;
@@ -1665,7 +1665,7 @@ struct Evaluator::Impl {
             if (n == "value") {
                 auto it = program.build_settings.find(key);
                 if (it == program.build_settings.end() || !it->second) {
-                    failed(c.span, std::format("build.rifts does not set '{}' for this target", key), "no such setting");
+                    failed(c.span, std::format("build.ed does not set '{}' for this target", key), "no such setting");
                 }
                 return setting_value(*it->second, type_of(c), key, c.span);
             }
@@ -1701,7 +1701,7 @@ struct Evaluator::Impl {
             for (const auto& [module_name, m] : program.modules) {
                 if (const Symbol* chosen = m->item(name); chosen && chosen->is_type()) return Value::of_type(tc.user(chosen), tc.type_value());
             }
-            failed(c.span, std::format("build.rifts chose the global allocator '{}', which this program doesn't have", name), "unknown allocator");
+            failed(c.span, std::format("build.ed chose the global allocator '{}', which this program doesn't have", name), "unknown allocator");
         }
         if (n == "target_has") {
             Value cap = eval(*c.args.at(0));
@@ -1760,7 +1760,7 @@ struct Evaluator::Impl {
             std::string name = static_text(eval(*c.args.at(0)));
             auto it = program.build_settings.find(name);
             if (it == program.build_settings.end() || !it->second) {
-                failed(c.span, std::format("build.rifts does not set '{}' for this target", name), "no such setting");
+                failed(c.span, std::format("build.ed does not set '{}' for this target", name), "no such setting");
             }
             return setting_value(*it->second, type_of(c), name, c.span);
         }
@@ -1778,7 +1778,7 @@ struct Evaluator::Impl {
             }
         }
         ct::BuildGraph* g = program.build_graph;
-        if (!g) failed(c.span, "'std::build::graph' only exists while build.rifts runs", "not in build.rifts");
+        if (!g) failed(c.span, "'std::build::graph' only exists while build.ed runs", "not in build.ed");
         std::vector<Value> args;
         for (const ExprPtr& a : c.args) args.push_back(eval(*a));
         auto target_of = [&](std::size_t i) -> BuildTarget& {
@@ -1818,7 +1818,7 @@ struct Evaluator::Impl {
                 t.standard = std_.symbol ? std_.symbol->name : "";
             } else {
                 t.root = static_text(field(spec, "root"));
-                if (t.root.empty()) failed(c.args[0]->span, "a Rift target needs a '.root' (its main .rifts file)", "no root");
+                if (t.root.empty()) failed(c.args[0]->span, "a Edax target needs a '.root' (its main .ed file)", "no root");
             }
             t.span = c.span;
             g->targets.push_back(std::move(t));
@@ -2224,7 +2224,7 @@ struct Evaluator::Impl {
             g->env_read[name] = value ? value : "";
             return string_value(value ? value : "");
         }
-        failed(c.span, std::format("'{}' is not supported by riftc's build interpreter yet", n), "unsupported");
+        failed(c.span, std::format("'{}' is not supported by edaxc's build interpreter yet", n), "unsupported");
     }
 
     Value run(const Symbol* s, std::optional<Value> self, const CallExpr& c) {
@@ -2652,4 +2652,4 @@ std::optional<std::vector<Value>> Evaluator::elements(const Expr& iterable) {
     return result;
 }
 
-} // namespace rift::ct
+} // namespace edax::ct

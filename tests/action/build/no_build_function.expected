@@ -1,5 +1,5 @@
 exit: 1
 --- stdout
 --- stderr
-tests/action/build/no_build_function_project/build.rifts:1:1: error[E4216]: build.rifts defines no 'build' function
-tests/action/build/no_build_function_project/build.rifts:1:1: note: write 'namespace build { compile_time void build(mut std::build::graph& g) { ... } }'
+tests/action/build/no_build_function_project/build.ed:1:1: error[E4216]: build.ed defines no 'build' function
+tests/action/build/no_build_function_project/build.ed:1:1: note: write 'namespace build { compile_time void build(mut std::build::graph& g) { ... } }'

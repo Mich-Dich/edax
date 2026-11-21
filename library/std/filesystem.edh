@@ -1,0 +1,41 @@
+// The Edax standard library: module std::filesystem (spec 19, 20).
+
+namespace std::filesystem {
+    // A path in the file system, as text.
+    class path {
+    public:
+        // A path with a copy of `text` (allocates).
+        static path from(std::str text);
+
+        // A path relative to the working directory, on purpose: no `std::relative_path` warning
+        // (allocates).
+        static path relative(std::str text);
+
+        // The path as text.
+        std::str as_str();
+
+        // A copy (allocates).
+        path clone();
+
+        // The directory part: everything before the last `/` (`"logs/app.log"` → `"logs"`,
+        // `"/app.log"` → `"/"`, `"app.log"` → `""`) (allocates).
+        path parent();
+
+        // The last part: `"logs/app.log"` → `"app.log"`.
+        std::str file_name();
+
+        // The extension of the last part, without its dot: `"logs/app.log"` → `"log"`, `""` when
+        // there is none (`".bashrc"` has none).
+        std::str extension();
+    }
+
+    // `dir / name`: `name` appended after a separator.
+    path operator/(path& dir, std::str name);
+
+    // The directory that contains the running executable.
+    path executable_dir();
+
+    // Creates `dir` and every missing directory above it. A directory that already exists is
+    // fine; anything else in the way is `std::io_error::already_exists`.
+    std::result<void, std::io_error> create_directories(path& dir);
+}

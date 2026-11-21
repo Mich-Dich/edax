@@ -1,2 +1,0 @@
-// RUN: riftc run --root=tests/action/run/modules_project tests/action/run/modules_project/main.rifts
-// A program made of several modules: header/source pairs, private helpers (spec 09).

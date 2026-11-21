@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/plugin_project --out-dir=%t app
+// Edax plugins: g.add_plugin builds each into the plugins directory with the programs;
+// std::plugin<I>::load checks the interface and the edaxc, and unloading destroys the object first.

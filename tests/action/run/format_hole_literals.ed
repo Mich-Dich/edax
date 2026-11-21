@@ -1,0 +1,8 @@
+// RUN: edaxc run %s
+// String and char literals inside f-string holes (spec 19).
+import std;
+std::static_str pick(bool b, std::static_str yes, std::static_str no) { if (b) { return yes; } return no; }
+i32 main() {
+    std::println(f"[{"left":<6}] [{"right":>6}] {pick(true, "a}b", "c")} {'{'} {"x:y"}");
+    return 0;
+}

@@ -1,0 +1,45 @@
+// RUN: edaxc run %s
+// Registries: std::meta::functions_with / types_with, f.call on free functions, namespace_name.
+import std;
+
+annotation(std::meta::target::function)
+struct command {
+    std::static_str word;
+}
+
+annotation(std::meta::target::type)
+struct component { }
+
+namespace app::commands {
+    @command{ .word = "greet" }
+    void greet(mut u32& state) { state += 1; std::println("hello"); }
+
+    @command{ .word = "bye" }
+    void bye(mut u32& state) { state += 10; std::println("bye"); }
+}
+
+@component
+struct position { f32 x = 0.0; }
+@component
+struct velocity { f32 dx = 0.0; }
+
+void run(std::str input, mut u32& state) {
+    for compile_time (std::meta::function f : std::meta::functions_with<command>()) {
+        if (input == f.annotation<command>().expect("found by functions_with").word) {
+            std::println(f"{f.namespace_name}::{f.name}");
+            f.call(mut state);
+        }
+    }
+}
+
+std::exit_code main() {
+    mut u32 state = 0;
+    run("greet", mut state);
+    run("bye", mut state);
+    run("other", mut state);
+    std::println(f"{state}");
+    for compile_time (type t : std::meta::types_with<component>()) {
+        std::println(std::type_name<t>());
+    }
+    return std::exit_code::success;
+}

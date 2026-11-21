@@ -2,7 +2,7 @@ exit: 1
 --- stdout
 --- stderr
 error[E4210]: -Dlog_level=loud: not a level (trace, debug, info, warn, error, fatal, off)
-   --> <std>/log.rifts:437:17
+   --> <std>/log.ed:437:17
     |
 437 |                 std::compile_error(f"-Dlog_level={given}: not a level (trace, debug, info, warn, error, fatal, off)");
     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed

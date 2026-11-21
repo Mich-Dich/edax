@@ -11,7 +11,7 @@ drop circle
 drop shape c1
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
- --> tests/action/run/inheritance.rifts:9:24
+ --> tests/action/run/inheritance.ed:9:24
   |
 9 |     std::string name = "";
   |                        ^^ allocates

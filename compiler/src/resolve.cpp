@@ -1,8 +1,8 @@
-#include "rift/resolve.hpp"
-#include "rift/ast_walk.hpp"
+#include "edax/resolve.hpp"
+#include "edax/ast_walk.hpp"
 
-#include "rift/ast_clone.hpp"
-#include "rift/ast_printer.hpp"
+#include "edax/ast_clone.hpp"
+#include "edax/ast_printer.hpp"
 
 #include <algorithm>
 #include <format>
@@ -10,7 +10,7 @@
 #include <ostream>
 #include <set>
 
-namespace rift {
+namespace edax {
 
 using namespace ast;
 using sema::Module;
@@ -344,7 +344,7 @@ private:
     void check_header(Module& m) {
         auto no_check = [&](const Decl& d) {
             if (d.kind != DeclKind::check) return;
-            note(error(DiagCode::E3019, d.span, "checks are written in the .rifts, not in a header", "check in a header"),
+            note(error(DiagCode::E3019, d.span, "checks are written in the .ed, not in a header", "check in a header"),
                  "move it into the source file; importers still get it through the compiled module (spec 23)");
         };
         for (const DeclPtr& d : m.header->ast.decls) {
@@ -355,12 +355,12 @@ private:
             if (d->is_private) {
                 note(error(DiagCode::E3012, d->name_span, std::format("'{}' is marked 'private' in a header", d->name),
                            "private item"),
-                     "private items live only in the .rifts");
+                     "private items live only in the .ed");
             }
             if (d->kind == DeclKind::function && d->as<FunctionDecl>().body) {
                 note(error(DiagCode::E3011, d->as<FunctionDecl>().body->span,
                            std::format("function '{}' has a body in a header", d->name), "body"),
-                     "declare it here as 'T f(...);' and move the body into the .rifts");
+                     "declare it here as 'T f(...);' and move the body into the .ed");
             }
             if (d->kind == DeclKind::struct_ || d->kind == DeclKind::class_) {
                 const auto& t = d->as<TypeDecl>();
@@ -368,7 +368,7 @@ private:
                     if (mem->kind == DeclKind::function && mem->as<FunctionDecl>().body) {
                         note(error(DiagCode::E3011, mem->as<FunctionDecl>().body->span,
                                    std::format("method '{}::{}' has a body in a header", d->name, mem->name), "body"),
-                             "method bodies are defined only inside the type's block in the .rifts");
+                             "method bodies are defined only inside the type's block in the .ed");
                     }
                     if (d->kind == DeclKind::class_ &&
                         (mem->access == Access::private_ || mem->access == Access::none)) {
@@ -377,7 +377,7 @@ private:
                                               "private member");
                         note(e, mem->access == Access::none
                                     ? "class members in a header go under 'public:' or 'protected:'"
-                                    : "private members are declared only in the class block of the .rifts");
+                                    : "private members are declared only in the class block of the .ed");
                     }
                 }
             }
@@ -487,8 +487,8 @@ private:
     void not_in_header(const Decl& d, std::string_view what) {
         Diagnostic& e = error(DiagCode::E3017, d.name_span,
                               std::format("{} '{}' is not declared in the header", what, d.name),
-                              "not in the .rifth");
-        note(e, "mark it 'private' if it is local to this module, or declare it in the .rifth");
+                              "not in the .edh");
+        note(e, "mark it 'private' if it is local to this module, or declare it in the .edh");
     }
 
     // Header and source versions of one function must agree on everything but the body.
@@ -582,7 +582,7 @@ private:
             if (!other.empty()) {
                 note(error(DiagCode::E3018, d.name_span,
                            std::format("'{}' is already complete in the header", d.name), "defined again"),
-                     "enums and interfaces are written only in the .rifth", other.front()->span);
+                     "enums and interfaces are written only in the .edh", other.front()->span);
                 return;
             }
             if (d.is_private) add_item(m, d, false);
@@ -665,16 +665,16 @@ private:
                 } else {
                     Diagnostic& e = error(DiagCode::E3015, mem->name_span,
                                           std::format("'{}::{}' is not declared in the header", type->name, mem->name),
-                                          "not in the .rifth");
-                    note(e, is_struct ? "declare every method of a struct in its .rifth block"
-                                      : "declare it under 'public:' in the .rifth, or move it under 'private:'");
+                                          "not in the .edh");
+                    note(e, is_struct ? "declare every method of a struct in its .edh block"
+                                      : "declare it under 'public:' in the .edh, or move it under 'private:'");
                 }
                 continue;
             }
             // Fields.
             if (is_struct) {
                 note(error(DiagCode::E3016, mem->name_span,
-                           std::format("struct '{}' cannot add field '{}' in its .rifts block", type->name, mem->name),
+                           std::format("struct '{}' cannot add field '{}' in its .ed block", type->name, mem->name),
                            "new field"),
                      "all fields of a struct are declared in the header");
             } else if (access == Access::private_) {
@@ -687,8 +687,8 @@ private:
             } else {
                 note(error(DiagCode::E3015, mem->name_span,
                            std::format("public field '{}::{}' is not declared in the header", type->name, mem->name),
-                           "not in the .rifth"),
-                     "public and protected members are declared in the .rifth; private ones go under 'private:'");
+                           "not in the .edh"),
+                     "public and protected members are declared in the .edh; private ones go under 'private:'");
             }
         }
     }
@@ -706,8 +706,8 @@ private:
                 Diagnostic& e = error(DiagCode::E3013, s->span,
                                       std::format("'{}' is declared in the header but never defined", display),
                                       "no definition");
-                note(e, m.source ? "define it in the module's .rifts"
-                                 : "this module has no .rifts to define it in");
+                note(e, m.source ? "define it in the module's .ed"
+                                 : "this module has no .ed to define it in");
             } else if (!s->in_header && s->definition && !s->definition->as<FunctionDecl>().body) {
                 error(DiagCode::E3013, s->span, std::format("'{}' has no body", display), "add '{ ... }'");
             }
@@ -824,7 +824,7 @@ private:
         if (std_visible()) {
             for (Module* m : std_modules_) add(m);
         }
-        // build.rifts is imported by every target of the project (its names are in namespace build).
+        // build.ed is imported by every target of the project (its names are in namespace build).
         if (auto b = program_.modules.find("build"); b != program_.modules.end() && !module_->name.starts_with("std")) {
             add(b->second.get());
         }
@@ -1127,12 +1127,12 @@ private:
             auto& f = header ? m.header : m.source;
             if (!f) continue;
             FileScope fs(*this, &m, header);
-            if (!f->ast.annotations.empty()) {   // `@a{ ... };` (spec 31): only in a .rifts
+            if (!f->ast.annotations.empty()) {   // `@a{ ... };` (spec 31): only in a .ed
                 ns_ = "";
                 if (header) {
                     note(error(DiagCode::E3073, f->ast.annotations.front().span,
-                               "a file annotation describes the code of a .rifts file, not a header", "in a header"),
-                         "write it at the top of the .rifts file");
+                               "a file annotation describes the code of a .ed file, not a header", "in a header"),
+                         "write it at the top of the .ed file");
                 } else {
                     for (AnnotationUse& u : f->ast.annotations) {
                         if (Symbol* a = use_annotation(u, AnnotationTarget::file)) add_checks(u, a, AnnotationTarget::file, nullptr, nullptr, 0);
@@ -1143,7 +1143,7 @@ private:
                 ns_        = d->ns;
                 auto    it = symbol_of_.find(d.get());
                 Symbol* s  = it == symbol_of_.end() ? nullptr : it->second;
-                // The .rifts part of something declared in the header: annotations belong to the
+                // The .ed part of something declared in the header: annotations belong to the
                 // declaration (spec 29).
                 bool part = !header && m.header && s && s->decl != d.get();
                 if (part) {
@@ -1171,8 +1171,8 @@ private:
         auto reject = [&](std::vector<AnnotationUse>& uses) {
             if (uses.empty()) return;
             note(error(DiagCode::E3073, uses.front().span, "annotations are written on the declaration in the header",
-                       "not in the .rifts"),
-                 "the .rifts doesn't repeat them (spec 29)");
+                       "not in the .ed"),
+                 "the .ed doesn't repeat them (spec 29)");
         };
         reject(d.annotations);
         if (d.kind == DeclKind::function) {
@@ -1181,7 +1181,7 @@ private:
         if (d.kind == DeclKind::struct_ || d.kind == DeclKind::class_) {
             for (DeclPtr& mem : d.as<TypeDecl>().members) {
                 auto it = symbol_of_.find(mem.get());
-                // private members added in the .rifts are declared there
+                // private members added in the .ed are declared there
                 if (it != symbol_of_.end() && it->second->decl == mem.get()) {
                     annotate_member(*mem, it->second);
                 } else {
@@ -1350,7 +1350,7 @@ private:
         for (const Symbol* o = owner; o; o = o->parent) {
             if (o->decl && o->decl->is_template && !o->template_of) return;
         }
-        std::vector<const Decl*> checks;   // in the declaration, and in the .rifts block of a header's annotation
+        std::vector<const Decl*> checks;   // in the declaration, and in the .ed block of a header's annotation
         for (const DeclPtr& mem : ad.members) checks.push_back(mem.get());
         if (a->source_block) {
             for (const DeclPtr& mem : a->source_block->as<TypeDecl>().members) checks.push_back(mem.get());
@@ -2075,7 +2075,7 @@ private:
         }
     }
 
-    // The `wrap` block of annotation `a`: in its declaration or its .rifts block.
+    // The `wrap` block of annotation `a`: in its declaration or its .ed block.
     static const BlockExpr* wrap_block_of(const Symbol* a) {
         if (a->decl && a->decl->as<TypeDecl>().wrap) return a->decl->as<TypeDecl>().wrap.get();
         if (a->source_block && a->source_block->as<TypeDecl>().wrap) return a->source_block->as<TypeDecl>().wrap.get();
@@ -2142,7 +2142,7 @@ private:
                                           std::format("'{}' is already declared in this function", name),
                                           "declared again");
                     note(e, "earlier declaration here", found->second->span);
-                    note(e, "Rift has no shadowing; choose a different name");
+                    note(e, "Edax has no shadowing; choose a different name");
                     break;
                 }
             }
@@ -2349,7 +2349,7 @@ private:
         }
         if (u.hidden) {
             note(error(DiagCode::E3024, span, std::format("'{}' is private to its module", name), "private"),
-                 "only items declared in a module's .rifth can be used from other modules");
+                 "only items declared in a module's .edh can be used from other modules");
             return nullptr;
         }
         if (want == Want::type) {
@@ -2618,7 +2618,7 @@ private:
         if (!f.hidden && report_unimported(join_ns(ns, missing), segs[k].span)) return nullptr;
         if (f.hidden) {
             note(error(DiagCode::E3024, segs[k].span, std::format("'{}::{}' is private to its module", ns, missing), "private"),
-                 "only items declared in a module's .rifth can be used from other modules");
+                 "only items declared in a module's .edh can be used from other modules");
         } else {
             Diagnostic& e = error(DiagCode::E3020, segs[k].span, std::format("cannot find '{}' in namespace '{}'", missing, ns),
                                   "not found");
@@ -3161,7 +3161,7 @@ private:
     std::multimap<std::string, Span>      declared_later_;   // locals of the current function   // "std not imported" once per file
 };
 
-// --- riftc symbols ------------------------------------------------------------------------
+// --- edaxc symbols ------------------------------------------------------------------------
 
 std::string fn_line(const Symbol& s) {
     const FunctionDecl& f = *s.function();
@@ -3366,4 +3366,4 @@ void print_symbols(std::ostream& out, const Module& m, const SourceManager& sour
     }
 }
 
-} // namespace rift
+} // namespace edax

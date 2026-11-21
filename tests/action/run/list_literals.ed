@@ -1,0 +1,23 @@
+// RUN: edaxc run %s
+// List literals as std::array and std::span, std::darray::from, span split_at.
+import std;
+u32 sum(std::span<u32> values) {
+    mut u32 total = 0;
+    for (u32 v : values) { total += v; }
+    return total;
+}
+void names(std::span<std::str> parts) {
+    for (std::str p : parts) { std::print(f"{p} "); }
+    std::println("");
+}
+std::exit_code main() {
+    std::array<u32, 3> sizes = [16, 32, 64];
+    std::span<std::static_str> levels = ["low", "medium", "high"];
+    u32 n = 5;
+    std::println(f"{sum(sizes.as_span())} {sum([1, 2, 3])} {sum([n, n * 2])} {sum([])} {levels.len()} {levels[2]}");
+    std::string s = std::string::from("dyn");
+    names([s, "-o", "out.txt"]);
+    ((u32, u32), std::str) mixed = ((1, 2), "x");
+    std::println(f"{mixed.0.1} {mixed.1}");
+    return std::exit_code::success;
+}

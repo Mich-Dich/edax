@@ -8,11 +8,11 @@
           "edax"
         ],
         "extensions": [
-          ".eds"
+          ".ed"
         ],
         "icon": {
-          "light": "./icons/eds.svg",
-          "dark": "./icons/eds.svg"
+          "light": "./icons/ed.svg",
+          "dark": "./icons/ed.svg"
         }
       },
       {

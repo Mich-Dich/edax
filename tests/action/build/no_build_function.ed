@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/no_build_function_project --out-dir=%t --diagnostic-format=short
+// build.ed must define compile_time void build(mut std::build::graph& g) (E4216).

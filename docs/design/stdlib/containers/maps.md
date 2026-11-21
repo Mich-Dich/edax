@@ -12,7 +12,7 @@
   `is_empty()`, `clear() mut`, and `entries()`: a stream (see [Control Flow](../../language/basics/control-flow.md), `for`) of
   `std::map_entry<K, V>` views with `.key` and `.value`. It allocates nothing and borrows the map.
 - `hash_map` also has `with_capacity(n)` (static) and `reserve(n) mut`; `std::string` has `with_capacity(n)`, `reserve(n)` and `capacity()`; `tree_map` has `first()` / `last() → std::option<std::map_entry<K, V>>`.
-```rift
+```edax
 mut std::hash_map<std::string, u32> ages = default;
 ages.insert(std::string::from("ada"), 36);
 for (std::map_entry<std::string, u32> e : ages.entries()) { std::println(f"{e.key}: {e.value}"); }

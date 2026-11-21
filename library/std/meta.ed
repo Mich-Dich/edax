@@ -1,0 +1,27 @@
+// The Edax standard library: module std::meta, written with reflection itself (spec 26).
+
+namespace std::meta {
+    template<type E>
+    std::static_str name_of(E& value) {
+        compile_time check (std::meta::is_enum<E>()) else f"std::meta::name_of needs an enum, not {std::type_name<E>()}";
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if (a.is(value)) {
+                return a.name;
+            }
+        }
+        std::panic("unreachable: every value holds one alternative");
+    }
+
+    template<type E>
+    std::option<E> from_name(std::str text) {
+        compile_time check (std::meta::is_enum<E>()) else f"std::meta::from_name needs an enum, not {std::type_name<E>()}";
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if compile_time (!a.has_payload) {
+                if (text == a.name) {
+                    return std::some(a.make());
+                }
+            }
+        }
+        return std::none;
+    }
+}

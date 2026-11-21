@@ -2,7 +2,7 @@ exit: 1
 --- stdout
 --- stderr
 error[E4010]: expected 'u32', found 'bool'
- --> tests/action/build/type_errors_stop.rifts:4:13
+ --> tests/action/build/type_errors_stop.ed:4:13
   |
 4 |     u32 x = true;
   |             ^^^^ this is 'bool'

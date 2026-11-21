@@ -6,7 +6,7 @@
 ```
 [compile_time [run_time]] <return_type> <name>(<parameters>) { <body> }
 ```
-```rift
+```edax
 std::result<employee, parse_error> parse_line(std::str line) { ... }
 void log(std::str message) { std::println(message); }
 ```
@@ -24,7 +24,7 @@ void log(std::str message) { std::println(message); }
 | `T& x` | Immutable reference | `f(v)` |
 | `mut T& x` | Mutable reference | **`f(mut v)`**, where `v` must be a `mut` variable |
 
-```rift
+```edax
 void bump(mut u32& x) { x += 1; }
 
 mut u32 counter = 0;
@@ -37,7 +37,7 @@ bump(counter);            // ERROR: mutable reference needs 'mut' at the call si
 
 ### `compile_time` parameters
 A parameter marked `compile_time` takes a **compile-time value** and is a compile-time constant in the body:
-```rift
+```edax
 void write(compile_time std::log::level lvl, std::format_args message, implicit compile_time std::call_site where) {
     if compile_time (cast<u8>(lvl) >= cast<u8>(std::log::level_at(where))) {     // decided per call site
         ...
@@ -54,7 +54,7 @@ void write(compile_time std::log::level lvl, std::format_args message, implicit 
 
 ### `implicit` parameters
 The contextual keyword **`implicit`** marks a parameter whose argument the **compiler supplies at each call** when the caller leaves it out.
-```rift
+```edax
 void info(std::format_args message, implicit std::call_site where);
 
 std::log::info(f"ready");                 // where: supplied for this call
@@ -62,7 +62,7 @@ std::log::info(f"ready", where);          // where: written (forwarding)
 ```
 - **Implicit parameters come last**, after every ordinary parameter. A call may leave out any number of them from the end. Writing one passes it like any argument.
 - **The type decides the value.** The parameter's type must implement `std::implicit<T>`:
-  ```rift
+  ```edax
   namespace std {
       template<type T>
       interface implicit {
@@ -77,14 +77,14 @@ std::log::info(f"ready", where);          // where: written (forwarding)
 - `implicit` is a keyword only before a parameter's type: `void f(implicit x)` is a parameter `x` of a type named `implicit`.
 
 **Forwarding** keeps the original caller's location:
-```rift
+```edax
 void warn_slow(std::time::duration d, implicit compile_time std::call_site where) {
     std::log::warn(f"took {d.as_milliseconds()} ms", where);     // reported at warn_slow's caller
 }
 ```
 
 **Another type:**
-```rift
+```edax
 namespace profiler {
     struct zone : std::implicit<profiler::zone> {
         std::static_str name = "";
@@ -105,16 +105,16 @@ Interfaces may declare **`compile_time static` methods** for this (see [Inherita
 
 ### `std::call_site`
 `std::call_site` is **the place a call is written**. The compiler builds one for every call that leaves out an implicit argument; every field is static data it computed:
-```rift
+```edax
 namespace std {
     struct call_site : std::implicit<std::call_site> {
-        std::static_str file;             // as riftc was given it: `renderer/vulkan/pipeline.rifts`
-        std::static_str file_name;        // `pipeline.rifts`
+        std::static_str file;             // as edaxc was given it: `renderer/vulkan/pipeline.ed`
+        std::static_str file_name;        // `pipeline.ed`
         std::static_str function;         // `gfx::vulkan::create_pipeline`
         std::static_str function_name;    // `create_pipeline`
         std::static_str namespace_name;   // `gfx::vulkan`
         std::static_str module;           // `renderer::vulkan::pipeline`
-        std::static_str target;           // the build target, or the main file's name without `.rifts`
+        std::static_str target;           // the build target, or the main file's name without `.ed`
         u32             line;
         u32             column;
     }
@@ -128,18 +128,18 @@ namespace std {
 | `std::meta::function_annotation<A>(where)` | `std::option<A>`: annotation `A` on the function the call is in |
 | `std::meta::type_annotation<A>(where)` | `std::option<A>`: on that function's type |
 | `std::meta::file_annotation<A>(where)` | `std::option<A>`: on that file (see [Annotations](../compile-time/annotations.md)) |
-| `setting.value_at(where)` | `std::option<T>`: what build.rifts passed to that file, else to the target, for a `std::build::setting<T>` (see [Rift as a Build System](../../build/build-system.md)) |
+| `setting.value_at(where)` | `std::option<T>`: what build.ed passed to that file, else to the target, for a `std::build::setting<T>` (see [Edax as a Build System](../../build/build-system.md)) |
 
 ### `main`
-```rift
+```edax
 std::exit_code main() { ... }
 std::exit_code main(std::span<std::str> args) { ... }
 ```
 - Return type: `void`, `std::exit_code`, or any integer type. If an integer return value is outside the platform's exit-status range, the program panics instead of silently truncating it.
 - `args[0]` is the executable path; `args[1..]` are the user's arguments. If an argument isn't valid UTF-8, the program stops at startup with an error message. Raw bytes are available through `std::env::raw_args()`, which returns copies (`std::darray<std::darray<u8>>`).
 
-```rift
-// examples/compile_check.rifts - valid:
+```edax
+// examples/compile_check.ed - valid:
 u32 main() {
     return 0;            // 0 becomes u32 from the return type; 0u32 also works
 }

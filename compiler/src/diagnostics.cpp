@@ -1,10 +1,10 @@
-#include "rift/diagnostics.hpp"
+#include "edax/diagnostics.hpp"
 
 #include <algorithm>
 #include <array>
 #include <ostream>
 
-namespace rift {
+namespace edax {
 
 namespace {
 
@@ -15,9 +15,9 @@ struct CodeInfo {
 };
 
 constexpr std::array code_table = {
-#define RIFT_DIAG(code, sev, title) CodeInfo{#code, Severity::sev, title},
-#include "rift/diagnostic_codes.def"
-#undef RIFT_DIAG
+#define EDAX_DIAG(code, sev, title) CodeInfo{#code, Severity::sev, title},
+#include "edax/diagnostic_codes.def"
+#undef EDAX_DIAG
 };
 
 const CodeInfo& info(DiagCode code) { return code_table.at(static_cast<std::size_t>(code)); }
@@ -277,4 +277,4 @@ void render_all(std::ostream& out, const DiagnosticEngine& diags, const SourceMa
     }
 }
 
-} // namespace rift
+} // namespace edax

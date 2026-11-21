@@ -1,2 +1,0 @@
-// RUN: riftc build --root=%S/unsafe_mode_project --out-dir=%t --mode=reckless --diagnostic-format=short
-// Removing guards needs allow_undefined_behavior() to return true (E4215).

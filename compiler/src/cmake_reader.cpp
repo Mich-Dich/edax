@@ -3,7 +3,7 @@
 // that describe targets. Install rules, tests and packaging are ignored; anything else stops the
 // reader with its file and line.
 
-#include "rift/cmake_reader.hpp"
+#include "edax/cmake_reader.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -16,7 +16,7 @@
 #include <set>
 #include <sstream>
 
-namespace rift {
+namespace edax {
 namespace {
 
 namespace fs = std::filesystem;
@@ -1577,4 +1577,4 @@ private:
 
 CMakeResult read_cmake(const CMakeInput& input) { return Reader(input).run(); }
 
-} // namespace rift
+} // namespace edax

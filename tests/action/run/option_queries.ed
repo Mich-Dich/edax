@@ -1,0 +1,13 @@
+// RUN: edaxc run %s
+// is_some / is_none / is_ok / is_error look at an option or result without taking it (spec 11),
+// at run time and at compile time.
+import std;
+compile_time bool known = cast::checked<u8>(300u32).is_none();
+i32 main() {
+    std::option<std::string> a = std::some(std::string::from("kept"));
+    std::result<u32, u8> r = std::error(3u8);
+    std::println(f"{a.is_some()} {a.is_none()} {r.is_ok()} {r.is_error()} {known}");
+    std::string s = (move a).value_or(std::string::from("other"));
+    std::println(s);
+    return 0;
+}

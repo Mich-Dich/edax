@@ -1,0 +1,97 @@
+// Every token kind, following spec 01-lexical.
+//
+//   EDAX_TOKEN(name, spelling)     special tokens and literals
+//   EDAX_KEYWORD(word)             keyword `word`            -> TokenKind::kw_word
+//   EDAX_TYPE_KEYWORD(word)        reserved built-in type    -> TokenKind::kw_word
+//   EDAX_PUNCT(name, spelling)     operators and punctuation
+//
+// Any macro left undefined by the includer defaults to EDAX_TOKEN.
+
+#ifndef EDAX_TOKEN
+#define EDAX_TOKEN(name, spelling)
+#endif
+#ifndef EDAX_KEYWORD
+#define EDAX_KEYWORD(word) EDAX_TOKEN(kw_##word, #word)
+#endif
+#ifndef EDAX_TYPE_KEYWORD
+#define EDAX_TYPE_KEYWORD(word) EDAX_KEYWORD(word)
+#endif
+#ifndef EDAX_PUNCT
+#define EDAX_PUNCT(name, spelling) EDAX_TOKEN(name, spelling)
+#endif
+
+// --- special --------------------------------------------------------------------------------
+EDAX_TOKEN(eof,                   "end of file")
+EDAX_TOKEN(error,                 "invalid token")
+EDAX_TOKEN(identifier,            "identifier")
+EDAX_TOKEN(underscore,            "_")
+EDAX_TOKEN(doc_comment,           "doc comment")
+
+// --- literals -------------------------------------------------------------------------------
+EDAX_TOKEN(int_literal,           "integer literal")
+EDAX_TOKEN(float_literal,         "float literal")
+EDAX_TOKEN(char_literal,          "character literal")
+EDAX_TOKEN(string_literal,        "string literal")
+EDAX_TOKEN(raw_string_literal,    "raw string literal")
+EDAX_TOKEN(format_string_literal, "format string literal")
+EDAX_TOKEN(c_string_literal,      "C string literal")
+
+// --- keywords -------------------------------------------------------------------------------
+EDAX_KEYWORD(import)       EDAX_KEYWORD(namespace) EDAX_KEYWORD(struct)    EDAX_KEYWORD(class)     EDAX_KEYWORD(interface)
+EDAX_KEYWORD(enum)         EDAX_KEYWORD(template)  EDAX_KEYWORD(type)
+EDAX_KEYWORD(virtual)      EDAX_KEYWORD(override)  EDAX_KEYWORD(abstract)
+EDAX_KEYWORD(operator)
+EDAX_KEYWORD(public)       EDAX_KEYWORD(protected) EDAX_KEYWORD(private)   EDAX_KEYWORD(static)
+EDAX_KEYWORD(extern)
+EDAX_KEYWORD(mut)          EDAX_KEYWORD(move)      EDAX_KEYWORD(this)      EDAX_KEYWORD(view)
+EDAX_KEYWORD(compile_time) EDAX_KEYWORD(run_time)  EDAX_KEYWORD(deduce)  EDAX_KEYWORD(check)
+EDAX_KEYWORD(thread_local)
+EDAX_KEYWORD(if)           EDAX_KEYWORD(else)      EDAX_KEYWORD(for)       EDAX_KEYWORD(while)
+EDAX_KEYWORD(break)        EDAX_KEYWORD(continue)  EDAX_KEYWORD(return)    EDAX_KEYWORD(match)
+EDAX_KEYWORD(true)         EDAX_KEYWORD(false)     EDAX_KEYWORD(nullptr)   EDAX_KEYWORD(default)
+EDAX_KEYWORD(auto)         EDAX_KEYWORD(cast)      EDAX_KEYWORD(bit)       EDAX_KEYWORD(unsafe)
+
+// --- built-in type names (reserved like keywords) -------------------------------------------
+EDAX_TYPE_KEYWORD(bool)    EDAX_TYPE_KEYWORD(char) EDAX_TYPE_KEYWORD(void) EDAX_TYPE_KEYWORD(never)
+EDAX_TYPE_KEYWORD(i8)      EDAX_TYPE_KEYWORD(i16)  EDAX_TYPE_KEYWORD(i32)  EDAX_TYPE_KEYWORD(i64)
+EDAX_TYPE_KEYWORD(i128)    EDAX_TYPE_KEYWORD(isize)
+EDAX_TYPE_KEYWORD(u8)      EDAX_TYPE_KEYWORD(u16)  EDAX_TYPE_KEYWORD(u32)  EDAX_TYPE_KEYWORD(u64)
+EDAX_TYPE_KEYWORD(u128)    EDAX_TYPE_KEYWORD(usize)
+EDAX_TYPE_KEYWORD(f32)     EDAX_TYPE_KEYWORD(f64)
+
+// --- punctuation ----------------------------------------------------------------------------
+// Note: `>>` is one token. The parser splits it when it closes two template argument lists.
+EDAX_PUNCT(l_paren,        "(")    EDAX_PUNCT(r_paren,        ")")
+EDAX_PUNCT(l_brace,        "{")    EDAX_PUNCT(r_brace,        "}")
+EDAX_PUNCT(l_bracket,      "[")    EDAX_PUNCT(r_bracket,      "]")
+EDAX_PUNCT(comma,          ",")    EDAX_PUNCT(semicolon,      ";")
+EDAX_PUNCT(colon,          ":")    EDAX_PUNCT(colon_colon,    "::")
+EDAX_PUNCT(dot,            ".")    EDAX_PUNCT(dot_dot,        "..")   EDAX_PUNCT(dot_dot_eq, "..=")
+EDAX_PUNCT(ellipsis,       "...")
+EDAX_PUNCT(arrow,          "->")   EDAX_PUNCT(fat_arrow,      "=>")
+EDAX_PUNCT(question,       "?")    EDAX_PUNCT(at,             "@")
+
+EDAX_PUNCT(plus,           "+")    EDAX_PUNCT(minus,          "-")
+EDAX_PUNCT(star,           "*")    EDAX_PUNCT(slash,          "/")    EDAX_PUNCT(percent,    "%")
+EDAX_PUNCT(plus_percent,   "+%")   EDAX_PUNCT(minus_percent,  "-%")   EDAX_PUNCT(star_percent, "*%")
+EDAX_PUNCT(amp,            "&")    EDAX_PUNCT(pipe,           "|")    EDAX_PUNCT(caret,      "^")
+EDAX_PUNCT(tilde,          "~")    EDAX_PUNCT(bang,           "!")
+EDAX_PUNCT(shl,            "<<")   EDAX_PUNCT(shr,            ">>")
+EDAX_PUNCT(amp_amp,        "&&")   EDAX_PUNCT(pipe_pipe,      "||")
+
+EDAX_PUNCT(eq_eq,          "==")   EDAX_PUNCT(bang_eq,        "!=")
+EDAX_PUNCT(less,           "<")    EDAX_PUNCT(less_eq,        "<=")
+EDAX_PUNCT(greater,        ">")    EDAX_PUNCT(greater_eq,     ">=")
+EDAX_PUNCT(spaceship,      "<=>")
+
+EDAX_PUNCT(eq,             "=")
+EDAX_PUNCT(plus_eq,        "+=")   EDAX_PUNCT(minus_eq,       "-=")   EDAX_PUNCT(star_eq,    "*=")
+EDAX_PUNCT(slash_eq,       "/=")   EDAX_PUNCT(percent_eq,     "%=")
+EDAX_PUNCT(amp_eq,         "&=")   EDAX_PUNCT(pipe_eq,        "|=")   EDAX_PUNCT(caret_eq,   "^=")
+EDAX_PUNCT(shl_eq,         "<<=")  EDAX_PUNCT(shr_eq,         ">>=")
+EDAX_PUNCT(plus_percent_eq, "+%=") EDAX_PUNCT(minus_percent_eq, "-%=") EDAX_PUNCT(star_percent_eq, "*%=")
+
+#undef EDAX_TOKEN
+#undef EDAX_KEYWORD
+#undef EDAX_TYPE_KEYWORD
+#undef EDAX_PUNCT

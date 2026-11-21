@@ -1,0 +1,28 @@
+// RUN: edaxc run %s
+// Interface default methods (inheritance and interfaces).
+import std;
+interface sink {
+    void write(std::str line) mut;
+    bool colored() { return false; }
+    u32 twice(u32 x) { return x * 2; }
+}
+class console : sink {
+public:
+    void write(std::str line) mut override { std::println(line); }
+    bool colored() override { return true; }
+}
+class plain : sink {
+public:
+    void write(std::str line) mut override { std::println(f"plain {line}"); }
+}
+void use(mut sink& s) {
+    s.write(std::format(f"colored={s.colored()} {s.twice(4)}"));
+}
+std::exit_code main() {
+    mut console c = console{};
+    mut plain p = plain{};
+    use(mut c);
+    use(mut p);
+    std::println(f"{p.colored()}");
+    return std::exit_code::success;
+}

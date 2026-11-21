@@ -27,7 +27,7 @@ Assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `
 |---|---|---|
 | Overflow | **panic** | wraps around (two's complement) |
 
-- The default is **the same in all built-in build modes** (`debug`, `release`, `release_with_debug_info`). A user-defined mode may switch `+ - *` to wrapping, explicitly in `build.rifts` (see [Build Modes](../../build/build-modes.md)). `+%` and `checked_*` never change with the mode.
+- The default is **the same in all built-in build modes** (`debug`, `release`, `release_with_debug_info`). A user-defined mode may switch `+ - *` to wrapping, explicitly in `build.ed` (see [Build Modes](../../build/build-modes.md)). `+%` and `checked_*` never change with the mode.
 - Division or `%` by zero panics. So does `i32::min / -1` (limits: see [Built-in Types and Conversions](types.md)).
 - More explicit variants: `std::checked_add(a, b)` returns `std::option`; `std::saturating_add(a, b)` clamps (and the same for sub/mul).
 - Integer division truncates toward zero. The sign of `%` follows the left operand.
@@ -46,7 +46,7 @@ Assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `
 - **Integer types only.**
 - **Bounds:** for a constant `n`, `n >= bit width` is a compile error. A run-time `n` is allowed and panics when it's out of range.
 
-```rift
+```edax
 u16 x = bit(4);                       // OK: u16
 auto y = bit(4);                      // ERROR: type unknown; write u16 y = bit(4) or bit<u16>(4)
 auto z = bit<u128>(100);              // OK: explicit
@@ -68,7 +68,7 @@ The arithmetic, bit and comparison operators also work lane by lane on SIMD vect
 
 ### Operator overloading
 Allowed for user types with the `operator` keyword, as a method or a free function. A free `operator` function must be declared **in the same namespace and module as one of its operand types**, so only the module that declares a type can define its operators (see [Namespaces](../organization/namespaces.md)):
-```rift
+```edax
 std::filesystem::path operator/(std::filesystem::path& lhs, std::str rhs) { ... }
 bool operator==(employee& other) = default;
 std::ordering operator<=>(version& other) { ... }

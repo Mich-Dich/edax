@@ -1,0 +1,34 @@
+// The Edax standard library: module std::build::mode.
+
+namespace std::build::mode {
+    open class debug : settings {
+    public:
+        compile_time std::build::optimization optimization() override { return std::build::optimization::none; }
+        compile_time std::build::debug_info debug_info() override { return std::build::debug_info::full; }
+        compile_time std::build::overflow overflow() override { return std::build::overflow::panic; }
+        compile_time std::build::shifts shifts() override { return std::build::shifts::panic; }
+        compile_time std::build::bounds bounds() override { return std::build::bounds::panic; }
+        compile_time std::build::run_time_checks run_time_checks() override { return std::build::run_time_checks::all; }
+        compile_time std::build::panic_behavior panic() override { return std::build::panic_behavior::abort; }
+        compile_time bool link_time_optimization() override { return false; }
+        compile_time bool allow_undefined_behavior() override { return false; }
+    }
+
+    open class release : settings {
+    public:
+        compile_time std::build::optimization optimization() override { return std::build::optimization::speed; }
+        compile_time std::build::debug_info debug_info() override { return std::build::debug_info::none; }
+        compile_time std::build::overflow overflow() override { return std::build::overflow::panic; }
+        compile_time std::build::shifts shifts() override { return std::build::shifts::panic; }
+        compile_time std::build::bounds bounds() override { return std::build::bounds::panic; }
+        compile_time std::build::run_time_checks run_time_checks() override { return std::build::run_time_checks::all; }
+        compile_time std::build::panic_behavior panic() override { return std::build::panic_behavior::abort; }
+        compile_time bool link_time_optimization() override { return false; }
+        compile_time bool allow_undefined_behavior() override { return false; }
+    }
+
+    open class release_with_debug_info : release {
+    public:
+        compile_time std::build::debug_info debug_info() override { return std::build::debug_info::full; }
+    }
+}

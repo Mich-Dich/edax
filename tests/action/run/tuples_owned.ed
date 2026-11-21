@@ -1,0 +1,23 @@
+// RUN: edaxc run %s
+// Tuples owning values: drops, clones, destructuring with _ (tuples and list literals).
+import std;
+class noisy {
+public:
+    u32 id;
+    ~noisy() { std::println(f"drop {this.id}"); }
+}
+(std::string, noisy) make(u32 id) { return (std::string::from("name"), noisy{ .id = id }); }
+std::exit_code main() {
+    {
+        (std::string, noisy) a = make(1);
+        std::println(f"{a.0} {a.1.id}");
+    }
+    (std::string s, noisy n) = make(2);
+    std::println(f"{s} {n.id}");
+    (std::string, u32) c = (std::string::from("c"), 3);
+    (std::string, u32) d = c.clone();
+    std::println(f"{d.0} {d.1} {c == d}");
+    (_, noisy m) = make(4);
+    std::println("end");
+    return std::exit_code::success;
+}

@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/engine_project --out-dir=%t
+// Without targets, build makes every program of build.ed.

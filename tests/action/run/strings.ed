@@ -1,0 +1,36 @@
+// RUN: edaxc run %s
+// std::string (spec 19): from, push_str, push (UTF-8), clone, ==, the implicit std::str borrow,
+// the literal conversion (with its warning), formatting and std::format.
+import std;
+struct person { std::string name = ""; u32 age = 0; }
+
+usize count(std::str s) { return s.len(); }
+
+i32 main() {
+    mut std::string s = std::string::from("hello");
+    s.push_str(", world");
+    s.push('!');
+    s.push('é');
+    std::str v = s;
+    usize tl = count(std::string::from("temp"));
+    std::println(f"{v} {s.len()} {count(s)} {tl}");
+    std::string t = s.clone();
+    std::println(f"{t == s} {s.is_empty()}");
+    person p = person{ .name = std::string::from("ada"), .age = 36 };
+    person q = p.clone();
+    std::str n = q.name;
+    std::println(f"{n} {q.age}");
+    std::string lit = "implicit";
+    std::str l = lit;
+    std::println(l);
+    formatting();
+    return 0;
+}
+i32 formatting() {
+    std::string s = std::string::from("abc");
+    std::println(f"[{s}] [{s:>5}]");
+    std::println(s);
+    std::string t = std::format(f"{s}-{42u32}");
+    std::println(t);
+    return 0;
+}

@@ -1,6 +1,0 @@
-// RUN: riftc check --diagnostic-format=short --warn=std::relative_path=off %s
-// The relative-path warning is switched off by its id.
-import std;
-void f() {
-    std::result<std::file, std::io_error> a = std::file::open("employees.csv");
-}

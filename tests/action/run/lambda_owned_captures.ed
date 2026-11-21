@@ -1,0 +1,19 @@
+// RUN: edaxc run %s
+// Lambdas that own values with destructors (move and init captures), also inside
+// std::function and a darray of them (spec 18).
+import std;
+std::function<usize(usize)> make_adder(std::string prefix) {
+    return [p = move prefix](usize n) { return p.len() + n; };
+}
+i32 main() {
+    std::string name = std::string::from("hello");
+    auto greet = [n = move name](u32 times) { std::println(f"{n} x{times}"); };
+    greet(2);
+    std::function<usize(usize)> add = make_adder(std::string::from("abc"));
+    std::println(f"{add(4)}");
+    mut std::darray<std::function<usize(usize)>> fs = default;
+    fs.push(move add);
+    fs.push(make_adder(std::string::from("xy")));
+    std::println(f"{fs.len()}");
+    return 0;
+}

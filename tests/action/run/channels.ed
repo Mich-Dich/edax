@@ -1,0 +1,56 @@
+// RUN: edaxc run %s
+// Channels (bounded, unbounded, try_send/try_receive, close) and std::condition (spec 27).
+import std;
+struct job {
+    u32         id;
+    std::string path;
+}
+u64 work(std::str path) { return cast<u64>(path.len()); }
+std::exit_code main() {
+    std::channel<job> jobs    = std::channel<job>::bounded(4);
+    std::channel<u64> results = std::channel<u64>::unbounded();
+    mut std::darray<std::thread::handle<void>> workers = default;
+    for (usize i : 0..4) {
+        std::channel_receiver<job> input  = jobs.receiver();
+        std::channel_sender<u64>   output = results.sender();
+        workers.push(std::thread::spawn([move input, move output]() {
+            for (job j : input) {
+                _ = output.send(work(j.path));
+            }
+        }));
+    }
+    std::channel_sender<job> submit = jobs.sender();
+    for (u32 n : 0..100) {
+        _ = submit.send(job{ .id = n, .path = std::format(f"data/{n}.bin") });
+    }
+    jobs.close();
+    std::channel_receiver<u64> sizes = results.receiver();
+    mut u64 total = 0;
+    for (u32 n : 0..100) {
+        total += sizes.receive().expect("a worker stopped early");
+    }
+    std::println(f"{total} bytes");
+    // try_send / try_receive and close semantics
+    std::channel<u32> small = std::channel<u32>::bounded(1);
+    std::channel_sender<u32> tx = small.sender();
+    std::channel_receiver<u32> rx = small.receiver();
+    std::println(f"{tx.try_send(1).is_ok()} {tx.try_send(2).is_ok()}");
+    std::println(f"{rx.try_receive().is_ok()} {rx.try_receive().is_ok()}");
+    _ = tx.send(7);
+    tx.close();
+    std::println(f"{tx.send(8).is_ok()} {rx.receive().value_or(0)} {rx.receive().is_none()}");
+    // condition variable
+    std::mutex<u32> m = std::mutex<u32>::make(0);
+    std::condition ready = default;
+    {
+        std::thread::scoped_handle<void> t = std::thread::spawn([&m, &ready]() {
+            std::thread::sleep(std::time::duration::milliseconds(20));
+            *m.lock() = 42;
+            ready.notify_all();
+        });
+        mut std::mutex_guard<u32> g = m.lock();
+        ready.wait(mut g, [](u32& v) { return v != 0; });
+        std::println(f"woke with {*g}");
+    }
+    return std::exit_code::success;
+}

@@ -1,0 +1,5 @@
+// RUN: edaxc build %s -o %t/prog
+// 'edaxc build' writes the executable and says where (spec 24: debug is the default mode).
+u32 main() {
+    return 0;
+}

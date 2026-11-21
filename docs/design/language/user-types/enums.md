@@ -5,7 +5,7 @@ One construct covers both simple enumerations and sum types (tagged unions).
 ## Rules
 
 ### Simple enums
-```rift
+```edax
 enum parse_error : u8 {
     bad_line = 0,
     bad_number,          // 1
@@ -18,7 +18,7 @@ enum parse_error : u8 {
 
 ### Enums with payloads
 Each alternative may carry **one** value in parentheses:
-```rift
+```edax
 enum token : u8 {
     number(f64),
     identifier(std::string),
@@ -37,7 +37,7 @@ token u = token::end;
 
 ### Matching
 `match` on an enum must be exhaustive (see [Control Flow](../basics/control-flow.md)):
-```rift
+```edax
 f64 value = match (t) {
     token::number(n)     => n,
     token::identifier(_) => 0.0,
@@ -48,7 +48,7 @@ f64 value = match (t) {
 
 ### Standard result types
 `std::result` and `std::option` are ordinary payload enums from the standard library:
-```rift
+```edax
 template<type T, type E>
 enum result : u8 { ok(T), error(E) }
 
@@ -56,7 +56,7 @@ template<type T>
 enum option : u8 { some(T), none }
 ```
 **The one naming exception:** the standard library exports their alternatives directly in `std::`, so you write `std::ok(x)`, `std::error(e)`, `std::some(x)` and `std::none` instead of `std::result<T, E>::ok(x)`. Their template arguments come from context, in the same way as literals do:
-```rift
+```edax
 std::result<u32, parse_error> r = std::error(parse_error::bad_line);   // T, E from the declaration
 auto bad = std::ok(5u32);                                              // ERROR: E is unknown
 ```

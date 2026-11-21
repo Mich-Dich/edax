@@ -1,0 +1,14 @@
+// RUN: edaxc check --cpu=x86_64_v3 %s
+// --cpu chooses the CPU level: vector widths and CPU features follow it.
+import std;
+
+compile_time check (std::simd::native_lanes<f32>() == 8) else "AVX2 registers hold 8 f32";
+compile_time check (std::simd::native_lanes<f64>() == 4) else "and 4 f64";
+compile_time check (std::build::target_has_cpu_feature(std::build::cpu_feature::avx2)) else "x86_64_v3 has AVX2";
+compile_time check (std::build::target_has_cpu_feature(std::build::cpu_feature::fma)) else "and FMA";
+compile_time check (!std::build::target_has_cpu_feature(std::build::cpu_feature::avx512f)) else "but not AVX-512";
+compile_time check (std::build::target_platform().cpu == std::build::cpu::x86_64_v3) else "the level";
+
+i32 main() {
+    return 0;
+}

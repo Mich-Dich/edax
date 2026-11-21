@@ -1,4 +1,0 @@
-// RUN: riftc build --mode=release_with_debug_info %s -o %t/prog
-u32 main() {
-    return 0;
-}

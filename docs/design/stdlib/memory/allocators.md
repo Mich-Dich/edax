@@ -5,7 +5,7 @@ Every type that allocates takes its memory from an **allocator**. The default is
 ## Rules
 
 ### The allocator interface
-```rift
+```edax
 namespace std {
     interface allocator {
         std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut;      // nullptr when out of memory
@@ -20,7 +20,7 @@ namespace std {
 
 ### Containers take an allocator parameter
 Every allocating type of the standard library has a last template parameter **`A = std::global_allocator`**:
-```rift
+```edax
 std::darray<u32>                          // the global allocator
 std::darray<u32, std::arena_allocator>    // memory from an arena
 std::hash_map<std::str, u32, std::arena_allocator>
@@ -37,7 +37,7 @@ std::unique_ptr<mesh, std::arena_allocator>
 | `std::global_allocator` | The program's global allocator (below) | Per block |
 | `std::arena_allocator` | An `std::arena`: one large block, handed out front to back | All at once, when the arena is destroyed or `reset()` |
 
-```rift
+```edax
 std::arena frame_memory = std::arena::make(1024 * 1024);                   // one heap block of 1 MiB
 mut std::darray<vertex, std::arena_allocator> verts =
     std::darray<vertex, std::arena_allocator>::with_allocator(frame_memory.allocator());
@@ -46,14 +46,14 @@ mut std::darray<vertex, std::arena_allocator> verts =
 - `free` on an arena does nothing; `arena.reset() mut` makes all of its memory available again (and is an error while containers still borrow it).
 
 ### Replacing the global allocator
-`build.rifts` can give a target another global allocator:
-```rift
+`build.ed` can give a target another global allocator:
+```edax
 g.set_global_allocator(app, std::sealable_allocator);
 ```
 - The type implements `std::allocator`, is `std::shareable` (every thread uses it) and has a `default`.
 - `std::sealable_allocator` is the global allocator plus a switch: after `std::seal_heap()`, every allocation panics with its location. Embedded and real-time programs call `std::seal_heap()` at the end of start-up, so "no allocation after start-up" is checked on every run.
 - `std::no_allocator` panics on the first allocation, for programs that must never use the heap.
-- On targets without the `heap` capability (see [Rift as a Build System](../../build/build-system.md)), only the types with a non-default allocator can allocate.
+- On targets without the `heap` capability (see [Edax as a Build System](../../build/build-system.md)), only the types with a non-default allocator can allocate.
 
 ## Rationale
 - **A template parameter, not a stored pointer:** the default costs nothing and calls are direct. Using another allocator is visible in the type, like every other cost.

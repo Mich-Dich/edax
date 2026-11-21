@@ -1,0 +1,46 @@
+// RUN: edaxc build --mode=release --diagnostic-format=short %s -o %t/prog
+// A compile_time(std::build::mode::release) check only exists in release builds (spec 23, 24).
+import std;
+
+struct packet_header {
+    u16 sync;
+    u8  kind;
+    u8  flags;
+    u32 sequence;
+    u64 timestamp;
+}
+
+compile_time check (std::size_of<packet_header>() == 16) else f"packet_header must be 16 bytes, is {std::size_of<packet_header>()}";
+compile_time(std::build::mode::release) check (false) else "only fails in release builds";
+
+compile_time run_time bool is_supported(u32 baud) {
+    return baud == 9600 || baud == 38400 || baud == 115200;
+}
+
+void configure(u32 baud) {
+    compile_time run_time check (is_supported(baud)) else f"{baud} baud is not supported";
+    std::println(f"baud {baud}");
+}
+
+compile_time u32 checked_square(u32 x) {
+    compile_time check (x < 100) else f"checked_square: {x} is too big";
+    return x * x;
+}
+
+compile_time u32 small = checked_square(9);
+
+u32 next_rate(u32 i) {
+    return if (i == 0) { 9600 } else { 1200 };
+}
+
+void main() {
+    configure(115200);
+    std::println(f"small = {small}");
+    for (u32 i : 0..3) {
+        run_time check (i < 5) else f"index {i} too big";
+        run_time(std::build::mode::release) check (false) else "release only";
+    }
+    configure(next_rate(0));
+    configure(next_rate(1));
+    std::println("not reached");
+}

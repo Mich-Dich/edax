@@ -18,7 +18,7 @@
 - `s.load(block)` and `s.store(block, v)` read and write SIMD vectors (see [SIMD](../../language/simd/simd.md)).
 - `std::span<T>` is a view of contiguous elements: `list.as_span()`, `std::span<T>::from_raw(p, n)` (unsafe). `std::span<mut T>` (`list.as_mut_span()`) gives mutable access to the elements, also through an immutable variable. `len()`, `s[i]`, `get(i)`, `slice(from, to)`, `chunks(n)` (a stream of non-overlapping parts, e.g. to hand parts to threads, see [Threads](../concurrency/threads.md)), `sort() mut` and the other sorts on `std::span<mut T>`.
 - **Splitting:** `s.split_at(i)` consumes a span and returns both halves as a tuple, `(std::span<T>, std::span<T>)` (also for `std::span<mut T>`); the two halves never overlap, so both can be changed at once (see [Tuples and List Literals](../../language/basics/tuples-and-lists.md)):
-  ```rift
+  ```edax
   (std::span<mut i64> left, std::span<mut i64> right) = items.split_at(middle);
   ```
 - **From a list:** `std::darray<T>::from([a, b, c])` copies a list literal into a new darray (it allocates); `std::array<T, N> a = [a, b, c];` needs no allocation.

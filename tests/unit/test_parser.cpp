@@ -1,11 +1,11 @@
-#include "rift/ast_printer.hpp"
-#include "rift/lexer.hpp"
-#include "rift/parser.hpp"
-#include "rift_test.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/lexer.hpp"
+#include "edax/parser.hpp"
+#include "edax_test.hpp"
 
 #include <sstream>
 
-using namespace rift;
+using namespace edax;
 
 namespace {
 
@@ -15,7 +15,7 @@ struct Parsed {
     ast::File        file;
 
     explicit Parsed(std::string text) {
-        FileId id = sources.add("t.rifts", std::move(text));
+        FileId id = sources.add("t.ed", std::move(text));
         auto   tokens = tokenize(sources.file(id), id, diags);
         file          = parse(sources.file(id), id, tokens, diags);
     }
@@ -39,7 +39,7 @@ struct Parsed {
 std::string expr(std::string text) {
     SourceManager    sources;
     DiagnosticEngine diags;
-    FileId           id     = sources.add("t.rifts", std::move(text));
+    FileId           id     = sources.add("t.ed", std::move(text));
     auto             tokens = tokenize(sources.file(id), id, diags);
     ast::ExprPtr     e      = parse_expression(sources.file(id), id, tokens, diags);
     if (diags.has_errors()) {
@@ -277,20 +277,20 @@ TEST_CASE("parser: stray code at file scope is reported once per run") {
 // --- f-strings (M6) -----------------------------------------------------------------------
 
 TEST_CASE("parser: f-strings split into text and holes") {
-    rift::SourceManager    sm;
-    rift::DiagnosticEngine diags;
-    rift::FileId id = sm.add("t.rifts", "void f() { g(f\"a\\t{x}{{b}} {y.z:>8.2x}!\"); }");
-    std::vector<rift::Token> tokens = rift::tokenize(sm.file(id), id, diags);
-    rift::ast::File file = rift::parse(sm.file(id), id, tokens, diags);
+    edax::SourceManager    sm;
+    edax::DiagnosticEngine diags;
+    edax::FileId id = sm.add("t.ed", "void f() { g(f\"a\\t{x}{{b}} {y.z:>8.2x}!\"); }");
+    std::vector<edax::Token> tokens = edax::tokenize(sm.file(id), id, diags);
+    edax::ast::File file = edax::parse(sm.file(id), id, tokens, diags);
     REQUIRE(!diags.has_errors());
-    auto& body = *file.decls[0]->as<rift::ast::FunctionDecl>().body;
-    auto& call = body.tail ? *body.tail : *body.statements[0]->as<rift::ast::ExprStmt>().expr;
-    auto& lit  = call.as<rift::ast::CallExpr>().args[0]->as<rift::ast::LiteralExpr>();
+    auto& body = *file.decls[0]->as<edax::ast::FunctionDecl>().body;
+    auto& call = body.tail ? *body.tail : *body.statements[0]->as<edax::ast::ExprStmt>().expr;
+    auto& lit  = call.as<edax::ast::CallExpr>().args[0]->as<edax::ast::LiteralExpr>();
     REQUIRE_EQ(lit.format_parts.size(), 5u);
     CHECK_EQ(lit.format_parts[0].text, std::string("a\t"));
     CHECK(lit.format_parts[1].expr != nullptr);
     CHECK_EQ(lit.format_parts[2].text, std::string("{b} "));
-    const rift::ast::FormatSpec& spec = lit.format_parts[3].spec;
+    const edax::ast::FormatSpec& spec = lit.format_parts[3].spec;
     CHECK(spec.present);
     CHECK_EQ(spec.align, '>');
     CHECK_EQ(spec.width, 8);

@@ -1,0 +1,32 @@
+// RUN: edaxc run %s
+// Raw pointers (spec 13): &x, mut &x, nullptr, conditions, comparisons, *p, ->, offset.
+import std;
+struct pair { i32 a = 0; i32 b = 0; }
+
+void bump(std::raw_ptr<mut i32> p) {
+    unsafe { *p = *p + 1; }
+}
+
+i32 main() {
+    mut u32 value = 5;
+    std::raw_ptr<mut u32> p = mut &value;
+    std::raw_ptr<u32> r = &value;
+    std::raw_ptr<u32> none = nullptr;
+    if (p) {
+        unsafe { *p = 6; }
+    }
+    if (!none) { std::println("null"); }
+    std::println(f"{value} {p == r} {none == nullptr} {r != nullptr}");
+    mut pair pr = pair{ .a = 1, .b = 2 };
+    std::raw_ptr<mut pair> pp = mut &pr;
+    unsafe {
+        pp->b = 40;
+        std::println(f"{pp->a} {(*pp).b}");
+        std::raw_ptr<mut i32> first = mut &pr.a;
+        std::raw_ptr<mut i32> second = first.offset(1);
+        *second += 2;
+    }
+    bump(mut &pr.a);
+    std::println(f"{pr.a} {pr.b}");
+    return 0;
+}

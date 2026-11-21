@@ -1,0 +1,8 @@
+// The build of a dependency: one Edax library.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        g.add_library(std::build::edax_target{ .name = "geo", .root = "geo/area.ed" });
+    }
+}

@@ -1,9 +1,9 @@
-#include "rift/diagnostics.hpp"
-#include "rift_test.hpp"
+#include "edax/diagnostics.hpp"
+#include "edax_test.hpp"
 
 #include <sstream>
 
-using namespace rift;
+using namespace edax;
 
 namespace {
 
@@ -12,7 +12,7 @@ struct Fixture {
     DiagnosticEngine diags;
     FileId           id;
 
-    explicit Fixture(std::string text) : id(sources.add("t.rifts", std::move(text))) {}
+    explicit Fixture(std::string text) : id(sources.add("t.ed", std::move(text))) {}
 
     std::string render_with(DiagnosticFormat format) {
         std::ostringstream out;
@@ -45,14 +45,14 @@ TEST_CASE("diagnostics: short format is one line per diagnostic") {
     Fixture f("u32 x = $;\n");
     f.diags.report(DiagCode::E1001, Span{f.id, 8, 9}, "invalid character");
     CHECK_EQ(f.render_with(DiagnosticFormat::short_form),
-             std::string("t.rifts:1:9: error[E1001]: invalid character\n"));
+             std::string("t.ed:1:9: error[E1001]: invalid character\n"));
 }
 
 TEST_CASE("diagnostics: human format shows the line with carets") {
     Fixture f("u32 x = \"abc;\n");
     f.diags.report(DiagCode::E1003, Span{f.id, 8, 13}, "unterminated string literal", "here");
     std::string expected = "error[E1003]: unterminated string literal\n"
-                           " --> t.rifts:1:9\n"
+                           " --> t.ed:1:9\n"
                            "  |\n"
                            "1 | u32 x = \"abc;\n"
                            "  |         ^^^^^ here\n"
@@ -72,7 +72,7 @@ TEST_CASE("diagnostics: notes are rendered in both formats") {
     Fixture f("abc\n");
     f.diags.report(DiagCode::E1001, Span{f.id, 1, 2}, "bad").notes.push_back(Note{"try this", std::nullopt});
     CHECK(f.render_with(DiagnosticFormat::human).find("= note: try this") != std::string::npos);
-    CHECK(f.render_with(DiagnosticFormat::short_form).find("t.rifts:1:2: note: try this") != std::string::npos);
+    CHECK(f.render_with(DiagnosticFormat::short_form).find("t.ed:1:2: note: try this") != std::string::npos);
 }
 
 TEST_CASE("diagnostics: nothing is printed when there are no diagnostics") {

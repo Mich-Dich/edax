@@ -1,2 +1,0 @@
-// RUN: riftc definition %S/definition_project/main.rifts 13:11
-// riftc definition (editors' go to definition): a standard library type.

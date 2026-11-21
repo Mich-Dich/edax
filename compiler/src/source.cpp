@@ -1,10 +1,10 @@
-#include "rift/source.hpp"
+#include "edax/source.hpp"
 
 #include <algorithm>
 #include <fstream>
 #include <sstream>
 
-namespace rift {
+namespace edax {
 
 namespace {
 std::uint32_t to_u32(std::size_t value) { return static_cast<std::uint32_t>(value); }
@@ -131,4 +131,4 @@ void encode_utf8(char32_t cp, std::string& out) {
     }
 }
 
-} // namespace rift
+} // namespace edax

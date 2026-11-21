@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t build_info
+// The example program example/build_info.ed (built through example/build.ed) keeps working.

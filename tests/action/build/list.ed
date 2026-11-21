@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/engine_project --list
+// build --list shows build.ed' targets, modes (built-in and added) and options (spec 25).

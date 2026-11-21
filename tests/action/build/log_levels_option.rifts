@@ -1,2 +1,0 @@
-// RUN: riftc run --root=%S/logging_project --out-dir=%t -Dlog_level=warn game
-// -Dlog_level replaces the target's level; the per-file level still wins (spec 31).

@@ -1,0 +1,1 @@
+// RUN: edaxc typed tests/feature/99-programs/tokenizer.ed

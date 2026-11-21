@@ -4,12 +4,12 @@
 > **Source:** the GLT engine logger (C++, plugin `logger_default`), reviewed in the appendix.
 
 `std::log` writes messages from any thread to any number of **sinks** (console, files, an in-game console, the network). A log call is an ordinary function call:
-```rift
+```edax
 std::log::info(f"loaded {count} meshes in {elapsed.as_milliseconds()} ms");
 ```
 There are no macros. Everything the C++ macros did is done by the language:
 
-| The C++ macro did | Rift does it with |
+| The C++ macro did | Edax does it with |
 |---|---|
 | Capture file, line, function (`std::source_location::current()`) | A **`std::call_site` parameter**, filled in by the compiler (section 9.1) |
 | Capture the module name (`GLT_MODULE_NAME`) | The call site knows its file, module, namespace and **build target** |
@@ -20,7 +20,7 @@ There are no macros. Everything the C++ macros did is done by the language:
 ## Rules
 
 ### 1. Levels
-```rift
+```edax
 namespace std::log {
     enum level : u8 { trace, debug, info, warn, error, fatal, off }
 }
@@ -46,20 +46,20 @@ The level is the first of these that applies (most specific wins):
 |---|---|---|
 | 1 | Annotation on the enclosing **function** | `@std::log::level_override{ .level = std::log::level::trace }` |
 | 2 | Annotation on the enclosing **type** (applies to its methods) | the same, on a class |
-| 3 | **Per-file** setting in `build.rifts` (glob, relative to the target root) | `std::log::set_level(mut g, renderer, "vulkan/*.rifts", std::log::level::trace);` |
-| 4 | **Per-target** setting in `build.rifts` | `std::log::set_level(mut g, renderer, std::log::level::info);` |
+| 3 | **Per-file** setting in `build.ed` (glob, relative to the target root) | `std::log::set_level(mut g, renderer, "vulkan/*.ed", std::log::level::trace);` |
+| 4 | **Per-target** setting in `build.ed` | `std::log::set_level(mut g, renderer, std::log::level::info);` |
 | 5 | **Mode default** | `trace` for modes based on `std::build::mode::debug`, `error` for modes based on `release` |
 
-```rift
-// build.rifts
+```edax
+// build.ed
 compile_time void build(mut std::build::graph& g) {
-    std::build::target renderer = g.add_library(std::build::rift_target{ .name = "renderer", .root = "renderer" });
+    std::build::target renderer = g.add_library(std::build::edax_target{ .name = "renderer", .root = "renderer" });
     std::log::set_level(mut g, renderer, std::log::level::info);                              // global default for the target
-    std::log::set_level(mut g, renderer, "vulkan/pipeline*.rifts", std::log::level::trace);  // override for some files
+    std::log::set_level(mut g, renderer, "vulkan/pipeline*.ed", std::log::level::trace);  // override for some files
 }
 ```
 - `std::log::set_level` are `compile_time` functions of the standard library. They record **per-file settings** (section 10), so changing one file's level recompiles only that file.
-- A file glob that matches no file of the target is a build error (`std::log: "vulkan/pipline*.rifts" matches no file of target 'renderer'`).
+- A file glob that matches no file of the target is a build error (`std::log: "vulkan/pipline*.ed" matches no file of target 'renderer'`).
 - `std::log::add_options(mut g, target)` declares the command-line option `-Dlog_level=<level>`, which replaces row 4 for that build.
 
 ### 3. Run-time filtering
@@ -70,7 +70,7 @@ Calls that exist can still be filtered while the program runs:
 
 ### 4. Records and patterns
 A sink receives a **record**:
-```rift
+```edax
 namespace std::log {
     view struct record {
         std::log::level       level;
@@ -84,7 +84,7 @@ namespace std::log {
 ```
 
 A **pattern** turns a record into a line. It uses the f-string syntax of 19, with record fields as the names:
-```rift
+```edax
 private compile_time std::log::pattern console_pattern = std::log::pattern::from(
     "{color}[{time}.{millis}] [{target} {level:<5} {thread}]{/color} {file_name}:{line} {message}");
 ```
@@ -103,7 +103,7 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
 - **`pattern::from(std::static_str)`** has a `compile_time check` entry (see 23): the text is parsed when the program is compiled, and an unknown field or a bad spec is an error **at the pattern literal**:
   ```
   error: std::log::pattern: unknown field 'mesage' (fields: message, level, time, ...)
-   --> app/main.rifts:12:62
+   --> app/main.ed:12:62
   ```
 - **`pattern::parse(std::str)`** returns `std::result<std::log::pattern, std::log::pattern_error>`, for patterns read from a config file at run time.
 - A pattern is a fixed array of at most 32 segments, so it needs no heap and can be a `compile_time` constant. Rendering a record walks the segments; the pattern text is never parsed again.
@@ -111,7 +111,7 @@ private compile_time std::log::pattern console_pattern = std::log::pattern::from
 
 ### 5. Sinks
 A sink is anything that implements the interface:
-```rift
+```edax
 namespace std::log {
     interface sink {
         void write(std::log::record& r) mut;
@@ -121,7 +121,7 @@ namespace std::log {
 ```
 - Sinks are **owned by the log thread** (section 6). They're moved there when they're added, so they must be `std::sendable` (see 27) but never need to be shareable or locked. A sink that isn't sendable is a compile error naming the field (example 5 of 27).
 - Every sink is added with **sink options**, which the log thread applies before calling `write`:
-  ```rift
+  ```edax
   struct sink_options {
       std::log::level   min_level = std::log::level::trace;
       std::log::pattern pattern   = std::log::default_pattern;
@@ -141,7 +141,7 @@ The standard library provides:
 Custom sinks (network, a GUI, the engine's own plugin) implement `std::log::sink`.
 
 ### 6. The log session
-```rift
+```edax
 std::log::session logs = std::log::start(std::log::options{
     .queue_capacity = 16 * 1024,                     // records
     .when_full      = std::log::when_full::wait,     // or drop
@@ -185,12 +185,12 @@ Each of these is general. Logging is the first user, not the only one.
 `std::call_site` is a standard library type for **the place a function was called from**. Like `std::static_str`, it points to static memory: it is a copy type, `std::sendable` and `std::shareable`, and it can be stored anywhere.
 
 - **A parameter of type `std::call_site` is filled in by the compiler** with the location of the call. It must be the first parameter. The caller doesn't write it:
-  ```rift
+  ```edax
   void info(std::call_site where, std::format_args message);
   std::log::info(f"ready");                 // where = this line
   ```
 - **Forwarding:** if the first argument of a call already has type `std::call_site`, it is passed as it is. That lets wrappers report *their* caller:
-  ```rift
+  ```edax
   void warn_slow(compile_time std::call_site where, std::time::duration d) {
       std::log::warn(where, f"took {d.as_milliseconds()} ms");     // reported at warn_slow's caller
   }
@@ -203,7 +203,7 @@ Each of these is general. Logging is the first user, not the only one.
 
 ### 9.2 `compile_time` parameters (closes open question 18)
 A parameter marked `compile_time` takes a **compile-time value** and is a compile-time constant in the body:
-```rift
+```edax
 void write(compile_time std::call_site where, compile_time std::log::level lvl, std::format_args message) {
     if compile_time (lvl >= std::log::level_at(where)) {
         ...
@@ -220,7 +220,7 @@ Open question 18 said a parameter modifier is needed only when the body must use
 
 ### 9.3 Lazy f-string holes
 An `f"..."` passed as a `std::format_args` is **not evaluated at the call**. Its holes are evaluated **when the callee formats it**: at most once, on the calling thread, before the callee returns. If the callee never formats it, the holes are never evaluated.
-```rift
+```edax
 std::log::debug(f"tree: {tree.dump()}");   // dump() only runs if the debug record is formatted
 ```
 - `std::format_args` stays a view (it can't escape the call, so everything the holes read is still alive) and becomes **move-only**: formatting consumes it, so it can't be formatted twice.
@@ -233,14 +233,14 @@ std::log::debug(f"tree: {tree.dump()}");   // dump() only runs if the debug reco
 |---|---|
 | `std::thread::set_current_name(std::str)`, `std::thread::current_name() → std::str` (stored in a 16-byte `thread_local`; `spawn` with `.name` sets it) | `{thread}`. Replaces `register_label_for_thread` |
 | `std::time::wall_time` (`now()`, local `date()` / `time_of_day()` with milliseconds) | `{time}`, `{date}` |
-| Per-file settings in `build.rifts`: `g.set_for_files(target, glob, name, value)`, read with `std::build::setting_at<T>(std::call_site, name) → std::option<T>` (see 25) | Per-file levels; usable for any per-file configuration |
+| Per-file settings in `build.ed`: `g.set_for_files(target, glob, name, value)`, read with `std::build::setting_at<T>(std::call_site, name) → std::option<T>` (see 25) | Per-file levels; usable for any per-file configuration |
 | `std::meta::enclosing_function(std::call_site)`, `enclosing_type(std::call_site)` | Reading `@std::log::level_override` (needs annotations, 29) |
 
 ## Examples
 
 ### 1. The library side
-```rift
-// std/log.rifts (excerpt)
+```edax
+// std/log.ed (excerpt)
 namespace std::log {
     @std::inline_always
     void info(compile_time std::call_site where, std::format_args message) {
@@ -276,8 +276,8 @@ namespace std::log {
 ```
 
 ### 2. The engine's `main` (the C++ `entry_point.cpp`)
-```rift
-// app/main.rifts
+```edax
+// app/main.ed
 import std;
 import engine;
 
@@ -309,8 +309,8 @@ std::exit_code main(std::span<std::str> args) {
 Compared with the C++ version: no `install_logger_functions`, no `register_label_for_thread`, no crash-handler subscription, no `shutdown()` call to forget.
 
 ### 3. A module that logs
-```rift
-// renderer/vulkan/pipeline.rifts
+```edax
+// renderer/vulkan/pipeline.ed
 namespace gfx::vulkan {
     std::result<pipeline, vk::result> create_pipeline(device& dev, pipeline_desc& desc) {
         std::log::trace(f"creating '{desc.name}' with {desc.stages.len()} stages");   // gone unless this file's level is trace
@@ -328,7 +328,7 @@ namespace gfx::vulkan {
 ```
 
 ### 4. What the C++ assert/validate macros become
-```rift
+```edax
 run_time check (!error) else f"argument error: {error.message()}";            // ASSERT: panics, logged as fatal (section 7)
 
 if (!texture.is_valid()) {                                                    // VALIDATE(expr, return false, ...)
@@ -338,24 +338,24 @@ if (!texture.is_valid()) {                                                    //
 ```
 
 ### 5. Errors at compile time
-```rift
+```edax
 std::log::info(f"loaded {count} meshes\n");
 std::log::info(f"loaded {cuont} meshes");
 std::log::info(f"{mesh}");
 ```
 ```
 warning[std::log::trailing_newline]: the message ends with '\n'; sinks add the line break
- --> scene.rifts:4:41
+ --> scene.ed:4:41
 error: unknown name 'cuont'
- --> scene.rifts:5:29
+ --> scene.ed:5:29
 error: std::log: 'gfx::mesh' can't be logged
- --> scene.rifts:6:22
+ --> scene.ed:6:22
 note: implement std::formattable for it (or use @std::derive::formattable), or log one of its fields
 ```
 
 ## Rationale
 - **No macros, three general features:** each C++ macro trick (location capture, compile-out, skipping argument evaluation) becomes a feature with one job that other code can use too. A log call is a function call, so it type-checks, has one-screen errors (principle 9), and can't break an `if`/`else`.
-- **Levels in `build.rifts`, not `#define`s:** a per-file level in C++ only works if it's defined before the header is first included; a precompiled header that includes `logger.h` silently ignores it (appendix, finding 10). In Rift the level is a setting the compiler reads per call site, so it can't be shadowed by include order, and a typo in a glob is an error.
+- **Levels in `build.ed`, not `#define`s:** a per-file level in C++ only works if it's defined before the header is first included; a precompiled header that includes `logger.h` silently ignores it (appendix, finding 10). In Edax the level is a setting the compiler reads per call site, so it can't be shadowed by include order, and a typo in a glob is an error.
 - **Two filters:** compile-time levels decide what exists in the binary (free), sink levels decide what is written (one load). That is the split the C++ logger had between `LOG_LEVEL_ENABLED` and the buffer threshold, made explicit.
 - **One log thread owning the sinks:** sinks don't need locks, can't race (they're only sendable, never shared), and formatting into a line happens off the hot thread. The calling thread only formats the message.
 - **Settings through the queue:** keeps the good idea of the C++ logger (a format change applies in message order) and makes it type-safe with a payload enum.
@@ -365,9 +365,9 @@ note: implement std::formattable for it (or use @std::derive::formattable), or l
 ## Open questions
 | # | Topic | Notes |
 |---|---|---|
-| 41 | **Per-file level in the source** | Levels can be set per file in `build.rifts` and per function/type with an annotation. A file-level annotation would need a new annotation target (29) |
+| 41 | **Per-file level in the source** | Levels can be set per file in `build.ed` and per function/type with an annotation. A file-level annotation would need a new annotation target (29) |
 | 42 | **Structured logging** | Holes know their expression text at compile time, so a JSON sink could write `"count": 5` from `f"{count}"` with no extra syntax |
-| 43 | **Plugins / dynamic libraries** | Rift has no dynamic-library design yet. With `std::log` in std, an engine plugin contributes sinks instead of replacing the logger |
+| 43 | **Plugins / dynamic libraries** | Edax has no dynamic-library design yet. With `std::log` in std, an engine plugin contributes sinks instead of replacing the logger |
 | 44 | **Log rotation** | `std::log::file` with size/day rotation, or leave it to custom sinks |
 
 ---
@@ -380,7 +380,7 @@ note: implement std::formattable for it (or use @std::derive::formattable), or l
 | `LOG(info, "x {}", a)`, `LOG_Master` | `std::log::info(f"x {a}")` |
 | `GLT_MODULE_NAME` | `{target}` / `{module}` from `std::call_site` |
 | `owned_source_location` | `std::call_site` (static, no allocation) |
-| `LOG_LEVEL_ENABLED` per translation unit | Per-file / per-target levels in `build.rifts`, `@std::log::level_override` |
+| `LOG_LEVEL_ENABLED` per translation unit | Per-file / per-target levels in `build.ed`, `@std::log::level_override` |
 | `logger_functions` table, `install_logger_functions`, `use_default_logger_functions` | Sinks added to a session |
 | Default implementation's `s_log_buffer` + `drain_log_buffer` | The static early buffer (section 7) |
 | `CMD_UPDATE_FORMAT` ... `CMD_UNREGISTER_THREAD_LABEL` (int + reused fields) | Command payload enum |

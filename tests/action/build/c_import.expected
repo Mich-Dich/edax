@@ -12,6 +12,6 @@ vec 2.0 4.0 6.0
 mixed 1.5 42
 small 2 4 9
 big 11.0 22.0 33.0
-C calls Rift: 12.0
+C calls Edax: 12.0
 enum any = -1
 --- stderr

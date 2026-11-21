@@ -5,7 +5,7 @@ exit: 0
 [4;38;5;208mWARN [0m warn
 [92mINFO [0m default colors
 []
-[92mlog_colors.rifts[0m two sinks: one colored, one not
+[92mlog_colors.ed[0m two sinks: one colored, one not
 INFO  two sinks: one colored, one not
 --- stderr
 [37;44mERROR[0m error

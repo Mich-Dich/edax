@@ -1,2 +1,0 @@
-// RUN: riftc test --root=%S/annotated_tests_project --out-dir=%t
-// `@std::test` functions (spec 25, 29): riftc test runs each one in its own process.

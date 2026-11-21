@@ -1,0 +1,42 @@
+// RUN: edaxc run %s
+// std::windowing::bindings without a display: defaults from annotations, rebinding, text round trip,
+// lookups from events and from the input state.
+import std;
+namespace wnd = std::windowing;
+
+enum action : u8 {
+    @wnd::default_key{ .key = wnd::key::escape } quit,
+    @wnd::default_key{ .key = wnd::key::space } jump,
+    @wnd::default_button{ .button = wnd::mouse_button::left } fire,
+    @wnd::default_key{ .key = wnd::key::s, .modifiers = wnd::modifiers{ .control = true } } save,
+    crouch,
+}
+
+std::exit_code main() {
+    mut wnd::bindings<action> keys = wnd::bindings<action>::defaults();
+    std::println(keys.to_text().as_str());
+    match (keys.bind(action::crouch, wnd::chord::of(wnd::key::space))) {
+        std::some(a) => std::println(f"space no longer does {a}"),
+        std::none => {},
+    }
+    _ = keys.bind(action::jump, wnd::chord::of(wnd::key::j));
+    std::string saved = keys.to_text();
+    std::println(saved.as_str());
+    match (wnd::bindings<action>::from_text(saved.as_str())) {
+        std::ok(b) => std::println(f"reloaded {b.len()} bindings: {b.to_text()}"),
+        std::error(e) => std::println(f"error {e}"),
+    }
+    wnd::event e = wnd::event::key(wnd::key_event{ .key = wnd::key::s, .modifiers = wnd::modifiers{ .control = true } });
+    match (keys.action_for(e)) {
+        std::some(a) => std::println(f"ctrl+s -> {a}"),
+        std::none => std::println("nothing"),
+    }
+    mut wnd::input_state input = default;
+    input.record_modifiers(wnd::modifiers{ .shift = true }, false, false);
+    input.record_key(wnd::key::j, wnd::key_action::pressed);
+    input.next_frame();
+    std::println(f"jump held with shift: {keys.is_down(action::jump, input)}, pressed: {keys.was_pressed(action::jump, input)}");
+    keys.reset_all();
+    std::println(keys.to_text().as_str());
+    return std::exit_code::success;
+}

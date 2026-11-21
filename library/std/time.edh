@@ -1,0 +1,119 @@
+// The Edax standard library: module std::time. Two clocks and one duration type; durations are
+// never negative and every unit is written.
+
+namespace std::time {
+    // A span of time: a u64 count of nanoseconds (about 584 years). Arithmetic that would go
+    // negative or overflow panics. Formatted in the largest unit that keeps it readable:
+    // `250ns`, `1.5ms`, `2.25s`, `3m 12s`.
+    struct duration {
+        u64 nanos = 0;
+
+        compile_time run_time static duration nanoseconds(u64 n);
+        compile_time run_time static duration microseconds(u64 n);
+        compile_time run_time static duration milliseconds(u64 n);
+        compile_time run_time static duration seconds(u64 n);
+        compile_time run_time static duration minutes(u64 n);
+        compile_time run_time static duration hours(u64 n);
+
+        // Rounded down.
+        u64 as_nanoseconds();
+        u64 as_microseconds();
+        u64 as_milliseconds();
+        u64 as_seconds();
+        f64 as_seconds_f64();
+
+        duration operator+(duration other);
+        duration operator-(duration other);
+        duration operator*(u64 n);
+        duration operator/(u64 n);
+        bool operator==(duration& other) = default;
+        std::ordering operator<=>(duration& other);
+
+        void format(mut std::formatter& out);
+    }
+
+    // A date and time of day on a calendar.
+    struct civil_time {
+        i32 year = 1970;
+        u8  month = 1;                   // 1..=12
+        u8  day = 1;                     // 1..=31
+        u8  hour = 0;
+        u8  minute = 0;
+        u8  second = 0;
+        u32 nanosecond = 0;
+        i32 utc_offset_seconds = 0;      // 0 for utc(), the system's offset for local()
+    }
+
+    // The calendar clock (the system's real time, which can jump): for showing and storing
+    // dates, never for measuring durations.
+    struct wall_time {
+        i64 seconds = 0;       // since 1970-01-01 00:00:00 UTC
+        u32 nanos = 0;
+
+        // Now.
+        static wall_time now();
+
+        // Nanoseconds since 1970-01-01 UTC.
+        i64 unix_nanoseconds();
+
+        // The date and time in UTC, and in the system's time zone.
+        civil_time utc();
+        civil_time local();
+
+        // The date and time in the time zone `z`.
+        civil_time in_zone(zone& z);
+    }
+
+    // Why `zone::load` failed.
+    enum zone_error : u8 {
+        // The operating system's time-zone database has no zone of that name.
+        not_found,
+        // The zone's file is not a valid TZif file.
+        invalid_data,
+    }
+
+    // A time zone: its offsets from UTC over time, with daylight-saving time. Zones come from
+    // the operating system's database (`/usr/share/zoneinfo`, or `$TZDIR`), so they follow the
+    // system's updates.
+    class zone {
+    public:
+        // Coordinated Universal Time.
+        static zone utc();
+
+        // The system's time zone (`$TZ`, else `/etc/localtime`).
+        static zone local();
+
+        // A zone by its IANA name: `"Europe/Oslo"`, `"America/New_York"`. Needs a target with
+        // files.
+        static std::result<zone, zone_error> load(std::str name);
+
+        // The zone's name: `"UTC"`, `"Europe/Oslo"`; for local(), the system's name for it.
+        std::str name();
+
+        // The offset from UTC in seconds at `t` (positive east of Greenwich).
+        i32 offset_at(wall_time t);
+
+        // Whether daylight-saving time is in effect at `t`.
+        bool is_dst_at(wall_time t);
+
+        // A copy (allocates).
+        zone clone();
+    }
+
+    // The monotonic clock: for measuring time inside the program. It never goes backwards.
+    struct instant {
+        u64 nanos = 0;
+
+        // Now.
+        static instant now();
+
+        // The time since this instant.
+        duration elapsed();
+
+        // The time from `earlier` to this instant; panics if `earlier` is later.
+        duration since(instant earlier);
+
+        instant operator+(duration d);
+        instant operator-(duration d);
+    }
+}

@@ -1,0 +1,53 @@
+// RUN: edaxc run %s
+// darray sort/sort_by/sort_by_key/reserve/truncate/contains; hash_map get_mut/get_or_insert/reserve/entries;
+// tree_map first/last; methods returning `mut T&` are places; std::option<mut T&>.
+import std;
+class counter {
+public:
+    std::darray<u32> items = default;
+    mut u32& at(usize i) mut { return this.items[i]; }
+}
+i32 main() {
+    mut std::darray<i32> d = default;
+    d.reserve(100);
+    std::println(f"cap>=100 {d.capacity() >= 100} len {d.len()}");
+    mut i32 x = 7;
+    for (i32 i : 0..50) { x = (x * 1103 + 12345) % 1000; d.push(x - 500); }
+    d.sort();
+    mut bool sorted = true;
+    for (usize i : 1..d.len()) { if (d[i - 1] > d[i]) { sorted = false; } }
+    std::println(f"sorted {sorted} min {d[0]} max {d[d.len() - 1]}");
+    d.sort_by([](i32& a, i32& b) { return a > b; });
+    std::println(f"desc {d[0]} {d[d.len() - 1]}");
+    std::println(f"contains {d.contains(d[3])} {d.contains(9999)}");
+    d.truncate(5);
+    std::println(f"truncated {d.len()}");
+    mut std::darray<std::string> words = default;
+    words.push(std::string::from("pear")); words.push(std::string::from("fig"));
+    words.push(std::string::from("apple")); words.push(std::string::from("kiwi"));
+    words.push(std::string::from("date")); words.push(std::string::from("plum"));
+    words.sort_by_key(std::sort_order::ascending, [](std::string& s) { return s.len(); });
+    for (std::string& w : words) { std::print(f"{w} "); }
+    std::println("");
+    mut std::hash_map<std::string, u32> counts = default;
+    counts.reserve(16);
+    std::str letters = "abacab";
+    for (usize i : 0..letters.len()) { counts.get_or_insert(std::string::from(letters.slice(i, i + 1)), 0) += 1; }
+    std::string a = std::string::from("a");
+    match (counts.get_mut(a)) {
+        std::some(v) => { v += 10; },
+        std::none => { },
+    }
+    mut u32 total = 0;
+    for (std::map_entry<std::string, u32> e : counts.entries()) { total += e.value; }
+    std::println(f"a {counts[a]} total {total} len {counts.len()}");
+    mut std::tree_map<i32, i32> t = default;
+    for (i32 i : 0..100) { t.insert((i * 37) % 100, i); }
+    match (t.first()) { std::some(e) => std::println(f"first {e.key}"), std::none => { }, }
+    match (t.last()) { std::some(e) => std::println(f"last {e.key}"), std::none => { }, }
+    mut counter c = default;
+    c.items.push(1);
+    c.at(0) += 41;
+    std::println(f"place {c.items[0]}");
+    return 0;
+}

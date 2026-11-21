@@ -11,7 +11,7 @@
 - **Mutability belongs to the variable, not to fields.** If the variable is `mut`, all its fields can be changed; if not, none can. Fields have no `mut` marker.
 - **No shadowing.** You can't declare a name that is already visible in an enclosing scope of the same function.
 
-```rift
+```edax
 u32 x = 5;                          // immutable
 mut u32 y = 5;                      // mutable
 y = 6;                              // OK
@@ -31,7 +31,7 @@ u32 z;                              // ERROR: no uninitialized values
 ### `auto`
 `auto` is allowed only when the initializer has a **fully known type on its own**:
 
-```rift
+```edax
 auto a = 5u32;                       // OK
 auto b = parse_line(line);           // OK: the function's return type
 auto c = [](u32 x) { return x; };    // OK: lambda types can't be named
@@ -49,7 +49,7 @@ auto f = std::none;                  // ERROR: option of what?
 - Library types define their own default: an empty `std::string`, an empty `std::darray`, `std::none` for options.
 - Types with no sensible default (`std::file`, references, `std::unique_ptr`) can't be `default`ed.
 
-```rift
+```edax
 u32 n = default;                     // 0
 std::darray<u32> v = default;        // empty
 std::file f = default;               // ERROR: std::file has no default
@@ -58,7 +58,7 @@ std::file f = default;               // ERROR: std::file has no default
 ### File-scope variables
 | Declaration | Meaning |
 |---|---|
-| `compile_time T x = v;` | Constant with no storage. May be declared in a `.rifth` |
+| `compile_time T x = v;` | Constant with no storage. May be declared in a `.edh` |
 | `static T x = v;` | Storage for the program's lifetime. `v` must be compile-time evaluable |
 | `static mut T x = v;` | Mutable global: every access needs `unsafe` |
 | `thread_local [mut] T x = v;` | One copy per thread; `mut` needs no `unsafe` (see [Threads](../../stdlib/concurrency/threads.md)) |
@@ -70,7 +70,7 @@ std::file f = default;               // ERROR: std::file has no default
 - **`static mut` is always unsafe:** every read and write must be inside `unsafe { }`, whatever the type.
 - `private` and `static` are orthogonal: `private static u32 x = 0;` is module-local *and* has program lifetime.
 
-```rift
+```edax
 compile_time usize buffer_size = 4096;
 private static std::atomic<u32> request_count = default;       // no mut needed: atomics synchronize
 static mut u32 raw_counter = 0;          // allowed, but every access needs unsafe

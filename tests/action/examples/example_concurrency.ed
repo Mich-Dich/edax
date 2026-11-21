@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t concurrency
+// The example program example/concurrency.ed (built through example/build.ed) keeps working.

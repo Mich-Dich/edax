@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/tools_project --out-dir=%t --compile-commands
+// compile_commands.json for the C/C++ sources (clangd).

@@ -1,0 +1,42 @@
+// RUN: edaxc run %s
+// Smart pointers (spec 13), written in the library: unique_ptr (operator*, ->, upcast to a base,
+// virtual destruction, in a darray), shared_ptr (clone, owners) and weak_ptr (lock).
+import std;
+open class shape {
+public:
+    std::string name = "";
+    virtual f64 area() abstract;
+    ~shape() { std::println(f"drop shape {this.name}"); }
+}
+class circle : shape {
+public:
+    f64 radius = 0.0;
+    f64 area() override { return 3.0 * this.radius * this.radius; }
+    ~circle() { std::println("drop circle"); }
+}
+struct counter { u32 n = 0; }
+
+i32 main() {
+    mut std::unique_ptr<counter> u = std::unique_ptr<counter>::make(counter{ .n = 1 });
+    u->n += 41;
+    (*u).n += 1;
+    std::println(f"{u->n} {(*u).n}");
+    std::unique_ptr<shape> s = std::unique_ptr<circle>::make(circle{ .name = std::string::from("c"), .radius = 1.0 });
+    std::println(f"{s->area()} {s->name}");
+    mut std::darray<std::unique_ptr<shape>> shapes = default;
+    shapes.push(move s);
+    shapes.push(std::unique_ptr<circle>::make(circle{ .name = std::string::from("d"), .radius = 2.0 }));
+    for (std::unique_ptr<shape>& p : shapes) { std::println(f"{p->name}: {p->area()}"); }
+    std::shared_ptr<counter> a = std::shared_ptr<counter>::make(counter{ .n = 7 });
+    std::weak_ptr<counter> w = a.weak();
+    {
+        std::shared_ptr<counter> b = a.clone();
+        std::println(f"{a.owners()} {b->n}");
+    }
+    std::println(f"{a.owners()}");
+    match (w.lock()) {
+        std::some(l) => std::println(f"alive {l->n} {l.owners()}"),
+        std::none => std::println("gone"),
+    }
+    return 0;
+}

@@ -1,6 +1,6 @@
 # Synchronization: Atomics, Mutexes, Conditions
 
-The synchronized types are the only types that change through an immutable reference (see [Threads](threads.md)). They are written in Rift on `std::raw`'s atomic and futex intrinsics (see [Raw Memory: `std::raw`](../memory/raw-memory.md)).
+The synchronized types are the only types that change through an immutable reference (see [Threads](threads.md)). They are written in Edax on `std::raw`'s atomic and futex intrinsics (see [Raw Memory: `std::raw`](../memory/raw-memory.md)).
 
 ## Rules
 
@@ -22,11 +22,11 @@ The synchronized types are the only types that change through an immutable refer
 - `std::memory_order` names: `relaxed`, `acquire`, `release`, `acquire_release`, `sequentially_consistent`. Full words, like the rest of `std` (see [The Standard Library](../README.md)).
 - Atomic arithmetic **wraps**, and the method name says so. A checked atomic add would need a retry loop, which costs more than it looks (principle 7). Build it from `compare_exchange` when needed.
 - `std::atomic_fence(order)` is a standalone fence.
-- **The memory model is C++'s** (as implemented by LLVM). A program without data races, which every safe Rift program is, behaves as if its threads were interleaved.
+- **The memory model is C++'s** (as implemented by LLVM). A program without data races, which every safe Edax program is, behaves as if its threads were interleaved.
 
 ### `std::mutex<T>`
 A mutex **owns** the data it protects. There is no way to reach the data without locking.
-```rift
+```edax
 std::mutex<stats> shared = std::mutex<stats>::make(stats{});
 ```
 - `lock() → std::mutex_guard<T>` blocks until the mutex is free. `try_lock() → std::option<std::mutex_guard<T>>` doesn't wait; `try_lock_for(d) → std::option<std::mutex_guard<T>>` waits at most the `std::time::duration` `d`.
@@ -47,7 +47,7 @@ A lock for data that is read often and written rarely: any number of readers, or
 
 ### `std::condition`
 Waits until the data behind a mutex reaches a state:
-```rift
+```edax
 std::condition ready = default;
 
 // waiting thread
@@ -65,7 +65,7 @@ ready.notify_one();                                                  // or notif
 ## Examples
 
 ### Shared state: mutex and atomic
-```rift
+```edax
 struct stats {
     u32 files   = 0;
     u64 largest = 0;
@@ -84,8 +84,8 @@ void record(std::mutex<stats>& shared, u64 size) {
 ```
 
 ### Memory orders checked at compile time (in the library)
-```rift
-// std (atomic.rifts)
+```edax
+// std (atomic.ed)
 T load(std::memory_order order) {
     compile_time check (order != std::memory_order::release && order != std::memory_order::acquire_release)
         else f"an atomic load can't use '{order}' ordering (use acquire, relaxed or sequentially_consistent)";

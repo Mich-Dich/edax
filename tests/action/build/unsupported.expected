@@ -1,4 +1,4 @@
 exit: 1
 --- stdout
 --- stderr
-tests/action/build/unsupported.rifts:7:40: error[E6001]: code generation does not support 'extern(std::build::language::cpp)' (C++ linkage) yet
+tests/action/build/unsupported.ed:7:40: error[E6001]: code generation does not support 'extern(std::build::language::cpp)' (C++ linkage) yet

@@ -1,3 +1,0 @@
-// RUN: riftc build --mode=fast %s
-// User-defined modes need build.rifts (spec 25), which is not supported yet.
-void main() { }

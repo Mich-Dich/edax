@@ -1,5 +1,5 @@
 exit: 2
 --- stdout
 --- stderr
-riftc: error: build.rifts has no option 'colour' (riftc build --list)
-Run 'riftc --help' for usage.
+edaxc: error: build.ed has no option 'colour' (edaxc build --list)
+Run 'edaxc --help' for usage.

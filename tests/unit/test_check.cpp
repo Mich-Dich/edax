@@ -1,18 +1,18 @@
 #include "project.hpp"
-#include "rift/ast_printer.hpp"
-#include "rift/types.hpp"
-#include "rift_test.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/types.hpp"
+#include "edax_test.hpp"
 
-using namespace rift;
-using rift_test::Project;
+using namespace edax;
+using edax_test::Project;
 
 namespace {
 
-std::string codes(const std::string& main) { return Project({{"main.rifts", main}}).codes(); }
+std::string codes(const std::string& main) { return Project({{"main.ed", main}}).codes(); }
 
 // Type of the initializer of the first local variable named `name` in the entry's first function.
 std::string type_of_local(const std::string& main, const std::string& name) {
-    Project p({{"main.rifts", main}});
+    Project p({{"main.ed", main}});
     if (p.diags.has_errors()) return "error " + p.codes();
     for (ast::DeclPtr& d : p.program.entry->source->ast.decls) {
         if (d->kind != ast::DeclKind::function) continue;
@@ -55,7 +55,7 @@ TEST_CASE("types: literal ranges") {
     CHECK(!types::literal_fits(129, true, tc.builtin("i8")));
     CHECK(!types::literal_fits(1, true, tc.builtin("u32")));
     CHECK(types::literal_fits(0, true, tc.builtin("u32")));
-    CHECK(types::literal_fits(~rift::u128{0}, false, tc.builtin("u128")));
+    CHECK(types::literal_fits(~edax::u128{0}, false, tc.builtin("u128")));
     CHECK_EQ(types::integer_range(tc.builtin("i8")), std::string("-128 to 127"));
 }
 
@@ -114,7 +114,7 @@ TEST_CASE("check: overload resolution") {
 }
 
 TEST_CASE("check: overloads record the chosen symbol") {
-    Project p({{"main.rifts", "u32 f(u32 x) { return 0; }\nu32 f(bool x) { return 1; }\nvoid g() { u32 r = f(true); }\n"}});
+    Project p({{"main.ed", "u32 f(u32 x) { return 0; }\nu32 f(bool x) { return 1; }\nvoid g() { u32 r = f(true); }\n"}});
     REQUIRE_EQ(p.codes(), std::string());
     auto& g    = p.program.entry->source->ast.decls[2]->as<ast::FunctionDecl>();
     auto& init = *g.body->statements[0]->as<ast::VariableStmt>().init;
@@ -200,9 +200,9 @@ TEST_CASE("check: unsafe") {
 TEST_CASE("check: indexing the std containers") {
     CHECK_EQ(type_of_local("import std;\nvoid f(std::darray<u16> v) { u16 x = v[0]; }", "x"), std::string("u16&"));   // operator[] returns a reference
     CHECK_EQ(type_of_local("import std;\nvoid f(std::hash_map<u32, bool> m) { bool x = m[3]; }", "x"), std::string("bool&"));
-    CHECK_EQ(Project({{"main.rifts", "import std;\nvoid f(std::darray<u16> v, u32 i) { u16 x = v[i]; }"}}).codes(),
+    CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::darray<u16> v, u32 i) { u16 x = v[i]; }"}}).codes(),
              std::string("E4010"));
-    CHECK_EQ(Project({{"main.rifts", "import std;\nvoid f(std::darray<u16> v) { u32 x = v[0]; }"}}).codes(),
+    CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::darray<u16> v) { u32 x = v[0]; }"}}).codes(),
              std::string("E4010"));
-    CHECK_EQ(Project({{"main.rifts", "import std;\nvoid f(std::thing v) { u32 x = v[0]; }"}}).codes(), std::string());
+    CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::thing v) { u32 x = v[0]; }"}}).codes(), std::string());
 }

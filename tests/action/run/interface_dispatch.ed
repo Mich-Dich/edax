@@ -1,0 +1,42 @@
+// RUN: edaxc run %s
+// Interface methods implemented in an open class hierarchy dispatch to the most derived
+// override; cast::dynamic goes from an interface to its implementer (spec 07, 17).
+import std;
+interface named { std::string name(); }
+open class animal : named {
+public:
+    std::string name() override { return std::string::from("animal"); }
+}
+class dog : animal {
+public:
+    std::string name() override { return std::string::from("dog"); }
+}
+void show(named& n) { std::println(n.name()); }
+i32 main() {
+    dog d = dog{};
+    animal& a = d;
+    show(a);
+    std::unique_ptr<animal> u = std::unique_ptr<dog>::make(dog{});
+    std::unique_ptr<named> n = move u;
+    std::println(n->name());
+    named& nr = d;
+    match (cast::dynamic<dog&>(nr)) {
+        std::some(x) => std::println("a dog"),
+        std::none => std::println("not a dog"),
+    }
+    pt q = pt{ .x = 4 };
+    probe(q);
+    probe(d);
+    return 0;
+}
+struct pt : named { i32 x = 0; std::string name() override { return std::string::from("pt"); } }
+void probe(named& n) {
+    match (cast::dynamic<pt&>(n)) {
+        std::some(p) => std::println(f"pt {p.x}"),
+        std::none => std::println("not a pt"),
+    }
+    match (cast::dynamic<animal&>(n)) {
+        std::some(a) => std::println(f"animal {a.name()}"),
+        std::none => std::println("not an animal"),
+    }
+}

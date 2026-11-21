@@ -1,8 +1,8 @@
 exit: 0
 --- stdout
 module counter
-  header: tests/feature/09-modules/counter_project/counter.rifth
-  source: tests/feature/09-modules/counter_project/counter.rifts
+  header: tests/feature/09-modules/counter_project/counter.edh
+  source: tests/feature/09-modules/counter_project/counter.ed
   imports: std
   class counter::counter
     public method get() -> u32  [header, defined in source]

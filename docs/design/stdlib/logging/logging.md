@@ -1,7 +1,7 @@
 # Logging: `std::log`
 
 `std::log` writes messages from any thread to any number of **sinks**: the console, files, an in-game console, the network. A log call is an ordinary function call:
-```rift
+```edax
 std::log::info(f"loaded {count} meshes in {elapsed.as_milliseconds()} ms");
 ```
 - The call knows where it is written (file, line, function, module, build target) through an `implicit` parameter (see [Functions](../../language/functions/functions.md)).
@@ -11,7 +11,7 @@ std::log::info(f"loaded {count} meshes in {elapsed.as_milliseconds()} ms");
 ## Rules
 
 ### Levels
-```rift
+```edax
 namespace std::log {
     enum level : u8 { trace, debug, info, warn, error, fatal, off }
 }
@@ -39,16 +39,16 @@ Every call has a **compile-time level**, taken from the first of these that appl
 | 1 | The enclosing **function** | `@std::log::level_override{ .level = ... }` on the function |
 | 2 | The enclosing **type** (all its methods) | `@std::log::level_override{ .level = ... }` on the type |
 | 3 | The **file**, in the file itself | `@std::log::level_override{ .level = ... };` at the top of the file (a file annotation, see [Annotations](../../language/compile-time/annotations.md)) |
-| 4 | The **file**, from `build.rifts` | `std::log::set_level(mut g, target, "<glob>", level)` |
+| 4 | The **file**, from `build.ed` | `std::log::set_level(mut g, target, "<glob>", level)` |
 | 5 | The command line | `-Dlog_level=<level>`, declared by `std::log::add_options(mut g, target)` |
-| 6 | The **target**, from `build.rifts` | `std::log::set_level(mut g, target, level)` |
+| 6 | The **target**, from `build.ed` | `std::log::set_level(mut g, target, level)` |
 | 7 | The **build mode** | `trace` in modes based on `std::build::mode::debug`, `error` in modes based on `std::build::mode::release` |
 
 A call whose level is below its compile-time level is **removed**. `std::log::level_at(where)` is the `compile_time` function that computes the level; it is ordinary library code.
 
 **In the file:**
-```rift
-// renderer/vulkan/pipeline.rifts
+```edax
+// renderer/vulkan/pipeline.ed
 import std;
 import gfx::vulkan_device;
 
@@ -59,21 +59,21 @@ namespace gfx::vulkan {
 }
 ```
 
-**In `build.rifts`:**
-```rift
+**In `build.ed`:**
+```edax
 compile_time void build(mut std::build::graph& g) {
-    std::build::target renderer = g.add_library(std::build::rift_target{ .name = "renderer", .root = "renderer/lib.rifts" });
+    std::build::target renderer = g.add_library(std::build::edax_target{ .name = "renderer", .root = "renderer/lib.ed" });
     std::log::add_options(mut g, renderer);                                                   // -Dlog_level=<level>
     std::log::set_level(mut g, renderer, std::log::level::info);                              // the target's level
-    std::log::set_level(mut g, renderer, "vulkan/pipeline*.rifts", std::log::level::debug);  // some files
+    std::log::set_level(mut g, renderer, "vulkan/pipeline*.ed", std::log::level::debug);  // some files
 }
 ```
 - The glob is relative to the directory of the target's root file. A glob that matches no file is a build error.
-- The per-file form records a per-file setting (see [Rift as a Build System](../../build/build-system.md)), so changing it recompiles only the matching files.
+- The per-file form records a per-file setting (see [Edax as a Build System](../../build/build-system.md)), so changing it recompiles only the matching files.
 - `-Dlog_level` must name a level; anything else is an error.
 
 **The annotation:**
-```rift
+```edax
 namespace std::log {
     annotation(std::meta::target::file, std::meta::target::type, std::meta::target::function)
     struct level_override {
@@ -87,7 +87,7 @@ namespace std::log {
 - The lowest minimum of all sinks is kept in one `std::atomic<u8>`, the **run-time minimum**. A call below it returns after one relaxed load and one branch, without formatting its message (its holes aren't evaluated, see [Formatting and Printing](../text/formatting.md)).
 
 ### Asserts and validation
-```rift
+```edax
 namespace std::log {
     @std::check_result bool validate(bool condition, std::format_args failure, implicit compile_time std::call_site where);
     @std::check_result bool validate(bool condition, std::format_args success, std::format_args failure, implicit compile_time std::call_site where);
@@ -104,7 +104,7 @@ namespace std::log {
 
 - The condition is evaluated in every build mode. The messages follow the log levels like any log call: `success` is a `trace` record, `failure` an `error` (validate) or `fatal` (assert) record, and holes of a message that isn't logged are never evaluated (see [Formatting and Printing](../text/formatting.md)).
 - Both return the condition and are marked `@std::check_result`, so the caller handles the failure with **`else`** (see [Control Flow](../../language/basics/control-flow.md)):
-  ```rift
+  ```edax
   bool bind(texture& t) {
       std::log::validate(t.is_valid(), f"bound texture {t.id}", f"texture {t.id} is invalid") else {
           return false;
@@ -125,7 +125,7 @@ The log functions check their calls with entry checks (see [Checks](../../langua
 | A hole changes something (see [Formatting and Printing](../text/formatting.md)) | error |
 | A pattern literal with an unknown field, a bad spec, or an unmatched brace | error at the literal |
 | A `@std::log::level_override` on a function or type more verbose than `error`, in a mode based on `std::build::mode::release` | warning `std::log::verbose_override` (an annotation check, see [Annotations](../../language/compile-time/annotations.md)) |
-| A per-file glob in `build.rifts` that matches no file | build error |
+| A per-file glob in `build.ed` that matches no file | build error |
 | `-Dlog_level=` with something that isn't a level | build error |
 
 The message checks read the literal text of the argument with `std::literal_text(message)` (see [Checks](../../language/errors/checks.md)).
@@ -133,8 +133,8 @@ The message checks read the literal text of the argument with `std::literal_text
 ## Examples
 
 ### The library side
-```rift
-// std/log.rifts (excerpt)
+```edax
+// std/log.ed (excerpt)
 namespace std::log {
     void info(std::format_args message, implicit compile_time std::call_site where) {
         compile_time check {
@@ -158,15 +158,15 @@ namespace std::log {
         if (f.is_some()) {
             return f.expect("is_some").level;
         }
-        // ... the type's and the file's annotation, then build.rifts' settings, then the mode
+        // ... the type's and the file's annotation, then build.ed' settings, then the mode
         return std::log::mode_default();
     }
 }
 ```
 
 ### A file with its own level
-```rift
-// renderer/vulkan/pipeline.rifts
+```edax
+// renderer/vulkan/pipeline.ed
 import std;
 import gfx::vulkan_device;
 
@@ -192,7 +192,7 @@ namespace gfx::vulkan {
 ```
 
 ### Checks and validation
-```rift
+```edax
 run_time check (!error) else f"argument error: {error.message()}";            // panics; the panic is logged (see the logging output page)
 
 std::log::validate(texture.is_valid(), f"texture '{name}' is invalid") else {   // error record
@@ -210,25 +210,25 @@ if (device_lost) {
 ```
 
 ### Compile errors
-```rift
+```edax
 std::log::info(f"loaded {count} meshes\n");
 std::log::warn("");
 std::log::info(f"{mesh}");
 ```
 ```
 warning: the message ends with '\n'; sinks add the line break
- --> scene.rifts:4:5
+ --> scene.ed:4:5
   = note: warning id: std::log::trailing_newline
 error: std::log: the message is empty
- --> scene.rifts:5:5
+ --> scene.ed:5:5
 error: 'gfx::mesh' can't be printed in an f-string
- --> scene.rifts:6:22
+ --> scene.ed:6:22
 ```
 
 ## Rationale
 - **Log calls are functions:** they type-check like any call, their errors fit on one screen (principle 9), and they behave like any other statement in `if`/`else`.
 - **Levels at several places, most specific wins:** the build sets defaults for whole targets and groups of files; a file, type or function can state its own level where the code is. The release-mode warning keeps a temporary `trace` override from shipping unnoticed.
-- **`level_at` is library code:** the order of the rules is a Rift function anyone can read, built from general tools (annotations around a call site, per-file settings).
+- **`level_at` is library code:** the order of the rules is a Edax function anyone can read, built from general tools (annotations around a call site, per-file settings).
 - **Two filters:** compile-time levels decide what is in the binary and cost nothing; sink levels decide what is written and cost one load.
 - **`fatal` doesn't end the program:** whether a failure is the end depends on the program (an engine may reset a subsystem); `fatal` only guarantees the record is on disk. Ending the program is `std::panic`, visible at the call.
 - **Three ways to check a condition:** `validate` for expected failures, `assert` for bugs the program can survive, `run_time check` for those it can't. The two log functions return the condition, so the recovery is ordinary code in an `else` block (see [Control Flow](../../language/basics/control-flow.md)) instead of a macro argument.

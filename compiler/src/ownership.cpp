@@ -1,15 +1,15 @@
-#include "rift/ownership.hpp"
-#include "rift/compile_time.hpp"
+#include "edax/ownership.hpp"
+#include "edax/compile_time.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/types.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/types.hpp"
 
 #include <algorithm>
 #include <format>
 #include <functional>
 #include <set>
 
-namespace rift {
+namespace edax {
 
 using namespace ast;
 using sema::LocalKind;
@@ -1370,4 +1370,4 @@ void check_ownership(sema::Program& program, DiagnosticEngine& diags) {
     Ownership(program, diags).run();
 }
 
-} // namespace rift
+} // namespace edax

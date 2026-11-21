@@ -1,18 +1,18 @@
-# Rift examples
+# Edax examples
 
-Programs that show what Rift 0.8.0 can do. Each one is a single `.rifts` file (plus a module or
-two); `build.rifts` builds them all.
+Programs that show what Edax 0.8.0 can do. Each one is a single `.ed` file (plus a module or
+two); `build.ed` builds them all.
 
 ```bash
 cmake --build build --target examples          # all programs -> build/example/bin
 build/example/bin/zoo                          # run one
 
-# or with riftc directly, from the repository root:
-riftc build --root=example --out-dir=build/example --bin-dir=build/example/bin
-riftc run --root=example calculator -- "2 * (3 + 4)"
-riftc run --root=example --mode=fast build_info   # a build mode defined in build.rifts
-riftc test --root=example                         # the example's test program
-riftc build --root=example --list                 # targets, modes and options
+# or with edaxc directly, from the repository root:
+edaxc build --root=example --out-dir=build/example --bin-dir=build/example/bin
+edaxc run --root=example calculator -- "2 * (3 + 4)"
+edaxc run --root=example --mode=fast build_info   # a build mode defined in build.ed
+edaxc test --root=example                         # the example's test program
+edaxc build --root=example --list                 # targets, modes and options
 ```
 
 | Program | Shows | Specs |
@@ -28,12 +28,12 @@ riftc build --root=example --list                 # targets, modes and options
 | `ownership` | copies and moves, borrowing, `std::take`/`replace`/`swap`, destructor order, returned views | 12 |
 | `gradebook` | files next to the executable, parsing a CSV, error enums, `map_error`, a report | 11, 19, 20 |
 | `compile_time_demo` | compile-time functions and tables, types as values, checks, a declared warning, reflection | 15, 23, 26 |
-| `ffi` | raw pointers, `unsafe`, `std::raw` memory, a C library built by `build.rifts`, a Rift function called from C, libm | 13, 25 |
+| `ffi` | raw pointers, `unsafe`, `std::raw` memory, a C library built by `build.ed`, a Edax function called from C, libm | 13, 25 |
 | `concurrency` | threads that borrow or own, channels, a mutex and an atomic, the thread pool's parallel loop and deterministic reduction, a pool task | 27, 28 |
 | `annotations` | namespaces and an alias, `@std::derive::formattable/hashable/ordered`, annotations with checks, a table printer driven by `@column`, a command table from annotated methods (`std::meta::methods`, `m.call`), `std::meta::name_of`/`from_name` | 26, 29, 30 |
-| `build_info` | reading the build mode and settings from `build.rifts`, mode-gated checks, a user mode | 24, 25 |
+| `build_info` | reading the build mode and settings from `build.ed`, mode-gated checks, a user mode | 24, 25 |
 | `windowing` | several windows with `std::windowing`, organized like a game engine (its own folder: `engine/` with an application, a layer stack, a renderer, settings saved in `config/`; `game/` with game, tools and debug-overlay layers): OpenGL windows in one share group and an independent one, a Vulkan window, key bindings changed at run time and saved, a texture made on a worker thread (needs an X server) | windowing, 26, 27, 29 |
 
 `compile_time_demo` prints a compiler warning on purpose: it shows a declared warning id
-(`riftc explain legacy`, run in this directory). Several files contain lines that are commented out
+(`edaxc explain legacy`, run in this directory). Several files contain lines that are commented out
 because they don't compile; their comments name the error you get.

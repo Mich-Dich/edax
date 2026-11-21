@@ -1,0 +1,121 @@
+// compile_time_demo: code that runs inside the compiler (spec 15), checks (spec 23) and reflection
+// (spec 26). Every number marked "computed at compile time" is a constant in the program.
+import std;
+
+// A compile_time function runs in edaxc's interpreter. `compile_time run_time` would also exist
+// at run time.
+compile_time u64 factorial(u32 n) {
+    mut u64 result = 1;
+    for (u32 i : 2..=n) { result *= cast<u64>(i); }
+    return result;
+}
+
+compile_time u64 fact_20 = factorial(20);                   // computed at compile time
+
+// A table built at compile time: the bit counts of 0..15.
+compile_time u8 bits_in(u32 n) {
+    mut u8 count = 0;
+    mut u32 x = n;
+    while (x != 0) {
+        count += cast::truncate<u8>(x & 1);
+        x >>= 1;
+    }
+    return count;
+}
+
+// Types are compile-time values: pick the smallest integer that fits.
+compile_time type counter_for(u64 max) {
+    return if (max <= 255) { u8 } else if (max <= 65535) { u16 } else { u32 };
+}
+compile_time type small_counter = counter_for(200);
+compile_time type big_counter = counter_for(100000);
+
+// Checks at file scope run once, when the module compiles.
+compile_time check (std::size_of<u64>() == 8) else "this example assumes 64-bit integers";
+
+// An entry check runs at every call, with the call's arguments: misuse is a compile error at
+// the call (try `set_pin(40)`).
+void set_pin(u8 pin) {
+    compile_time check (pin < 32) else f"pin {pin} doesn't exist: this chip has pins 0..31";
+    std::println(f"pin {pin} set");
+}
+
+// `compile_time run_time`: checked at compile time when the argument is known, at run time otherwise.
+compile_time run_time bool valid_baud(u32 baud) { return baud == 9600 || baud == 115200; }
+
+void open_uart(u32 baud) {
+    compile_time run_time check (valid_baud(baud)) else f"{baud} baud is not supported";
+    std::println(f"uart at {baud} baud");
+}
+
+// A declared warning id (spec 23): `edaxc explain legacy` prints this comment;
+// `--warn=legacy=off` silences it (a program's own global name; a library would use a namespace).
+compile_time std::diagnostic legacy = default;
+
+void old_api() {
+    compile_time check {
+        std::compile_warning(legacy, "old_api() is going away; call set_pin() instead");
+    }
+}
+
+struct sensor {
+    std::static_str name = "";
+    f64 value = 0.0;
+    u32 samples = 0;
+    bool calibrated = false;
+}
+
+enum level : u8 { low, normal, high, critical }
+
+// Reflection: one function prints any struct, field by field (the loop is unrolled per field).
+template<type T>
+void dump(T& value) {
+    std::print(f"{std::type_name<T>()} {{");
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        std::print(f" .{f.name} = {f.get(value)}");
+    }
+    std::println(" }");
+}
+
+// The name of any simple enum value.
+template<type E>
+std::static_str name_of(E value) {
+    for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+        if (a.is(value)) { return a.name; }
+    }
+    std::panic("not an alternative");
+}
+
+// Field-wise equality for any struct.
+template<type T>
+bool same(T& a, T& b) {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        if (f.get(a) != f.get(b)) { return false; }
+    }
+    return true;
+}
+
+i32 main() {
+    std::println(f"20! = {fact_20} (computed at compile time)");
+    std::print("bit counts of 0..15:");
+    for compile_time (u32 i : 0..16) {
+        std::print(f" {bits_in(i)}");                         // each one computed at compile time
+    }
+    std::println("");
+    std::println(f"counter_for(200) is {std::type_name<small_counter>()}, counter_for(100000) is {std::type_name<big_counter>()}");
+    small_counter tiny = 200;
+    std::println(f"a small_counter holds {tiny} in {std::size_of<small_counter>()} byte");
+
+    set_pin(13);
+    open_uart(115200);
+    old_api();
+
+    mut sensor s = sensor{ .name = "thermo", .value = 21.5, .samples = 12 };
+    dump(s);
+    sensor copy = s;
+    s.calibrated = true;
+    std::println(f"same as before calibration: {same(s, copy)}");
+    std::println(f"levels: {name_of(level::low)} {name_of(level::critical)}");
+    std::println(f"sensor has {std::meta::fields<sensor>().len()} fields and takes {std::size_of<sensor>()} bytes");
+    return 0;
+}

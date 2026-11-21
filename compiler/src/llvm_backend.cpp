@@ -1,10 +1,10 @@
-#include "rift/simd_intrinsics.hpp"
-#include "rift/llvm_backend.hpp"
-#include "rift/ast_walk.hpp"
+#include "edax/simd_intrinsics.hpp"
+#include "edax/llvm_backend.hpp"
+#include "edax/ast_walk.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/compile_time.hpp"
-#include "rift/types.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/compile_time.hpp"
+#include "edax/types.hpp"
 
 #include <functional>
 
@@ -54,13 +54,13 @@
 #include <tuple>
 #include <vector>
 
-#ifdef RIFT_VERSION
-#define RIFT_VERSION_TEXT RIFT_VERSION
+#ifdef EDAX_VERSION
+#define EDAX_VERSION_TEXT EDAX_VERSION
 #else
-#define RIFT_VERSION_TEXT "0.0.0-dev"
+#define EDAX_VERSION_TEXT "0.0.0-dev"
 #endif
 
-namespace rift {
+namespace edax {
 namespace {
 
 using namespace ast;
@@ -83,7 +83,7 @@ std::vector<std::string_view> split_lines(std::string_view text) {
 }
 
 // --- LLVM versions -------------------------------------------------------------------------
-// riftc builds with LLVM 18 to 21; the few APIs that changed between them go through these.
+// edaxc builds with LLVM 18 to 21; the few APIs that changed between them go through these.
 
 llvm::Function* intrinsic_declaration(llvm::Module* m, llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> types = {}) {
 #if LLVM_VERSION_MAJOR >= 20
@@ -123,9 +123,9 @@ void set_target_triple(llvm::Module& m, const std::string& triple) {
 }
 
 } // namespace
-} // namespace rift
+} // namespace edax
 
-// The targets riftc can cross-compile for (spec 25: `--target=`), besides the host.
+// The targets edaxc can cross-compile for (spec 25: `--target=`), besides the host.
 extern "C" {
 void LLVMInitializeAArch64TargetInfo();
 void LLVMInitializeAArch64Target();
@@ -144,13 +144,13 @@ void LLVMInitializeRISCVAsmPrinter();
 void LLVMInitializeRISCVAsmParser();
 }
 
-namespace rift {
+namespace edax {
 namespace {
 
 // The platform being compiled for: empty for the host (spec 25, `--target=`).
 std::string g_target_triple;
 
-// The LLVM triple riftc compiles for.
+// The LLVM triple edaxc compiles for.
 std::string target_triple() { return g_target_triple.empty() ? llvm::sys::getDefaultTargetTriple() : g_target_triple; }
 
 // A CPU level (build system, "Target platforms"; SIMD, "Choosing widths and CPU levels").
@@ -312,7 +312,7 @@ public:
     Gen(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags, LlvmOptions options,
         llvm::LLVMContext& ctx)
         : program_(program), tc_(*program.types), sources_(sources), diags_(diags), options_(options), ctx_(ctx),
-          mod_(std::make_unique<llvm::Module>("rift", ctx)), b_(ctx) {
+          mod_(std::make_unique<llvm::Module>("edax", ctx)), b_(ctx) {
         mod_->setDataLayout(host_data_layout());
         if (options_.debug_info) {
             dib_ = std::make_unique<llvm::DIBuilder>(*mod_);
@@ -331,14 +331,14 @@ public:
         if (auto it = di_files_.find(id); it != di_files_.end()) return it->second;
         std::filesystem::path p(sources_.file(id).path());
         std::error_code ec;
-        if (p.string().starts_with("<std>/")) {   // the library's files: in the tree riftc was built from, if it is still there
-            std::filesystem::path tree = std::filesystem::path(RIFT_STD_DIR) / p.string().substr(6);
+        if (p.string().starts_with("<std>/")) {   // the library's files: in the tree edaxc was built from, if it is still there
+            std::filesystem::path tree = std::filesystem::path(EDAX_STD_DIR) / p.string().substr(6);
             p = std::filesystem::exists(tree, ec) ? tree : std::filesystem::path("/<std>") / p.string().substr(6);
         }
         std::filesystem::path abs = p.is_absolute() || p.string().starts_with("<") ? p : std::filesystem::absolute(p, ec);
         llvm::DIFile* f = dib_->createFile(abs.filename().string(), abs.parent_path().string());
         if (!unit_) {
-            unit_ = dib_->createCompileUnit(llvm::dwarf::DW_LANG_C_plus_plus, f, "riftc " RIFT_VERSION, false, "", 0);
+            unit_ = dib_->createCompileUnit(llvm::dwarf::DW_LANG_C_plus_plus, f, "edaxc " EDAX_VERSION, false, "", 0);
         }
         di_files_[id] = f;
         return f;
@@ -376,12 +376,12 @@ public:
         return ns;
     }
 
-    llvm::DIType* di_basic(const std::string& rift_name, const std::string& c_name, unsigned bits, unsigned encoding) {
+    llvm::DIType* di_basic(const std::string& edax_name, const std::string& c_name, unsigned bits, unsigned encoding) {
         llvm::DIType* base = dib_->createBasicType(c_name, bits, encoding);
-        return dib_->createTypedef(base, rift_name, nullptr, 0, unit_);
+        return dib_->createTypedef(base, edax_name, nullptr, 0, unit_);
     }
 
-    // The DWARF type of a Rift type: built-in types are typedefs with their Rift names, structs
+    // The DWARF type of a Edax type: built-in types are typedefs with their Edax names, structs
     // and classes follow the backend's layout, simple enums are enumerations, enums with payloads
     // are `struct { tag; union { ... } payload; }`.
     llvm::DIType* di_type(const types::Type* t) {
@@ -609,7 +609,7 @@ public:
 
 private:
     std::unique_ptr<llvm::Module> build() {
-        // `@std::test` functions of the entry file (spec 25, 29): `riftc test` runs them one by one.
+        // `@std::test` functions of the entry file (spec 25, 29): `edaxc test` runs them one by one.
         std::vector<const Symbol*> tests;
         if (program_.entry) {
             for (const Symbol* s : program_.entry->item_order) {
@@ -620,11 +620,11 @@ private:
         if (!main && !options_.all_functions && tests.empty() && !program_.is_plugin) return nullptr;
         declare_runtime();
         if (program_.entry && program_.entry->source) inspect_file_ = program_.entry->source->id;
-        if (main && !program_.is_plugin) rift_main_ = function_of(main);
+        if (main && !program_.is_plugin) edax_main_ = function_of(main);
         if (program_.is_plugin && program_.plugin_class) emit_plugin_entry();
         std::vector<llvm::Function*> test_fns;
         for (const Symbol* t : tests) test_fns.push_back(function_of(t));
-        // Rift functions exported to C exist even when no Rift code calls them: C may (spec 13).
+        // Edax functions exported to C exist even when no Edax code calls them: C may (spec 13).
         for (auto& [name, m] : program_.modules) {
             for (Symbol* s : m->item_order) {
                 if (s->kind != SymbolKind::function) continue;
@@ -670,7 +670,7 @@ private:
             }
         }
         if (program_.is_plugin) {
-            // A plugin has no `main`: the library's only entry is rift_plugin_entry.
+            // A plugin has no `main`: the library's only entry is edax_plugin_entry.
         } else if (!tests.empty()) {
             emit_test_entry(tests, test_fns, main);
         } else if (main) {
@@ -726,15 +726,15 @@ private:
         return nullptr;
     }
 
-    // `ptr @rift_plugin_entry()`: the plugin's descriptor (std::plugin_descriptor in std.rifts):
-    // a magic number, the hash of its interface, the riftc version and its `create` function.
+    // `ptr @edax_plugin_entry()`: the plugin's descriptor (std::plugin_descriptor in std.ed):
+    // a magic number, the hash of its interface, the edaxc version and its `create` function.
     void emit_plugin_entry() {
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         auto* st  = llvm::StructType::get(ctx_, {i64, i64, ptr_type(), ptr_type()});
         // create(out): the object on the heap, made by T::make(), written to `out` as a
         // std::raw_ptr<mut I>: the object and T's table for I.
         auto* create = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
-                                              llvm::Function::InternalLinkage, "rift.plugin.create", mod_.get());
+                                              llvm::Function::InternalLinkage, "edax.plugin.create", mod_.get());
         {
             llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", create));
             llvm::Type*     t     = user_type(program_.plugin_class);
@@ -749,11 +749,11 @@ private:
             b.CreateRetVoid();
         }
         llvm::Constant* fields[] = {llvm::ConstantInt::get(i64, 0x5249465450474C31ull), llvm::ConstantInt::get(i64, program_.plugin_interface_hash),
-                                    string_global(RIFT_VERSION_TEXT), create};
+                                    string_global(EDAX_VERSION_TEXT), create};
         auto* descriptor = new llvm::GlobalVariable(*mod_, st, true, llvm::GlobalValue::InternalLinkage, llvm::ConstantStruct::get(st, fields),
-                                                    "rift.plugin.descriptor");
+                                                    "edax.plugin.descriptor");
         auto* entry = llvm::Function::Create(llvm::FunctionType::get(ptr_type(), {}, false), llvm::Function::ExternalLinkage,
-                                             "rift_plugin_entry", mod_.get());
+                                             "edax_plugin_entry", mod_.get());
         llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", entry));
         b.CreateRet(descriptor);
     }
@@ -808,8 +808,8 @@ private:
         if (f->is_extern && f->abi == "cpp") unsupported(s->span, "'extern(std::build::language::cpp)' (C++ linkage)");
         if (f->is_extern && !f->body) return extern_function(s, *f);   // a C function: imported
         if (!f->body) unsupported(s->span, "functions without a body");
-        // One module is the whole program: Rift functions are internal (LLVM may inline, specialize
-        // or drop them); C sees only `main` and the exported wrappers. Rift never unwinds: a panic
+        // One module is the whole program: Edax functions are internal (LLVM may inline, specialize
+        // or drop them); C sees only `main` and the exported wrappers. Edax never unwinds: a panic
         // aborts (spec 11).
         auto* fn = llvm::Function::Create(function_type(s), llvm::Function::InternalLinkage, function_name(s), mod_.get());
         fn->addFnAttr(llvm::Attribute::NoUnwind);
@@ -831,11 +831,11 @@ private:
         }
         fns_[s] = fn;
         queue_.push_back(s);
-        if (f->is_extern) export_function(s, *f, fn);   // a Rift function that C can call
+        if (f->is_extern) export_function(s, *f, fn);   // a Edax function that C can call
         return fn;
     }
 
-    // The LLVM type of the Rift function `s` (methods take `self` first). Also for abstract and
+    // The LLVM type of the Edax function `s` (methods take `self` first). Also for abstract and
     // interface methods, which have no body: dynamic calls use it.
     llvm::FunctionType* function_type(const Symbol* s) {
         const FunctionDecl*      f     = body_decl(s);
@@ -852,7 +852,7 @@ private:
     }
 
     // `extern(c)` with a body (spec 13): C calls it under its own name. The exported symbol is a
-    // wrapper that converts C's byte-sized `bool` and calls the Rift function.
+    // wrapper that converts C's byte-sized `bool` and calls the Edax function.
     void export_function(const Symbol* s, const FunctionDecl& f, llvm::Function* target) {
         if (has_self(s)) unsupported(s->span, "exporting methods to C");
         llvm::Function*                  decl     = extern_function_type(s, f, f.name + ".export");
@@ -873,7 +873,7 @@ private:
                 for (unsigned k = 0; k < c.parts.size(); ++k) parts.push_back(wrapper->getArg(c.first + k));
                 args.push_back(c_join(c, parts));
             } else if (c.kind == CArg::Kind::memory) {
-                args.push_back(b_.CreateLoad(c.rift, wrapper->getArg(c.first)));
+                args.push_back(b_.CreateLoad(c.edax, wrapper->getArg(c.first)));
             } else {
                 llvm::Value* a = wrapper->getArg(c.first);
                 args.push_back(want->isIntegerTy(1) ? b_.CreateICmpNE(a, llvm::ConstantInt::get(a->getType(), 0)) : a);
@@ -936,13 +936,13 @@ private:
             a.first = static_cast<unsigned>(params.size());
             if (a.kind == CArg::Kind::direct) params.insert(params.end(), a.parts.begin(), a.parts.end());
             else if (a.kind == CArg::Kind::memory) params.push_back(ptr_type());
-            else params.push_back(a.rift);
+            else params.push_back(a.edax);
             sig.params.push_back(std::move(a));
         }
         llvm::Type* ret = !rt || is_void(rt) || sig.result.kind == CArg::Kind::memory ? llvm::Type::getVoidTy(ctx_)
                         : sig.result.kind == CArg::Kind::direct
                             ? (sig.result.parts.size() == 1 ? sig.result.parts[0] : llvm::StructType::get(ctx_, sig.result.parts))
-                            : sig.result.rift;
+                            : sig.result.edax;
         llvm::Function* fn = nullptr;
         {
             fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::ExternalLinkage,
@@ -957,13 +957,13 @@ private:
                 if (a.kind == CArg::Kind::plain) {
                     if (auto k = extend(types[i]); k != llvm::Attribute::None) fn->addParamAttr(a.first, k);
                 } else if (a.kind == CArg::Kind::memory && a.byval) {
-                    fn->addParamAttr(a.first, llvm::Attribute::getWithByValType(ctx_, a.rift));
+                    fn->addParamAttr(a.first, llvm::Attribute::getWithByValType(ctx_, a.edax));
                     fn->addParamAttr(a.first, llvm::Attribute::getWithAlignment(ctx_, llvm::Align(8)));
                 }
             }
             if (rt && !is_void(rt)) {
                 if (sig.result.kind == CArg::Kind::memory) {
-                    fn->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, sig.result.rift));
+                    fn->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, sig.result.edax));
                     fn->addParamAttr(0, llvm::Attribute::NoAlias);
                 } else if (sig.result.kind == CArg::Kind::plain) {
                     if (auto k = extend(rt); k != llvm::Attribute::None) fn->addRetAttr(k);
@@ -980,7 +980,7 @@ private:
     struct CArg {
         enum class Kind { plain, direct, memory };
         Kind                       kind = Kind::plain;
-        llvm::Type*                rift = nullptr;   // the Rift (LLVM) type of the value
+        llvm::Type*                edax = nullptr;   // the Edax (LLVM) type of the value
         std::vector<llvm::Type*>   parts;            // direct: the registers' types, one per eightbyte
         bool                       byval = false;    // memory: a `byval` copy (x86-64); else a pointer to a copy (AArch64)
         unsigned                   first = 0;        // the index of its first LLVM parameter
@@ -1010,7 +1010,7 @@ private:
     // pointer to a copy).
     CArg c_classify(llvm::Type* t, bool result, Span span) {
         CArg a;
-        a.rift = t;
+        a.edax = t;
         if (!t->isStructTy() && !t->isArrayTy()) return a;
         const llvm::DataLayout& dl   = mod_->getDataLayout();
         std::uint64_t           size = dl.getTypeAllocSize(t);
@@ -1089,14 +1089,14 @@ private:
             b_.CreateStore(part, at);
             offset += mod_->getDataLayout().getTypeAllocSize(part->getType());
         }
-        return b_.CreateLoad(a.rift, buffer);
+        return b_.CreateLoad(a.edax, buffer);
     }
 
     // A buffer that holds both the struct and its registers (which may be larger: a 12-byte
     // struct travels in two 8-byte registers).
     llvm::AllocaInst* c_buffer(const CArg& a) {
         const llvm::DataLayout& dl = mod_->getDataLayout();
-        std::uint64_t size = dl.getTypeAllocSize(a.rift);
+        std::uint64_t size = dl.getTypeAllocSize(a.edax);
         std::uint64_t regs = 0;
         for (llvm::Type* p : a.parts) regs += dl.getTypeAllocSize(p);
         llvm::AllocaInst* buffer = entry_alloca(llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx_), std::max(size, regs)), "c_abi");
@@ -1104,32 +1104,32 @@ private:
         return buffer;
     }
 
-    // Calls the extern function `fn` with Rift values: structs are passed and returned as C does.
-    llvm::Value* c_call(llvm::Function* fn, const std::vector<llvm::Value*>& rift_args) {
+    // Calls the extern function `fn` with Edax values: structs are passed and returned as C does.
+    llvm::Value* c_call(llvm::Function* fn, const std::vector<llvm::Value*>& edax_args) {
         auto it = c_sigs_.find(fn);
-        if (it == c_sigs_.end()) return b_.CreateCall(fn, rift_args);
+        if (it == c_sigs_.end()) return b_.CreateCall(fn, edax_args);
         const CSignature& sig = it->second;
         std::vector<llvm::Value*> args;
         llvm::AllocaInst* sret = nullptr;
         if (sig.result.kind == CArg::Kind::memory) {
-            sret = entry_alloca(sig.result.rift, "c_result");
+            sret = entry_alloca(sig.result.edax, "c_result");
             args.push_back(sret);
         }
-        for (std::size_t i = 0; i < rift_args.size() && i < sig.params.size(); ++i) {
+        for (std::size_t i = 0; i < edax_args.size() && i < sig.params.size(); ++i) {
             const CArg& a = sig.params[i];
             if (a.kind == CArg::Kind::direct) {
-                for (llvm::Value* part : c_split(a, rift_args[i])) args.push_back(part);
+                for (llvm::Value* part : c_split(a, edax_args[i])) args.push_back(part);
             } else if (a.kind == CArg::Kind::memory) {
-                llvm::AllocaInst* copy = entry_alloca(a.rift, "c_arg");
-                b_.CreateStore(rift_args[i], copy);
+                llvm::AllocaInst* copy = entry_alloca(a.edax, "c_arg");
+                b_.CreateStore(edax_args[i], copy);
                 args.push_back(copy);
             } else {
-                args.push_back(rift_args[i]);
+                args.push_back(edax_args[i]);
             }
         }
         llvm::CallInst* call = b_.CreateCall(fn, args);
         call->setAttributes(fn->getAttributes());
-        if (sret) return b_.CreateLoad(sig.result.rift, sret);
+        if (sret) return b_.CreateLoad(sig.result.edax, sret);
         if (sig.result.kind == CArg::Kind::direct) {
             std::vector<llvm::Value*> parts;
             if (sig.result.parts.size() == 1) parts.push_back(call);
@@ -1335,7 +1335,7 @@ private:
 
     // --- types ------------------------------------------------------------------------------
 
-    // The LLVM type of a value of Rift type `t`. Booleans are `i1` in values; they are stored as
+    // The LLVM type of a value of Edax type `t`. Booleans are `i1` in values; they are stored as
     // `i8` in memory once structs are lowered (see the interop layout notes).
     llvm::Type* lower_type(const types::Type* t) {
         if (!t) unsupported(cur_, "values of an unknown type");
@@ -1397,7 +1397,7 @@ private:
         known->setAtomic(llvm::AtomicOrdering::Monotonic);
         b_.CreateCondBr(b_.CreateIsNull(known), pick, call);
         b_.SetInsertPoint(pick);
-        llvm::Function* has_level = runtime("rift_cpu_has_level", llvm::Type::getInt1Ty(ctx_), {llvm::Type::getInt32Ty(ctx_)});
+        llvm::Function* has_level = runtime("edax_cpu_has_level", llvm::Type::getInt1Ty(ctx_), {llvm::Type::getInt32Ty(ctx_)});
         // The listed levels from the last (the highest, as written) down; the build's own copy last.
         std::vector<const Symbol*> listed(s->versions.begin(), s->versions.end() - 1);
         llvm::Value* chosen = function_of(s->versions.back());
@@ -1522,7 +1522,7 @@ private:
         llvm::BasicBlock* good = llvm::BasicBlock::Create(ctx_, "ok", cur_fn_);
         b_.CreateCondBr(ok, good, bad);
         b_.SetInsertPoint(bad);
-        b_.CreateCall(rift_panic_str_, {loc_global(span), message_bytes(message), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), message.size())});
+        b_.CreateCall(edax_panic_str_, {loc_global(span), message_bytes(message), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), message.size())});
         b_.CreateUnreachable();
         b_.SetInsertPoint(good);
     }
@@ -1530,9 +1530,9 @@ private:
     // Where the current call of a function with run_time entry checks was made (null: unknown,
     // e.g. through a function pointer). Set by the caller around the call (spec 23).
     llvm::GlobalVariable* call_site_global() {
-        if (auto* g = mod_->getNamedGlobal("rift_call_site")) return g;
+        if (auto* g = mod_->getNamedGlobal("edax_call_site")) return g;
         auto* g = new llvm::GlobalVariable(*mod_, ptr_type(), false, llvm::GlobalValue::InternalLinkage,
-                                           llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), "rift_call_site");
+                                           llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), "edax_call_site");
         g->setThreadLocalMode(llvm::GlobalValue::LocalExecTLSModel);   // each thread has its own call site (spec 27)
         return g;
     }
@@ -1559,7 +1559,7 @@ private:
         return false;
     }
 
-    // The source location `rift_loc` global for `span`: `{ file, line, column }`.
+    // The source location `edax_loc` global for `span`: `{ file, line, column }`.
     llvm::Constant* loc_global(Span span) {
         auto key = std::make_pair(span.file, span.begin);
         if (auto it = locs_.find(key); it != locs_.end()) return it->second;
@@ -1570,7 +1570,7 @@ private:
             loc_type_, {path, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), lc.line),
                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), lc.column)});
         auto* g = new llvm::GlobalVariable(*mod_, loc_type_, true, llvm::GlobalValue::PrivateLinkage, init,
-                                           std::format("rift_loc_{}", locs_.size()));
+                                           std::format("edax_loc_{}", locs_.size()));
         locs_[key] = g;
         return g;
     }
@@ -2474,13 +2474,13 @@ private:
             llvm::Value* p  = gen_expr(*c.args[0]);
             llvm::Value* n  = gen_expr(*c.args[1]);
             llvm::Value* ns = gen_expr(*c.args[2]);
-            b_.CreateCall(runtime("rift_futex_wait_for", vd, {ptr_type(), i32, llvm::Type::getInt64Ty(ctx_)}), {p, n, ns});
+            b_.CreateCall(runtime("edax_futex_wait_for", vd, {ptr_type(), i32, llvm::Type::getInt64Ty(ctx_)}), {p, n, ns});
             return nullptr;
         }
         if (name == "futex_wait" || name == "futex_wake") {
             llvm::Value* p = gen_expr(*c.args[0]);
             llvm::Value* n = gen_expr(*c.args[1]);
-            b_.CreateCall(runtime(name == "futex_wait" ? "rift_futex_wait" : "rift_futex_wake", vd, {ptr_type(), i32}), {p, n});
+            b_.CreateCall(runtime(name == "futex_wait" ? "edax_futex_wait" : "edax_futex_wake", vd, {ptr_type(), i32}), {p, n});
             return nullptr;
         }
         const types::Type* vt     = types::strip_ref(c.args[0]->type)->inner;
@@ -2524,7 +2524,7 @@ private:
     }
 
     // A raw SIMD intrinsic (SIMD, "Raw intrinsics"): the LLVM intrinsic, with the arguments and
-    // the result reinterpreted between Rift's vector types and LLVM's.
+    // the result reinterpreted between Edax's vector types and LLVM's.
     llvm::Value* simd_intrinsic(CallExpr& c, const simd::Intrinsic& in) {
         auto llvm_of = [&](const simd::Intrinsic::LlvmType& t) -> llvm::Type* {
             llvm::Type* lane = t.is_float ? (t.lane_bits == 64 ? llvm::Type::getDoubleTy(ctx_) : llvm::Type::getFloatTy(ctx_))
@@ -2544,13 +2544,13 @@ private:
         llvm::Type*         result = llvm_of(in.llvm_result);
         llvm::FunctionCallee f     = mod_->getOrInsertFunction(std::string(in.llvm_name), llvm::FunctionType::get(result, params, false));
         llvm::Value*        r      = b_.CreateCall(f, args);
-        llvm::Type*         rift   = lower_type(c.type);
-        if (rift->isVectorTy()) return b_.CreateBitCast(r, rift);
-        if (rift->isIntegerTy() && r->getType()->isIntegerTy()) return b_.CreateZExtOrTrunc(r, rift);
+        llvm::Type*         edax   = lower_type(c.type);
+        if (edax->isVectorTy()) return b_.CreateBitCast(r, edax);
+        if (edax->isIntegerTy() && r->getType()->isIntegerTy()) return b_.CreateZExtOrTrunc(r, edax);
         return r;
     }
 
-    // The std function std::raw's `name` goes through when build.rifts chose a global allocator
+    // The std function std::raw's `name` goes through when build.ed chose a global allocator
     // (`raw_heap_allocate`, ...), or null for the C library's heap.
     const Symbol* chosen_heap(const std::string& name) {
         if (!program_.std_module || !program_.build_settings.contains("std::global_allocator")) return nullptr;
@@ -2564,7 +2564,7 @@ private:
         const types::Type* pt = types::strip_ref(c.type);
         const Symbol* heap = (name == "allocate" || name == "reallocate" || name == "free") ? chosen_heap(name) : nullptr;
         if (heap) {
-            // build.rifts chose a global allocator (allocators): std::raw goes through it.
+            // build.ed chose a global allocator (allocators): std::raw goes through it.
             llvm::Function* f = function_of(heap);
             if (name == "free") {
                 llvm::Value* p = gen_expr(*c.args[0]);
@@ -3276,30 +3276,30 @@ private:
         auto* ptr = llvm::PointerType::get(ctx_, 0);
         auto* vd  = llvm::Type::getVoidTy(ctx_);
         loc_type_ = llvm::StructType::get(ctx_, {ptr, i32, i32});
-        rift_panic_str_ = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr, ptr, i64}, false),
-                                                 llvm::Function::ExternalLinkage, "rift_panic_str", mod_.get());
-        rift_panic_str_->setDoesNotReturn();
-        rift_exit_status_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i128, ptr}, false),
-                                                   llvm::Function::ExternalLinkage, "rift_exit_status", mod_.get());
+        edax_panic_str_ = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr, ptr, i64}, false),
+                                                 llvm::Function::ExternalLinkage, "edax_panic_str", mod_.get());
+        edax_panic_str_->setDoesNotReturn();
+        edax_exit_status_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i128, ptr}, false),
+                                                   llvm::Function::ExternalLinkage, "edax_exit_status", mod_.get());
     }
 
-    // `message` as a constant byte array (not NUL-terminated), for `rift_panic_str`.
+    // `message` as a constant byte array (not NUL-terminated), for `edax_panic_str`.
     llvm::Constant* message_bytes(const std::string& message) {
         llvm::Constant* init = llvm::ConstantDataArray::getString(ctx_, message, false);
         return new llvm::GlobalVariable(*mod_, init->getType(), true, llvm::GlobalValue::PrivateLinkage, init, ".msg");
     }
 
-    // The C entry point of a program with `@std::test` functions (spec 25, 29). `riftc test` runs
+    // The C entry point of a program with `@std::test` functions (spec 25, 29). `edaxc test` runs
     // it with an environment variable:
-    //   RIFT_TEST_LIST=1     prints "rift-tests:" and the tests' names, one per line;
-    //   RIFT_TEST_RUN=name   runs that test (exit 0 when it returns; a panic aborts, exit 2: no such test).
+    //   EDAX_TEST_LIST=1     prints "edax-tests:" and the tests' names, one per line;
+    //   EDAX_TEST_RUN=name   runs that test (exit 0 when it returns; a panic aborts, exit 2: no such test).
     // Without either it runs `main` if there is one, else every test in order.
     void emit_test_entry(const std::vector<const Symbol*>& tests, const std::vector<llvm::Function*>& fns, const Symbol* main) {
         auto* i32 = llvm::Type::getInt32Ty(ctx_);
         auto* ptr = llvm::PointerType::get(ctx_, 0);
         if (main) {   // the program's own entry, renamed
             emit_entry(main);
-            mod_->getFunction("main")->setName("rift_program_main");
+            mod_->getFunction("main")->setName("edax_program_main");
         }
         llvm::Function*   init  = emit_init_globals();
         llvm::Function*   entry = llvm::Function::Create(llvm::FunctionType::get(i32, {i32, ptr}, false), llvm::Function::ExternalLinkage,
@@ -3309,17 +3309,17 @@ private:
         llvm::FunctionCallee puts   = mod_->getOrInsertFunction("puts", llvm::FunctionType::get(i32, {ptr}, false));
         llvm::FunctionCallee getenv = mod_->getOrInsertFunction("getenv", llvm::FunctionType::get(ptr, {ptr}, false));
         llvm::Value* null = llvm::ConstantPointerNull::get(ptr);
-        // RIFT_TEST_LIST
+        // EDAX_TEST_LIST
         llvm::BasicBlock* list     = llvm::BasicBlock::Create(ctx_, "list", entry);
         llvm::BasicBlock* not_list = llvm::BasicBlock::Create(ctx_, "not_list", entry);
-        b.CreateCondBr(b.CreateICmpNE(b.CreateCall(getenv, {string_global("RIFT_TEST_LIST")}), null), list, not_list);
+        b.CreateCondBr(b.CreateICmpNE(b.CreateCall(getenv, {string_global("EDAX_TEST_LIST")}), null), list, not_list);
         b.SetInsertPoint(list);
-        b.CreateCall(puts, {string_global("rift-tests:")});
+        b.CreateCall(puts, {string_global("edax-tests:")});
         for (const Symbol* t : tests) b.CreateCall(puts, {string_global(t->name)});
         b.CreateRet(llvm::ConstantInt::get(i32, 0));
-        // RIFT_TEST_RUN=name
+        // EDAX_TEST_RUN=name
         b.SetInsertPoint(not_list);
-        llvm::Value*      name    = b.CreateCall(getenv, {string_global("RIFT_TEST_RUN")});
+        llvm::Value*      name    = b.CreateCall(getenv, {string_global("EDAX_TEST_RUN")});
         llvm::BasicBlock* run_one = llvm::BasicBlock::Create(ctx_, "run_one", entry);
         llvm::BasicBlock* plain   = llvm::BasicBlock::Create(ctx_, "plain", entry);
         b.CreateCondBr(b.CreateICmpNE(name, null), run_one, plain);
@@ -3338,7 +3338,7 @@ private:
         // Neither: the program's main, or every test in order.
         b.SetInsertPoint(plain);
         if (main) {
-            b.CreateRet(b.CreateCall(mod_->getFunction("rift_program_main"), {entry->getArg(0), entry->getArg(1)}));
+            b.CreateRet(b.CreateCall(mod_->getFunction("edax_program_main"), {entry->getArg(0), entry->getArg(1)}));
             return;
         }
         b.CreateCall(init);
@@ -3349,7 +3349,7 @@ private:
         b.CreateRet(llvm::ConstantInt::get(i32, 0));
     }
 
-    // The C entry point: runs Rift's `main` and returns its status.
+    // The C entry point: runs Edax's `main` and returns its status.
     void emit_entry(const Symbol* main) {
         const FunctionDecl* f      = body_decl(main);
         auto*               i32    = llvm::Type::getInt32Ty(ctx_);
@@ -3359,7 +3359,7 @@ private:
         llvm::BasicBlock*   block  = llvm::BasicBlock::Create(ctx_, "entry", entry);
         llvm::IRBuilder<>   b(block);
         // The arguments as std::str (checked to be UTF-8); raw for std::env::raw_args (spec 04).
-        llvm::FunctionCallee main_args = mod_->getOrInsertFunction("rift_main_args", llvm::FunctionType::get(ptr, {i32, ptr}, false));
+        llvm::FunctionCallee main_args = mod_->getOrInsertFunction("edax_main_args", llvm::FunctionType::get(ptr, {i32, ptr}, false));
         llvm::Value*        array  = b.CreateCall(main_args, {entry->getArg(0), entry->getArg(1)});
         b.CreateCall(emit_init_globals());
         std::vector<llvm::Value*> main_in;
@@ -3370,13 +3370,13 @@ private:
             v = b.CreateInsertValue(v, b.CreateSExt(entry->getArg(0), llvm::Type::getInt64Ty(ctx_)), 1);
             main_in.push_back(v);
         }
-        llvm::CallInst*     call   = b.CreateCall(rift_main_, main_in);
+        llvm::CallInst*     call   = b.CreateCall(edax_main_, main_in);
         b.CreateCall(mod_->getOrInsertFunction("free", llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr}, false)), {array});
         const types::Type*  result = f->result ? tc_.lower(*f->result, sema::substitution_of(main)) : nullptr;
         if (result && result->is_integer()) {
             llvm::Value* wide = result->is_signed ? b.CreateSExt(call, llvm::Type::getInt128Ty(ctx_))
                                                   : b.CreateZExt(call, llvm::Type::getInt128Ty(ctx_));
-            b.CreateRet(b.CreateCall(rift_exit_status_, {wide, loc_global(main->span)}));
+            b.CreateRet(b.CreateCall(edax_exit_status_, {wide, loc_global(main->span)}));
         } else if (result && result->is(Kind::user)) {
             b.CreateRet(b.CreateZExt(call, i32));   // std::exit_code: success = 0, failure = 1
         } else {
@@ -4070,7 +4070,7 @@ private:
         return llvm::Function::Create(llvm::FunctionType::get(result, params, false), llvm::Function::ExternalLinkage, name, mod_.get());
     }
 
-    // The `rift_spec` of a format hole: `{ align, plus, width, precision, radix }` (spec 19).
+    // The `edax_spec` of a format hole: `{ align, plus, width, precision, radix }` (spec 19).
     llvm::Constant* spec_constant(char align, bool plus, int width, int precision, char radix) {
         auto* i8  = llvm::Type::getInt8Ty(ctx_);
         auto* i32 = llvm::Type::getInt32Ty(ctx_);
@@ -4083,9 +4083,9 @@ private:
 
     llvm::Constant* plain_spec() { return spec_constant(0, false, -1, -1, 0); }
 
-    // The rift_stream for stdout (`err` false) or stderr.
+    // The edax_stream for stdout (`err` false) or stderr.
     llvm::Value* stream(bool err) {
-        return b_.CreateCall(runtime("rift_stream", ptr_type(), {llvm::Type::getInt1Ty(ctx_)}),
+        return b_.CreateCall(runtime("edax_stream", ptr_type(), {llvm::Type::getInt1Ty(ctx_)}),
                              {llvm::ConstantInt::getBool(ctx_, err)});
     }
 
@@ -4119,11 +4119,11 @@ private:
             if (!panic) record_format(callee_name(c));
             llvm::AllocaInst* buf = text_into_buffer(arg);
             if (panic) {
-                b_.CreateCall(runtime("rift_panic_buf", llvm::Type::getVoidTy(ctx_), {loc, loc}), {loc_global(c.span), buf});
+                b_.CreateCall(runtime("edax_panic_buf", llvm::Type::getVoidTy(ctx_), {loc, loc}), {loc_global(c.span), buf});
                 b_.CreateUnreachable();
                 open_dead_block();
             } else {
-                b_.CreateCall(runtime("rift_flush", llvm::Type::getVoidTy(ctx_), {loc, loc, i1}),
+                b_.CreateCall(runtime("edax_flush", llvm::Type::getVoidTy(ctx_), {loc, loc, i1}),
                               {stream(err), buf, llvm::ConstantInt::getBool(ctx_, newline)});
             }
             return;
@@ -4136,11 +4136,11 @@ private:
         llvm::Value* data = b_.CreateExtractValue(v, 0);
         llvm::Value* len  = b_.CreateExtractValue(v, 1);
         if (panic) {
-            b_.CreateCall(runtime("rift_panic_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64}), {loc_global(c.span), data, len});
+            b_.CreateCall(runtime("edax_panic_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64}), {loc_global(c.span), data, len});
             b_.CreateUnreachable();
             open_dead_block();
         } else {
-            b_.CreateCall(runtime("rift_write_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64, i1}),
+            b_.CreateCall(runtime("edax_write_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64, i1}),
                           {stream(err), data, len, llvm::ConstantInt::getBool(ctx_, newline)});
         }
     }
@@ -4148,7 +4148,7 @@ private:
     // `std::format_args` (spec 19): a view of an f-string that is not formatted yet: a function
     // that writes the text into a buffer, and the addresses of the holes' values it reads.
     llvm::StructType* format_args_type() {
-        if (!format_args_type_) format_args_type_ = llvm::StructType::create(ctx_, {ptr_type(), ptr_type()}, "rift.format_args");
+        if (!format_args_type_) format_args_type_ = llvm::StructType::create(ctx_, {ptr_type(), ptr_type()}, "edax.format_args");
         return format_args_type_;
     }
     llvm::StructType* format_args_type_ = nullptr;
@@ -4187,7 +4187,7 @@ private:
                        b_.CreateStructGEP(env_t, env, static_cast<unsigned>(captured.size())));
         auto* vd = llvm::Type::getVoidTy(ctx_);
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr_type(), ptr_type()}, false), llvm::Function::InternalLinkage,
-                                          "rift_format", mod_.get());
+                                          "edax_format", mod_.get());
         fn->addFnAttr(llvm::Attribute::NoUnwind);
         llvm::IRBuilderBase::InsertPoint saved_ip     = b_.saveIP();
         llvm::DebugLoc                   saved_loc    = b_.getCurrentDebugLocation();
@@ -4218,7 +4218,7 @@ private:
             if (part.expr) {
                 format_hole(buf, part);
             } else {
-                b_.CreateCall(runtime("rift_buf_put", vd, {ptr_type(), ptr_type(), i64}),
+                b_.CreateCall(runtime("edax_buf_put", vd, {ptr_type(), ptr_type(), i64}),
                               {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
             }
         }
@@ -4262,7 +4262,7 @@ private:
             if (part.expr) {
                 format_hole(buf, part);
             } else {
-                b_.CreateCall(runtime("rift_buf_put", llvm::Type::getVoidTy(ctx_), {p, p, i64}),
+                b_.CreateCall(runtime("edax_buf_put", llvm::Type::getVoidTy(ctx_), {p, p, i64}),
                               {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
             }
         }
@@ -4394,22 +4394,22 @@ private:
         auto*                p    = ptr_type();
         if (t && t->is_integer()) {
             if (!t->is_signed || part.spec.radix) {   // unsigned, or two's complement bits in another base
-                b_.CreateCall(runtime("rift_fmt_u", vd, {p, i128, i1, p}),
+                b_.CreateCall(runtime("edax_fmt_u", vd, {p, i128, i1, p}),
                               {buf, b_.CreateZExt(v, i128), llvm::ConstantInt::getFalse(ctx_), spec});
             } else {
-                b_.CreateCall(runtime("rift_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
+                b_.CreateCall(runtime("edax_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
             }
         } else if (t && t->is_float()) {
             bool single = t->bits == 32;
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
-            b_.CreateCall(runtime("rift_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
+            b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
                           {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
         } else if (t && t->is(Kind::bool_)) {
-            b_.CreateCall(runtime("rift_fmt_bool", vd, {p, i1, p}), {buf, v, spec});
+            b_.CreateCall(runtime("edax_fmt_bool", vd, {p, i1, p}), {buf, v, spec});
         } else if (t && t->is(Kind::char_)) {
-            b_.CreateCall(runtime("rift_fmt_char", vd, {p, llvm::Type::getInt32Ty(ctx_), p}), {buf, v, spec});
+            b_.CreateCall(runtime("edax_fmt_char", vd, {p, llvm::Type::getInt32Ty(ctx_), p}), {buf, v, spec});
         } else if (is_str(t) || is_string(t)) {
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, llvm::Type::getInt64Ty(ctx_), p}),
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, llvm::Type::getInt64Ty(ctx_), p}),
                           {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
         } else {
             unsupported(e.span, std::format("formatting values of type '{}'", t ? types::to_string(t) : "unknown"));
@@ -4437,7 +4437,7 @@ private:
         auto* p   = ptr_type();
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         auto put_text = [&](llvm::Value* target, const std::string& text) {
-            b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+            b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}),
                           {target, message_bytes(text), llvm::ConstantInt::get(i64, text.size())});
         };
         if (t->is(Kind::user) && t->symbol->kind != SymbolKind::enum_ && !is_string(t)) {
@@ -4464,7 +4464,7 @@ private:
             b_.CreateStore(b_.CreateLoad(spec_t, spec), b_.CreateStructGEP(ft, fmt, spec_i));
             b_.CreateCall(function_of(method), {addr, fmt});
             llvm::Value* text = b_.CreateCall(function_of(as_str), {tmp});
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, i64, p}),
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, i64, p}),
                           {buf, b_.CreateExtractValue(text, 0), b_.CreateExtractValue(text, 1), spec});
             drop_value(st, tmp);
             return;
@@ -4498,7 +4498,7 @@ private:
             b_.SetInsertPoint(done);
             llvm::Value* data = b_.CreateLoad(p, b_.CreateStructGEP(buffer_type(), inner, 0));
             llvm::Value* len  = b_.CreateLoad(i64, b_.CreateStructGEP(buffer_type(), inner, 1));
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, i64, p}), {buf, data, len, spec});
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, i64, p}), {buf, data, len, spec});
             b_.CreateCall(libc("free", vd, {p}), {data});
             return;
         }
@@ -4508,31 +4508,31 @@ private:
         if (is_string(t)) {
             const Symbol* as_str = std_member(t, "as_str");
             llvm::Value*  text   = b_.CreateCall(function_of(as_str), {addr});
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, i64, p}),
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, i64, p}),
                           {buf, b_.CreateExtractValue(text, 0), b_.CreateExtractValue(text, 1), spec});
             return;
         }
         llvm::Value* v = b_.CreateLoad(lower_type(t), addr);
         if (t->is_user(SymbolKind::enum_)) {
             v = enum_name(t->symbol, v);
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, i64, p}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, i64, p}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
         } else if (t->is_integer()) {
             if (!t->is_signed) {
-                b_.CreateCall(runtime("rift_fmt_u", vd, {p, i128, i1, p}), {buf, b_.CreateZExt(v, i128), llvm::ConstantInt::getFalse(ctx_), spec});
+                b_.CreateCall(runtime("edax_fmt_u", vd, {p, i128, i1, p}), {buf, b_.CreateZExt(v, i128), llvm::ConstantInt::getFalse(ctx_), spec});
             } else {
-                b_.CreateCall(runtime("rift_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
+                b_.CreateCall(runtime("edax_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
             }
         } else if (t->is_float()) {
             bool single = t->bits == 32;
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
-            b_.CreateCall(runtime("rift_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
+            b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
                           {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
         } else if (t->is(Kind::bool_)) {
-            b_.CreateCall(runtime("rift_fmt_bool", vd, {p, i1, p}), {buf, b_.CreateTrunc(v, i1), spec});
+            b_.CreateCall(runtime("edax_fmt_bool", vd, {p, i1, p}), {buf, b_.CreateTrunc(v, i1), spec});
         } else if (t->is(Kind::char_)) {
-            b_.CreateCall(runtime("rift_fmt_char", vd, {p, llvm::Type::getInt32Ty(ctx_), p}), {buf, v, spec});
+            b_.CreateCall(runtime("edax_fmt_char", vd, {p, llvm::Type::getInt32Ty(ctx_), p}), {buf, v, spec});
         } else if (is_str(t)) {
-            b_.CreateCall(runtime("rift_fmt_str", vd, {p, p, i64, p}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
+            b_.CreateCall(runtime("edax_fmt_str", vd, {p, p, i64, p}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1), spec});
         } else {
             unsupported(span, std::format("formatting values of type '{}'", types::to_string(t)));
         }
@@ -4542,7 +4542,7 @@ private:
 
     llvm::Value* str_equal(llvm::Value* a, llvm::Value* b, bool eq) {
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
-        llvm::Value* same = b_.CreateCall(runtime("rift_str_eq", llvm::Type::getInt1Ty(ctx_), {ptr_type(), i64, ptr_type(), i64}),
+        llvm::Value* same = b_.CreateCall(runtime("edax_str_eq", llvm::Type::getInt1Ty(ctx_), {ptr_type(), i64, ptr_type(), i64}),
                                           {b_.CreateExtractValue(a, 0), b_.CreateExtractValue(a, 1), b_.CreateExtractValue(b, 0),
                                            b_.CreateExtractValue(b, 1)});
         return eq ? same : b_.CreateNot(same);
@@ -4870,12 +4870,12 @@ private:
     }
 
     // In a `@std::simd::must_vectorize` function, marks the back edge of a plain loop with
-    // `!{!"rift.must_vectorize", i32 n}` in its loop metadata: after optimizing, the loops that
+    // `!{!"edax.must_vectorize", i32 n}` in its loop metadata: after optimizing, the loops that
     // were vectorized carry `llvm.loop.isvectorized` too.
     void tag_loop(llvm::Instruction* back_edge, Span span) {
         if (!must_vectorize_) return;
         auto* i32 = llvm::Type::getInt32Ty(ctx_);
-        llvm::Metadata* tag[] = {llvm::MDString::get(ctx_, "rift.must_vectorize"),
+        llvm::Metadata* tag[] = {llvm::MDString::get(ctx_, "edax.must_vectorize"),
                                  llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, program_.must_vectorize_loops.size()))};
         llvm::TempMDTuple self = llvm::MDTuple::getTemporary(ctx_, {});
         llvm::Metadata* ops[] = {self.get(), llvm::MDNode::get(ctx_, tag)};
@@ -5356,16 +5356,16 @@ private:
             if (message.kind == ExprKind::string_literal && message.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
                 for (FormatPart& part : message.as<LiteralExpr>().format_parts) {
                     if (part.expr) format_hole(buf, part);
-                    else b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+                    else b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}),
                                        {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
                 }
             } else {
                 llvm::Value* v = gen_expr(message);
-                b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
+                b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}), {buf, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
             }
-            b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+            b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}),
                           {buf, message_bytes(suffix), llvm::ConstantInt::get(i64, suffix.size())});
-            b_.CreateCall(runtime("rift_panic_buf", vd, {p, p}), {loc, buf});
+            b_.CreateCall(runtime("edax_panic_buf", vd, {p, p}), {loc, buf});
             b_.CreateUnreachable();
             return;
         }
@@ -5376,14 +5376,14 @@ private:
                 if (part.expr) {
                     format_hole(buf, part);
                 } else {
-                    b_.CreateCall(runtime("rift_buf_put", vd, {p, p, i64}),
+                    b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}),
                                   {buf, message_bytes(part.text), llvm::ConstantInt::get(i64, part.text.size())});
                 }
             }
-            b_.CreateCall(runtime("rift_panic_buf", vd, {p, p}), {loc, buf});
+            b_.CreateCall(runtime("edax_panic_buf", vd, {p, p}), {loc, buf});
         } else {
             llvm::Value* v = gen_expr(message);
-            b_.CreateCall(runtime("rift_panic_str", vd, {p, p, i64}),
+            b_.CreateCall(runtime("edax_panic_str", vd, {p, p, i64}),
                           {loc, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
         }
         b_.CreateUnreachable();
@@ -5521,7 +5521,7 @@ private:
     std::map<const Symbol*, llvm::Function*>       global_inits_;
     std::deque<const Symbol*>                      global_queue_;
 
-    // The storage of a global variable. Its initializer runs at startup (rift_init_globals).
+    // The storage of a global variable. Its initializer runs at startup (edax_init_globals).
     llvm::GlobalVariable* global_of(const Symbol* g) {
         if (auto it = globals_.find(g); it != globals_.end()) return it->second;
         cur_ = g->span;
@@ -5589,10 +5589,10 @@ private:
         return out;
     }
 
-    // rift_init_globals: runs the initializers of the globals the program uses, module by module.
+    // edax_init_globals: runs the initializers of the globals the program uses, module by module.
     llvm::Function* emit_init_globals() {
         llvm::Function* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false),
-                                                    llvm::Function::InternalLinkage, "rift_init_globals", mod_.get());
+                                                    llvm::Function::InternalLinkage, "edax_init_globals", mod_.get());
         llvm::IRBuilderBase::InsertPoint saved_ip = b_.saveIP();
         b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", fn));
         for (const Module* m : module_order()) {
@@ -5700,9 +5700,9 @@ private:
     // Destroys a `std::function`: destroys its captures (the closure's drop function, if it has
     // one) and frees them.
     llvm::Function* function_drop() {
-        if (llvm::Function* f = mod_->getFunction("rift_function_drop")) return f;
+        if (llvm::Function* f = mod_->getFunction("edax_function_drop")) return f;
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
-                                          llvm::Function::InternalLinkage, "rift_function_drop", mod_.get());
+                                          llvm::Function::InternalLinkage, "edax_function_drop", mod_.get());
         auto*             entry = llvm::BasicBlock::Create(ctx_, "entry", fn);
         auto*             call  = llvm::BasicBlock::Create(ctx_, "drop", fn);
         auto*             done  = llvm::BasicBlock::Create(ctx_, "free", fn);
@@ -6114,7 +6114,7 @@ private:
         b_.CreateCall(drop_function(e.type), {slot});
     }
 
-    // --- insights (`riftc insights`): what the compiler does implicitly ---------------------
+    // --- insights (`edaxc insights`): what the compiler does implicitly ---------------------
     //
     // While a function of the inspected file is generated, the hooks below record events: stack
     // slots, calls, drops, moves, copies, conversions, dispatch and checks. Calls and drops only
@@ -6402,7 +6402,7 @@ private:
                 "builds too. Like every slot of the function it is reserved when the function is entered. It describes a buffer whose "
                 "bytes are on the heap.");
         insight(at, "heap", "alloc", "range", "allocates: the formatted text",
-                "Formatting writes the text into a heap buffer that grows as needed (`rift_buf_put` → `realloc`) and is freed once "
+                "Formatting writes the text into a heap buffer that grows as needed (`edax_buf_put` → `realloc`) and is freed once "
                 "the text is written or copied into the `std::string`.");
     }
 
@@ -6577,8 +6577,8 @@ private:
         for (const auto& [s, fn] : fns_) fn_display_[fn] = display_name(s);
         for (const auto& [s, fn] : drop_fns_) fn_display_[fn] = "~" + types::qualified_name(tc_.user(s));
         // The runtime's buffer functions are only declared here; their bodies grow with realloc.
-        std::set<std::string> alloc_targets{"malloc", "realloc", "calloc", "rift_buf_put", "rift_fmt_u", "rift_fmt_i", "rift_fmt_f",
-                                            "rift_fmt_str", "rift_fmt_bool", "rift_fmt_char"};
+        std::set<std::string> alloc_targets{"malloc", "realloc", "calloc", "edax_buf_put", "edax_fmt_u", "edax_fmt_i", "edax_fmt_f",
+                                            "edax_fmt_str", "edax_fmt_bool", "edax_fmt_char"};
         reach(alloc_targets, next_alloc_);
         reach({"free"}, next_free_);
         const std::string maybe = "\n\nWhether it does depends on the run (e.g. `push` only grows a full buffer).";
@@ -6646,9 +6646,9 @@ private:
     Span                                              cur_{};
     llvm::Function*                                   cur_fn_ = nullptr;
     const std::map<const Symbol*, const types::Type*>* cur_subst_ = nullptr;   // the template arguments of the function being generated
-    llvm::Function*                                   rift_main_ = nullptr;
-    llvm::Function*                                   rift_panic_str_ = nullptr;
-    llvm::Function*                                   rift_exit_status_ = nullptr;
+    llvm::Function*                                   edax_main_ = nullptr;
+    llvm::Function*                                   edax_panic_str_ = nullptr;
+    llvm::Function*                                   edax_exit_status_ = nullptr;
     llvm::Value*                                      self_ = nullptr;
     llvm::StructType*                                 loc_type_ = nullptr;
     std::map<const Symbol*, llvm::Function*>          fns_;
@@ -6761,14 +6761,14 @@ bool check_vectorized(llvm::Module& original, const sema::Program& program, cons
     return ok;
 }
 
-// `i1 @rift_cpu_has_level(i32 id)`: whether the running CPU has CPU level `id` of the target's
+// `i1 @edax_cpu_has_level(i32 id)`: whether the running CPU has CPU level `id` of the target's
 // architecture (1 the first, as in the table of levels): what `@std::simd::multiversion` picks
 // its copy with. x86-64 asks `cpuid` and `xgetbv`; AArch64 and RISC-V ask the kernel (getauxval).
 std::string cpu_detection_ir() {
     llvm::Triple t(target_triple());
     if (t.getArch() == llvm::Triple::x86_64) {
         return R"(
-define internal i1 @rift_cpu_has_level(i32 %id) {
+define internal i1 @edax_cpu_has_level(i32 %id) {
 entry:
   %first = icmp ule i32 %id, 1
   br i1 %first, label %yes, label %v2
@@ -6823,7 +6823,7 @@ no:
     if (t.isAArch64()) {   // armv9: SVE2 (AT_HWCAP2 = 26, HWCAP2_SVE2 = bit 1)
         return R"(
 declare i64 @getauxval(i64)
-define internal i1 @rift_cpu_has_level(i32 %id) {
+define internal i1 @edax_cpu_has_level(i32 %id) {
 entry:
   %first = icmp ule i32 %id, 1
   br i1 %first, label %yes, label %v9
@@ -6840,7 +6840,7 @@ yes:
     if (t.isRISCV()) {   // riscv64_v: the V extension (AT_HWCAP = 16, bit 'v' - 'a' = 21)
         return R"(
 declare i64 @getauxval(i64)
-define internal i1 @rift_cpu_has_level(i32 %id) {
+define internal i1 @edax_cpu_has_level(i32 %id) {
 entry:
   %first = icmp ule i32 %id, 1
   br i1 %first, label %yes, label %v
@@ -6854,7 +6854,7 @@ yes:
 }
 )";
     }
-    return "\ndefine internal i1 @rift_cpu_has_level(i32 %id) {\nentry:\n  %ok = icmp ule i32 %id, 1\n  ret i1 %ok\n}\n";
+    return "\ndefine internal i1 @edax_cpu_has_level(i32 %id) {\nentry:\n  %ok = icmp ule i32 %id, 1\n  ret i1 %ok\n}\n";
 ;
 }
 
@@ -6873,7 +6873,7 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
     // The runtime defines the functions and intrinsics it shares with the module; the module's
     // declarations of them would clash with those.
     std::string runtime_text = llvm_runtime_ir();
-    {   // the futex system call's number on the host (riftc compiles for the machine it runs on)
+    {   // the futex system call's number on the host (edaxc compiles for the machine it runs on)
         llvm::Triple      host(target_triple());
         const std::string number = host.isAArch64() || host.isRISCV() ? "98" : "202";
         for (std::size_t at; (at = runtime_text.find("@@SYS_FUTEX@@")) != std::string::npos;) runtime_text.replace(at, 13, number);
@@ -6896,12 +6896,12 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
         }
         text.append(line);
     }
-    if (options.panic_trap) {   // every panic ends in rift_panic_buf: make it a trap
-        const std::string head = "define internal void @rift_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
+    if (options.panic_trap) {   // every panic ends in edax_panic_buf: make it a trap
+        const std::string head = "define internal void @edax_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
         std::size_t at = runtime_text.find(head);
         if (at != std::string::npos) {
             runtime_text.replace(at, head.size(), head + "\n  call void @llvm.trap()\n  unreachable\n}\n"
-                                                  "define internal void @rift_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
+                                                  "define internal void @edax_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
             runtime_text += "\ndeclare void @llvm.trap() cold noreturn nounwind\n";
         }
     }
@@ -6913,11 +6913,11 @@ bool build_executable(std::string_view ir, const std::string& out_path, const st
     initialize_targets();
     llvm::LLVMContext ctx;
     llvm::SMDiagnostic err;
-    std::unique_ptr<llvm::Module> mod = llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir.data(), ir.size()), "rift.ll"), err, ctx);
+    std::unique_ptr<llvm::Module> mod = llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir.data(), ir.size()), "edax.ll"), err, ctx);
     if (!mod) {
         std::string text;
         llvm::raw_string_ostream os(text);
-        err.print("riftc", os);
+        err.print("edaxc", os);
         error = "internal error: the generated LLVM IR does not parse\n" + text;
         return false;
     }
@@ -6990,7 +6990,7 @@ bool set_build_target(const std::string& platform, std::string& error) {
     }
     llvm::Triple t(llvm::Triple::normalize(platform));
     if (!t.isArch64Bit() || !(t.isAArch64() || t.getArch() == llvm::Triple::x86_64 || t.getArch() == llvm::Triple::riscv64)) {
-        error = std::format("'{}' is not a supported platform: riftc compiles for 64-bit x86-64, AArch64 and RISC-V", platform);
+        error = std::format("'{}' is not a supported platform: edaxc compiles for 64-bit x86-64, AArch64 and RISC-V", platform);
         return false;
     }
     if (!t.isOSLinux()) {
@@ -7001,7 +7001,7 @@ bool set_build_target(const std::string& platform, std::string& error) {
     initialize_targets();
     std::string lookup_error;
     if (!lookup_target(g_target_triple, lookup_error)) {
-        error = std::format("this riftc's LLVM can't generate code for '{}': {}", platform, lookup_error);
+        error = std::format("this edaxc's LLVM can't generate code for '{}': {}", platform, lookup_error);
         g_target_triple.clear();
         return false;
     }
@@ -7063,7 +7063,7 @@ bool set_build_cpu(const std::string& level, std::string& error) {
     }
     const CpuLevel* l = find_cpu_level(level);
     if (!l) {
-        error = std::format("'{}' is not a CPU level riftc knows", level);
+        error = std::format("'{}' is not a CPU level edaxc knows", level);
         return false;
     }
     llvm::Triple t(target_triple());
@@ -7107,7 +7107,7 @@ bool set_target_description(const TargetPlatform& description, std::string& erro
     initialize_targets();
     std::string lookup_error;
     if (!lookup_target(t.str(), lookup_error)) {
-        error = std::format("this riftc's LLVM can't generate code for '{}': {}", description.triple, lookup_error);
+        error = std::format("this edaxc's LLVM can't generate code for '{}': {}", description.triple, lookup_error);
         g_target_triple = before;
         return false;
     }
@@ -7118,4 +7118,4 @@ bool set_target_description(const TargetPlatform& description, std::string& erro
 
 bool target_is_host() { return g_target_triple.empty() || llvm::Triple(g_target_triple).getArch() == llvm::Triple(llvm::sys::getDefaultTargetTriple()).getArch(); }
 
-} // namespace rift
+} // namespace edax

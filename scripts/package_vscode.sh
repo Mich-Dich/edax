@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Packages the VS Code extension in editors/vscode as a .vsix with plain `zip` (no Node needed).
-# Usage: scripts/package_vscode.sh   ->  editors/vscode/rift-language-<version>.vsix
+# Usage: scripts/package_vscode.sh   ->  editors/vscode/edax-language-<version>.vsix
 set -euo pipefail
 src="$(cd "$(dirname "$0")/../editors/vscode" && pwd)"
 version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$src/package.json" | head -n 1)"
-out="$src/rift-language-$version.vsix"
+out="$src/edax-language-$version.vsix"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/extension"
@@ -17,10 +17,10 @@ cat > "$work/extension.vsixmanifest" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="rift-language" Version="$version" Publisher="dominikm" />
-    <DisplayName>Rift Language</DisplayName>
-    <Description xml:space="preserve">Rift (.rifts / .rifth): syntax highlighting, build, step-through debugging, and code insights</Description>
-    <Tags>debuggers,rift,Rift,__ext_rifts,__ext_rifth</Tags>
+    <Identity Language="en-US" Id="edax-language" Version="$version" Publisher="dominikm" />
+    <DisplayName>Edax Language</DisplayName>
+    <Description xml:space="preserve">Edax (.ed / .edh): syntax highlighting, build, step-through debugging, and code insights</Description>
+    <Tags>debuggers,edax,Edax,__ext_ed,__ext_edh</Tags>
     <Categories>Programming Languages,Debuggers</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Properties>

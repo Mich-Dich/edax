@@ -1,6 +1,6 @@
 # Metaprogramming
 
-Metaprogramming in Rift is **ordinary compile-time code** (see [Compile-Time Evaluation](compile-time.md)). There is no macro language, no token pasting and no code in strings. Three things are added on top of `compile_time` functions and `if compile_time`:
+Metaprogramming in Edax is **ordinary compile-time code** (see [Compile-Time Evaluation](compile-time.md)). There is no macro language, no token pasting and no code in strings. Three things are added on top of `compile_time` functions and `if compile_time`:
 
 1. **Types are values** at compile time: `compile_time type t = u32;`.
 2. **Reflection:** `std::meta` describes a type's fields and alternatives.
@@ -12,7 +12,7 @@ Together they cover generic printing, comparison, hashing, serialization and enu
 
 ### Types as values
 `type` is a built-in type whose values are types. It exists only at compile time.
-```rift
+```edax
 compile_time type id = u32;
 
 compile_time type counter_type(usize max) {
@@ -51,7 +51,7 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::types_with<A>()` | `std::span<type>`: every type carrying annotation `A` (below) |
 | `std::is_integer<T>()`, `std::is_float<T>()`, `std::is_same<A, B>()`, `std::size_of<T>()`, `std::align_of<T>()`, `std::type_name<T>()` | As in 15 and 23 |
 
-```rift
+```edax
 struct field {                 // std::meta::field
     std::static_str name;
     type            type;      // the field's declared type
@@ -84,7 +84,7 @@ struct parameter {             // std::meta::parameter
 Every handle (`field`, `alternative`, `function`, `parameter`) also has `annotation<A>()` and `has<A>()` (see [Annotations](annotations.md)).
 
 **Using a field.** `f.get(value)` is a reference to that field of `value`. With `mut` it is a mutable reference, written like any other mutable reference argument (see [Functions](../functions/functions.md)):
-```rift
+```edax
 u32&     a = f.get(person);          // when f.type is u32
 mut u32& b = f.get(mut person);
 ```
@@ -101,7 +101,7 @@ mut u32& b = f.get(mut person);
 - `f`, `a` and `m` must be **compile-time values** (a `for compile_time` loop variable, a `compile_time` constant). The type of `f.get(value)` depends on which field `f` is, so the compiler must know it.
 - **Privacy is respected.** `std::meta::fields<T>()` lists the fields that are visible where the call is written (see [Classes](../user-types/classes.md), [Headers, Sources and Modules](../organization/modules.md)). A generic function in another module sees the public fields of a class, and every field of a struct. There is no reflective way around `private`.
 - **Finding annotated declarations:** `functions_with<A>()` and `types_with<A>()` search the modules of the current build target and the modules it imports, nothing else. The result is sorted by namespace path, then name, so it doesn't depend on file or import order. A free function from the list is called with `f.call(args...)`. This builds registries (commands, plugins, components) without listing their entries by hand:
-  ```rift
+  ```edax
   for compile_time (std::meta::function f : std::meta::functions_with<command>()) {
       if (input == f.annotation<command>().expect("found by functions_with").word) {
           f.call(mut state);
@@ -111,7 +111,7 @@ mut u32& b = f.get(mut person);
 - Reflection is read-only. It cannot add, remove or rename fields, alternatives or functions. Adding methods to a type is done with an annotation's `generate` block (see [Annotations](annotations.md)), on the type's own declaration.
 
 ### `for compile_time`
-```rift
+```edax
 for compile_time (std::meta::field f : std::meta::fields<T>()) {
     ...
 }
@@ -125,7 +125,7 @@ for compile_time (std::meta::field f : std::meta::fields<T>()) {
 ## Examples
 
 ### 1. Printing any struct
-```rift
+```edax
 template<type T>
 void describe(T& value) {
     compile_time check (std::meta::is_struct<T>()) else f"describe needs a struct, not {std::type_name<T>()}";
@@ -141,7 +141,7 @@ describe(point{ .x = 1.0, .y = 2.5 });      // point { .x = 1.0 .y = 2.5 }
 ```
 
 ### 2. Field-by-field equality
-```rift
+```edax
 template<type T>
 bool fields_equal(T& a, T& b) {
     for compile_time (std::meta::field f : std::meta::fields<T>()) {
@@ -156,7 +156,7 @@ Each copy compares one field with that field's own `!=`. A field type without `!
 
 ### 3. Enum ↔ string
 The standard library has this built in: `std::meta::name_of(value)` and `std::meta::from_name<E>(text)`. Written by hand, it is:
-```rift
+```edax
 template<type E>
 std::static_str name_of(E value) {
     for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
@@ -181,7 +181,7 @@ std::option<E> parse_enum(std::str text) {
 ```
 
 ### 4. Choosing a type
-```rift
+```edax
 compile_time usize max_players = 100;
 compile_time type  player_id   = counter_type(max_players);   // u8
 
@@ -190,7 +190,7 @@ counter_type(max_players) other = 0;   // ERROR: a type value is used as a type 
 ```
 
 ### 5. Calling every method with a given annotation
-```rift
+```edax
 annotation(std::meta::target::function) struct command { std::static_str word; }
 
 class shell {
@@ -214,13 +214,13 @@ bool dispatch(mut shell& sh, std::str input) {
 The command table is built from the methods themselves: adding a command is adding one annotated method, and nothing else has to be kept in sync.
 
 ## Rationale
-- **Ordinary compile-time code, not macros:** metaprograms use the same syntax, types and error messages as the rest of the language. A reader who knows Rift can read them, and the compiler can check them like any other code.
+- **Ordinary compile-time code, not macros:** metaprograms use the same syntax, types and error messages as the rest of the language. A reader who knows Edax can read them, and the compiler can check them like any other code.
 - **`type` as a value:** one more value kind instead of a second language for type computations. Functions such as `counter_type` read like normal code.
 - **Type values are used through names:** a declaration `f.type x = ...;` or `counter_type(N) x = ...;` would make every type position also an expression position, which makes C++-like syntax ambiguous. Naming the type first keeps the grammar simple and the code readable.
 - **`f.get(value)` instead of a splice operator:** no new symbol. It reads as what it does, and `mut` marks a mutable access the same way as everywhere else.
 - **`for compile_time` mirrors `if compile_time`:** the same word says "decided by the compiler", and both type-check each copy or branch on its own.
 - **Template-argument form for `std::meta`:** consistent with the traits of 15 (`std::is_integer<T>()`).
 - **Privacy:** reflection that could read private fields would make `private` advisory. Listing only visible fields keeps 06 and 09 true.
-- **Only methods are generated, and only through annotations:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types, plus derive-style methods on a type its author marked (see [Annotations](annotations.md)). Not generating whole types or free functions means every name has a declaration a reader can find. Code generation beyond that is a build step (see [Rift as a Build System](../../build/build-system.md)).
+- **Only methods are generated, and only through annotations:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types, plus derive-style methods on a type its author marked (see [Annotations](annotations.md)). Not generating whole types or free functions means every name has a declaration a reader can find. Code generation beyond that is a build step (see [Edax as a Build System](../../build/build-system.md)).
 - **Registries from the import graph only:** `functions_with` sees exactly what the target compiles, so its result is deterministic and changes only when the code does.
 - **Methods as handles with `m.call(...)`:** the reflected call is checked like a written one, so reflection never bypasses types, `mut` or privacy.

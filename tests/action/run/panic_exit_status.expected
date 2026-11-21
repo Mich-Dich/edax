@@ -1,4 +1,4 @@
 exit: 134
 --- stdout
 --- stderr
-tests/action/run/panic_exit_status.rifts:3:5: panic: main returned -1, which is not a valid exit status (0 to 255)
+tests/action/run/panic_exit_status.ed:3:5: panic: main returned -1, which is not a valid exit status (0 to 255)

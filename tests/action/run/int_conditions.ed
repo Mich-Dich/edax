@@ -1,0 +1,10 @@
+// RUN: edaxc run %s
+// Integers and raw pointers in conditions mean "!= 0" / "not null" (spec 02).
+import std;
+i32 main() {
+    u32 f = 6;
+    if (f & 2) { std::println("yes"); }
+    if (f & 1) { std::println("no"); }
+    while (f & 4) { std::println("loop"); return 0; }
+    return 1;
+}

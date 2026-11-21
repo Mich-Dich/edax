@@ -10,21 +10,21 @@
 
 ### Blocks as values
 `if`, `match` and plain `{ }` blocks can be used as expressions. Their value is the **last expression without a `;`**:
-```rift
+```edax
 std::str label = if (x > 0) { "positive" } else { "non-positive" };
 ```
 - When used as an expression, an `if` must have an `else`, and every branch must produce the same type.
 - Branches of type `never` (`return`, `break`, `continue`, `std::panic(...)`) fit with any type.
 
 ### `if` / `else`
-```rift
+```edax
 if (ptr) { ... }                       // OK: std::raw_ptr in a condition
 if (count > 10) { ... } else if (count) { ... } else { ... }
 ```
 
 ### `else` after a call
 A call to a function marked **`@std::check_result`** (see [Annotations](../compile-time/annotations.md)), written as a statement, may be followed by an `else` block. The block runs when the call returns false:
-```rift
+```edax
 std::log::validate(texture.is_valid(), f"texture '{name}' is invalid") else {
     return false;
 }
@@ -36,7 +36,7 @@ connect(address) else { continue; }          // connect is declared @std::check_
 - `@std::check_result` is for functions that report a failure themselves (log it, count it) and return whether the check passed, like `std::log::validate` and `std::log::assert`.
 
 ### `while`
-```rift
+```edax
 while (file.has_more()) {
     ...
 }
@@ -44,7 +44,7 @@ while (file.has_more()) {
 `break` and `continue` work in `while` and `for`.
 
 ### `for`: range-based only
-```rift
+```edax
 for (employee& e : employees) { ... }         // immutable reference
 for (mut employee& e : employees) { ... }     // mutable reference (employees must be mut)
 for (u32 x : numbers) { ... }                 // by value: copy types only
@@ -68,7 +68,7 @@ for (u8 b : 0..=255) { ... }                  // inclusive range
   - `match (mut v)` makes them mutable references (`v` must be `mut`).
   - If it is a temporary or `move v`, bindings own the values.
 
-```rift
+```edax
 std::str label = match (code) {
     200 => "ok",
     404 => "not_found",

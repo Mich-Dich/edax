@@ -1,0 +1,10 @@
+// RUN: edaxc run %s
+// An index check of the library reports the line that indexes (spec 16, 23).
+import std;
+i32 main() {
+    mut std::darray<u32> d = default;
+    d.push(1);
+    std::println(f"{d[0]}");
+    std::println(f"{d[3]}");
+    return 0;
+}

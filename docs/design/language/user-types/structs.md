@@ -21,7 +21,7 @@ Only with designated fields: `T{ .field = value, ... }`.
 - Fields left out take their default. Leaving out a field **without** a default is an error.
 - Positional construction `employee{"Ann", 30, 1.0}` is not allowed.
 
-```rift
+```edax
 struct employee {
     std::string name;
     u32         age    = 0;
@@ -50,7 +50,7 @@ employee g = employee{ std::string::from("x"), 1, 2.0 };  // ERROR: positional
 - `==` is **opt-in**: `bool operator==(employee& other) = default;` compares field by field.
 
 ### Header / source
-A struct used by other modules is declared **completely** in the `.rifth` (all fields plus method declarations). Its method bodies go in a `struct` block in the `.rifts`, which may not add fields (see [Headers, Sources and Modules](../organization/modules.md)). A struct without methods only needs the header.
+A struct used by other modules is declared **completely** in the `.edh` (all fields plus method declarations). Its method bodies go in a `struct` block in the `.ed`, which may not add fields (see [Headers, Sources and Modules](../organization/modules.md)). A struct without methods only needs the header.
 
 ## Rationale
 - **What makes a struct plain:** everything is visible, there is no hidden state, no inheritance and no destructor. Methods don't change that, so they have no restrictions.

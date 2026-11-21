@@ -2,12 +2,12 @@
 
 A **check** is a condition that must hold. If it doesn't, you get either a **compile error** or a **panic**. Every check says *when* it is evaluated, using the same `compile_time` / `run_time` words as functions (see [Compile-Time Evaluation](../compile-time/compile-time.md)).
 
-Checks are written in the **source** (`.rifts`) only. Headers never contain them.
+Checks are written in the **source** (`.ed`) only. Headers never contain them.
 
 ## Rules
 
 ### Check vs. assert
-A C/C++ `assert` is a run-time check; Rift's is `run_time check`. What's new is that the same statement can also be evaluated by the compiler:
+A C/C++ `assert` is a run-time check; Edax's is `run_time check`. What's new is that the same statement can also be evaluated by the compiler:
 
 | Statement | Evaluated | If the condition is false | In the binary? | Arguments may be |
 |---|---|---|---|---|
@@ -47,19 +47,19 @@ compile_time run_time(std::build::mode::debug) check (...) else ...;     // comp
 ```
 - A listed mode also covers every mode **derived from** it (see [Build Modes](../../build/build-modes.md)): `run_time(std::build::mode::release)` applies to `release`, `release_with_debug_info` and a user mode based on either.
 - Modes are written with their **full names**, like every other name: the built-in ones are the classes `std::build::mode::debug`, `::release` and `::release_with_debug_info` (see [Build Modes](../../build/build-modes.md)). A bare `debug` is an error; there is no implicit namespace.
-- A user mode is a class derived in `build.rifts` (`build::profile`, see [Build Modes](../../build/build-modes.md) and [Rift as a Build System](../../build/build-system.md)). It is only valid if the build defines it, so library code should list built-in modes only.
+- A user mode is a class derived in `build.ed` (`build::profile`, see [Build Modes](../../build/build-modes.md) and [Edax as a Build System](../../build/build-system.md)). It is only valid if the build defines it, so library code should list built-in modes only.
 - A check **without** a list is in every mode. Only a mode whose `run_time_checks()` returns `gated_only` or `none` and whose `allow_undefined_behavior()` returns `true` can remove it (see [Build Modes](../../build/build-modes.md)).
 - For entry checks the **caller's** mode decides (see [Build Modes](../../build/build-modes.md), "Scope of a mode").
 - Mode-gated checks have no side effects to lose: the condition and the message are only evaluated when the check is active. That's why removing them can't change what a correct program does.
 
-```rift
+```edax
 f32 sample(std::span<f32> data, usize i) {
     run_time check (i < data.len()) else f"sample index {i} out of range (len {data.len()})";
     run_time(std::build::mode::debug) check (data.is_sorted()) else "sample() expects sorted data";     // O(n): debug only
     ...
 }
 
-compile_time(std::build::mode::release) check (!build::dev_tools.value()) else "dev_tools must be off in release builds";   // a setting of build.rifts
+compile_time(std::build::mode::release) check (!build::dev_tools.value()) else "dev_tools must be off in release builds";   // a setting of build.ed
 ```
 
 ### Where checks can be written
@@ -71,7 +71,7 @@ compile_time(std::build::mode::release) check (!build::dev_tools.value()) else "
 | **Elsewhere in a function body** | Not allowed | Where they are written (a normal assert) |
 
 The **entry** of a function is the run of `check` statements at the very start of its body, before any other statement. Entry checks are the function's preconditions: the reader sees them first, and the compiler evaluates them as part of each call. There are no postconditions; a condition on the result is a `run_time check` before the `return`.
-```rift
+```edax
 std::result<u32, uart::error> configure(u32 baud) {
     compile_time run_time check (uart::is_supported(baud)) else f"{baud} baud is not supported by this UART";
     // ---- end of entry: normal body from here on ----
@@ -90,7 +90,7 @@ These count as compile-time values: literals, `compile_time` constants, template
 
 ### Diagnostic functions (in `std::`)
 These are used in block-form checks, and anywhere else compile-time code runs (such as `if compile_time` branches, see [Compile-Time Evaluation](../compile-time/compile-time.md)):
-```rift
+```edax
 compile_time never std::compile_error(std::format_args message);
 compile_time never std::compile_error(std::diagnostic id, std::format_args message);
 compile_time void  std::compile_warning(std::diagnostic id, std::format_args message);
@@ -104,24 +104,24 @@ compile_time std::static_str      std::literal_text(<parameter>);      // the ar
                                                                        // hole, or ""
 ```
 - **Warnings require an id.** An id is a **declared name**, not a string: a `compile_time std::diagnostic` constant, with a comment above it that explains it:
-  ```rift
-  // gfx.rifth
+  ```edax
+  // gfx.edh
   // Calls that are going away; each warning names the replacement.
   compile_time std::diagnostic deprecated = default;
   ```
-  Its full name is the id: `gfx::deprecated`. A misspelled id is an unknown name (a compile error), and a string where an id belongs is an error. Users switch warnings per id: `riftc --warn=gfx::deprecated=off|error|on`. An id on an error is optional; `riftc explain <id>` shows the comment above the declaration (std ids come with riftc; `gfx::deprecated` is looked up in the `.rifth`/`.rifts` files under the current directory that declare namespace `gfx`). The id is the diagnostic's namespace path (see [Namespaces](../organization/namespaces.md)), not its module's.
+  Its full name is the id: `gfx::deprecated`. A misspelled id is an unknown name (a compile error), and a string where an id belongs is an error. Users switch warnings per id: `edaxc --warn=gfx::deprecated=off|error|on`. An id on an error is optional; `edaxc explain <id>` shows the comment above the declaration (std ids come with edaxc; `gfx::deprecated` is looked up in the `.edh`/`.ed` files under the current directory that declare namespace `gfx`). The id is the diagnostic's namespace path (see [Namespaces](../organization/namespaces.md)), not its module's.
 - Notes emitted during a check are attached to that check's error or warning, in whatever order they're called.
 - A **panic during compile-time evaluation** is a compile error with the panic's message.
 - Check evaluation has a step budget. Exceeding it is an error, which keeps builds fast (principle 9).
 
 ### Where errors are reported
-- A failed entry check is reported **at the call**, underlining the arguments the condition reads. One note points to the check (`check in uart.rifts:14`).
+- A failed entry check is reported **at the call**, underlining the arguments the condition reads. One note points to the check (`check in uart.ed:14`).
 - A type-body check is reported at the code that instantiated the type.
 - In general: at the first location *outside the module that wrote the check*, plus at most 3 notes for the call/instantiation chain. If everything is in one module, it is reported at the check itself.
 - A failed `run_time` entry check is evaluated at the call site, so the panic message names **the caller's line**, followed by the check's location.
 
 ### Headers and compilation
-Checks live **only in the `.rifts`**. The source is the single source of truth, and headers stay a plain list of declarations. The checks still reach importers through the **compiled module interface**, the same way template bodies do (see [Headers, Sources and Modules](../organization/modules.md), [Templates](../compile-time/templates.md)). It carries:
+Checks live **only in the `.ed`**. The source is the single source of truth, and headers stay a plain list of declarations. The checks still reach importers through the **compiled module interface**, the same way template bodies do (see [Headers, Sources and Modules](../organization/modules.md), [Templates](../compile-time/templates.md)). It carries:
 
 | Carried | Not carried |
 |---|---|
@@ -133,8 +133,8 @@ Since importers already wait for the source to compile (for class layout), check
 ## Examples
 
 ### 1. Template argument rules (type body)
-```rift
-// net.rifts
+```edax
+// net.ed
 template<type T, usize N>
 class ring_buffer {
     compile_time check (N > 0) else f"ring_buffer<{std::type_name<T>()}, 0>: capacity must be at least 1";
@@ -146,39 +146,39 @@ private:
     std::array<T, N> items = default;
 }
 ```
-```rift
-// main.rifts
+```edax
+// main.ed
 net::ring_buffer<packet, 100> queue = default;
 ```
 ```
 error: ring_buffer capacity must be a power of two, got 100
- --> main.rifts:4:5
+ --> main.ed:4:5
   |
 4 |     net::ring_buffer<packet, 100> queue = default;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: check in net.rifts:4
+note: check in net.ed:4
 ```
 The checks run in order, so the second one never sees `N == 0`.
 
 ### 2. A value that must be known at compile time
 On a microcontroller, the pin number selects a register, so it has to be a constant:
-```rift
-// gpio.rifts
+```edax
+// gpio.ed
 void configure_output(u8 pin) {
     compile_time check (pin < 32) else f"pin {pin} doesn't exist: this chip has pins 0..31";
     ...
 }
 ```
-```rift
+```edax
 gpio::configure_output(5);          // OK
 gpio::configure_output(40);         // compile error: pin 40 doesn't exist ...
 gpio::configure_output(user_pin);   // compile error: 'pin' must be a compile-time value
-                                    //   (required by the compile_time check in gpio.rifts:3)
+                                    //   (required by the compile_time check in gpio.ed:3)
 ```
 
 ### 3. Known values early, run-time values safely
-```rift
-// uart.rifts
+```edax
+// uart.ed
 compile_time run_time bool is_supported(u32 baud) {
     return baud == 9600 || baud == 38400 || baud == 115200 || baud == 921600;
 }
@@ -188,15 +188,15 @@ std::result<u32, uart::error> configure(u32 baud) {
     ...
 }
 ```
-```rift
+```edax
 _ = uart::configure(115201);       // compile error at this line, underlining 115201
 _ = uart::configure(user_rate);    // compiles; panics at this line if user_rate is unsupported
 ```
 If a bad run-time value should return `uart::error::bad_baud` instead of panicking, don't use a check for it: write a normal `if` in the body. A failed check always means "the caller has a bug".
 
 ### 4. Replacing a generic error message (block form)
-```rift
-// log.rifts
+```edax
+// log.ed
 template<type T : std::formattable>
 void value(std::static_str label, T& item) {
     compile_time check {
@@ -211,7 +211,7 @@ void value(std::static_str label, T& item) {
 The user sees this message *instead of* the generic "does not implement `std::formattable`".
 
 ### 5. Deprecation
-```rift
+```edax
 void draw_quad(f32 x, f32 y) {
     compile_time check {
         std::compile_warning(gfx::deprecated, "draw_quad() is deprecated; use draw_rect(rect) instead");
@@ -222,8 +222,8 @@ void draw_quad(f32 x, f32 y) {
 This is an entry check, so every call gets the warning at its own line.
 
 ### 6. Layout guarantees (file scope)
-```rift
-// telemetry.rifts
+```edax
+// telemetry.ed
 struct packet_header {
     u16 sync;
     u8  type;
@@ -238,8 +238,8 @@ compile_time check (std::align_of<packet_header>() == 8) else "packet_header mus
 
 ### 7. The relative-path warning, as library code
 The warning from 19 is an entry check in the standard library's source:
-```rift
-// library/std/std.rifts
+```edax
+// library/std/std.ed
 class file {
 public:
     static std::result<std::file, std::io_error> open(std::str path) {
@@ -256,14 +256,14 @@ public:
     }
 }
 ```
-The warning is reported at the argument (`std::location_of(path)`), and `riftc explain
-std::relative_path` prints the comment above its declaration in `std.rifth`.
+The warning is reported at the argument (`std::location_of(path)`), and `edaxc explain
+std::relative_path` prints the comment above its declaration in `std.edh`.
 `std::is_compile_time(param)` and `std::location_of(param)` take a parameter of the function and
 are only allowed in its compile-time code.
 `std::is_compile_time(param)` lets a block-form check look at a parameter **only when** the call gives it a compile-time value. Without it, reading `path` in a `compile_time check` would make a compile-time argument required.
 
 ### 8. The `ASSERT` from the C++ example
-```rift
+```edax
 run_time check (result == vk::result::success) else f"Failed to create {what} pipeline";
 ```
 There are no macros, so a malformed check is a normal syntax or name error at that line. For example, `{wat}` in the message gives `unknown name 'wat'`, pointing at `wat`. That replaces 90 lines of macro-expansion notes.

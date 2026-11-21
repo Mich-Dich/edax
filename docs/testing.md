@@ -1,4 +1,4 @@
-# Testing the Rift compiler
+# Testing the Edax compiler
 
 Everything runs from bash and prints plain text. One command builds and runs all suites:
 
@@ -25,14 +25,14 @@ build succeeds and every test passes.
 | `scripts/test.sh -v` | print every test, not only failures |
 | `CXX=clang++ BUILD_DIR=build-clang scripts/test.sh` | separate build with another compiler |
 | `ctest --test-dir build --output-on-failure` | the same three suites through CTest |
-| `build/tests/rift_unit_tests [filter] [-v] [--list]` | the unit test binary directly |
+| `build/tests/edax_unit_tests [filter] [-v] [--list]` | the unit test binary directly |
 
 ## The three suites
 
 ### 1. Unit tests: `tests/unit/test_*.cpp`
 
 C++ tests of compiler internals (source map, UTF-8, diagnostics, lexer, driver), linked
-against `librift`. They use a tiny in-repo framework (`tests/unit/framework/rift_test.hpp`),
+against `libedax`. They use a tiny in-repo framework (`tests/unit/framework/edax_test.hpp`),
 no external dependencies:
 
 ```cpp
@@ -58,13 +58,13 @@ FAIL    unit     lexer: ranges and method calls are not floats
 Use unit tests for **one component in isolation**, edge cases, and anything awkward to
 express as a source file.
 
-### 2. Feature tests: `tests/feature/<spec-chapter>/*.rifts`
+### 2. Feature tests: `tests/feature/<spec-chapter>/*.ed`
 
 One file per language rule, grouped by spec chapter (`01-lexical`, `02-types`, ...). The
-runner compiles the file with `riftc check --diagnostic-format=short` and compares the
+runner compiles the file with `edaxc check --diagnostic-format=short` and compares the
 diagnostics with **inline annotations**:
 
-```rift
+```edax
 u32 a = 0x;          //~ error[E1009]
 u32 b = 0b102;       //~ error[E1010]: invalid digit '2'
 u32 c = `5`;         //~ error[E1001]
@@ -85,38 +85,38 @@ bad file showing what is rejected.
 **Stopping early.** `// STOP-AFTER: parse` (or `lex`, `resolve`, `types`, `ownership`) runs only the phases up to
 that one. Syntax tests use it, because their snippets refer to names that are never declared.
 
-**Multi-file tests.** A directory whose name ends in `_project` is one test: `main.rifts` is
+**Multi-file tests.** A directory whose name ends in `_project` is one test: `main.ed` is
 the entry, the directory is the project root (`--root`), and annotations in *every* file of
 the directory are matched against diagnostics in that file:
 
 ```
 tests/feature/09-modules/visibility_project/
-    main.rifts        import lib;  ...  lib::account{ .amount = 5 };   //~ error[E3036]
-    lib.rifth         the module's interface
-    lib.rifts         its implementation
+    main.ed        import lib;  ...  lib::account{ .amount = 5 };   //~ error[E3036]
+    lib.edh         the module's interface
+    lib.ed         its implementation
 ```
 
 Files inside a `_project` directory are never run as tests on their own, in either suite, so
 action tests can use them as fixtures:
-`// RUN: riftc check --root=tests/feature/09-modules/counter_project tests/feature/09-modules/counter_project/main.rifts`.
+`// RUN: edaxc check --root=tests/feature/09-modules/counter_project tests/feature/09-modules/counter_project/main.ed`.
 
-### 3. Action tests: `tests/action/**/*.rifts` + `.expected`
+### 3. Action tests: `tests/action/**/*.ed` + `.expected`
 
-End-to-end runs of the real `riftc` binary. Each test names its command line; the runner
+End-to-end runs of the real `edaxc` binary. Each test names its command line; the runner
 compares **stdout, stderr and exit code exactly** with the golden file next to it:
 
-```rift
-// RUN: riftc check %s
+```edax
+// RUN: edaxc check %s
 u32 main() { return 0; }
 ```
 
 `%s` is the test file and `%S` its directory, relative to the repository root (the runner's
 working directory), so paths in the output are stable. `%t` is a fresh temporary directory
-for outputs (`// RUN: riftc build %s -o %t/prog`); it is written as `%t` in the golden file.
-The RUN line may point at any file, e.g. `// RUN: riftc check examples/employees.rifts`.
+for outputs (`// RUN: edaxc build %s -o %t/prog`); it is written as `%t` in the golden file.
+The RUN line may point at any file, e.g. `// RUN: edaxc check examples/employees.ed`.
 
-**Running compiled programs.** `riftc run` builds the program in a temporary directory and
-exits with the *program's* status, so a `// RUN: riftc run %s` test records what the
+**Running compiled programs.** `edaxc run` builds the program in a temporary directory and
+exits with the *program's* status, so a `// RUN: edaxc run %s` test records what the
 program printed and how it ended. `tests/action/run/` holds these: one program per language
 area (arithmetic, control flow, structs, enums, formatting, globals, modules, evaluation
 order) plus one test per kind of panic. A panic prints `file:line:col: panic: message` on
@@ -127,7 +127,7 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_overflow.rifts:8:12: panic: integer overflow in '+' (u8)
+tests/action/run/panic_overflow.ed:8:12: panic: integer overflow in '+' (u8)
 ```
 
 `tests/action/build/` covers the `build` command itself: modes, output paths, E6001 for
@@ -139,26 +139,26 @@ Golden file format (`tests/action/check/errors_short.expected`):
 exit: 1
 --- stdout
 --- stderr
-tests/action/check/errors_short.rifts:2:10: error[E1010]: invalid digit '2' in base-2 literal
+tests/action/check/errors_short.ed:2:10: error[E1010]: invalid digit '2' in base-2 literal
 ```
 
 On a mismatch the runner prints a unified diff. If the change is intended, run
 `scripts/test.sh --update` and review the golden files with `git diff` before committing.
 
 Use action tests for **what a user sees**: CLI behavior, exit codes, the exact diagnostic
-layout, token dumps (`riftc lex`), syntax trees (`riftc parse`), merged module symbol tables
-(`riftc symbols`), typed syntax trees (`riftc typed`), program output (`riftc run`), and the
+layout, token dumps (`edaxc lex`), syntax trees (`edaxc parse`), merged module symbol tables
+(`edaxc symbols`), typed syntax trees (`edaxc typed`), program output (`edaxc run`), and the
 example programs.
 `tests/feature/99-programs/` holds complete programs that must check without any diagnostic;
 they guard against false errors.
-A `riftc parse` golden file is the easiest way to check *how* something parsed, e.g.
-operator precedence in `tests/action/parse/precedence.rifts`.
+A `edaxc parse` golden file is the easiest way to check *how* something parsed, e.g.
+operator precedence in `tests/action/parse/precedence.ed`.
 
 ## Tests for features that don't exist yet: `XFAIL`
 
 Any feature or action test can say it is expected to fail:
 
-```rift
+```edax
 // XFAIL: needs the type checker (spec 02)
 u8 d = 300;          //~ error
 ```
@@ -168,7 +168,7 @@ the test starts passing, which is reported as `XPASS` **and fails the run**, so 
 removed and the test becomes a real regression test. This lets you write spec tests ahead of
 the implementation.
 
-## Exit codes of `riftc`
+## Exit codes of `edaxc`
 
 | Code | Meaning |
 |---|---|
@@ -179,13 +179,13 @@ the implementation.
 
 ## Diagnostic codes
 
-Every diagnostic has a stable code from `compiler/include/rift/diagnostic_codes.def`
-(`E0xxx` driver, `E1xxx` lexer, `E2xxx` parser, ...; `W` for warnings). `riftc explain`
-lists them and `riftc explain E1003` describes one. Tests should match on codes rather than
+Every diagnostic has a stable code from `compiler/include/edax/diagnostic_codes.def`
+(`E0xxx` driver, `E1xxx` lexer, `E2xxx` parser, ...; `W` for warnings). `edaxc explain`
+lists them and `edaxc explain E1003` describes one. Tests should match on codes rather than
 message text, so messages can be improved without touching every test.
 
 ## Adding a compiler phase
 
 1. Add its codes to `diagnostic_codes.def` (the `explain_all` action test will fail; `--update` it).
-2. Call it from `run_frontend` in `compiler/src/driver.cpp` (and add a dump command like `lex` if useful, e.g. `riftc parse` printing the AST).
+2. Call it from `run_frontend` in `compiler/src/driver.cpp` (and add a dump command like `lex` if useful, e.g. `edaxc parse` printing the AST).
 3. Unit-test the component, add good/bad feature files for each rule, remove `XFAIL` from the feature tests it now handles.

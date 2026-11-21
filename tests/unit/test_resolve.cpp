@@ -1,20 +1,20 @@
 #include "project.hpp"
-#include "rift_test.hpp"
+#include "edax_test.hpp"
 
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
 
-using namespace rift;
+using namespace edax;
 namespace fs = std::filesystem;
 
 namespace {
 
-using rift_test::Project;
-using rift_test::Stop;
+using edax_test::Project;
+using edax_test::Stop;
 
-std::string codes_of(const std::string& main) { return Project({{"main.rifts", main}}, Stop::resolve).codes(); }
+std::string codes_of(const std::string& main) { return Project({{"main.ed", main}}, Stop::resolve).codes(); }
 
 // The body statements of the first function in the entry module's source.
 ast::BlockExpr& first_body(Project& p) {
@@ -27,9 +27,9 @@ ast::BlockExpr& first_body(Project& p) {
 } // namespace
 
 TEST_CASE("resolve: module names follow directories") {
-    CHECK_EQ(module_name_for("proj/shapes/circle.rifth", "proj"), std::string("shapes::circle"));
-    CHECK_EQ(module_name_for("proj/main.rifts", "proj"), std::string("main"));
-    CHECK_EQ(module_name_for("./main.rifts", "."), std::string("main"));
+    CHECK_EQ(module_name_for("proj/shapes/circle.edh", "proj"), std::string("shapes::circle"));
+    CHECK_EQ(module_name_for("proj/main.ed", "proj"), std::string("main"));
+    CHECK_EQ(module_name_for("./main.ed", "."), std::string("main"));
 }
 
 TEST_CASE("resolve: a clean program has no diagnostics") {
@@ -37,7 +37,7 @@ TEST_CASE("resolve: a clean program has no diagnostics") {
 }
 
 TEST_CASE("resolve: uses point at their declarations") {
-    Project p({{"main.rifts", "u32 f(u32 x) { u32 y = x; return y; }\n"}});
+    Project p({{"main.ed", "u32 f(u32 x) { u32 y = x; return y; }\n"}});
     REQUIRE_EQ(p.codes(), std::string());
     ast::BlockExpr& body = first_body(p);
     auto& decl = body.statements[0]->as<ast::VariableStmt>();
@@ -70,9 +70,9 @@ TEST_CASE("resolve: overloads by parameter types") {
 }
 
 TEST_CASE("resolve: header and source merge into one symbol") {
-    Project p({{"main.rifts", "import lib;\nvoid main() { u32 x = lib::f(1); }\n"},
-               {"lib.rifth", "namespace lib {\nu32 f(u32 x);\nclass c {\npublic:\n    u32 get();\n}\n}\n"},
-               {"lib.rifts", "namespace lib {\nu32 f(u32 x) { return x; }\nclass c {\npublic:\n    u32 get() { return this.v; }\n"
+    Project p({{"main.ed", "import lib;\nvoid main() { u32 x = lib::f(1); }\n"},
+               {"lib.edh", "namespace lib {\nu32 f(u32 x);\nclass c {\npublic:\n    u32 get();\n}\n}\n"},
+               {"lib.ed", "namespace lib {\nu32 f(u32 x) { return x; }\nclass c {\npublic:\n    u32 get() { return this.v; }\n"
                              "private:\n    u32 v = 0;\n}\n}\n"}});
     REQUIRE_EQ(p.codes(), std::string());
     sema::Module& lib = p.module("lib");
@@ -90,29 +90,29 @@ TEST_CASE("resolve: header and source merge into one symbol") {
 }
 
 TEST_CASE("resolve: layout is header fields, then private fields in source order") {
-    Project p({{"main.rifts", "import lib;\nvoid main() { }\n"},
-               {"lib.rifth", "class c {\npublic:\n    u32 a = 0;\n    u32 b = 0;\n}\n"},
-               {"lib.rifts", "class c {\nprivate:\n    u32 z = 0;\n    u32 y = 0;\n}\n"}});
+    Project p({{"main.ed", "import lib;\nvoid main() { }\n"},
+               {"lib.edh", "class c {\npublic:\n    u32 a = 0;\n    u32 b = 0;\n}\n"},
+               {"lib.ed", "class c {\nprivate:\n    u32 z = 0;\n    u32 y = 0;\n}\n"}});
     REQUIRE_EQ(p.codes(), std::string());
     CHECK(p.symbols("lib").find("layout: a b z y") != std::string::npos);
 }
 
 TEST_CASE("resolve: imports") {
-    CHECK_EQ(Project({{"main.rifts", "import nope;\n"}}).codes(), std::string("E3001"));
-    CHECK_EQ(Project({{"main.rifts", "import x;\n"}, {"x.rifts", "void f() { }\n"}}).codes(), std::string("E3003"));
-    CHECK_EQ(Project({{"main.rifts", "import a;\n"}, {"a.rifth", "import b;\n"}, {"b.rifth", "import a;\n"}}).codes(),
+    CHECK_EQ(Project({{"main.ed", "import nope;\n"}}).codes(), std::string("E3001"));
+    CHECK_EQ(Project({{"main.ed", "import x;\n"}, {"x.ed", "void f() { }\n"}}).codes(), std::string("E3003"));
+    CHECK_EQ(Project({{"main.ed", "import a;\n"}, {"a.edh", "import b;\n"}, {"b.edh", "import a;\n"}}).codes(),
              std::string("E3002"));
-    CHECK_EQ(Project({{"main.rifts", "import d::e;\nvoid f() { u32 x = d::g(); }\n"}, {"d/e.rifth", "namespace d {\nu32 g();\n}\n"},
-                      {"d/e.rifts", "namespace d {\nu32 g() { return 0; }\n}\n"}})
+    CHECK_EQ(Project({{"main.ed", "import d::e;\nvoid f() { u32 x = d::g(); }\n"}, {"d/e.edh", "namespace d {\nu32 g();\n}\n"},
+                      {"d/e.ed", "namespace d {\nu32 g() { return 0; }\n}\n"}})
                  .codes(),
              std::string());
 }
 
 TEST_CASE("resolve: modules must be imported where they are used") {
-    Project p({{"main.rifts", "import a;\nvoid f() { u32 x = b::g(); }\n"},
-               {"a.rifth", "import b;\n"},
-               {"b.rifth", "namespace b {\nu32 g();\n}\n"},
-               {"b.rifts", "namespace b {\nu32 g() { return 0; }\n}\n"}});
+    Project p({{"main.ed", "import a;\nvoid f() { u32 x = b::g(); }\n"},
+               {"a.edh", "import b;\n"},
+               {"b.edh", "namespace b {\nu32 g();\n}\n"},
+               {"b.ed", "namespace b {\nu32 g() { return 0; }\n}\n"}});
     CHECK_EQ(p.codes(), std::string("E3023"));
 }
 

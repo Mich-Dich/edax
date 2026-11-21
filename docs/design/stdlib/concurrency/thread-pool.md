@@ -7,7 +7,7 @@ The pool follows the thread rules of 27: what a task borrows stays borrowed unti
 ## Rules
 
 ### 1. Creating a pool
-```rift
+```edax
 std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{
     .threads = std::thread::available_parallelism(),
 });
@@ -37,7 +37,7 @@ Works like `std::thread::spawn` (see [Threads](threads.md)): the same lambda rul
 - **Tasks must not block for long:** a task waiting on I/O, a lock held elsewhere or a channel keeps a worker away from every other task. Blocking work belongs on its own `std::thread`.
 
 ### 3. Parallel loops: `for_chunks` and `for_index_chunks`
-```rift
+```edax
 pool.for_chunks(data, chunk_size, f);           // data: std::span<T> or std::span<mut T>
 pool.for_index_chunks(count, chunk_size, f);    // f(usize from, usize to) over 0..count
 ```
@@ -49,7 +49,7 @@ pool.for_index_chunks(count, chunk_size, f);    // f(usize from, usize to) over 
 - `f` gets whole chunks, not single elements, so its inner loop is ordinary sequential code that the compiler can vectorize.
 
 ### 4. Parallel reduction: `reduce_chunks`
-```rift
+```edax
 R total = pool.reduce_chunks(data, chunk_size, identity, map, combine);
 ```
 - `map(std::span<T> chunk) → R` computes one result per chunk; `combine(R a, R b) → R` joins two results; `identity` is the result for empty data.
@@ -84,7 +84,7 @@ Ready-made algorithms built on a pool. Each takes the pool as its first argument
 ## Examples
 
 ### 1. Scaling a buffer in place
-```rift
+```edax
 void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor) {
     pool.for_chunks(samples.as_mut_span(), 16 * 1024, [factor](std::span<mut f32> part) {
         for (mut f32& x : part) {
@@ -96,7 +96,7 @@ void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor
 Compare example 2 of 27: no handles, no darray, no OS threads started, and the inner loop vectorizes.
 
 ### 2. A deterministic parallel sum
-```rift
+```edax
 f64 total(std::thread_pool& pool, std::span<f64> values) {
     return pool.reduce_chunks(values, 8 * 1024, 0.0,
         [](std::span<f64> part) {
@@ -111,7 +111,7 @@ f64 total(std::thread_pool& pool, std::span<f64> values) {
 ```
 
 ### 3. Nested tasks: summing a tree
-```rift
+```edax
 struct node {
     u64                                value = 0;
     std::option<std::unique_ptr<node>> left  = std::none;
@@ -136,14 +136,14 @@ u64 child_sum(std::thread_pool& pool, std::option<std::unique_ptr<node>>& child)
 - In real code, stop spawning below a certain depth: a task per node is too fine-grained, the same way a chunk size of 1 would be.
 
 ### 4. A task that outlives the function
-```rift
+```edax
 std::thread_pool::task<std::darray<u8>> start_compress(std::thread_pool& pool, std::darray<u8> input) {
     return pool.spawn([move input]() { return compress(input); });   // owns its data: a normal, returnable task
 }
 ```
 
 ### 5. A capture that would race
-```rift
+```edax
 mut u64 count = 0;
 pool.for_index_chunks(n, 1024, [mut &count](usize from, usize to) { count += to - from; });   // ERROR
 ```

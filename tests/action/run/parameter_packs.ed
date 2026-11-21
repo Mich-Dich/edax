@@ -1,0 +1,35 @@
+// RUN: edaxc run %s
+// Parameter packs (templates, "Parameter packs"): walked with for compile_time, passed on whole
+// with values..., counted with values.len(), after ordinary template parameters.
+import std;
+
+template<type... A>
+void print_all(A&... values) {
+    for compile_time (A& v : values) {
+        std::print(f"{v} ");
+    }
+    std::println(f"({values.len()} values)");
+}
+
+template<type... A>
+void forward(std::str label, A&... values) {
+    std::print(f"{label}: ");
+    print_all(values...);
+}
+
+template<type T, type... A>
+usize count_same(T& first, A&... rest) {
+    mut usize n = 0;
+    for compile_time (A& v : rest) {
+        if compile_time (std::is_same<T, A>()) { n += 1; }
+    }
+    return n;
+}
+
+i32 main() {
+    print_all(1u32, "two", 3.0);
+    print_all();
+    forward("again", 'x', true);
+    std::println(f"{count_same(1u32, 2u32, 3.0, 4u32)}");
+    return 0;
+}

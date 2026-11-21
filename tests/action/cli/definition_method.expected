@@ -1,4 +1,4 @@
 exit: 0
 --- stdout
-tests/action/cli/definition_project/main.rifts:7:9
+tests/action/cli/definition_project/main.ed:7:9
 --- stderr

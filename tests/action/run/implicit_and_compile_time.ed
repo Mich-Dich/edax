@@ -1,0 +1,78 @@
+// RUN: edaxc run %s
+// `implicit` parameters, std::call_site, std::implicit<T>, `compile_time` parameters, file
+// annotations and the reflection around a call site (spec 31).
+import std;
+
+@where_level{ .n = 3 };
+
+annotation(std::meta::target::file, std::meta::target::type, std::meta::target::function)
+struct where_level {
+    u32 n = 0;
+}
+
+namespace app {
+    void show(std::str what, implicit std::call_site where) {
+        std::println(f"{what}: {where.file_name}:{where.line}:{where.column} in {where.function} ({where.function_name}, namespace '{where.namespace_name}', module {where.module}, target {where.target})");
+    }
+
+    void relay(std::str what, implicit std::call_site where) {
+        app::show(what, where);   // reported at relay's caller
+    }
+
+    struct zone : std::implicit<app::zone> {
+        std::static_str name = "";
+        u32 line = 0;
+        compile_time static app::zone from_call(std::call_site where) override {
+            return app::zone{ .name = where.function_name, .line = where.line };
+        }
+    }
+
+    void begin(implicit app::zone z) {
+        std::println(f"zone {z.name} at line {z.line}");
+    }
+}
+
+enum speed : u8 { slow, fast }
+
+std::static_str describe(compile_time speed s) {
+    if compile_time (s == speed::fast) {
+        return "fast path";
+    } else {
+        return "slow path";
+    }
+}
+
+compile_time u32 level_at(std::call_site where) {
+    std::option<where_level> f = std::meta::function_annotation<where_level>(where);
+    if (f.is_some()) { return f.expect("is_some").n; }
+    std::option<where_level> t = std::meta::type_annotation<where_level>(where);
+    if (t.is_some()) { return t.expect("is_some").n; }
+    return std::meta::file_annotation<where_level>(where).value_or(where_level{}).n;
+}
+
+void report(std::str what, implicit compile_time std::call_site where) {
+    compile_time u32 n = level_at(where);
+    std::println(f"{what}: level {n}");
+}
+
+@where_level{ .n = 7 }
+struct machine {
+    void a() { report("type"); }
+    @where_level{ .n = 9 }
+    void b() { report("method"); }
+}
+
+@where_level{ .n = 5 }
+void special() { report("function"); }
+
+u32 main() {
+    app::show("direct");
+    app::relay("relayed");
+    app::begin();
+    std::println(f"{describe(speed::slow)}, {describe(speed::fast)}");
+    report("file");
+    special();
+    machine{}.a();
+    machine{}.b();
+    return 0;
+}

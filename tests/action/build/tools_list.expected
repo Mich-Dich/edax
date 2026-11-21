@@ -1,7 +1,7 @@
 exit: 0
 --- stdout
 targets:
-  app                  program (app/main.rifts)
+  app                  program (app/main.ed)
   m                    system library
   geo                  target of a dependency
   csrc                 C library

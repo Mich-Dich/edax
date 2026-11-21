@@ -1,10 +1,10 @@
-# Rift
+# Edax
 
-The Rift programming language - C++-inspired, but explicitly simpler,
+The Edax programming language - C++-inspired, but explicitly simpler,
 safer, and more consistent. The language design lives in [`docs/design/`](docs/design/README.md).
 
 **Status: v0.8.0** - the language and standard library of [`docs/design/`](docs/design/README.md),
-with the gaps listed under "Known limits" below. `riftc build` turns a program into a native
+with the gaps listed under "Known limits" below. `edaxc build` turns a program into a native
 executable through LLVM (no C code is generated; the system's `cc` only links). Supported: checked
 arithmetic, structs and classes with destructors, operators and nested types, inheritance with
 virtual calls, interfaces with default methods, enums with payloads and `match`, tuples and list
@@ -12,25 +12,25 @@ literals, templates with constraints and default arguments, lambdas, `std::funct
 `std::fn_ptr`, ownership and borrow checks, raw pointers and `extern(std::build::language::c)`,
 compile-time code, `compile_time` and `implicit` parameters, checks, reflection and registries
 (`std::meta::functions_with`), annotations (checks, `generate`, `wrap`), and SIMD vector types
-(`f32x8`, masks, blocks). The standard library (`library/std`) is written in Rift on the `std::raw`
+(`f32x8`, masks, blocks). The standard library (`library/std`) is written in Edax on the `std::raw`
 intrinsics: `option`/`result`, `darray`, `array`, `span`, `bitset`, `hash_map`, `tree_map`,
 `string` and the `str` methods, smart pointers, threads, synchronization, channels, the thread pool
 and `std::parallel`, `std::time`, `std::log`, `file`, `filesystem`, `env`, `std::windowing`
 (several windows with OpenGL share groups and Vulkan surfaces, input layers and key bindings, on
 X11; see `example/windowing/`), and `std::build` for build scripts.
 
-**Projects** are built by a `build.rifts`: everything in it is declared in `namespace build` and
-every target imports it. It describes targets (Rift programs, libraries and tests, C/C++ libraries,
+**Projects** are built by a `build.ed`: everything in it is declared in `namespace build` and
+every target imports it. It describes targets (Edax programs, libraries and tests, C/C++ libraries,
 system libraries), build modes as classes with `compile_time` settings, declared settings
 (`compile_time std::build::setting<bool> validation = default;`, read in code as
 `build::validation.value()`), options, custom steps, and path or git dependencies pinned in
 `build.lock`:
 
 ```bash
-riftc build                      # every program of ./build.rifts, in debug
-riftc run app --mode=release     # build and run one target
-riftc test                       # build and run the tests
-riftc build --list               # targets, modes and options
+edaxc build                      # every program of ./build.ed, in debug
+edaxc run app --mode=release     # build and run one target
+edaxc test                       # build and run the tests
+edaxc build --list               # targets, modes and options
 ```
 
 Example programs for most features are in [`example/`](example/README.md):
@@ -46,30 +46,30 @@ Threads (spec 27, 28): `std::thread::spawn`, `std::atomic`, `std::mutex`, `std::
 channels, `thread_local` and `std::thread_pool` (work stealing, parallel loops over chunks,
 deterministic reductions). **Data races are compile errors:** the compiler derives
 `std::sendable` / `std::shareable` from a type's fields, and a thread that borrows keeps what it
-borrows borrowed until it is joined. See `example/concurrency.rifts`.
+borrows borrowed until it is joined. See `example/concurrency.ed`.
 
 Also in 0.8.0: **packages** (`g.package` with git (commit or tag), archive and local sources,
-`.path`, `.options`, `.uses`, `.patches`, locked in `build.lock`; packages with a `build.rifts`,
-a `CMakeLists.txt` read by riftc's own CMake reader, or only headers; `riftc package
-list|fetch|status`), **C and C++ interop** (`g.import_c_headers` turns C headers into a Rift module,
+`.path`, `.options`, `.uses`, `.patches`, locked in `build.lock`; packages with a `build.ed`,
+a `CMakeLists.txt` read by edaxc's own CMake reader, or only headers; `edaxc package
+list|fetch|status`), **C and C++ interop** (`g.import_c_headers` turns C headers into a Edax module,
 `g.wrap_cpp` wraps C++ classes through generated C wrappers with exceptions as
 `std::cpp_exception` errors, structs passed by value to and from C as the C calling convention
-does on x86-64 and AArch64), shared C libraries and Rift plugins (`g.add_shared_library` of a C
+does on x86-64 and AArch64), shared C libraries and Edax plugins (`g.add_shared_library` of a C
 target, `g.add_plugin`, `std::plugin<I>`, `std::c_library`), allocators (`std::allocator`, arenas,
 `g.set_global_allocator`, a sealable heap), target platforms and CPU levels (`--target`, `--cpu`,
 target descriptions), step verification, parameter packs, file annotation checks, SIMD
-multiversioning, `must_vectorize`, raw SIMD intrinsics and `riftc simd-report`, `std::rw_mutex`
+multiversioning, `must_vectorize`, raw SIMD intrinsics and `edaxc simd-report`, `std::rw_mutex`
 and the timed waits, thread platform options, time zones, and wrapping annotations on templates.
 
 Known limits of 0.8.0 (designed, not implemented yet):
-- Shared **Rift** libraries (`g.add_shared_library(std::build::rift_target{...})`); a shared C or
+- Shared **Edax** libraries (`g.add_shared_library(std::build::edax_target{...})`); a shared C or
   C++ library works.
-- Package descriptions in the project (`packages/<name>.rifts`, `package_build::script`), the
-  CMake converter (`riftc package convert`), `riftc package update`, and
+- Package descriptions in the project (`packages/<name>.ed`, `package_build::script`), the
+  CMake converter (`edaxc package convert`), `edaxc package update`, and
   `package_build::cmake_external`. The CMake reader stops, with the command's file and line, at
   what it doesn't translate (`execute_process`, `ExternalProject_Add`, `FetchContent`, ...).
 - An allocator parameter for `std::tree_map` and `std::string_with<A>`.
-- `g.wrap_cpp` reads the headers with clang (`clang++`, or `$RIFT_CLANGXX`); it wraps numbers,
+- `g.wrap_cpp` reads the headers with clang (`clang++`, or `$EDAX_CLANGXX`); it wraps numbers,
   `bool`, strings (`std::string`, `std::string_view`, `const char*`) and the wrapped classes
   themselves, and lists everything else in its report.
 - Structs by value through `extern` functions are supported on x86-64 (System V) and AArch64; other
@@ -84,29 +84,29 @@ Requires:
 - Clang 18+ or GCC 14+, with `-std=c++2c` support
 - LLVM 18, 19, 20 or 21 development files (e.g. `llvm-20-dev`, plus `libzstd-dev` for its CMake exports); the backend emits LLVM IR. CMake takes the first of 18, 20, 21, 19 it finds; `-DRIFT_LLVM_VERSION=21` or `-DLLVM_DIR=...` picks one
 - Python 3.10+ (test runner only)
-- To link Rift programs: a system linker driver such as GCC or Clang as `cc` (or set `RIFT_CC` / `--cc=`)
+- To link Edax programs: a system linker driver such as GCC or Clang as `cc` (or set `EDAX_CC` / `--cc=`)
 
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
 ```
 
-The binary is `build/compiler/riftc`:
+The binary is `build/compiler/edaxc`:
 
 ```bash
-$ ./build/compiler/riftc --version
-riftc 0.8.0
-$ ./build/compiler/riftc run example/hello.rifts           # build in a temp dir and run
-$ ./build/compiler/riftc build example/hello.rifts         # -> example/build/debug/hello
-$ ./build/compiler/riftc build --mode=release example/hello.rifts   # -> example/build/release/hello
-$ ./build/compiler/riftc emit-llvm example/hello.rifts      # the generated LLVM IR
-$ ./build/compiler/riftc check example/zoo.rifts     # silent + exit 0 when clean
-$ ./build/compiler/riftc lex example/hello.rifts   # token dump
-$ ./build/compiler/riftc parse example/zoo.rifts     # syntax tree (S-expressions)
-$ ./build/compiler/riftc symbols example/zoo.rifts   # merged module symbol table
-$ ./build/compiler/riftc typed example/zoo.rifts     # syntax tree with every expression's type
-$ ./build/compiler/riftc check --root=proj proj/main.rifts  # project root for imports
-$ ./build/compiler/riftc explain E1003                      # what a diagnostic code means
+$ ./build/compiler/edaxc --version
+edaxc 0.8.0
+$ ./build/compiler/edaxc run example/hello.ed           # build in a temp dir and run
+$ ./build/compiler/edaxc build example/hello.ed         # -> example/build/debug/hello
+$ ./build/compiler/edaxc build --mode=release example/hello.ed   # -> example/build/release/hello
+$ ./build/compiler/edaxc emit-llvm example/hello.ed      # the generated LLVM IR
+$ ./build/compiler/edaxc check example/zoo.ed     # silent + exit 0 when clean
+$ ./build/compiler/edaxc lex example/hello.ed   # token dump
+$ ./build/compiler/edaxc parse example/zoo.ed     # syntax tree (S-expressions)
+$ ./build/compiler/edaxc symbols example/zoo.ed   # merged module symbol table
+$ ./build/compiler/edaxc typed example/zoo.ed     # syntax tree with every expression's type
+$ ./build/compiler/edaxc check --root=proj proj/main.ed  # project root for imports
+$ ./build/compiler/edaxc explain E1003                      # what a diagnostic code means
 ```
 
 ## Testing
@@ -121,8 +121,8 @@ scripts/test.sh --update        # re-record golden files for action tests
 | Suite | What | Where |
 |---|---|---|
 | unit | C++ tests of compiler internals | `tests/unit/test_*.cpp` |
-| feature | good/bad `.rifts` files per spec rule, inline `//~ error[E1009]` annotations | `tests/feature/<chapter>/` |
-| action | real `riftc` runs; stdout, stderr and exit code compared with golden files (`tests/action/run/` runs compiled programs) | `tests/action/**/*.rifts` + `.expected` |
+| feature | good/bad `.ed` files per spec rule, inline `//~ error[E1009]` annotations | `tests/feature/<chapter>/` |
+| action | real `edaxc` runs; stdout, stderr and exit code compared with golden files (`tests/action/run/` runs compiled programs) | `tests/action/**/*.ed` + `.expected` |
 
 Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 [`docs/testing.md`](docs/testing.md). CTest runs the same suites:
@@ -132,17 +132,17 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 
 | Path | Purpose |
 |---|---|
-| `compiler/include/rift/` | Public headers of `librift` (source map, diagnostics, tokens, lexer, AST, parser, driver) |
-| `compiler/include/rift/ast.hpp` | The syntax tree; `ast_printer.hpp` prints it for `riftc parse` |
-| `compiler/include/rift/symbols.hpp` | Modules and symbols; `modules.hpp` loads imports, `resolve.hpp` resolves names |
-| `compiler/include/rift/types.hpp` | Types; `check.hpp` is the type checker, `ownership.hpp` the ownership checker |
-| `compiler/include/rift/compile_time.hpp` | The compile-time evaluator (constants, `if`/`for compile_time`, `std::meta`); `ast_clone.hpp` copies loop bodies |
-| `compiler/include/rift/llvm_backend.hpp` | The LLVM backend: checked program to LLVM IR, object file, executable; the runtime is LLVM IR in `src/llvm_runtime.cpp` |
-| `compiler/include/rift/diagnostic_codes.def` | Every diagnostic code, in one table |
-| `compiler/include/rift/token_kinds.def` | Every token kind, keyword and operator |
-| `compiler/src/` | `librift` implementation |
-| `library/std/` | The standard library's Rift source, compiled into `riftc` and loaded by `import std;` |
-| `compiler/driver/main.cpp` | The `riftc` executable (thin wrapper around `rift::run_driver`) |
+| `compiler/include/edax/` | Public headers of `libedax` (source map, diagnostics, tokens, lexer, AST, parser, driver) |
+| `compiler/include/edax/ast.hpp` | The syntax tree; `ast_printer.hpp` prints it for `edaxc parse` |
+| `compiler/include/edax/symbols.hpp` | Modules and symbols; `modules.hpp` loads imports, `resolve.hpp` resolves names |
+| `compiler/include/edax/types.hpp` | Types; `check.hpp` is the type checker, `ownership.hpp` the ownership checker |
+| `compiler/include/edax/compile_time.hpp` | The compile-time evaluator (constants, `if`/`for compile_time`, `std::meta`); `ast_clone.hpp` copies loop bodies |
+| `compiler/include/edax/llvm_backend.hpp` | The LLVM backend: checked program to LLVM IR, object file, executable; the runtime is LLVM IR in `src/llvm_runtime.cpp` |
+| `compiler/include/edax/diagnostic_codes.def` | Every diagnostic code, in one table |
+| `compiler/include/edax/token_kinds.def` | Every token kind, keyword and operator |
+| `compiler/src/` | `libedax` implementation |
+| `library/std/` | The standard library's Edax source, compiled into `edaxc` and loaded by `import std;` |
+| `compiler/driver/main.cpp` | The `edaxc` executable (thin wrapper around `edax::run_driver`) |
 | `tests/run_tests.py` | Test runner for all three suites |
 | `tests/unit/`, `tests/feature/`, `tests/action/` | The test suites |
 | `scripts/test.sh` | Build + test in one command |

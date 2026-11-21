@@ -1,5 +1,5 @@
 exit: 2
 --- stdout
 --- stderr
-riftc: error: unknown build mode 'turbo' (debug, release, release_with_debug_info, profile, fast, embedded)
-Run 'riftc --help' for usage.
+edaxc: error: unknown build mode 'turbo' (debug, release, release_with_debug_info, profile, fast, embedded)
+Run 'edaxc --help' for usage.

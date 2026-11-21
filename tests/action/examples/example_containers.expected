@@ -16,5 +16,5 @@ sum of all: 440, bitset<60> takes 8 bytes
 -- strings and text
 numbers add up to 67; not a number: 'x'
 starts with 'the': true, has 'fox': true, 'lazy' at 35
-'Rift ✓' is 8 bytes
+'Edax ✓' is 8 bytes
 --- stderr

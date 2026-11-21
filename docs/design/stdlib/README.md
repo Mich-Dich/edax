@@ -1,6 +1,6 @@
 # The Standard Library
 
-Everything in `std::` is ordinary Rift code, except for the few things the compiler must provide. This page explains the library's rules and lists every area with its page.
+Everything in `std::` is ordinary Edax code, except for the few things the compiler must provide. This page explains the library's rules and lists every area with its page.
 
 ## Rules
 
@@ -8,7 +8,7 @@ Everything in `std::` is ordinary Rift code, except for the few things the compi
 - Always `std::`-qualified. There is no `using`; a file can shorten a namespace with an alias (see [Namespaces](../language/organization/namespaces.md)).
 - `snake_case`, with **full words over abbreviations**: `std::error`, not `std::err`. Established short forms are kept where they are clearer than the long name: `darray`, `str`, `ptr`, `io`.
 - Names say what something *is*. There is no `std::list`: in C++ that name means a linked list.
-- **The boundary test:** if a feature can be written as an ordinary Rift function or type, it belongs in `std::`, not in the language.
+- **The boundary test:** if a feature can be written as an ordinary Edax function or type, it belongs in `std::`, not in the language.
 
 ### Map of the library
 | Area | Names | Page |
@@ -42,7 +42,7 @@ Everything in `std::` is ordinary Rift code, except for the few things the compi
 `import std;` makes all of it available; `import std::filesystem;` and the like load only part of it.
 
 ### What the compiler provides
-The library is Rift code built on `std::raw` (see [Raw Memory: `std::raw`](memory/raw-memory.md)) and a few `extern(std::build::language::c)` functions. The compiler provides only what can't be written in Rift:
+The library is Edax code built on `std::raw` (see [Raw Memory: `std::raw`](memory/raw-memory.md)) and a few `extern(std::build::language::c)` functions. The compiler provides only what can't be written in Edax:
 - the `std::raw` intrinsics,
 - `std::option` / `std::result` methods and `?` (see [Error Handling](../language/errors/error-handling.md)),
 - formatting (`f"..."`, `std::format`, printing),
@@ -50,7 +50,7 @@ The library is Rift code built on `std::raw` (see [Raw Memory: `std::raw`](memor
 - the compile-time functions (`std::size_of`, `std::meta::...`, the diagnostic functions).
 
 ### Performance
-The standard library is meant to be the fast option, not a baseline that needs a third-party replacement. Each container uses the design the fastest C++ libraries converged on, and its layout is part of its page. None of this weakens safety: every public operation stays bounds- and state-checked; the `unsafe` code is inside the library, behind the same API. Rift functions have no exceptions, so the optimizer can inline and specialize across the whole program.
+The standard library is meant to be the fast option, not a baseline that needs a third-party replacement. Each container uses the design the fastest C++ libraries converged on, and its layout is part of its page. None of this weakens safety: every public operation stays bounds- and state-checked; the `unsafe` code is inside the library, behind the same API. Edax functions have no exceptions, so the optimizer can inline and specialize across the whole program.
 
 ## Rationale
 - **Library over language:** the boundary test keeps the language small. A feature in `std::` can be read, debugged and replaced like any other code.

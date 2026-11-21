@@ -1,0 +1,65 @@
+// The build of the example programs (spec 25). From the repository root:
+//
+//   edaxc build --root=example --out-dir=build/example --bin-dir=build/example/bin
+//                                                              every program -> build/example/bin
+//   edaxc run --root=example zoo                               build and run one of them
+//   edaxc build --root=example --list                          targets, modes and options
+//   edaxc test --root=example                                  the example's tests
+//
+// (`cmake --build build --target examples` runs the first line.)
+import std;
+
+// Everything in build.ed is declared in namespace build; every target imports it, so the
+// programs read the settings below as build::greeting and build::build_number.
+namespace build {
+    // The examples' benchmark mode: release without overflow checks. It still has no undefined
+    // behaviour, so it does not need allow_undefined_behavior().
+    class fast : std::build::mode::release {
+    public:
+        compile_time std::build::overflow overflow() override { return std::build::overflow::wrap; }
+    }
+
+    // The greeting build_info prints (an option: -Dgreeting=...).
+    compile_time std::build::setting<std::static_str> greeting = default;
+
+    // The build number build_info prints.
+    compile_time std::build::setting<u32> build_number = default;
+
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(fast);
+
+        // One program per example file.
+        g.add_executable(std::build::edax_target{ .name = "hello", .root = "hello.ed" });
+        g.add_executable(std::build::edax_target{ .name = "numbers", .root = "numbers.ed" });
+        g.add_executable(std::build::edax_target{ .name = "geometry", .root = "geometry.ed" });
+        g.add_executable(std::build::edax_target{ .name = "zoo", .root = "zoo.ed" });
+        g.add_executable(std::build::edax_target{ .name = "generics", .root = "generics.ed" });
+        g.add_executable(std::build::edax_target{ .name = "lambdas", .root = "lambdas.ed" });
+        g.add_executable(std::build::edax_target{ .name = "calculator", .root = "calculator.ed" });
+        g.add_executable(std::build::edax_target{ .name = "containers", .root = "containers.ed" });
+        g.add_executable(std::build::edax_target{ .name = "ownership", .root = "ownership.ed" });
+        g.add_executable(std::build::edax_target{ .name = "gradebook", .root = "gradebook.ed" });
+        g.add_executable(std::build::edax_target{ .name = "compile_time_demo", .root = "compile_time_demo.ed" });
+        g.add_executable(std::build::edax_target{ .name = "concurrency", .root = "concurrency.ed" });
+        g.add_executable(std::build::edax_target{ .name = "annotations", .root = "annotations.ed" });
+        // Several windows with std::windowing: OpenGL and Vulkan (windowing/README.md).
+        g.add_executable(std::build::edax_target{ .name = "windowing", .root = "windowing/main.ed" });
+
+        // ffi links a C library built from native/stats.c, and libm.
+        std::build::target stats = g.add_c_library(std::build::c_target{ .name = "stats" });
+        g.add_sources(stats, g.glob("native/*.c"));
+        std::build::target libm = g.add_system_library(std::build::system_library{ .name = "m" });
+        std::build::target ffi = g.add_executable(std::build::edax_target{ .name = "ffi", .root = "ffi.ed" });
+        g.link(ffi, stats);
+        g.link(ffi, libm);
+
+        // build_info gets settings from the build: an option of the command line, and a constant.
+        std::static_str text = g.option(greeting, "Hello", "The greeting build_info prints");
+        std::build::target info = g.add_executable(std::build::edax_target{ .name = "build_info", .root = "build_info.ed" });
+        g.set(info, greeting, text);
+        g.set(info, build_number, 10);
+
+        // A test: `edaxc test --root=example`.
+        g.add_test(std::build::edax_target{ .name = "geometry_test", .root = "tests/geometry_test.ed" });
+    }
+}

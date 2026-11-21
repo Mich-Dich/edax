@@ -2,10 +2,10 @@ exit: 0
 --- stdout
 targets:
   mathc                C library
-  core                 library (core/util.rifts)
-  app                  program (app/main.rifts)
-  shifter              program (app/shifter.rifts)
-  util_test            test (tests/util_test.rifts)
+  core                 library (core/util.ed)
+  app                  program (app/main.ed)
+  shifter              program (app/shifter.ed)
+  util_test            test (tests/util_test.ed)
 modes:
   debug, release, release_with_debug_info, profile, fast, embedded
 options:

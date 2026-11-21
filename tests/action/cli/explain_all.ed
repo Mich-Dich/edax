@@ -1,0 +1,2 @@
+// RUN: edaxc explain
+// Lists every diagnostic code. Update with --update when codes are added.

@@ -7,7 +7,7 @@ true false 2 16
 1 1
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
- --> tests/action/run/arrays.rifts:4:34
+ --> tests/action/run/arrays.ed:4:34
   |
 4 | struct cell { std::string name = ""; u32 n = 0; }
   |                                  ^^ allocates

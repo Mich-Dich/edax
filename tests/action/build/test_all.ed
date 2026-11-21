@@ -1,0 +1,2 @@
+// RUN: edaxc test --root=%S/engine_project --out-dir=%t
+// test builds and runs the tests of build.ed.

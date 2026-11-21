@@ -1,2 +1,0 @@
-// RUN: riftc definition %S/definition_project/main.rifts 14:14
-// riftc definition (editors' go to definition): a field.

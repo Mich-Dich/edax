@@ -1,0 +1,1 @@
+// RUN: edaxc check tests/action/cli/this_file_does_not_exist.ed

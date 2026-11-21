@@ -9,14 +9,14 @@ abc
 abc-42
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
- --> tests/action/run/strings.rifts:5:36
+ --> tests/action/run/strings.ed:5:36
   |
 5 | struct person { std::string name = ""; u32 age = 0; }
   |                                    ^^ allocates
   = note: write 'std::string::from("...")' to make the allocation visible
 
 warning[W4002]: implicit allocation of a std::string from a string literal
-  --> tests/action/run/strings.rifts:23:23
+  --> tests/action/run/strings.ed:23:23
    |
 23 |     std::string lit = "implicit";
    |                       ^^^^^^^^^^ allocates

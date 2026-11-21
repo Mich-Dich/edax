@@ -1,2 +1,0 @@
-// RUN: riftc definition %S/definition_project/main.rifts 11:16
-// riftc definition (editors' go to definition): the type before a static member.

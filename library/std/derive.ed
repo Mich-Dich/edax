@@ -1,0 +1,18 @@
+// The Edax standard library: module std::derive. Its annotations are complete in the header.
+
+namespace std::derive {
+    struct formattable {
+        compile_time check (std::meta::is_struct<annotated>() || std::meta::is_class<annotated>() || std::meta::is_enum<annotated>())
+            else f"@std::derive::formattable works on structs, classes and enums, not on {std::type_name<annotated>()}";
+    }
+
+    struct hashable {
+        compile_time check (std::meta::is_struct<annotated>() || std::meta::is_class<annotated>())
+            else f"@std::derive::hashable works on structs and classes, not on {std::type_name<annotated>()}";
+    }
+
+    struct ordered {
+        compile_time check (std::meta::is_struct<annotated>() || std::meta::is_class<annotated>())
+            else f"@std::derive::ordered works on structs and classes, not on {std::type_name<annotated>()}";
+    }
+}

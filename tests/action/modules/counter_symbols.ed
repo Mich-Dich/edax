@@ -1,0 +1,1 @@
+// RUN: edaxc symbols --root=tests/feature/09-modules/counter_project tests/feature/09-modules/counter_project/counter.ed

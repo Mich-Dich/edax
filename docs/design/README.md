@@ -1,16 +1,16 @@
-# Rift Language Design
+# Edax Language Design
 
-Rift is a C++-inspired systems language: explicit, simple to use, with full control over memory and cost. These pages describe the language and its standard library **as they are**. Each page explains one topic and can be read on its own, with **Rules**, **Examples** and **Rationale**.
+Edax (Latin for "devouring") is a C++-inspired systems language: explicit, simple to use, with full control over memory and cost. These pages describe the language and its standard library **as they are**. Each page explains one topic and can be read on its own, with **Rules**, **Examples** and **Rationale**.
 
-- Source files are `.rifts`, header files `.rifth`.
+- Source files are `.ed`, header files `.edh`.
 - Undecided points are collected in [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md), not in the pages.
-- A complete program: [`examples/employees.rifts`](../../examples/employees.rifts).
+- Example programs: [`example/`](../../example/README.md).
 
 ## Design principles
 
 1. **Explicit beats implicit.** If a value's type, cost or behaviour can't be read from the source, the compiler refuses to guess. The *complete* list of implicit conversions fits in one table (see [Built-in types](language/basics/types.md)).
 2. **One way to do each thing.** One way to initialize (`=`), one way to build a value (`T{...}`), one way to define a method body.
-3. **Safe by default.** Safe code cannot trigger undefined behaviour. Overflow, out-of-bounds access and bad shifts panic. Unsafe operations live inside a visible `unsafe { }` block. All built-in build modes are safe; a user mode can relax this only by saying so in `build.rifts`.
+3. **Safe by default.** Safe code cannot trigger undefined behaviour. Overflow, out-of-bounds access and bad shifts panic. Unsafe operations live inside a visible `unsafe { }` block. All built-in build modes are safe; a user mode can relax this only by saying so in `build.ed`.
 4. **Immutable by default.** Variables, parameters and `this` are immutable unless marked `mut`.
 5. **No uninitialized values.** Every variable has a value from its declaration on.
 6. **Composition and inheritance, both explicit.** Inheritance requires `open` on the base class.
@@ -20,7 +20,7 @@ Rift is a C++-inspired systems language: explicit, simple to use, with full cont
 
 ## Learning path
 
-New to Rift? Read in this order; each step only uses what came before.
+New to Edax? Read in this order; each step only uses what came before.
 
 1. **Basics:** [Lexical structure](language/basics/lexical.md) → [Built-in types](language/basics/types.md) → [Tuples and list literals](language/basics/tuples-and-lists.md) → [Variables](language/basics/variables.md) → [Operators](language/basics/operators.md) → [Casts](language/basics/casts.md) → [Control flow](language/basics/control-flow.md)
 2. **Functions:** [Functions](language/functions/functions.md) → [Lambdas](language/functions/lambdas.md)
@@ -63,7 +63,7 @@ New to Rift? Read in this order; each step only uses what came before.
 | `logging/` | [Logging](stdlib/logging/logging.md), [Logging output](stdlib/logging/output.md) |
 
 ### Building: `build/`
-[Build system](build/build-system.md) (`build.rifts`, targets, C/C++), [Packages](build/packages.md) (outside code, CMake projects, the lock file), [Build modes](build/build-modes.md) (`debug`, `release`, user-defined modes)
+[Build system](build/build-system.md) (`build.ed`, targets, C/C++), [Packages](build/packages.md) (outside code, CMake projects, the lock file), [Build modes](build/build-modes.md) (`debug`, `release`, user-defined modes)
 
 ### Not part of the design
 - [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md): what is not designed yet.

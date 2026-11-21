@@ -1,2 +1,0 @@
-// RUN: riftc build --root=%S/engine_project --out-dir=%t engine
-// Targets named on the command line must exist.

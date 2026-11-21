@@ -1,0 +1,4 @@
+// RUN: edaxc run --root=%S/packages_project --out-dir=%t app
+// Packages: a local CMake library read by edaxc's CMake reader (options, add_subdirectory,
+// a function, configure_file, check_include_file, an alias, generator expressions) and a
+// header-only package, linked by a Edax program.

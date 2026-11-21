@@ -1,0 +1,2 @@
+// RUN: edaxc definition %S/definition_project/main.ed 13:11
+// edaxc definition (editors' go to definition): a standard library type.

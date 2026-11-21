@@ -1,11 +1,11 @@
-#include "rift/token.hpp"
+#include "edax/token.hpp"
 
 #include <unordered_map>
 #include <algorithm>
 #include <array>
 #include <ostream>
 
-namespace rift {
+namespace edax {
 
 namespace {
 
@@ -17,10 +17,10 @@ struct KindInfo {
 };
 
 constexpr std::array kind_table = {
-#define RIFT_TOKEN(name, spelling) KindInfo{#name, spelling, false, false},
-#define RIFT_KEYWORD(word) KindInfo{"kw_" #word, #word, true, false},
-#define RIFT_TYPE_KEYWORD(word) KindInfo{"kw_" #word, #word, true, true},
-#include "rift/token_kinds.def"
+#define EDAX_TOKEN(name, spelling) KindInfo{#name, spelling, false, false},
+#define EDAX_KEYWORD(word) KindInfo{"kw_" #word, #word, true, false},
+#define EDAX_TYPE_KEYWORD(word) KindInfo{"kw_" #word, #word, true, true},
+#include "edax/token_kinds.def"
 };
 
 const KindInfo& info(TokenKind kind) { return kind_table.at(static_cast<std::size_t>(kind)); }
@@ -60,4 +60,4 @@ std::string to_string(u128 value) {
     return digits;
 }
 
-} // namespace rift
+} // namespace edax

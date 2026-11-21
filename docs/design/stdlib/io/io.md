@@ -31,7 +31,7 @@
 | `std::filesystem::create_directories(p&) → std::result<void, std::io_error>` | Creates the directory and any missing parents |
 
 ### The relative-path warning
-```rift
+```edax
 std::file in = std::file::open("employees.csv")?;                     // WARNING: relative path literal
 std::file in = std::file::open(std::filesystem::executable_dir() / "employees.csv")?;   // OK
 std::file in = std::file::open(std::filesystem::path::relative("employees.csv"))?;     // OK: explicitly relative

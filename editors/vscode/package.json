@@ -1,7 +1,7 @@
 {
-  "name": "rift-language",
-  "displayName": "Rift Language",
-  "description": "Rift (.rifts / .rifth): syntax highlighting, build, step-through debugging, and code insights that show what the compiler does implicitly",
+  "name": "edax-language",
+  "displayName": "Edax Language",
+  "description": "Edax (.ed / .edh): syntax highlighting, build, step-through debugging, and code insights that show what the compiler does implicitly",
   "version": "0.7.0",
   "publisher": "dominikm",
   "license": "MIT",
@@ -14,9 +14,9 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onLanguage:rift",
-    "onDebugResolve:rift",
-    "onDebugDynamicConfigurations:rift",
+    "onLanguage:edax",
+    "onDebugResolve:edax",
+    "onDebugDynamicConfigurations:edax",
     "onDebugInitialConfigurations"
   ],
   "extensionDependencies": [
@@ -25,61 +25,61 @@
   "contributes": {
     "languages": [
       {
-        "id": "rift",
+        "id": "edax",
         "aliases": [
-          "Rift",
-          "rift"
+          "Edax",
+          "edax"
         ],
         "extensions": [
-          ".rifts",
-          ".rifth"
+          ".ed",
+          ".edh"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "rift",
-        "scopeName": "source.rift",
-        "path": "./syntaxes/rift.tmLanguage.json",
+        "language": "edax",
+        "scopeName": "source.edax",
+        "path": "./syntaxes/edax.tmLanguage.json",
         "embeddedLanguages": {
-          "meta.embedded.interpolation.rift": "rift"
+          "meta.embedded.interpolation.edax": "edax"
         },
         "tokenTypes": {
-          "meta.embedded.interpolation.rift": "other",
-          "punctuation.section.interpolation.begin.rift": "other",
-          "punctuation.section.interpolation.end.rift": "other",
-          "constant.character.escape.brace.rift": "string"
+          "meta.embedded.interpolation.edax": "other",
+          "punctuation.section.interpolation.begin.edax": "other",
+          "punctuation.section.interpolation.end.edax": "other",
+          "constant.character.escape.brace.edax": "string"
         }
       }
     ],
     "breakpoints": [
       {
-        "language": "rift"
+        "language": "edax"
       }
     ],
     "debuggers": [
       {
-        "type": "rift",
-        "label": "Rift (LLDB)",
+        "type": "edax",
+        "label": "Edax (LLDB)",
         "languages": [
-          "rift"
+          "edax"
         ],
         "configurationAttributes": {
           "launch": {
             "properties": {
               "program": {
                 "type": "string",
-                "description": "A .rifts file to build and debug, or an already built executable.",
+                "description": "A .ed file to build and debug, or an already built executable.",
                 "default": "${file}"
               },
               "target": {
                 "type": "string",
-                "description": "A program target of build.rifts (instead of 'program'). Built with 'riftc build <target>'."
+                "description": "A program target of build.ed (instead of 'program'). Built with 'edaxc build <target>'."
               },
               "root": {
                 "type": "string",
-                "description": "The project root that holds build.rifts (default: the workspace folder).",
+                "description": "The project root that holds build.ed (default: the workspace folder).",
                 "default": "${workspaceFolder}"
               },
               "mode": {
@@ -89,7 +89,7 @@
               },
               "build": {
                 "type": "boolean",
-                "description": "Build with riftc before launching.",
+                "description": "Build with edaxc before launching.",
                 "default": true
               },
               "buildArgs": {
@@ -97,7 +97,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Extra riftc arguments, e.g. [\"-DNAME=VALUE\"].",
+                "description": "Extra edaxc arguments, e.g. [\"-DNAME=VALUE\"].",
                 "default": []
               },
               "args": {
@@ -154,9 +154,9 @@
         },
         "initialConfigurations": [
           {
-            "type": "rift",
+            "type": "edax",
             "request": "launch",
-            "name": "Debug current Rift file",
+            "name": "Debug current Edax file",
             "program": "${file}",
             "args": [],
             "cwd": "${fileDirname}"
@@ -164,22 +164,22 @@
         ],
         "configurationSnippets": [
           {
-            "label": "Rift: Debug current file",
-            "description": "Build the open .rifts file with riftc and debug it.",
+            "label": "Edax: Debug current file",
+            "description": "Build the open .ed file with edaxc and debug it.",
             "body": {
-              "type": "rift",
+              "type": "edax",
               "request": "launch",
-              "name": "Debug current Rift file",
+              "name": "Debug current Edax file",
               "program": "^\"\\${file}\"",
               "args": [],
               "cwd": "^\"\\${fileDirname}\""
             }
           },
           {
-            "label": "Rift: Debug a build.rifts target",
-            "description": "Build one program of build.rifts and debug it.",
+            "label": "Edax: Debug a build.ed target",
+            "description": "Build one program of build.ed and debug it.",
             "body": {
-              "type": "rift",
+              "type": "edax",
               "request": "launch",
               "name": "Debug ${1:app}",
               "target": "${1:app}",
@@ -192,174 +192,174 @@
     ],
     "commands": [
       {
-        "command": "rift.debugFile",
-        "title": "Debug Rift File",
-        "category": "Rift",
+        "command": "edax.debugFile",
+        "title": "Debug Edax File",
+        "category": "Edax",
         "icon": "$(debug-alt)"
       },
       {
-        "command": "rift.runFile",
-        "title": "Run Rift File",
-        "category": "Rift",
+        "command": "edax.runFile",
+        "title": "Run Edax File",
+        "category": "Edax",
         "icon": "$(play)"
       },
       {
-        "command": "rift.buildFile",
-        "title": "Build Rift File",
-        "category": "Rift"
+        "command": "edax.buildFile",
+        "title": "Build Edax File",
+        "category": "Edax"
       },
       {
-        "command": "rift.insights.toggle",
+        "command": "edax.insights.toggle",
         "title": "Toggle Code Insights",
-        "category": "Rift",
+        "category": "Edax",
         "icon": "$(eye)"
       },
       {
-        "command": "rift.insights.choose",
+        "command": "edax.insights.choose",
         "title": "Choose Code Insights…",
-        "category": "Rift"
+        "category": "Edax"
       },
       {
-        "command": "rift.insights.refresh",
+        "command": "edax.insights.refresh",
         "title": "Refresh Code Insights",
-        "category": "Rift"
+        "category": "Edax"
       },
       {
-        "command": "rift.insights.explain",
+        "command": "edax.insights.explain",
         "title": "Explain Insight",
-        "category": "Rift"
+        "category": "Edax"
       }
     ],
     "menus": {
       "editor/title/run": [
         {
-          "command": "rift.runFile",
-          "when": "resourceLangId == rift && resourceExtname == .rifts",
+          "command": "edax.runFile",
+          "when": "resourceLangId == edax && resourceExtname == .ed",
           "group": "navigation@0"
         },
         {
-          "command": "rift.debugFile",
-          "when": "resourceLangId == rift && resourceExtname == .rifts",
+          "command": "edax.debugFile",
+          "when": "resourceLangId == edax && resourceExtname == .ed",
           "group": "navigation@1"
         }
       ],
       "commandPalette": [
         {
-          "command": "rift.debugFile",
-          "when": "editorLangId == rift"
+          "command": "edax.debugFile",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.runFile",
-          "when": "editorLangId == rift"
+          "command": "edax.runFile",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.buildFile",
-          "when": "editorLangId == rift"
+          "command": "edax.buildFile",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.insights.toggle",
-          "when": "editorLangId == rift"
+          "command": "edax.insights.toggle",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.insights.choose",
-          "when": "editorLangId == rift"
+          "command": "edax.insights.choose",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.insights.refresh",
-          "when": "editorLangId == rift"
+          "command": "edax.insights.refresh",
+          "when": "editorLangId == edax"
         },
         {
-          "command": "rift.insights.explain",
+          "command": "edax.insights.explain",
           "when": "false"
         }
       ],
       "editor/title": [
         {
-          "command": "rift.insights.toggle",
-          "when": "resourceLangId == rift",
+          "command": "edax.insights.toggle",
+          "when": "resourceLangId == edax",
           "group": "navigation@5"
         }
       ]
     },
     "configuration": {
-      "title": "Rift",
+      "title": "Edax",
       "properties": {
-        "rift.compilerPath": {
+        "edax.compilerPath": {
           "type": "string",
           "default": "",
-          "description": "Path to riftc. Empty: build/compiler/riftc in a workspace folder, else riftc on PATH."
+          "description": "Path to edaxc. Empty: build/compiler/edaxc in a workspace folder, else edaxc on PATH."
         },
-        "rift.standardLibraryPath": {
+        "edax.standardLibraryPath": {
           "type": "string",
           "default": "",
-          "description": "Folder with the standard library's source (library/std). Only needed when riftc was built from a checkout that has since moved. Empty: library/std in a workspace folder."
+          "description": "Folder with the standard library's source (library/std). Only needed when edaxc was built from a checkout that has since moved. Empty: library/std in a workspace folder."
         },
-        "rift.debug.buildMode": {
+        "edax.debug.buildMode": {
           "type": "string",
           "default": "debug",
           "description": "Build mode used for debugging when the launch configuration has no 'mode'."
         },
-        "rift.debug.stepIntoStandardLibrary": {
+        "edax.debug.stepIntoStandardLibrary": {
           "type": "boolean",
           "default": true,
           "description": "Step Into enters std:: functions (darray::push, string::from, ...), like stepping into a C++ library with sources."
         },
-        "rift.insights.enabled": {
+        "edax.insights.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show **code insights**: what the compiler does that the source doesn't spell out. Off by default; toggle with *Rift: Toggle Code Insights* (the eye in the editor title). Needs a riftc with the `insights` command."
+          "markdownDescription": "Show **code insights**: what the compiler does that the source doesn't spell out. Off by default; toggle with *Edax: Toggle Code Insights* (the eye in the editor title). Needs a edaxc with the `insights` command."
         },
-        "rift.insights.virtualLines": {
+        "edax.insights.virtualLines": {
           "type": "boolean",
           "default": true,
           "description": "Show stack frames and end-of-scope drops as lines of their own above the code (CodeLens). Off: at the end of the line."
         },
-        "rift.insights.inlineLabels": {
+        "edax.insights.inlineLabels": {
           "type": "boolean",
           "default": true,
           "description": "At the end of each line, a short tag per fact (alloc, drop, move, copy24, tmp, conv, virt, dyn, chk), most important first. Hover a tag for the full explanation and the code it is about. Off: highlights only."
         },
-        "rift.insights.show.stack": {
+        "edax.insights.show.stack": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Stack frames: every slot a function reserves when it is entered (variables of every scope, temporaries, drop flags)."
         },
-        "rift.insights.show.heap": {
+        "edax.insights.show.heap": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Heap memory: calls that may allocate or free, with the call chain to the allocator."
         },
-        "rift.insights.show.drops": {
+        "edax.insights.show.drops": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Drops: destructors that run at the end of a scope (in reverse order) or before return / break / continue."
         },
-        "rift.insights.show.moves": {
+        "edax.insights.show.moves": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Moves: ownership leaving a variable (`move x`, returning a local)."
         },
-        "rift.insights.show.copies": {
+        "edax.insights.show.copies": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Large copies: copy types over 16 bytes used by value."
         },
-        "rift.insights.show.temporaries": {
+        "edax.insights.show.temporaries": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "Temporaries: unnamed stack slots the compiler creates."
         },
-        "rift.insights.show.conversions": {
+        "edax.insights.show.conversions": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Implicit conversions: string → str, literal → string, upcasts, integer/pointer → bool in conditions, lambda → std::function."
         },
-        "rift.insights.show.dispatch": {
+        "edax.insights.show.dispatch": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Dynamic dispatch: virtual and interface calls through a table."
         },
-        "rift.insights.show.checks": {
+        "edax.insights.show.checks": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "Run-time checks: overflow, shift and division checks that panic."
@@ -368,9 +368,9 @@
     },
     "problemMatchers": [
       {
-        "name": "riftc",
-        "owner": "riftc",
-        "source": "riftc",
+        "name": "edaxc",
+        "owner": "edaxc",
+        "source": "edaxc",
         "fileLocation": [
           "autoDetect",
           "${workspaceFolder}"
@@ -388,8 +388,8 @@
     ],
     "colors": [
       {
-        "id": "rift.insights.stack.foreground",
-        "description": "Rift code insights: text and underline of 'stack'.",
+        "id": "edax.insights.stack.foreground",
+        "description": "Edax code insights: text and underline of 'stack'.",
         "defaults": {
           "dark": "#4FC1FFB0",
           "light": "#0070C1C0",
@@ -398,8 +398,8 @@
         }
       },
       {
-        "id": "rift.insights.stack.background",
-        "description": "Rift code insights: highlight of 'stack' ranges.",
+        "id": "edax.insights.stack.background",
+        "description": "Edax code insights: highlight of 'stack' ranges.",
         "defaults": {
           "dark": "#4FC1FF1C",
           "light": "#0070C114",
@@ -408,8 +408,8 @@
         }
       },
       {
-        "id": "rift.insights.heap.foreground",
-        "description": "Rift code insights: text and underline of 'heap'.",
+        "id": "edax.insights.heap.foreground",
+        "description": "Edax code insights: text and underline of 'heap'.",
         "defaults": {
           "dark": "#F48771B0",
           "light": "#C72E0FC0",
@@ -418,8 +418,8 @@
         }
       },
       {
-        "id": "rift.insights.heap.background",
-        "description": "Rift code insights: highlight of 'heap' ranges.",
+        "id": "edax.insights.heap.background",
+        "description": "Edax code insights: highlight of 'heap' ranges.",
         "defaults": {
           "dark": "#F487711C",
           "light": "#C72E0F14",
@@ -428,8 +428,8 @@
         }
       },
       {
-        "id": "rift.insights.drops.foreground",
-        "description": "Rift code insights: text and underline of 'drops'.",
+        "id": "edax.insights.drops.foreground",
+        "description": "Edax code insights: text and underline of 'drops'.",
         "defaults": {
           "dark": "#C586C0B0",
           "light": "#AF00DBC0",
@@ -438,8 +438,8 @@
         }
       },
       {
-        "id": "rift.insights.drops.background",
-        "description": "Rift code insights: highlight of 'drops' ranges.",
+        "id": "edax.insights.drops.background",
+        "description": "Edax code insights: highlight of 'drops' ranges.",
         "defaults": {
           "dark": "#C586C01C",
           "light": "#AF00DB14",
@@ -448,8 +448,8 @@
         }
       },
       {
-        "id": "rift.insights.moves.foreground",
-        "description": "Rift code insights: text and underline of 'moves'.",
+        "id": "edax.insights.moves.foreground",
+        "description": "Edax code insights: text and underline of 'moves'.",
         "defaults": {
           "dark": "#DCDCAAB0",
           "light": "#795E26C0",
@@ -458,8 +458,8 @@
         }
       },
       {
-        "id": "rift.insights.moves.background",
-        "description": "Rift code insights: highlight of 'moves' ranges.",
+        "id": "edax.insights.moves.background",
+        "description": "Edax code insights: highlight of 'moves' ranges.",
         "defaults": {
           "dark": "#DCDCAA1C",
           "light": "#795E2614",
@@ -468,8 +468,8 @@
         }
       },
       {
-        "id": "rift.insights.copies.foreground",
-        "description": "Rift code insights: text and underline of 'copies'.",
+        "id": "edax.insights.copies.foreground",
+        "description": "Edax code insights: text and underline of 'copies'.",
         "defaults": {
           "dark": "#CE9178B0",
           "light": "#A31515C0",
@@ -478,8 +478,8 @@
         }
       },
       {
-        "id": "rift.insights.copies.background",
-        "description": "Rift code insights: highlight of 'copies' ranges.",
+        "id": "edax.insights.copies.background",
+        "description": "Edax code insights: highlight of 'copies' ranges.",
         "defaults": {
           "dark": "#CE91781C",
           "light": "#A3151514",
@@ -488,8 +488,8 @@
         }
       },
       {
-        "id": "rift.insights.temporaries.foreground",
-        "description": "Rift code insights: text and underline of 'temporaries'.",
+        "id": "edax.insights.temporaries.foreground",
+        "description": "Edax code insights: text and underline of 'temporaries'.",
         "defaults": {
           "dark": "#9CDCFEB0",
           "light": "#001080C0",
@@ -498,8 +498,8 @@
         }
       },
       {
-        "id": "rift.insights.temporaries.background",
-        "description": "Rift code insights: highlight of 'temporaries' ranges.",
+        "id": "edax.insights.temporaries.background",
+        "description": "Edax code insights: highlight of 'temporaries' ranges.",
         "defaults": {
           "dark": "#9CDCFE1C",
           "light": "#00108014",
@@ -508,8 +508,8 @@
         }
       },
       {
-        "id": "rift.insights.conversions.foreground",
-        "description": "Rift code insights: text and underline of 'conversions'.",
+        "id": "edax.insights.conversions.foreground",
+        "description": "Edax code insights: text and underline of 'conversions'.",
         "defaults": {
           "dark": "#4EC9B0B0",
           "light": "#267F99C0",
@@ -518,8 +518,8 @@
         }
       },
       {
-        "id": "rift.insights.conversions.background",
-        "description": "Rift code insights: highlight of 'conversions' ranges.",
+        "id": "edax.insights.conversions.background",
+        "description": "Edax code insights: highlight of 'conversions' ranges.",
         "defaults": {
           "dark": "#4EC9B01C",
           "light": "#267F9914",
@@ -528,8 +528,8 @@
         }
       },
       {
-        "id": "rift.insights.dispatch.foreground",
-        "description": "Rift code insights: text and underline of 'dispatch'.",
+        "id": "edax.insights.dispatch.foreground",
+        "description": "Edax code insights: text and underline of 'dispatch'.",
         "defaults": {
           "dark": "#B5CEA8B0",
           "light": "#098658C0",
@@ -538,8 +538,8 @@
         }
       },
       {
-        "id": "rift.insights.dispatch.background",
-        "description": "Rift code insights: highlight of 'dispatch' ranges.",
+        "id": "edax.insights.dispatch.background",
+        "description": "Edax code insights: highlight of 'dispatch' ranges.",
         "defaults": {
           "dark": "#B5CEA81C",
           "light": "#09865814",
@@ -548,8 +548,8 @@
         }
       },
       {
-        "id": "rift.insights.checks.foreground",
-        "description": "Rift code insights: text and underline of 'checks'.",
+        "id": "edax.insights.checks.foreground",
+        "description": "Edax code insights: text and underline of 'checks'.",
         "defaults": {
           "dark": "#A0A0A0B0",
           "light": "#6A6A6AC0",
@@ -558,8 +558,8 @@
         }
       },
       {
-        "id": "rift.insights.checks.background",
-        "description": "Rift code insights: highlight of 'checks' ranges.",
+        "id": "edax.insights.checks.background",
+        "description": "Edax code insights: highlight of 'checks' ranges.",
         "defaults": {
           "dark": "#A0A0A01C",
           "light": "#6A6A6A14",

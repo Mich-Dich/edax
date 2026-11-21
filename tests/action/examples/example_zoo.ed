@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t zoo
+// The example program example/zoo.ed (built through example/build.ed) keeps working.

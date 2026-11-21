@@ -1,6 +1,6 @@
 # Raw Memory: `std::raw`
 
-The standard library's containers are written in Rift. Their only access to memory is a small
+The standard library's containers are written in Edax. Their only access to memory is a small
 set of compiler intrinsics in `std::raw`; all of them require `unsafe`:
 
 | Intrinsic | Does |
@@ -30,4 +30,4 @@ reaches its elements through `cast::reinterpret<std::raw_ptr<T>>(&items)`.
 containers use `write`.
 
 ## Rationale
-- **A small, fixed set of intrinsics:** containers, strings, smart pointers and synchronization are ordinary Rift code. Only what can't be expressed in Rift (allocation, moving bits, atomic instructions, sleeping on an address) is built into the compiler, and every use is inside `unsafe`.
+- **A small, fixed set of intrinsics:** containers, strings, smart pointers and synchronization are ordinary Edax code. Only what can't be expressed in Edax (allocation, moving bits, atomic instructions, sleeping on an address) is built into the compiler, and every use is inside `unsafe`.

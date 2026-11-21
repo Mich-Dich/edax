@@ -1,0 +1,20 @@
+// feature 24: the mode is a class; code reads its settings at compile time.
+import std;
+
+compile_time bool is_debug = std::build::mode_is(std::build::mode::debug);
+compile_time check (is_debug) else "the tests build in debug";
+compile_time check (!std::build::mode_is(std::build::mode::release)) else "not release";
+compile_time check (std::build::current_mode().overflow() == std::build::overflow::panic) else "all built-in modes are safe";
+compile_time check (std::build::current_mode().optimization() == std::build::optimization::speed) else "debug does not optimize";//~ error[E4210]: debug does not optimize
+
+// A mode written in ordinary code: a class like any other.
+class quiet : std::build::mode::debug {
+public:
+    compile_time std::build::debug_info debug_info() override { return std::build::debug_info::none; }
+}
+
+compile_time std::build::setting<bool> verbose = default;
+compile_time bool missing = verbose.value();   //~ error[E4201]: build.ed does not set 'verbose'
+void f() {
+    run_time(build::quiet) check (true) else "no build.ed here";  //~ error[E4212]: unknown build mode 'build::quiet'
+}

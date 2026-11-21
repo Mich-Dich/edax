@@ -1,2 +1,0 @@
-// RUN: riftc run --root=%S/engine_project --out-dir=%t --mode=embedded app
-// panic() returning trap: the overflow is a trap instruction without a message.

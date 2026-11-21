@@ -5,18 +5,18 @@
 ### Files
 | Extension | Meaning |
 |---|---|
-| `.rifts` | Source file (implementation) |
-| `.rifth` | Header file (interface), see [Headers, Sources and Modules](../organization/modules.md) |
+| `.ed` | Source file (implementation) |
+| `.edh` | Header file (interface), see [Headers, Sources and Modules](../organization/modules.md) |
 
 - Source text is UTF-8.
-- A `.rifts` file without a matching `.rifth` is a standalone file. It can't be imported, which suits a program's `main` file.
+- A `.ed` file without a matching `.edh` is a standalone file. It can't be imported, which suits a program's `main` file.
 
 ### Comments
-```rift
+```edax
 // line comment
 /* block comment, does not nest */
 ```
-There is no separate doc-comment syntax. The comment lines directly above a declaration describe it: `riftc explain` prints them for diagnostic ids (see [Checks](../errors/checks.md)), and tools show them for any name.
+There is no separate doc-comment syntax. The comment lines directly above a declaration describe it: `edaxc explain` prints them for diagnostic ids (see [Checks](../errors/checks.md)), and tools show them for any name.
 
 ### Identifiers and naming
 | Category | Convention | Enforced? |
@@ -80,14 +80,14 @@ Unsuffixed literals take their type from context (see [Built-in Types and Conver
 - `;` ends **statements** and **declarations without a body** (`void f();` in a header).
 - A `}` that closes a type, function, block or control-flow statement is **never** followed by `;`.
 - A declaration whose initializer ends in `}` still ends with `;`, because the declaration is the statement:
-  ```rift
+  ```edax
   u32 x = match (code) { 0 => 1, _ => 2, };
   auto f = [](u32 x) { return x + 1; };
   ```
 - Braces are **mandatory** for `if`, `else`, `for`, `while`, `match` and every function body.
 
 ## Examples
-```rift
+```edax
 struct point {
     f64 x = 0.0;
     f64 y = 0.0;
@@ -102,6 +102,6 @@ void log(std::str message);    // header declaration: ';' ends it
 ```
 
 ## Rationale
-- **No `;` after types:** C needs it for `struct x {...} instance;`. Rift doesn't have that form, so the `;` only causes errors when it's forgotten.
+- **No `;` after types:** C needs it for `struct x {...} instance;`. Edax doesn't have that form, so the `;` only causes errors when it's forgotten.
 - **Mandatory braces:** this rules out goto-fail-style bugs where an unbraced second line looks like part of the `if`. It's also required for `if` to work as an expression (see [Control Flow](control-flow.md)).
 - **Contextual keywords:** words like `open` and `implicit` are useful as names elsewhere (`std::file::open`), so they're reserved only where they mean something.

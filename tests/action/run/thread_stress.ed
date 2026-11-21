@@ -1,0 +1,87 @@
+// RUN: edaxc run %s
+// Concurrency under load: MPMC channel, contended mutex, nested pool tasks, deterministic reductions.
+import std;
+u64 fib(std::thread_pool& pool, u64 n) {
+    if (n < 12) {
+        if (n < 2) { return n; }
+        return fib(pool, n - 1) + fib(pool, n - 2);
+    }
+    std::thread_pool::scoped_task<u64> a = pool.spawn([&pool, n]() { return fib(pool, n - 1); });
+    u64 b = fib(pool, n - 2);
+    return a.join() + b;
+}
+i32 main() {
+    // MPMC: 4 producers x 25000 values through a bounded(8) channel to 4 consumers.
+    std::channel<u64> ch = std::channel<u64>::bounded(8);
+    std::channel<u64> sums = std::channel<u64>::unbounded();
+    mut std::darray<std::thread::handle<void>> producers = default;
+    mut std::darray<std::thread::handle<void>> threads = default;
+    for (u64 p : 0..4) {
+        std::channel_sender<u64> tx = ch.sender();
+        producers.push(std::thread::spawn([move tx, p]() {
+            for (u64 i : 0..25000) { _ = tx.send(p * 100000 + i); }
+        }));
+    }
+    for (u64 c : 0..4) {
+        std::channel_receiver<u64> rx = ch.receiver();
+        std::channel_sender<u64> out = sums.sender();
+        threads.push(std::thread::spawn([move rx, move out]() {
+            mut u64 s = 0;
+            for (u64 v : rx) { s += v; }
+            _ = out.send(s);
+        }));
+    }
+    while (producers.len() > 0) { producers.pop().expect("a producer").join(); }
+    ch.close();
+    std::channel_receiver<u64> results = sums.receiver();
+    mut u64 total = 0;
+    for (u32 i : 0..4) { total += results.receive().expect("lost a consumer"); }
+    mut u64 want = 0;
+    for (u64 p : 0..4) { for (u64 i : 0..25000) { want += p * 100000 + i; } }
+    std::println(f"mpmc {total == want}");
+    // Mutex under contention.
+    std::mutex<u64> m = std::mutex<u64>::make(0);
+    {
+        mut std::darray<std::thread::scoped_handle<void>> hs = default;
+        for (u32 t : 0..8) {
+            hs.push(std::thread::spawn([&m]() {
+                for (u32 i : 0..20000) { *m.lock() += 1; }
+            }));
+        }
+    }
+    std::println(f"mutex {*m.lock()}");
+    // Pool: nested tasks, detached tasks, many loops.
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 6, .idle_spin = std::time::duration::microseconds(5) });
+    std::println(f"fib {fib(pool, 27)}");
+    std::atomic<u64> detached_runs = default;
+    {
+        std::thread_pool inner = std::thread_pool::make(std::thread_pool::options{ .threads = 3 });
+        for (u32 i : 0..200) {
+            std::thread_pool::scoped_task<void> t = inner.spawn([&detached_runs]() {
+                _ = detached_runs.fetch_wrapping_add(1, std::memory_order::relaxed);
+            });
+        }
+    }
+    std::println(f"tasks {detached_runs.load(std::memory_order::acquire)}");
+    mut std::darray<u64> data = default;
+    for (u64 i : 0..200000) { data.push(i); }
+    mut bool same = true;
+    u64 first = pool.reduce_chunks(data.as_span(), 777, 0u64, [](std::span<u64> part) {
+        mut u64 s = 0;
+        for (u64 v : part) { s += v; }
+        return s;
+    }, [](u64 a, u64 b) { return a + b; });
+    for (u32 round : 0..50) {
+        u64 again = pool.reduce_chunks(data.as_span(), 777, 0u64, [](std::span<u64> part) {
+            mut u64 s = 0;
+            for (u64 v : part) { s += v; }
+            return s;
+        }, [](u64 a, u64 b) { return a + b; });
+        if (again != first + cast<u64>(round) * 200000) { same = false; }
+        pool.for_chunks(data.as_mut_span(), 1000, [](std::span<mut u64> part) {
+            for (mut u64& v : part) { v += 1; }
+        });
+    }
+    std::println(f"reduce {first} stable {same} data {data[0]} {data[199999]}");
+    return 0;
+}

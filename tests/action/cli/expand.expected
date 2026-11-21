@@ -1,6 +1,6 @@
 exit: 0
 --- stdout
-// motor_command as written in tests/action/cli/expand.rifts, with the members its annotations generate (spec 29)
+// motor_command as written in tests/action/cli/expand.ed, with the members its annotations generate (spec 29)
 @validated
 @std::derive::hashable
 struct motor_command {

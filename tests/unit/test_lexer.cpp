@@ -1,10 +1,10 @@
-#include "rift/lexer.hpp"
-#include "rift_test.hpp"
+#include "edax/lexer.hpp"
+#include "edax_test.hpp"
 
 #include <string>
 #include <vector>
 
-using namespace rift;
+using namespace edax;
 using namespace std::string_literals;
 
 namespace {
@@ -15,7 +15,7 @@ struct Lexed {
     std::vector<Token> tokens;
 
     explicit Lexed(std::string text) {
-        FileId id = sources.add("t.rifts", std::move(text));
+        FileId id = sources.add("t.ed", std::move(text));
         tokens    = tokenize(sources.file(id), id, diags);
     }
 
@@ -57,7 +57,7 @@ TEST_CASE("lexer: empty input is just eof") {
 TEST_CASE("lexer: next() keeps returning eof") {
     SourceManager    sm;
     DiagnosticEngine diags;
-    FileId           id = sm.add("t.rifts", "x");
+    FileId           id = sm.add("t.ed", "x");
     Lexer            lexer(sm.file(id), id, diags);
     CHECK_EQ(lexer.next().kind, TokenKind::identifier);
     CHECK_EQ(lexer.next().kind, TokenKind::eof);

@@ -15,7 +15,7 @@ mixed abi_mixed_next(mixed m);
 small_ints abi_small(small_ints s);
 big abi_big_sum(big a, big b);
 double abi_callback(double (*f)(big, vec3f));
-/* Implemented in Rift (an exported extern function) and called from C. */
-big rift_big_twice(big b);
-double abi_call_rift(void);
+/* Implemented in Edax (an exported extern function) and called from C. */
+big edax_big_twice(big b);
+double abi_call_edax(void);
 #endif

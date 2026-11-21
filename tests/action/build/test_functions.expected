@@ -3,7 +3,7 @@ exit: 1
 PASS parsing::parses_negative_numbers
 PASS parsing::trims_spaces
 FAIL parsing::wrong_on_purpose
-tests/action/build/annotated_tests_project/tests/parsing.rifts:15:21: panic: 7 is not 8
-note: the check is at tests/action/build/annotated_tests_project/tests/parsing.rifts:15:21
+tests/action/build/annotated_tests_project/tests/parsing.ed:15:21: panic: 7 is not 8
+note: the check is at tests/action/build/annotated_tests_project/tests/parsing.ed:15:21
 2 of 3 tests passed
 --- stderr

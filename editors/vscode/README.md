@@ -1,12 +1,12 @@
-# Rift for VS Code
+# Edax for VS Code
 
-Syntax highlighting, build, and step-through debugging for the Rift language (`.rifts` source,
-`.rifth` header).
+Syntax highlighting, build, and step-through debugging for the Edax language (`.ed` source,
+`.edh` header).
 
 ## Install
 
 ```sh
-code --install-extension rift-language-0.7.0.vsix
+code --install-extension edax-language-0.7.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` menu → **Install from VSIX…**. Debugging uses
@@ -18,22 +18,22 @@ Or in VS Code: Extensions view → `…` menu → **Install from VSIX…**. Debu
 Ctrl+click a name (or F12, or right-click → **Go to Definition**) to jump to where it is declared:
 types, functions, methods, fields, locals, enum alternatives, struct literal fields, and modules
 (an `import` line opens the module's header). It works in the standard library too (`std::darray`
-opens `library/std/std.rifth`), and from there onwards. The extension runs
-`riftc definition <file> <line>:<column>` with the nearest folder above the file that has a
-`build.rifts` as the project root. riftc reads the saved file, so save before jumping from code
+opens `library/std/std.edh`), and from there onwards. The extension runs
+`edaxc definition <file> <line>:<column>` with the nearest folder above the file that has a
+`build.ed` as the project root. edaxc reads the saved file, so save before jumping from code
 you just changed.
 
 ## Debugging
 
-Open a `.rifts` file and press **F5** (or use the ▷ / 🐞 buttons in the editor title). The
-extension builds the file with `riftc build --mode=debug`, shows compile errors in **Problems**,
+Open a `.ed` file and press **F5** (or use the ▷ / 🐞 buttons in the editor title). The
+extension builds the file with `edaxc build --mode=debug`, shows compile errors in **Problems**,
 and starts the debugger. It works like C++ in VS Code:
 
-- Breakpoints in `.rifts` files, Step Over / Into / Out, Continue, Run to Cursor.
-- **Step Into enters the standard library**: `list.push(7)` opens `library/std/std.rifts` at
-  `darray<T>::push`. The call stack shows Rift names (`std::darray<u32>::push`, `geometry::area`).
+- Breakpoints in `.ed` files, Step Over / Into / Out, Continue, Run to Cursor.
+- **Step Into enters the standard library**: `list.push(7)` opens `library/std/std.ed` at
+  `darray<T>::push`. The call stack shows Edax names (`std::darray<u32>::push`, `geometry::area`).
 - **Variables and Watch**: locals, parameters, `this`, loop variables and `match` bindings, with
-  Rift types (`u32`, `std::string`, `geometry::point`). Standard library values are shown by
+  Edax types (`u32`, `std::string`, `geometry::point`). Standard library values are shown by
   content:
 
   | Value | Shown as |
@@ -45,12 +45,12 @@ and starts the debugger. It works like C++ in VS Code:
   | `std::option<T>`, `std::result<T, E>`, any enum with payloads | `some(42)`, `error(bad_number)`, `word("hi")` |
   | `char` | `'R'` |
 
-Debug a target of a `build.rifts` project with a launch configuration (**Run → Add
-Configuration… → Rift: Debug a build.rifts target**):
+Debug a target of a `build.ed` project with a launch configuration (**Run → Add
+Configuration… → Edax: Debug a build.ed target**):
 
 ```jsonc
 {
-    "type": "rift",
+    "type": "edax",
     "request": "launch",
     "name": "Debug app",
     "target": "app",            // or "program": "${file}" for a single file
@@ -62,10 +62,10 @@ Configuration… → Rift: Debug a build.rifts target**):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `rift.compilerPath` | `""` | `riftc` to use. Empty: `build/compiler/riftc` in a workspace folder, else `riftc` on `PATH` |
-| `rift.standardLibraryPath` | `""` | `library/std` sources, only needed if the checkout riftc was built from has moved |
-| `rift.debug.buildMode` | `debug` | Build mode for debugging |
-| `rift.debug.stepIntoStandardLibrary` | `true` | Step Into enters `std::` functions |
+| `edax.compilerPath` | `""` | `edaxc` to use. Empty: `build/compiler/edaxc` in a workspace folder, else `edaxc` on `PATH` |
+| `edax.standardLibraryPath` | `""` | `library/std` sources, only needed if the checkout edaxc was built from has moved |
+| `edax.debug.buildMode` | `debug` | Build mode for debugging |
+| `edax.debug.stepIntoStandardLibrary` | `true` | Step Into enters `std::` functions |
 
 Variables need `debug_info()` to be `full` (the `debug` mode). `line_tables` gives breakpoints,
 stepping and call stacks only.
@@ -75,11 +75,11 @@ stepping and call stacks only.
 The same works in a terminal:
 
 ```sh
-riftc build hello.rifts                     # -> build/debug/hello
+edaxc build hello.ed                     # -> build/debug/hello
 lldb build/debug/hello
-(lldb) command script import editors/vscode/lldb/rift_formatters.py
+(lldb) command script import editors/vscode/lldb/edax_formatters.py
 (lldb) settings set target.process.thread.step-avoid-regexp ''
-(lldb) b hello.rifts:12
+(lldb) b hello.ed:12
 (lldb) run
 ```
 
@@ -87,8 +87,8 @@ lldb build/debug/hello
 
 ## Code insights
 
-Off until you turn them on: the eye button in the editor title (**Rift: Toggle Code Insights**),
-or **Rift: Choose Code Insights…** (also the *Insights* item in the status bar) to pick what to
+Off until you turn them on: the eye button in the editor title (**Edax: Toggle Code Insights**),
+or **Edax: Choose Code Insights…** (also the *Insights* item in the status bar) to pick what to
 show. Insights show what the compiler does that the source doesn't spell out:
 
 | Category | Shown as | Default |
@@ -126,10 +126,10 @@ Insights follow the program, not just the code on one line:
   line also says how much stays in memory once optimized.
 - **Checks**: checks that cannot fail (`k % 4`, an exhaustive `match`) are not shown.
 
-Each category is a setting (`rift.insights.show.<category>`). `rift.insights.virtualLines` puts
-frames and drops at the end of the line instead of on lines of their own; `rift.insights.inlineLabels`
+Each category is a setting (`edax.insights.show.<category>`). `edax.insights.virtualLines` puts
+frames and drops at the end of the line instead of on lines of their own; `edax.insights.inlineLabels`
 switches the tags off (the highlights keep their hovers). Insights refresh
-when the file is saved. They come from `riftc insights <file>`, which prints them as JSON.
+when the file is saved. They come from `edaxc insights <file>`, which prints them as JSON.
 
 ## Highlighting
 
@@ -152,10 +152,10 @@ when the file is saved. They come from `riftc insights <file>`, which prints the
 | Piece | Where |
 |---|---|
 | Debug info (DWARF 5: lines, variables, types) | `compiler/src/llvm_backend.cpp`, section "variable debug info" |
-| Launch configuration → `riftc build` → CodeLLDB | `extension.js` |
-| How LLDB shows Rift values | `lldb/rift_formatters.py` |
-| Code insights (`riftc insights` → decorations, CodeLens) | `insights.js`; the facts: `compiler/src/llvm_backend.cpp`, section "insights" |
-| Highlighting | `syntaxes/rift.tmLanguage.json` (keywords mirror `compiler/include/rift/token_kinds.def`) |
+| Launch configuration → `edaxc build` → CodeLLDB | `extension.js` |
+| How LLDB shows Edax values | `lldb/edax_formatters.py` |
+| Code insights (`edaxc insights` → decorations, CodeLens) | `insights.js`; the facts: `compiler/src/llvm_backend.cpp`, section "insights" |
+| Highlighting | `syntaxes/edax.tmLanguage.json` (keywords mirror `compiler/include/edax/token_kinds.def`) |
 
 Repackage after changes:
 

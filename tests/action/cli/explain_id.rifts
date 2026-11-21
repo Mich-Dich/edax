@@ -1,2 +1,0 @@
-// RUN: riftc explain std::relative_path
-// A declared warning id shows the doc comment of its declaration (spec 23).

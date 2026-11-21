@@ -1,3 +1,0 @@
-// RUN: riftc lex %s
-mut u32 count = 0;
-count += 1;

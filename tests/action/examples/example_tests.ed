@@ -1,0 +1,2 @@
+// RUN: edaxc test --root=%S/../../../example --out-dir=%t
+// The tests of example/build.ed pass.

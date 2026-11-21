@@ -1,8 +1,8 @@
 exit: 0
 --- stdout
 module shapes::circle
-  header: tests/feature/09-modules/shapes_project/shapes/circle.rifth
-  source: tests/feature/09-modules/shapes_project/shapes/circle.rifts
+  header: tests/feature/09-modules/shapes_project/shapes/circle.edh
+  source: tests/feature/09-modules/shapes_project/shapes/circle.ed
   imports: shapes::geometry
   struct shapes::circle
     field center : point

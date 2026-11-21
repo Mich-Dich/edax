@@ -1,0 +1,73 @@
+// RUN: edaxc run %s
+// User-defined operators (spec 16): binary, unary, defaulted ==, <=> with derived comparisons,
+// operator+= and a = a + b, and both operator[] overloads.
+import std;
+
+struct vec2 {
+    i32 x = 0;
+    i32 y = 0;
+    vec2 operator+(vec2& o) { return vec2{ .x = this.x + o.x, .y = this.y + o.y }; }
+    bool operator==(vec2& other) = default;
+}
+
+vec2 operator*(vec2& v, i32 k) { return vec2{ .x = v.x * k, .y = v.y * k }; }
+
+struct version {
+    u32 major = 0;
+    u32 minor = 0;
+    std::ordering operator<=>(version& o) {
+        if (this.major != o.major) { return this.major <=> o.major; }
+        return this.minor <=> o.minor;
+    }
+}
+
+struct counter {
+    i32 n = 0;
+    void operator+=(i32 k) mut { this.n += k; }
+}
+
+struct grid {
+    i32 a = 0;
+    i32 b = 0;
+    i32& operator[](usize i) { if (i == 0) { return this.a; } return this.b; }
+    mut i32& operator[](usize i) mut { if (i == 0) { return this.a; } return this.b; }
+}
+
+i32 run_binary() {
+    vec2 p = vec2{ .x = 1, .y = 2 };
+    vec2 q = p + vec2{ .x = 3, .y = 4 };
+    vec2 r = q * 2;
+    std::println(f"{r.x} {r.y}");
+    std::println(f"{p == p} {p == q} {p != q}");
+    mut vec2 s = p;
+    s += q;
+    std::println(f"{s.x}");
+    version v1 = version{ .major = 1, .minor = 2 };
+    version v2 = version{ .major = 1, .minor = 5 };
+    std::println(f"{v1 < v2} {v1 >= v2} {v2 > v1}");
+    mut counter c = counter{};
+    c += 5;
+    c += 6;
+    std::println(f"{c.n}");
+    mut grid g = grid{};
+    g[1] = 7;
+    g[0] += 2;
+    std::println(f"{g[0]} {g[1]}");
+    return 0;
+}
+struct neg { i32 x = 0; neg operator-() { return neg{ .x = -this.x }; } }
+struct m { u8 b = 0; }
+m operator~(m& a) { return m{ .b = ~a.b }; }
+i32 run_unary() {
+    neg a = neg{ .x = 4 };
+    neg b = -a;
+    m c = ~m{ .b = 15 };
+    std::println(f"{b.x} {c.b} {(a.x <=> 5) == std::ordering::less} {(5 <=> a.x) == std::ordering::greater}");
+    return 0;
+}
+
+i32 main() {
+    run_binary();
+    run_unary();
+    return 0;
+}

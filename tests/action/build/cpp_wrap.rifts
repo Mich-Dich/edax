@@ -1,4 +1,0 @@
-// RUN: riftc run --root=%S/cpp_wrap_project --out-dir=%t app
-// g.wrap_cpp: C++ classes (and a template instance) used from Rift through generated C wrappers:
-// constructors as `make`, overloads and operators under the names the report lists, a thrown
-// exception as a std::cpp_exception error, destructors when the Rift objects are dropped.

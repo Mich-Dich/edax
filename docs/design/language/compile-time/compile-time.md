@@ -16,7 +16,7 @@
   - may not do I/O or touch `static mut`.
 - A `compile_time run_time` function follows the same body restrictions, so it behaves identically in both modes.
 
-```rift
+```edax
 compile_time u32 square(u32 x) { return x * x; }
 
 compile_time run_time u32 clamp(u32 x, u32 lo, u32 hi) {
@@ -29,14 +29,14 @@ u32 c = clamp(runtime_value, 0, 10); // run time
 ```
 
 ### Compile-time values
-```rift
+```edax
 compile_time usize buffer_size = 4096;      // file scope or local
 compile_time u32 area = square(16);
 ```
 - These are immutable, with no storage and no address.
 - They can be used as template arguments: `std::array<u8, buffer_size>`.
 - Values that need heap memory may be built at compile time. They're stored in **read-only static memory** and can never be changed. This is allowed for types whose fields are numbers, `bool`, `char`, strings, containers of these (`std::darray`, `std::hash_map`, ...) and structs and enums made of these. Types holding resources (files, mutexes, pointers) can't be built at compile time:
-  ```rift
+  ```edax
   compile_time std::darray<argument_spec> specs = build_specs();
   ```
 
@@ -47,7 +47,7 @@ A function parameter marked `compile_time` takes a compile-time value and is a c
 Compile-time code can use `len`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice(from, to)` and `find(needle)` (a `std::option<usize>`) on strings.
 
 ### `if compile_time`
-```rift
+```edax
 if compile_time (std::is_integer<T>()) { ... } else { ... }
 ```
 - The condition must be a compile-time `bool`.
@@ -55,7 +55,7 @@ if compile_time (std::is_integer<T>()) { ... } else { ... }
 
 ### `deduce`: return type chosen by branch
 Allowed only in templates. It replaces the return type when different `if compile_time` branches return different types:
-```rift
+```edax
 template<type T>
 deduce double_it(T x) {
     if compile_time (std::is_integer<T>()) {

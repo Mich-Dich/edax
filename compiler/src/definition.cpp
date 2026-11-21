@@ -1,14 +1,14 @@
-// `riftc definition <file> <line>:<column>`: where the name at a place in a file is declared, for
+// `edaxc definition <file> <line>:<column>`: where the name at a place in a file is declared, for
 // an editor's "go to definition". The program is loaded, resolved and type-checked as far as it
 // goes; then every name in the file (paths, types, members, struct literal fields, patterns,
 // imports) is matched against the place, the innermost first.
 
-#include "rift/definition.hpp"
+#include "edax/definition.hpp"
 
 #include <functional>
 #include <optional>
 
-namespace rift {
+namespace edax {
 namespace {
 
 using namespace ast;
@@ -330,4 +330,4 @@ std::optional<Span> find_definition(const sema::Program& program, FileId file, s
     return f.result();
 }
 
-} // namespace rift
+} // namespace edax

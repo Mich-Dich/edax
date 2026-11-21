@@ -1,0 +1,54 @@
+// RUN: edaxc run %s
+// Log files: rotation by size (logging output, "Rotation"), the JSON lines format, and the std
+// pieces they use: path parts, file.read_all and std::env::variable.
+import std;
+
+u32 count_lines(std::filesystem::path& p, std::str prefix) {
+    mut u32 n = 0;
+    mut std::file in = std::file::open(p).expect("exists");
+    for (std::str line : in.lines()) {
+        if (line.starts_with(prefix)) { n += 1; }
+    }
+    return n;
+}
+
+u32 main() {
+    std::filesystem::path dir = std::filesystem::executable_dir() / "rotation-logs";
+    std::filesystem::path text_log = dir / "app.log";
+    std::filesystem::path json_log = dir / "events.jsonl";
+    std::println(f"{text_log.file_name()} {text_log.extension()} {json_log.extension()}");
+    {
+        mut std::log::session logs = std::log::start(std::log::options{});
+        _ = logs.add(std::log::file::create(std::log::file_options{
+            .path     = text_log.clone(),
+            .rotation = std::log::rotation::by_size(std::log::size_rotation{ .max_bytes = 600, .keep = 2 }),
+        }).expect("text log"), std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
+        _ = logs.add(std::log::file::create(std::log::file_options{
+            .path   = json_log.clone(),
+            .format = std::log::file_format::json_lines,
+        }).expect("json log"), std::log::sink_options{});
+        mut u32 i = 0;
+        while (i < 40) {
+            std::log::info(f"record number {i} with \"quotes\"");
+            i += 1;
+        }
+    }
+    // The newest records are in app.log, older ones in app.1.log and app.2.log; app.3.log was
+    // never kept.
+    u32 current = count_lines(text_log, "INFO");
+    u32 first = count_lines(dir / "app.1.log", "INFO");
+    u32 second = count_lines(dir / "app.2.log", "INFO");
+    std::println(f"rotated: {current > 0} {first > 0} {second > 0} {current + first + second < 40}");
+    std::println(f"{std::file::open(dir / "app.3.log").is_error()}");
+    mut std::file json = std::file::open(json_log).expect("json");
+    std::string all = json.read_all().expect("read");
+    mut u32 objects = 0;
+    for (std::str line : all.as_str().split('\n')) {
+        if (line.starts_with("{\"time\":\"") && line.ends_with("}")) { objects += 1; }
+    }
+    std::println(f"json objects: {objects}");
+    std::println(f"{all.as_str().contains("\"message\":\"record number 7 with \\\"quotes\\\"\"")}");
+    std::println(f"{all.as_str().contains("\"level\":\"info\"")}");
+    std::println(f"{std::env::variable("EDAX_SURELY_UNSET_VARIABLE").is_none()}");
+    return 0;
+}

@@ -1,0 +1,2 @@
+// RUN: edaxc package list --root=%S/packages_project --out-dir=%t
+// edaxc package list: each package's source, version, path and how edaxc builds it.

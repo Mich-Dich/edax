@@ -20,7 +20,7 @@
 | `r.is_ok()`, `r.is_error()` (`o.is_some()`, `o.is_none()` on an option) | `bool`; looks without taking the value |
 
 `?` requires the **error types to be identical**. There is no hidden conversion; convert with `.or_error` or `.map_error`:
-```rift
+```edax
 std::result<employee, parse_error> parse_line(std::str line) {
     std::darray<std::str> parts = line.split(',');
     if (parts.len() != 3) {
@@ -55,7 +55,7 @@ These things panic:
 `std::panic` has return type `never`.
 
 ### The panic hook
-```rift
+```edax
 namespace std {
     struct panic_info {
         std::str       message;

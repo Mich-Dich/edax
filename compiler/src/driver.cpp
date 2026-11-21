@@ -1,22 +1,22 @@
-#include "rift/ast_walk.hpp"
-#include "rift/driver.hpp"
+#include "edax/ast_walk.hpp"
+#include "edax/driver.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/c_import.hpp"
-#include "rift/cmake_reader.hpp"
-#include "rift/cpp_wrap.hpp"
-#include "rift/definition.hpp"
-#include "rift/check.hpp"
-#include "rift/compile_time.hpp"
-#include "rift/llvm_backend.hpp"
-#include "rift/diagnostics.hpp"
-#include "rift/lexer.hpp"
-#include "rift/modules.hpp"
-#include "rift/ownership.hpp"
-#include "rift/parser.hpp"
-#include "rift/resolve.hpp"
-#include "rift/source.hpp"
-#include "rift/std_library.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/c_import.hpp"
+#include "edax/cmake_reader.hpp"
+#include "edax/cpp_wrap.hpp"
+#include "edax/definition.hpp"
+#include "edax/check.hpp"
+#include "edax/compile_time.hpp"
+#include "edax/llvm_backend.hpp"
+#include "edax/diagnostics.hpp"
+#include "edax/lexer.hpp"
+#include "edax/modules.hpp"
+#include "edax/ownership.hpp"
+#include "edax/parser.hpp"
+#include "edax/resolve.hpp"
+#include "edax/source.hpp"
+#include "edax/std_library.hpp"
 
 #include <cstdlib>
 #include <functional>
@@ -39,28 +39,28 @@
 
 extern char** environ;   // POSIX: the process environment, passed on to child processes
 
-#ifndef RIFT_VERSION
-#define RIFT_VERSION "0.0.0-dev"
+#ifndef EDAX_VERSION
+#define EDAX_VERSION "0.0.0-dev"
 #endif
 
-namespace rift {
+namespace edax {
 
 namespace {
 
 constexpr std::string_view usage_text =
-    "usage: riftc <command> [options] [file]\n"
+    "usage: edaxc <command> [options] [file]\n"
     "\n"
     "commands:\n"
-    "  lex <file>            print the token stream of a .rifts/.rifth file\n"
+    "  lex <file>            print the token stream of a .ed/.edh file\n"
     "  parse <file>          print the syntax tree of one file\n"
     "  check <file>          check a module and everything it imports\n"
     "  symbols <file>        print the module's merged symbol table (header + source)\n"
     "  typed <file>          print the syntax tree with the type of every expression\n"
     "  build <file>          compile a program to build/<mode>/<name> (next to the file)\n"
-    "  build [targets]       build the programs of ./build.rifts (or the targets named)\n"
+    "  build [targets]       build the programs of ./build.ed (or the targets named)\n"
     "  run <file> [-- args]  build a program in a temporary directory and run it\n"
-    "  run <target>          build and run a program of ./build.rifts\n"
-    "  test [tests]          build and run the tests of ./build.rifts\n"
+    "  run <target>          build and run a program of ./build.ed\n"
+    "  test [tests]          build and run the tests of ./build.ed\n"
     "  emit-llvm <file>      print the LLVM IR the program compiles to\n"
     "  insights <file>       list what the compiler does implicitly (stack, heap, drops, moves, ...) as JSON\n"
     "  expand <file> <type>  print a type with the members its annotations generate written out\n"
@@ -69,7 +69,7 @@ constexpr std::string_view usage_text =
     "                        forms, split or emulated operations, masked tails, multiversion copies,\n"
     "                        must_vectorize loops\n"
     "  package list|fetch|status [name]\n"
-    "                        the packages of ./build.rifts: list them (version, path, how they're built,\n"
+    "                        the packages of ./build.ed: list them (version, path, how they're built,\n"
     "                        local changes), fetch them without building, or show those whose files\n"
     "                        differ from build.lock\n"
     "  definition <file> <line>:<column>\n"
@@ -80,22 +80,22 @@ constexpr std::string_view usage_text =
     "options:\n"
     "  --diagnostic-format=human|short   diagnostic layout (default: human)\n"
     "  --color=auto|always|never         colored diagnostics (default: auto)\n"
-    "  --root=DIR                        project root for imports and build.rifts (default: the file's\n"
-    "                                    directory; for build.rifts the current directory)\n"
+    "  --root=DIR                        project root for imports and build.ed (default: the file's\n"
+    "                                    directory; for build.ed the current directory)\n"
     "  --stop-after=PHASE                lex, parse, resolve, types or ownership\n"
     "  --mode=MODE                       debug (default), release, release_with_debug_info, or a mode\n"
-    "                                    of build.rifts\n"
+    "                                    of build.ed\n"
     "  --warn=ID=off|error|on            switch a warning of a check, e.g. --warn=gfx::deprecated=off\n"
     "  -o FILE, --output=FILE            where 'build' writes the executable\n"
-    "  -DNAME=VALUE                      an option of build.rifts\n"
-    "  --list                            build: list build.rifts' targets, modes and options\n"
+    "  -DNAME=VALUE                      an option of build.ed\n"
+    "  --list                            build: list build.ed' targets, modes and options\n"
     "  --compile-commands                build: write compile_commands.json for the C/C++ targets\n"
-    "  --out-dir=DIR                     where a build.rifts build goes (default: <root>/build)\n"
-    "  --bin-dir=DIR                     where a build.rifts build puts its programs (default: <out-dir>/<mode>)\n"
-    "  --cc=COMPILER                     linker for build/run (default: $RIFT_CC, else cc)\n"
+    "  --out-dir=DIR                     where a build.ed build goes (default: <root>/build)\n"
+    "  --bin-dir=DIR                     where a build.ed build puts its programs (default: <out-dir>/<mode>)\n"
+    "  --cc=COMPILER                     linker for build/run (default: $EDAX_CC, else cc)\n"
     "  --target=PLATFORM                 build for another platform: x86_64-linux-gnu, aarch64-linux-gnu,\n"
     "                                    riscv64-linux-gnu (links with PLATFORM-gcc, else clang --target),\n"
-    "                                    or a target description FILE.rifts declaring\n"
+    "                                    or a target description FILE.ed declaring\n"
     "                                    'compile_time std::build::platform target = ...;'\n"
     "  --cpu=LEVEL                       the CPU level: x86_64, x86_64_v2, x86_64_v3, x86_64_v4, armv8,\n"
     "                                    armv9, riscv64, riscv64_v (default: the architecture's first)\n"
@@ -121,11 +121,11 @@ struct Options {
     bool             all_functions = false;   // --all-functions (testing the backend)
     std::vector<std::string> program_args;   // `run ... -- args`
     std::map<std::string, std::string> warn;  // --warn=gfx::deprecated=off|error|on (spec 23)
-    std::vector<std::string> targets;         // build.rifts targets named on the command line
+    std::vector<std::string> targets;         // build.ed targets named on the command line
     std::map<std::string, std::string> defines;   // -Dname=value (spec 25)
     bool             list = false;             // build --list
     bool             compile_commands = false; // build --compile-commands
-    bool             project = false;          // the command works on build.rifts
+    bool             project = false;          // the command works on build.ed
     std::string      out_dir;                  // --out-dir: where a project's build goes (default <root>/build)
     std::string      bin_dir;                  // --bin-dir: where a project's programs go (default <out>/<mode>)
     std::string      target;                   // --target=<platform>: cross compiling (spec 25)
@@ -148,12 +148,12 @@ bool on_path(const std::string& program) {
     return false;
 }
 
-// The C (or C++) compiler and linker driver, as words: --cc, $RIFT_CC, else `cc` for the host;
+// The C (or C++) compiler and linker driver, as words: --cc, $EDAX_CC, else `cc` for the host;
 // for another platform `<platform>-gcc` when installed, else `clang --target=<platform>`.
 std::vector<std::string> c_compiler(const Options& opts, bool cpp) {
     std::string given = opts.cc;
     if (given.empty()) {
-        const char* env = std::getenv("RIFT_CC");
+        const char* env = std::getenv("EDAX_CC");
         if (env && *env) given = env;
     }
     if (!given.empty() && !cpp) {
@@ -217,13 +217,13 @@ int run_process(const std::vector<std::string>& cmd, std::string* captured, cons
 }
 
 std::filesystem::path make_temp_dir() {
-    std::string pattern = (std::filesystem::temp_directory_path() / "riftc-run-XXXXXX").string();
+    std::string pattern = (std::filesystem::temp_directory_path() / "edaxc-run-XXXXXX").string();
     if (!mkdtemp(pattern.data())) return {};
     return pattern;
 }
 
 ExitCode usage_error(DriverStreams& s, std::string_view message) {
-    s.err << "riftc: error: " << message << "\nRun 'riftc --help' for usage.\n";
+    s.err << "edaxc: error: " << message << "\nRun 'edaxc --help' for usage.\n";
     return ExitCode::usage_error;
 }
 
@@ -249,7 +249,7 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
             continue;
         }
         if (builds && arg.starts_with("--mode=")) {
-            opts.mode = std::string(arg.substr(7));   // user modes are checked against build.rifts
+            opts.mode = std::string(arg.substr(7));   // user modes are checked against build.ed
             if (opts.mode.empty()) return usage_error(s, "'--mode=' needs a mode name");
             continue;
         }
@@ -327,28 +327,28 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
             opts.stop_after = Phase::ownership;
         } else if (arg.starts_with("-") && arg != "-") {
             return usage_error(s, std::format("unknown option '{}'", arg));
-        } else if (opts.input.empty() && (arg.ends_with(".rifts") || arg.ends_with(".rifth") || !builds)) {
+        } else if (opts.input.empty() && (arg.ends_with(".ed") || arg.ends_with(".edh") || !builds)) {
             opts.input = arg;
         } else if ((opts.command == "expand" || opts.command == "simd-report" || opts.command == "definition") && !opts.input.empty() &&
                    opts.targets.empty()) {
             opts.targets.emplace_back(arg);   // the type, or the function
         } else if (builds && opts.input.empty() && opts.command != "emit-llvm") {
-            opts.targets.emplace_back(arg);   // a target of build.rifts
+            opts.targets.emplace_back(arg);   // a target of build.ed
         } else {
             return usage_error(s, std::format("unexpected extra argument '{}'", arg));
         }
     }
-    // `riftc build`, `riftc run app`, `riftc test`: the project's build.rifts (spec 25).
+    // `edaxc build`, `edaxc run app`, `edaxc test`: the project's build.ed (spec 25).
     opts.project = builds && opts.command != "emit-llvm" && opts.input.empty();
     if (opts.project && opts.command == "run" && opts.targets.size() != 1) {
-        return usage_error(s, "'run' takes a program: a .rifts file, or one target of build.rifts");
+        return usage_error(s, "'run' takes a program: a .ed file, or one target of build.ed");
     }
     if (!opts.project && (opts.list || opts.compile_commands || !opts.defines.empty())) {
-        return usage_error(s, "'--list', '--compile-commands' and '-D' work with build.rifts: run them without a file");
+        return usage_error(s, "'--list', '--compile-commands' and '-D' work with build.ed: run them without a file");
     }
     if (!opts.project && opts.mode != "debug" && opts.mode != "release" && opts.mode != "release_with_debug_info") {
         return usage_error(s, std::format("unknown build mode '{}' (debug, release, release_with_debug_info; "
-                                          "other modes are defined in build.rifts)", opts.mode));
+                                          "other modes are defined in build.ed)", opts.mode));
     }
     if (opts.input.empty() && !opts.project) {
         return usage_error(s, std::format("'{}' needs an input file", opts.command));
@@ -421,10 +421,10 @@ std::string json_string(std::string_view text) {
     return out + "\"";
 }
 
-// `riftc insights <file>`: what the compiler does implicitly in the file's code, as JSON for
+// `edaxc insights <file>`: what the compiler does implicitly in the file's code, as JSON for
 // editors (the VS Code extension's code insights). Every function of the file is generated,
 // whether `main` reaches it or not.
-// `riftc simd-report <file> [<function>]` (SIMD, "Seeing what happens"): per function of the
+// `edaxc simd-report <file> [<function>]` (SIMD, "Seeing what happens"): per function of the
 // file, its vector types and their hardware form on the CPU level, the operations that are split
 // or emulated, the masked tail steps of block loops, the multiversion copies, and the loops of
 // `@std::simd::must_vectorize` functions with the vectorizer's verdict.
@@ -526,7 +526,7 @@ ExitCode run_simd_report(const Options& opts, sema::Program& program, SourceMana
                                                 native ? "native masked loads and stores" : "a short sequence of loads, blends and stores"));
                 } else if (sema::find_annotation(f.annotations, "std::simd::must_vectorize") && !fe.is_compile_time) {
                     bool scalar = scalar_loops.contains({fe.span.file, fe.span.begin});
-                    loops.push_back(std::format("line {}: {}", line_of(fe.span), scalar ? "NOT vectorized (riftc build reports why)" : "vectorized"));
+                    loops.push_back(std::format("line {}: {}", line_of(fe.span), scalar ? "NOT vectorized (edaxc build reports why)" : "vectorized"));
                 }
             }
             return true;
@@ -604,7 +604,7 @@ ExitCode run_insights(const Options& opts, sema::Program& program, SourceManager
 }
 
 // The backend: LLVM IR text (emit-llvm), then an executable: the IR is compiled to an object file
-// for the host and linked with the system linker (--cc, RIFT_CC or cc).
+// for the host and linked with the system linker (--cc, EDAX_CC or cc).
 ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager& sources, DiagnosticEngine& diags,
                           DriverStreams& s) {
     auto setting = [&](const char* name) {
@@ -631,7 +631,7 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     if (opts.command == "run") {
         temp_dir = make_temp_dir();
         if (temp_dir.empty()) {
-            s.err << "riftc: error[E0004]: cannot create a temporary directory\n";
+            s.err << "edaxc: error[E0004]: cannot create a temporary directory\n";
             return ExitCode::compile_error;
         }
         exe = temp_dir / input.stem();
@@ -650,7 +650,7 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
     if (!build_executable(ir, exe.string(), linker, error, codegen)) {
         if (error.starts_with("the linker")) {
-            s.err << std::format("riftc: error: {}\n", error);
+            s.err << std::format("edaxc: error: {}\n", error);
             if (!opts.target.empty()) {
                 s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
                                      opts.target, opts.target);
@@ -658,7 +658,7 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
             if (!temp_dir.empty()) fs::remove_all(temp_dir, ec);
             return ExitCode::compile_error;
         }
-        s.err << std::format("riftc: internal compiler error: {}\n", error);
+        s.err << std::format("edaxc: internal compiler error: {}\n", error);
         if (!temp_dir.empty()) fs::remove_all(temp_dir, ec);
         return ExitCode::internal_error;
     }
@@ -675,12 +675,12 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     return static_cast<ExitCode>(program_status);
 }
 
-// `riftc definition <file> <line>:<column>` (editors' go to definition): prints
+// `edaxc definition <file> <line>:<column>` (editors' go to definition): prints
 // `<file>:<line>:<column>` of the declaration of the name there, or nothing (exit 1). The
 // program is checked as far as it goes; diagnostics are not printed.
 ExitCode run_definition(const Options& opts, DriverStreams& s) {
     namespace fs = std::filesystem;
-    if (opts.targets.empty()) return usage_error(s, "'definition' takes a file and a place: riftc definition <file> <line>:<column>");
+    if (opts.targets.empty()) return usage_error(s, "'definition' takes a file and a place: edaxc definition <file> <line>:<column>");
     const std::string& place = opts.targets.front();
     std::size_t colon = place.find(':');
     std::uint32_t line = 0, column = 0;
@@ -695,15 +695,15 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
     DiagnosticEngine diags;
     std::error_code  ec;
     fs::path         wanted = fs::weakly_canonical(input, ec);
-    std::string      wanted_name;   // a file of the standard library: its name in riftc ("<std>/log.rifts")
-    fs::path         std_dir = fs::weakly_canonical(RIFT_STD_DIR, ec);
+    std::string      wanted_name;   // a file of the standard library: its name in edaxc ("<std>/log.ed")
+    fs::path         std_dir = fs::weakly_canonical(EDAX_STD_DIR, ec);
     if (fs::path rel = wanted.lexically_relative(std_dir); !rel.empty() && !rel.string().starts_with("..")) {
-        // Loaded through a program that imports the module: the library is compiled into riftc.
+        // Loaded through a program that imports the module: the library is compiled into edaxc.
         std::string module = rel.replace_extension().generic_string();
         for (std::size_t at; (at = module.find('/')) != std::string::npos;) module.replace(at, 1, "::");
         if (module != "std") module = "std::" + module;
         wanted_name = "<std>/" + wanted.lexically_relative(std_dir).generic_string();
-        fs::path entry = fs::temp_directory_path(ec) / std::format("riftc-definition-{}.rifts", static_cast<long>(::getpid()));
+        fs::path entry = fs::temp_directory_path(ec) / std::format("edaxc-definition-{}.ed", static_cast<long>(::getpid()));
         std::ofstream(entry) << "import std;\nimport " << module << ";\ni32 main() { return 0; }\n";
         input = entry.string();
     }
@@ -729,8 +729,8 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
         const SourceFile& target = sources.file(at->file);
         LineCol lc = target.line_col(at->begin);
         fs::path path(target.path());
-        if (target.path().starts_with("<std>/")) {   // the library's files: in the tree riftc was built from
-            fs::path tree = fs::path(RIFT_STD_DIR) / target.path().substr(6);
+        if (target.path().starts_with("<std>/")) {   // the library's files: in the tree edaxc was built from
+            fs::path tree = fs::path(EDAX_STD_DIR) / target.path().substr(6);
             if (fs::exists(tree, ec)) path = tree;
         } else {
             path = fs::absolute(path, ec);
@@ -746,8 +746,8 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
 
 ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     std::string input(opts.input);
-    if (!input.ends_with(".rifts") && !input.ends_with(".rifth")) {
-        s.err << std::format("riftc: error[E0002]: '{}': {}\n", input,
+    if (!input.ends_with(".ed") && !input.ends_with(".edh")) {
+        s.err << std::format("edaxc: error[E0002]: '{}': {}\n", input,
                              code_title(DiagCode::E0002));
         return ExitCode::compile_error;
     }
@@ -760,7 +760,7 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
         std::string           reason;
         std::optional<FileId> id = sources.load(input, reason);
         if (!id) {
-            s.err << std::format("riftc: error[E0001]: cannot read '{}': {}\n", input, reason);
+            s.err << std::format("edaxc: error[E0001]: cannot read '{}': {}\n", input, reason);
             return ExitCode::compile_error;
         }
         const SourceFile&  file   = sources.file(*id);
@@ -777,7 +777,7 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
 
     std::error_code ec;
     if (!std::filesystem::is_regular_file(input, ec)) {
-        s.err << std::format("riftc: error[E0001]: cannot read '{}': cannot open file\n", input);
+        s.err << std::format("edaxc: error[E0001]: cannot read '{}': cannot open file\n", input);
         return ExitCode::compile_error;
     }
     if (opts.command == "definition") return run_definition(opts, s);
@@ -791,7 +791,7 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     }
     program.build_mode = opts.mode;
     program.warn_levels = opts.warn;
-    program.build_target = std::filesystem::path(input).stem().string();   // `{target}` without build.rifts (spec 31)
+    program.build_target = std::filesystem::path(input).stem().string();   // `{target}` without build.ed (spec 31)
     if (!diags.has_errors() && opts.stop_after >= Phase::types) {
         check_types(program, sources, diags);
         typed = true;
@@ -812,9 +812,9 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
         print_symbols(s.out, *program.entry, sources);
     }
     if (opts.command == "expand" && resolved && !diags.has_errors()) {
-        if (opts.targets.empty()) return usage_error(s, "'expand' takes a file and a type: riftc expand <file> <type>");
+        if (opts.targets.empty()) return usage_error(s, "'expand' takes a file and a type: edaxc expand <file> <type>");
         if (!print_expansion(s.out, program, sources, opts.targets.front())) {
-            s.err << std::format("riftc: error: no type '{}' in '{}' or the modules it imports\n", opts.targets.front(), input);
+            s.err << std::format("edaxc: error: no type '{}' in '{}' or the modules it imports\n", opts.targets.front(), input);
             return ExitCode::compile_error;
         }
     }
@@ -827,7 +827,7 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     return diags.has_errors() ? ExitCode::compile_error : ExitCode::success;
 }
 
-// --- build.rifts (spec 25) ------------------------------------------------------------------
+// --- build.ed (spec 25) ------------------------------------------------------------------
 
 // The mode's settings that relax a rule of the built-in modes, for the note every such build
 // prints (spec 24).
@@ -849,8 +849,8 @@ std::string relaxed_rules(const std::map<std::string, std::string>& ms) {
     return out;
 }
 
-// Compiles and links one Rift target of build.rifts. Returns the executable's path, or empty.
-std::string build_rift_target(const Options& opts, const std::filesystem::path& root, const std::filesystem::path& out,
+// Compiles and links one Edax target of build.ed. Returns the executable's path, or empty.
+std::string build_edax_target(const Options& opts, const std::filesystem::path& root, const std::filesystem::path& out,
                               const ct::BuildTarget& t, const std::string& mode, const std::vector<std::string>& libraries,
                               const std::vector<std::string>& extra_roots, DriverStreams& s, bool& failed) {
     namespace fs = std::filesystem;
@@ -858,12 +858,12 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
     fs::path entry = (base / t.root).lexically_normal();
     std::error_code ec;
     if (!fs::is_regular_file(entry, ec)) {
-        s.err << std::format("riftc: error[E0001]: target '{}': cannot read '{}'\n", t.name, entry.string());
+        s.err << std::format("edaxc: error[E0001]: target '{}': cannot read '{}'\n", t.name, entry.string());
         failed = true;
         return {};
     }
     // Up to date (spec 25): the executable is newer than every file it was built from, and was
-    // built the same way (mode, settings, libraries, linker, this riftc).
+    // built the same way (mode, settings, libraries, linker, this edaxc).
     bool     plugin   = t.kind == ct::BuildTarget::Kind::plugin;   // `<bin>/plugins/<name>.so` (dynamic libraries)
     fs::path bin_dir  = opts.bin_dir.empty() ? out / mode / opts.target : fs::path(opts.bin_dir);
     fs::path exe_path = plugin ? bin_dir / "plugins" / (t.name + ".so") : bin_dir / t.name;
@@ -875,8 +875,8 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
     for (const std::string& l : libraries) signature += " " + l;
     for (const std::string& r : extra_roots) signature += " root=" + r;
     {
-        auto riftc_time = fs::last_write_time("/proc/self/exe", ec);
-        if (!ec) signature += std::format(" riftc={}", riftc_time.time_since_epoch().count());
+        auto edaxc_time = fs::last_write_time("/proc/self/exe", ec);
+        if (!ec) signature += std::format(" edaxc={}", edaxc_time.time_since_epoch().count());
         ec.clear();
     }
     if (std::ifstream in(stamp); in && fs::exists(exe_path, ec)) {
@@ -899,7 +899,7 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
     DiagnosticEngine diags;
     LoadOptions      load;
     load.root         = base.lexically_normal().string();
-    load.build_script = (base / "build.rifts").lexically_normal().string();
+    load.build_script = (base / "build.ed").lexically_normal().string();
     load.extra_roots  = extra_roots;
     sema::Program program = load_program(entry.string(), load, sources, diags);
     if (!diags.has_errors()) resolve_program(program, diags);
@@ -935,7 +935,7 @@ std::string build_rift_target(const Options& opts, const std::filesystem::path& 
     codegen.shared       = plugin;
     std::string error;
     if (!build_executable(ir, exe.string(), linker, error, codegen, libraries)) {
-        s.err << std::format("riftc: error: target '{}': {}\n", t.name, error);
+        s.err << std::format("edaxc: error: target '{}': {}\n", t.name, error);
         if (!opts.target.empty() && error.starts_with("the linker")) {
             s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
                                  opts.target, opts.target);
@@ -1029,7 +1029,7 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
     }
     for (const Job& j : jobs) {
         if (j.status == 0) continue;
-        s.err << j.output << std::format("riftc: error: target '{}': compiling '{}' failed\n", t.name, j.source);
+        s.err << j.output << std::format("edaxc: error: target '{}': compiling '{}' failed\n", t.name, j.source);
         failed = true;
         return {};
     }
@@ -1042,7 +1042,7 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         link.insert(link.end(), objects.begin(), objects.end());
         std::string output;
         if (run_process(link, &output) != 0) {
-            s.err << output << std::format("riftc: error: target '{}': linking the shared library failed\n", t.name);
+            s.err << output << std::format("edaxc: error: target '{}': linking the shared library failed\n", t.name);
             failed = true;
             return {};
         }
@@ -1054,7 +1054,7 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
     ar.insert(ar.end(), objects.begin(), objects.end());
     std::string output;
     if (run_process(ar, &output) != 0) {
-        s.err << output << std::format("riftc: error: target '{}': 'ar' failed\n", t.name);
+        s.err << output << std::format("edaxc: error: target '{}': 'ar' failed\n", t.name);
         failed = true;
         return {};
     }
@@ -1063,8 +1063,8 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
 
 // `g.import_c_headers` (C interop): preprocesses the headers of each import of C target `t`
 // with its include directories and defines, translates them and writes
-// `<out>/c_import/<target>/<module>.rifth` (and an empty `.rifts`) plus a report. Returns the
-// directory, a module root of the Rift targets that link `t`. Written again only when the
+// `<out>/c_import/<target>/<module>.edh` (and an empty `.ed`) plus a report. Returns the
+// directory, a module root of the Edax targets that link `t`. Written again only when the
 // translation changes, so the programs' caches stay valid.
 std::string import_c_target(const Options& opts, const std::filesystem::path& root, const std::filesystem::path& out,
                             const ct::BuildGraph& g, const ct::BuildTarget& t, DriverStreams& s, bool& failed) {
@@ -1102,7 +1102,7 @@ std::string import_c_target(const Options& opts, const std::filesystem::path& ro
         cmd.push_back(unit.string());
         std::string output;
         if (run_process(cmd, &output) != 0) {
-            s.err << output << std::format("riftc: error: target '{}': preprocessing the headers of '{}' failed\n", t.name, imp.module);
+            s.err << output << std::format("edaxc: error: target '{}': preprocessing the headers of '{}' failed\n", t.name, imp.module);
             failed = true;
             return {};
         }
@@ -1125,8 +1125,8 @@ std::string import_c_target(const Options& opts, const std::filesystem::path& ro
             if (in && old == text) return;
             std::ofstream(p) << text;
         };
-        write_if_changed(dir / (imp.module + ".rifth"), r.header);
-        write_if_changed(dir / (imp.module + ".rifts"), r.source);
+        write_if_changed(dir / (imp.module + ".edh"), r.header);
+        write_if_changed(dir / (imp.module + ".ed"), r.source);
         std::string report = std::format("# g.import_c_headers: {} ({} functions)\n", imp.module, r.functions);
         report += r.skipped.empty() ? "# everything was translated\n" : "# not translated:\n";
         for (const auto& [name, why] : r.skipped) report += std::format("{}: {}\n", name, why);
@@ -1137,7 +1137,7 @@ std::string import_c_target(const Options& opts, const std::filesystem::path& ro
 }
 
 // `g.wrap_cpp` (C interop): reads the headers of each wrap of C++ target `t` with clang's JSON
-// AST, writes `<out>/cpp_wrap/<target>/<module>.rifth`/`.rifts`, the C wrappers' source (added
+// AST, writes `<out>/cpp_wrap/<target>/<module>.edh`/`.ed`, the C wrappers' source (added
 // to `extra_sources`, compiled into `t`) and a report. Returns the module root.
 std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, const std::filesystem::path& out,
                             const ct::BuildGraph& g, const ct::BuildTarget& t, DriverStreams& s, bool& failed,
@@ -1163,7 +1163,7 @@ std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, c
     for (const auto& [name, value] : t.defines) flags.push_back("-D" + name + "=" + value);
     std::string standard = t.standard.starts_with("cpp") ? "c++" + t.standard.substr(3) : "c++20";
     std::string clang    = "clang++";
-    if (const char* env = std::getenv("RIFT_CLANGXX"); env && *env) clang = env;
+    if (const char* env = std::getenv("EDAX_CLANGXX"); env && *env) clang = env;
     for (const ct::BuildTarget::CppWrap& w : t.cpp_wraps) {
         CppWrapOptions o{w.headers, w.classes, w.templates, w.module, w.ns};
         fs::path probe = dir / (w.module + ".probe.cpp");
@@ -1180,10 +1180,10 @@ std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, c
             int status = run_process(cmd, &dump);
             if (status != 0) {
                 if (status == process_not_found) {
-                    s.err << std::format("riftc: error: target '{}': g.wrap_cpp reads C++ headers with clang, and '{}' was not found "
-                                         "(install clang, or set RIFT_CLANGXX)\n", t.name, clang);
+                    s.err << std::format("edaxc: error: target '{}': g.wrap_cpp reads C++ headers with clang, and '{}' was not found "
+                                         "(install clang, or set EDAX_CLANGXX)\n", t.name, clang);
                 } else {
-                    s.err << dump.substr(0, dump.find("\n{")) << std::format("riftc: error: target '{}': clang could not read the headers of '{}'\n", t.name, w.module);
+                    s.err << dump.substr(0, dump.find("\n{")) << std::format("edaxc: error: target '{}': clang could not read the headers of '{}'\n", t.name, w.module);
                 }
                 failed = true;
                 return {};
@@ -1193,7 +1193,7 @@ std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, c
         fs::remove(probe, ec);
         CppWrapResult r = cpp_wrap_generate(o, dumps);
         if (!r.error.empty()) {
-            s.err << std::format("riftc: error: target '{}': {}\n", t.name, r.error);
+            s.err << std::format("edaxc: error: target '{}': {}\n", t.name, r.error);
             failed = true;
             return {};
         }
@@ -1203,8 +1203,8 @@ std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, c
             if (in && old == text) return;
             std::ofstream(p) << text;
         };
-        write_if_changed(dir / (w.module + ".rifth"), r.header);
-        write_if_changed(dir / (w.module + ".rifts"), r.source);
+        write_if_changed(dir / (w.module + ".edh"), r.header);
+        write_if_changed(dir / (w.module + ".ed"), r.source);
         write_if_changed(dir / (w.module + "_wrappers.cpp"), r.wrappers);
         std::string report = std::format("# g.wrap_cpp: {}\n", w.module);
         report += r.report.empty() ? "# everything was wrapped under its own name\n" : "";
@@ -1253,7 +1253,7 @@ bool run_step(const std::filesystem::path& root, const ct::BuildStep& st, Driver
     }
     for (const std::string& i : st.inputs) {
         if (!fs::exists(at(i), ec)) {
-            s.err << std::format("riftc: error: step '{}': its input '{}' does not exist\n", st.name, i);
+            s.err << std::format("edaxc: error: step '{}': its input '{}' does not exist\n", st.name, i);
             return false;
         }
         if (fs::last_write_time(at(i), ec) > oldest) stale = true;
@@ -1265,12 +1265,12 @@ bool run_step(const std::filesystem::path& root, const ct::BuildStep& st, Driver
     std::string output;
     int status = run_process(cmd, &output, root.string());
     if (status != 0) {
-        s.err << output << std::format("riftc: error: step '{}' failed (exit status {})\n", st.name, status);
+        s.err << output << std::format("edaxc: error: step '{}' failed (exit status {})\n", st.name, status);
         return false;
     }
     for (const std::string& o : st.outputs) {
         if (!fs::exists(at(o), ec)) {
-            s.err << std::format("riftc: error: step '{}' did not write its declared output '{}'\n", st.name, o);
+            s.err << std::format("edaxc: error: step '{}' did not write its declared output '{}'\n", st.name, o);
             return false;
         }
     }
@@ -1278,7 +1278,7 @@ bool run_step(const std::filesystem::path& root, const ct::BuildStep& st, Driver
     return true;
 }
 
-// A user target description (build system, "Target platforms"): a .rifts file declaring
+// A user target description (build system, "Target platforms"): a .ed file declaring
 // `compile_time std::build::platform target = std::build::platform{ ... };`. Its triple, operating
 // system, CPU level and capabilities replace the platform's.
 std::optional<ExitCode> load_target_description(const Options& opts, DriverStreams& s) {
@@ -1318,7 +1318,7 @@ std::optional<ExitCode> load_target_description(const Options& opts, DriverStrea
     return std::nullopt;
 }
 
-// One evaluated build.rifts: its graph and the program that owns its symbols.
+// One evaluated build.ed: its graph and the program that owns its symbols.
 struct EvaluatedBuild {
     std::filesystem::path root;
     ct::BuildGraph        graph;
@@ -1326,8 +1326,8 @@ struct EvaluatedBuild {
     sema::Program         program;
 };
 
-// Runs `<root>/build.rifts`' build(g) with the compile-time interpreter (spec 25).
-// The targets of a package that has no build.rifts (packages, section 3): read from its
+// Runs `<root>/build.ed`' build(g) with the compile-time interpreter (spec 25).
+// The targets of a package that has no build.ed (packages, section 3): read from its
 // CMakeLists.txt, or one header-only target. They join the graph; the package's foreign targets
 // (`pkg.target("name")`) link them. Returns an error message, or "".
 std::string add_package_targets(const Options& opts, const std::filesystem::path&, const std::filesystem::path& out,
@@ -1366,7 +1366,7 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
             std::string prefix = dir.lexically_normal().string() + "/";
             if (shown.starts_with(prefix)) shown = (dep.kind == "local" ? dep.source : dep.path) + "/" + shown.substr(prefix.size());
             return std::format("the package '{}': {}\nnote: the CMake reader stops at what it can't translate, never guessing; give the "
-                               "package a build.rifts of its own (.build = std::build::package_build::rift)", dep.name, shown);
+                               "package a build.ed of its own (.build = std::build::package_build::edax)", dep.name, shown);
         }
         std::map<std::string, std::string> alias;
         for (const CMakeTarget& c : r.targets) {
@@ -1589,7 +1589,7 @@ std::string fetch_package(const std::filesystem::path& root, const std::filesyst
         return dir.string();
     }
     // An archive: downloaded, checked against its SHA-256, unpacked into the path.
-    fs::path marker = dir / ".riftc-package";
+    fs::path marker = dir / ".edaxc-package";
     {
         std::ifstream in(marker);
         std::string   have;
@@ -1615,7 +1615,7 @@ std::string fetch_package(const std::filesystem::path& root, const std::filesyst
     sum             = sum.substr(0, sum.find(' '));
     if (sum != d.sha256) {
         fs::remove(download, ec);
-        error = std::format("the archive's SHA-256 is {}, not the {} build.rifts names", sum, d.sha256);
+        error = std::format("the archive's SHA-256 is {}, not the {} build.ed names", sum, d.sha256);
         return {};
     }
     fs::path unpack = out / "package-downloads" / (d.name + ".unpack");
@@ -1694,7 +1694,7 @@ bool evaluate_build(EvaluatedBuild& b, const Options& opts, const std::filesyste
         return dir.string();
     };
     DiagnosticEngine diags;
-    fs::path script = (b.root / "build.rifts").lexically_normal();
+    fs::path script = (b.root / "build.ed").lexically_normal();
     b.program = load_program(script.string(), [&] { LoadOptions o; o.root = b.root.lexically_normal().string(); return o; }(), b.sources, diags);
     if (!diags.has_errors()) resolve_program(b.program, diags);
     b.program.build_mode  = opts.mode;
@@ -1710,8 +1710,8 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path root = opts.root.empty() ? fs::path(".") : fs::path(opts.root);   // as written: diagnostics show it
-    if (!fs::is_regular_file(root / "build.rifts", ec)) {
-        return usage_error(s, std::format("no build.rifts in '{}': name a .rifts file, or write a build.rifts (spec 25)",
+    if (!fs::is_regular_file(root / "build.ed", ec)) {
+        return usage_error(s, std::format("no build.ed in '{}': name a .ed file, or write a build.ed (spec 25)",
                                           opts.root.empty() ? root.string() : opts.root));
     }
     fs::path out = opts.out_dir.empty() ? root / "build" : fs::absolute(opts.out_dir, ec);
@@ -1729,7 +1729,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     std::map<std::string, std::string> lock_before = lock;
     std::vector<std::string> lock_errors;
 
-    // 1. Run build.rifts' build(g) with the compile-time interpreter.
+    // 1. Run build.ed' build(g) with the compile-time interpreter.
     std::deque<EvaluatedBuild> builds;
     EvaluatedBuild& main_build = builds.emplace_back();
     main_build.root = root;
@@ -1737,7 +1737,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     ct::BuildGraph& graph = main_build.graph;
     sema::Program&  program = main_build.program;
 
-    // Targets of dependencies: their own build.rifts, evaluated in the same mode; their
+    // Targets of dependencies: their own build.ed, evaluated in the same mode; their
     // targets join this graph (with paths relative to their root).
     for (std::size_t d = 0; d < graph.dependencies.size(); ++d) {
         bool used = false;
@@ -1745,22 +1745,22 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         if (!used) continue;
         fs::path dep_root = graph.dependencies[d].dir;
         const ct::BuildDependency& dependency = graph.dependencies[d];
-        bool has_build = fs::is_regular_file(dep_root / "build.rifts", ec);
+        bool has_build = fs::is_regular_file(dep_root / "build.ed", ec);
         if (dependency.is_package && (dependency.build == "cmake" || dependency.build == "headers_only" ||
                                       (dependency.build == "automatic" && !has_build))) {
             std::string error = add_package_targets(opts, root, out, graph, d, s);
             if (!error.empty()) {
-                s.err << "riftc: error: " << error << "\n";
+                s.err << "edaxc: error: " << error << "\n";
                 return ExitCode::compile_error;
             }
             continue;
         }
         if (dependency.is_package && !has_build) {
-            s.err << std::format("riftc: error: the package '{}' has no build.rifts (.build = std::build::package_build::rift)\n", dependency.name);
+            s.err << std::format("edaxc: error: the package '{}' has no build.ed (.build = std::build::package_build::edax)\n", dependency.name);
             return ExitCode::compile_error;
         }
         if (!has_build) {
-            s.err << std::format("riftc: error: the dependency '{}' has no build.rifts; describe its sources in this build.rifts "
+            s.err << std::format("edaxc: error: the dependency '{}' has no build.ed; describe its sources in this build.ed "
                                  "(g.glob_in) instead of g.target_of\n", graph.dependencies[d].source);
             return ExitCode::compile_error;
         }
@@ -1783,22 +1783,22 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                 if (dep.graph.targets[i].name == t.name) t.links.push_back(offset + i);
             }
             if (t.links.empty()) {
-                s.err << std::format("riftc: error: the dependency '{}' has no target '{}'\n", graph.dependencies[d].source, t.name);
+                s.err << std::format("edaxc: error: the dependency '{}' has no target '{}'\n", graph.dependencies[d].source, t.name);
                 return ExitCode::compile_error;
             }
         }
     }
     if (!lock_errors.empty()) {
-        for (const std::string& e : lock_errors) s.err << "riftc: error: " << e << "\n";
+        for (const std::string& e : lock_errors) s.err << "edaxc: error: " << e << "\n";
         return ExitCode::compile_error;
     }
     if (lock != lock_before) {
         std::ofstream lock_out(root / "build.lock");
-        lock_out << "# Written by riftc (spec 25): the content hash of each dependency. Keep it in version control.\n";
+        lock_out << "# Written by edaxc (spec 25): the content hash of each dependency. Keep it in version control.\n";
         for (const auto& [key, hash] : lock) lock_out << key << " " << hash << "\n";
     }
 
-    // 2. The mode: a built-in one, or a class build.rifts added with g.add_mode.
+    // 2. The mode: a built-in one, or a class build.ed added with g.add_mode.
     bool builtin = opts.mode == "debug" || opts.mode == "release" || opts.mode == "release_with_debug_info";
     bool added   = false;
     std::string names = "debug, release, release_with_debug_info";
@@ -1810,7 +1810,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     for (const auto& [name, value] : opts.defines) {
         bool known = false;
         for (const ct::BuildOption& o : graph.options) known = known || o.name == name;
-        if (!known) return usage_error(s, std::format("build.rifts has no option '{}' (riftc build --list)", name));
+        if (!known) return usage_error(s, std::format("build.ed has no option '{}' (edaxc build --list)", name));
     }
 
     auto kind_name = [](ct::BuildTarget::Kind k) {
@@ -1852,7 +1852,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         for (std::size_t i = 0; i < graph.targets.size(); ++i) {
             if (graph.targets[i].name == name) selected.push_back(i), found = true;
         }
-        if (!found) return usage_error(s, std::format("build.rifts has no target '{}' (riftc build --list)", name));
+        if (!found) return usage_error(s, std::format("build.ed has no target '{}' (edaxc build --list)", name));
     }
     if (opts.targets.empty()) {
         for (std::size_t i = 0; i < graph.targets.size(); ++i) {
@@ -1884,18 +1884,18 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     std::set<std::size_t> steps_done;
     bool failed = false;
     // What a target links, directly or through other targets: archives, -l flags, and the
-    // roots of dependencies whose Rift modules it imports.
+    // roots of dependencies whose Edax modules it imports.
     std::function<void(std::size_t, std::vector<std::string>&, std::vector<std::string>&, std::set<std::size_t>&)> collect =
         [&](std::size_t i, std::vector<std::string>& libs, std::vector<std::string>& roots, std::set<std::size_t>& seen) {
             for (std::size_t l : graph.targets[i].links) {
                 if (!seen.insert(l).second) continue;
                 const ct::BuildTarget& used = graph.targets[l];
                 if (used.kind == ct::BuildTarget::Kind::c_library) {
-                    if (!used.c_imports.empty()) {   // its headers as a Rift module
+                    if (!used.c_imports.empty()) {   // its headers as a Edax module
                         if (!imports.count(l)) imports[l] = import_c_target(opts, root, out, graph, used, s, failed);
                         if (!imports[l].empty() && std::find(roots.begin(), roots.end(), imports[l]) == roots.end()) roots.push_back(imports[l]);
                     }
-                    if (!used.cpp_wraps.empty() && !wraps.count(l)) {   // its C++ classes as a Rift module
+                    if (!used.cpp_wraps.empty() && !wraps.count(l)) {   // its C++ classes as a Edax module
                         std::vector<std::string> extra;
                         wraps[l] = wrap_cpp_target(opts, root, out, graph, used, s, failed, extra);
                         if (!failed && !archives.count(l)) {
@@ -1956,7 +1956,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                 if (!blocked) ready.push_back(k);
             }
             if (ready.empty()) {   // a cycle between steps
-                s.err << "riftc: error: the steps' inputs and outputs form a cycle\n";
+                s.err << "edaxc: error: the steps' inputs and outputs form a cycle\n";
                 failed = true;
                 break;
             }
@@ -1993,7 +1993,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                     std::sort(undeclared.begin(), undeclared.end());
                     std::string who;
                     for (std::size_t n = 0; n < step_names.size(); ++n) who += (n ? (n + 1 == step_names.size() ? " or " : ", ") : "") + step_names[n];
-                    s.err << std::format("riftc: error: step {} changed files it doesn't declare as outputs:\n", who);
+                    s.err << std::format("edaxc: error: step {} changed files it doesn't declare as outputs:\n", who);
                     for (const std::string& f : undeclared) {
                         std::error_code rel_ec;
                         fs::path shown = fs::path(f).lexically_relative(fs::weakly_canonical(root, rel_ec));
@@ -2037,14 +2037,14 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             if (failed || opts.compile_commands) continue;
             bool        target_failed = false;
             std::string mode          = t.mode ? t.mode->name : opts.mode;
-            std::string so            = build_rift_target(opts, root, out, t, mode, libs, roots, s, target_failed);
+            std::string so            = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
             if (target_failed) return ExitCode::compile_error;
             if (opts.command == "build") s.out << std::format("built '{}' ({})\n", so, mode);
             continue;
         }
         if (t.kind != ct::BuildTarget::Kind::executable && t.kind != ct::BuildTarget::Kind::test) {
             if (opts.command == "run") return usage_error(s, std::format("'{}' is a {}, not a program", t.name, kind_name(t.kind)));
-            continue;   // a Rift library is compiled into the programs that import it
+            continue;   // a Edax library is compiled into the programs that import it
         }
         std::vector<std::string> libs, roots;
         std::set<std::size_t>    seen;
@@ -2053,7 +2053,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         if (opts.compile_commands) continue;
         std::string mode = t.mode ? t.mode->name : opts.mode;
         bool        target_failed = false;
-        std::string exe = build_rift_target(opts, root, out, t, mode, libs, roots, s, target_failed);
+        std::string exe = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
         if (target_failed) return ExitCode::compile_error;
         if (opts.command == "build") {
             s.out << std::format("built '{}' ({})\n", exe, mode);
@@ -2065,16 +2065,16 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             return static_cast<ExitCode>(run_process(cmd, nullptr));
         } else {   // test: a program whose main returns 0, or its `@std::test` functions one by one (spec 29)
             std::string output;
-            int status = run_process({"env", "RIFT_TEST_LIST=1", exe}, &output);
-            if (status == 0 && output.starts_with("rift-tests:\n")) {
+            int status = run_process({"env", "EDAX_TEST_LIST=1", exe}, &output);
+            if (status == 0 && output.starts_with("edax-tests:\n")) {
                 std::vector<std::string> test_names;
-                std::istringstream       lines(output.substr(std::string_view("rift-tests:\n").size()));
+                std::istringstream       lines(output.substr(std::string_view("edax-tests:\n").size()));
                 for (std::string line; std::getline(lines, line);) {
                     if (!line.empty()) test_names.push_back(line);
                 }
                 for (const std::string& name : test_names) {
                     std::string one;
-                    int         st = run_process({"env", "RIFT_TEST_RUN=" + name, exe}, &one);
+                    int         st = run_process({"env", "EDAX_TEST_RUN=" + name, exe}, &one);
                     s.out << std::format("{} {}::{}\n", st == 0 ? "PASS" : "FAIL", t.name, name);
                     if (st != 0) {
                         s.out << one;
@@ -2149,8 +2149,8 @@ std::optional<std::string> diagnostic_doc(std::string_view text, std::string_vie
     return std::nullopt;
 }
 
-// `riftc explain gfx::deprecated`: the doc comment of a declared warning id (spec 23). The std
-// library's ids come from riftc itself; others from `gfx.rifth` (or `.rifts`) in the current
+// `edaxc explain gfx::deprecated`: the doc comment of a declared warning id (spec 23). The std
+// library's ids come from edaxc itself; others from `gfx.edh` (or `.ed`) in the current
 // directory, the project root.
 ExitCode explain_id(std::string_view id, DriverStreams& s) {
     // An id is the diagnostic's namespace path (spec 23, 30): `gfx::deprecated`, `legacy`.
@@ -2171,8 +2171,8 @@ ExitCode explain_id(std::string_view id, DriverStreams& s) {
         std::string           guess(ns);
         for (std::size_t at = guess.find("::"); at != std::string::npos; at = guess.find("::", at)) guess.replace(at, 2, "/");
         if (!guess.empty()) {
-            files.push_back(guess + ".rifth");
-            files.push_back(guess + ".rifts");
+            files.push_back(guess + ".edh");
+            files.push_back(guess + ".ed");
         }
         std::error_code ec;
         for (fs::recursive_directory_iterator it(".", fs::directory_options::skip_permission_denied, ec), end; it != end && !ec;
@@ -2182,7 +2182,7 @@ ExitCode explain_id(std::string_view id, DriverStreams& s) {
                 continue;
             }
             std::string ext = it->path().extension().string();
-            if (ext == ".rifth" || ext == ".rifts") files.push_back(it->path());
+            if (ext == ".edh" || ext == ".ed") files.push_back(it->path());
         }
         for (const fs::path& f : files) {
             std::ifstream in(f);
@@ -2200,10 +2200,10 @@ ExitCode explain_id(std::string_view id, DriverStreams& s) {
 
 ExitCode run_explain(std::span<const std::string_view> args, DriverStreams& s) {
     if (args.empty()) {
-#define RIFT_DIAG(code, severity, title) \
+#define EDAX_DIAG(code, severity, title) \
     s.out << std::format("{}  {:<8} {}\n", #code, #severity, title);
-#include "rift/diagnostic_codes.def"
-#undef RIFT_DIAG
+#include "edax/diagnostic_codes.def"
+#undef EDAX_DIAG
         return ExitCode::success;
     }
     if (args.size() > 1) {
@@ -2222,17 +2222,17 @@ ExitCode run_explain(std::span<const std::string_view> args, DriverStreams& s) {
 
 } // namespace
 
-std::string version_string() { return std::string("riftc ") + RIFT_VERSION; }
+std::string version_string() { return std::string("edaxc ") + EDAX_VERSION; }
 
-// `riftc package list|fetch|status [name]` (packages, section 8). Evaluating build.rifts
+// `edaxc package list|fetch|status [name]` (packages, section 8). Evaluating build.ed
 // fetches the packages; this prints what it found.
 ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    if (args.empty()) return usage_error(s, "riftc package list|fetch|status [name]");
+    if (args.empty()) return usage_error(s, "edaxc package list|fetch|status [name]");
     std::string sub(args[0]);
     if (sub == "convert" || sub == "update") {
-        return usage_error(s, std::format("'riftc package {}' is not supported by this riftc yet; edit build.rifts", sub));
+        return usage_error(s, std::format("'edaxc package {}' is not supported by this edaxc yet; edit build.ed", sub));
     }
     if (sub != "list" && sub != "fetch" && sub != "status") return usage_error(s, std::format("unknown package command '{}'", sub));
     Options opts;
@@ -2246,7 +2246,7 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
         else return usage_error(s, std::format("unknown option '{}'", a));
     }
     fs::path root = opts.root.empty() ? fs::path(".") : fs::path(opts.root);
-    if (!fs::is_regular_file(root / "build.rifts", ec)) return usage_error(s, "no build.rifts here (--root=DIR)");
+    if (!fs::is_regular_file(root / "build.ed", ec)) return usage_error(s, "no build.ed here (--root=DIR)");
     fs::path out = opts.out_dir.empty() ? root / "build" : fs::absolute(opts.out_dir, ec);
     std::map<std::string, std::string> lock;
     {
@@ -2261,11 +2261,11 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
     EvaluatedBuild b;
     b.root = root;
     if (!evaluate_build(b, opts, out, s, lock, lock_errors)) return ExitCode::compile_error;
-    for (const std::string& e : lock_errors) s.err << "riftc: error: " << e << "\n";
+    for (const std::string& e : lock_errors) s.err << "edaxc: error: " << e << "\n";
     if (!lock_errors.empty()) return ExitCode::compile_error;
     if (lock != before) {
         std::ofstream lock_out(root / "build.lock");
-        lock_out << "# Written by riftc (spec 25): the content hash of each dependency. Keep it in version control.\n";
+        lock_out << "# Written by edaxc (spec 25): the content hash of each dependency. Keep it in version control.\n";
         for (const auto& [key, hash] : lock) lock_out << key << " " << hash << "\n";
     }
     std::size_t shown = 0;
@@ -2280,8 +2280,8 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
             changes = output;
         }
         std::string how = d.build != "automatic" ? d.build
-                        : fs::is_regular_file(dir / "build.rifts", ec)    ? "rift (build.rifts)"
-                        : fs::is_regular_file(dir / "CMakeLists.txt", ec) ? "cmake (CMakeLists.txt, read by riftc)"
+                        : fs::is_regular_file(dir / "build.ed", ec)    ? "edax (build.ed)"
+                        : fs::is_regular_file(dir / "CMakeLists.txt", ec) ? "cmake (CMakeLists.txt, read by edaxc)"
                                                                            : "headers_only";
         std::string version = d.kind == "git" ? (d.commit.empty() ? d.tag + " = " : "") + (lock.contains("package " + d.name) ? [&] {
                                   std::string v = lock["package " + d.name];
@@ -2306,8 +2306,8 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
         }
         s.out << (changes.empty() || !d.patches.empty() ? "  no local changes\n" : "  local changes:\n" + changes);
     }
-    if (!only.empty() && shown == 0) return usage_error(s, std::format("build.rifts has no package '{}'", only));
-    if (shown == 0 && sub != "status") s.out << "build.rifts declares no packages\n";
+    if (!only.empty() && shown == 0) return usage_error(s, std::format("build.ed has no package '{}'", only));
+    if (shown == 0 && sub != "status") s.out << "build.ed declares no packages\n";
     return ExitCode::success;
 }
 
@@ -2339,7 +2339,7 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
         if (std::optional<ExitCode> failed = parse_options(args.subspan(1), opts, streams)) {
             return *failed;
         }
-        if (opts.target.ends_with(".rifts")) {
+        if (opts.target.ends_with(".ed")) {
             if (std::optional<ExitCode> failed = load_target_description(opts, streams)) return *failed;
         } else if (std::string error; !set_build_target(opts.target, error)) {
             return usage_error(streams, error);
@@ -2353,10 +2353,10 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
             return usage_error(streams, std::format("a program built for '{}' can't run here; use 'build'", opts.target));
         }
         if (opts.project) return run_project(opts, streams);
-        if (command == "test") return usage_error(streams, "'test' runs the tests of build.rifts: run it without a file");
+        if (command == "test") return usage_error(streams, "'test' runs the tests of build.ed: run it without a file");
         return run_frontend(opts, streams);
     }
     return usage_error(streams, std::format("unknown command '{}'", command));
 }
 
-} // namespace rift
+} // namespace edax

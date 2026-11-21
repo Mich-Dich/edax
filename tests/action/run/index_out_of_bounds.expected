@@ -2,4 +2,4 @@ exit: 134
 --- stdout
 1
 --- stderr
-tests/action/run/index_out_of_bounds.rifts:8:21: panic: index out of bounds
+tests/action/run/index_out_of_bounds.ed:8:21: panic: index out of bounds

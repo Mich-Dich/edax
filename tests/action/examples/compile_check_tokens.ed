@@ -1,0 +1,1 @@
+// RUN: edaxc lex %S/compile_check.ed

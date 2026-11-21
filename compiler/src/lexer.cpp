@@ -1,9 +1,9 @@
-#include "rift/lexer.hpp"
+#include "edax/lexer.hpp"
 
 #include <array>
 #include <format>
 
-namespace rift {
+namespace edax {
 
 namespace {
 
@@ -46,10 +46,10 @@ struct Punct {
 };
 
 constexpr std::array punctuation = {
-#define RIFT_TOKEN(name, spelling)
-#define RIFT_KEYWORD(word)
-#define RIFT_PUNCT(name, spelling) Punct{spelling, TokenKind::name},
-#include "rift/token_kinds.def"
+#define EDAX_TOKEN(name, spelling)
+#define EDAX_KEYWORD(word)
+#define EDAX_PUNCT(name, spelling) Punct{spelling, TokenKind::name},
+#include "edax/token_kinds.def"
 };
 
 std::string describe_char(char32_t cp) {
@@ -569,7 +569,7 @@ Token Lexer::lex_invalid(std::size_t begin) {
     pos_ += len;
     Diagnostic& d = diags_.report(DiagCode::E1001, span(begin, pos_),
                                   std::format("invalid character {} in source", describe_char(cp)),
-                                  "not part of Rift's syntax");
+                                  "not part of Edax's syntax");
     if (cp >= 0x80) {
         d.notes.push_back(Note{"identifiers are ASCII letters, digits and '_'; other text belongs "
                                "in string literals or comments",
@@ -578,4 +578,4 @@ Token Lexer::lex_invalid(std::size_t begin) {
     return make(TokenKind::error, begin);
 }
 
-} // namespace rift
+} // namespace edax

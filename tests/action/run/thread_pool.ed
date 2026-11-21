@@ -1,0 +1,82 @@
+// RUN: edaxc run %s
+// std::thread_pool (spec 28): for_chunks, reduce_chunks (deterministic), nested scoped tasks, owned tasks.
+import std;
+void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor) {
+    pool.for_chunks(samples.as_mut_span(), 16 * 1024, [factor](std::span<mut f32> part) {
+        for (mut f32& x : part) {
+            x *= factor;
+        }
+    });
+}
+f64 total(std::thread_pool& pool, std::span<f64> values) {
+    return pool.reduce_chunks(values, 8 * 1024, 0.0,
+        [](std::span<f64> part) {
+            mut f64 sum = 0.0;
+            for (f64 v : part) {
+                sum += v;
+            }
+            return sum;
+        },
+        [](f64 a, f64 b) { return a + b; });
+}
+struct node {
+    u64                                value = 0;
+    std::option<std::unique_ptr<node>> left  = std::none;
+    std::option<std::unique_ptr<node>> right = std::none;
+}
+u64 tree_sum(std::thread_pool& pool, node& n) {
+    std::thread_pool::scoped_task<u64> left = pool.spawn([&pool, &n]() { return child_sum(pool, n.left); });
+    u64 right = child_sum(pool, n.right);
+    return n.value + left.join() + right;
+}
+u64 child_sum(std::thread_pool& pool, std::option<std::unique_ptr<node>>& child) {
+    return match (child) {
+        std::some(c) => tree_sum(pool, *c),
+        std::none    => 0,
+    };
+}
+node build(u64 depth, mut u64& next) {
+    next += 1;
+    mut node n = node{ .value = next };
+    if (depth > 0) {
+        n.left = std::some(std::unique_ptr<node>::make(build(depth - 1, mut next)));
+        n.right = std::some(std::unique_ptr<node>::make(build(depth - 1, mut next)));
+    }
+    return n;
+}
+std::thread_pool::task<std::darray<u8>> start_compress(std::thread_pool& pool, std::darray<u8> input) {
+    return pool.spawn([move input]() {
+        mut std::darray<u8> out = default;
+        for (u8 b : input) { out.push(b / 2); }
+        return out;
+    });
+}
+i32 main() {
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });
+    mut std::darray<f32> samples = default;
+    for (u32 i : 0..100000) { samples.push(1.0f32); }
+    scale_all(pool, mut samples, 3.0f32);
+    mut f32 acc = 0.0f32;
+    for (f32 x : samples) { acc += x; }
+    std::println(f"scaled {acc}");
+    mut std::darray<f64> values = default;
+    for (u32 i : 0..100000) { values.push(cast::round<f64>(i) * 0.1); }
+    f64 a = total(pool, values.as_span());
+    std::thread_pool one = std::thread_pool::make(std::thread_pool::options{ .threads = 1 });
+    f64 b = total(one, values.as_span());
+    std::println(f"sum {a} same {a == b}");
+    mut u64 next = 0;
+    node root = build(10, mut next);
+    std::println(f"tree {tree_sum(pool, root)} expected {next * (next + 1) / 2}");
+    std::atomic<u64> counted = default;
+    pool.for_index_chunks(1000000, 1024, [&counted](usize from, usize to) {
+        _ = counted.fetch_wrapping_add(cast<u64>(to - from), std::memory_order::relaxed);
+    });
+    std::println(f"indices {counted.load(std::memory_order::acquire)}");
+    mut std::darray<u8> data = default;
+    for (u32 i : 0..10) { data.push(cast::truncate<u8>(i * 10)); }
+    std::thread_pool::task<std::darray<u8>> t = start_compress(pool, move data);
+    std::darray<u8> done = t.join();
+    std::println(f"compressed {done.len()} {done[9]} threads {pool.thread_count()}");
+    return 0;
+}

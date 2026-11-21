@@ -1,0 +1,73 @@
+// RUN: edaxc run %s
+// Allocators: containers take an allocator parameter (std::global_allocator by default, which
+// costs no space), arenas hand out memory front to back, and a custom allocator is a type
+// implementing std::allocator.
+import std;
+
+struct point {
+    i32 x;
+    i32 y;
+}
+
+// Counts what goes through it, then uses the global allocator.
+struct counting : std::allocator {
+    std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override {
+        allocations.fetch_wrapping_add(1, std::memory_order::relaxed);
+        mut std::global_allocator g = default;
+        return g.allocate(size, alignment);
+    }
+
+    unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override {
+        frees.fetch_wrapping_add(1, std::memory_order::relaxed);
+        mut std::global_allocator g = default;
+        g.free(block, size, alignment);
+    }
+}
+
+static std::atomic<u32> allocations = default;
+static std::atomic<u32> frees = default;
+
+i32 main() {
+    std::println(f"darray<u32>: {std::size_of<std::darray<u32>>()} bytes");
+
+    std::arena frame = std::arena::make(4096);
+    {
+        mut std::darray<point, std::arena_allocator> points =
+            std::darray<point, std::arena_allocator>::with_allocator(frame.allocator());
+        mut i32 i = 0;
+        while (i < 10) {
+            points.push(point{ .x = i, .y = i * i });
+            i += 1;
+        }
+        std::println(f"{points.len()} points, last ({points[9].x}, {points[9].y}), arena used {frame.used()} of {frame.capacity()}");
+
+        mut std::hash_map<u32, u32, std::arena_allocator> squares =
+            std::hash_map<u32, u32, std::arena_allocator>::with_capacity_in(16, frame.allocator());
+        _ = squares.insert(3, 9);
+        _ = squares.insert(4, 16);
+        std::println(f"map {squares.get(4).value_or(0)}, arena used more: {frame.used() > 0}");
+
+        std::unique_ptr<point, std::arena_allocator> p = std::unique_ptr<point, std::arena_allocator>::make_in(point{ .x = 7, .y = 8 }, frame.allocator());
+        std::println(f"boxed ({p->x}, {p->y})");
+    }
+
+    {
+        mut std::darray<u64, counting> counted = default;
+        mut u64 k = 0;
+        while (k < 100) {
+            counted.push(k);
+            k += 1;
+        }
+        std::println(f"{counted.len()} values, sum {counted[99] + counted[0]}");
+    }
+    std::println(f"allocations > 0: {allocations.load(std::memory_order::relaxed) > 0}, every block given back: {allocations.load(std::memory_order::relaxed) == frees.load(std::memory_order::relaxed)}");
+
+    std::arena small = std::arena::make(64);
+    mut std::darray<u64, std::arena_allocator> too_many = std::darray<u64, std::arena_allocator>::with_allocator(small.allocator());
+    mut u64 n = 0;
+    while (n < 100) {   // the arena is full after 8 values: out of memory
+        too_many.push(n);
+        n += 1;
+    }
+    return 0;
+}

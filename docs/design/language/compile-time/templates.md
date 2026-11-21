@@ -4,7 +4,7 @@
 
 ### Declaring template parameters
 Template parameters are **always declared** with `template<...>` in front of the item:
-```rift
+```edax
 template<type T>
 T larger(T a, T b) {
     return if (a > b) { a } else { b };
@@ -28,7 +28,7 @@ class hash_map { ... }
 ### Using templates
 - **Types:** template arguments are always written out: `std::darray<employee>`, `std::array<u8, 16>`.
 - **Functions:** arguments are deduced from the call arguments, or written explicitly:
-  ```rift
+  ```edax
   u32 m = larger(a, b);              // T = u32 from a and b
   u32 n = larger<u32>(3, 4);         // explicit; the literals take u32
   u32 o = larger(3, 4);              // ERROR: T can't be deduced from untyped literals
@@ -38,7 +38,7 @@ class hash_map { ... }
 
 ### Parameter packs
 A pack takes any number of types, and a function parameter of a pack type takes the matching arguments:
-```rift
+```edax
 template<type... A>
 void print_all(A&... values) {
     for compile_time (A& v : values) {          // one copy of the body per argument, each with its own type
@@ -60,7 +60,7 @@ print_all(1u32, "two", 3.0);                    // A = u32, std::static_str, f64
 ### Method templates
 A method can have its own template parameters, also in a class template. They are deduced from
 the call's arguments like a function's:
-```rift
+```edax
 template<type T>
 class darray {
 public:
@@ -72,7 +72,7 @@ employees.retain([](employee& e) { return e.is_senior(); });
 ```
 
 ### Constraints
-```rift
+```edax
 template<type T : std::comparable>
 T larger(T a, T b) { ... }
 ```
@@ -83,7 +83,7 @@ T larger(T a, T b) { ... }
 
 ### No specialization
 There is no template specialization. Behaviour that depends on the type is written with `if compile_time` (see [Compile-Time Evaluation](compile-time.md)):
-```rift
+```edax
 template<type T>
 std::string describe(T value) {
     if compile_time (std::is_integer<T>()) {
@@ -95,8 +95,8 @@ std::string describe(T value) {
 ```
 
 ### Compilation model
-1. The template **declaration** is in the `.rifth`; the **body** is in the `.rifts`.
-2. Compiling the `.rifts` stores the template body in the module's compiled interface (see [Headers, Sources and Modules](../organization/modules.md)).
+1. The template **declaration** is in the `.edh`; the **body** is in the `.ed`.
+2. Compiling the `.ed` stores the template body in the module's compiled interface (see [Headers, Sources and Modules](../organization/modules.md)).
 3. An importer that uses `larger<u32>` **instantiates and type-checks at its own compile time**. Layout, `sizeof`, `compile_time` evaluation and `deduce` return types are all available there.
 4. Identical instantiations from different files are **merged at link time**. Each unique instantiation ends up in the binary only once.
 

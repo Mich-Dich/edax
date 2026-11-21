@@ -1,0 +1,267 @@
+// The Edax standard library: module std::windowing::bindings (see bindings.edh).
+
+namespace std::windowing {
+    struct chord {
+        bool operator==(chord& other) = default;
+
+        static chord of(std::windowing::key k) {
+            return chord{ .trigger = trigger::key(k) };
+        }
+        static chord with(std::windowing::key k, std::windowing::modifiers m) {
+            return chord{ .trigger = trigger::key(k), .modifiers = m };
+        }
+        static chord of_button(std::windowing::mouse_button b) {
+            return chord{ .trigger = trigger::button(b) };
+        }
+    }
+
+    // The name of the first alternative of `actions` with a payload, or "".
+    private compile_time std::static_str first_payload(type actions) {
+        for (std::meta::alternative a : std::meta::alternatives<actions>()) {
+            if (a.has_payload) {
+                return a.name;
+            }
+        }
+        return "";
+    }
+
+    // Whether every modifier `wanted` names is held (others may be held too).
+    private bool holds(std::windowing::modifiers held, std::windowing::modifiers wanted) {
+        return (held.shift || !wanted.shift) && (held.control || !wanted.control)
+            && (held.alt || !wanted.alt) && (held.super || !wanted.super);
+    }
+
+    template<type A>
+    class bindings {
+    public:
+        compile_time check (std::meta::is_enum<A>())
+            else f"std::windowing::bindings<{std::type_name<A>()}>: the actions must be an enum";
+        compile_time check (first_payload(A).is_empty())
+            else f"std::windowing::bindings: action '{first_payload(A)}' has a payload; actions are plain names";
+
+        static bindings<A> defaults() {
+            // Two actions on the same default chord: an error at compile time, naming both.
+            compile_time check {
+                for (std::meta::alternative a : std::meta::alternatives<A>()) {
+                    for (std::meta::alternative b : std::meta::alternatives<A>()) {
+                        if (a.index < b.index) {
+                            if (a.has<default_key>() && b.has<default_key>()
+                                && a.annotation<default_key>().expect("has") == b.annotation<default_key>().expect("has")) {
+                                std::compile_error(f"'{a.name}' and '{b.name}' have the same @default_key");
+                            }
+                            if (a.has<default_button>() && b.has<default_button>()
+                                && a.annotation<default_button>().expect("has") == b.annotation<default_button>().expect("has")) {
+                                std::compile_error(f"'{a.name}' and '{b.name}' have the same @default_button");
+                            }
+                        }
+                    }
+                }
+            }
+            mut bindings<A> out = bindings<A>{};
+            for compile_time (std::meta::alternative a : std::meta::alternatives<A>()) {
+                if compile_time (a.has<default_key>()) {
+                    compile_time default_key k = a.annotation<default_key>().expect("checked by has");
+                    out.entries.push(binding_entry<A>{ .chord = chord::with(k.key, k.modifiers), .action = a.make() });
+                }
+                if compile_time (a.has<default_button>()) {
+                    compile_time default_button b = a.annotation<default_button>().expect("checked by has");
+                    out.entries.push(binding_entry<A>{
+                        .chord  = chord{ .trigger = trigger::button(b.button), .modifiers = b.modifiers },
+                        .action = a.make(),
+                    });
+                }
+            }
+            return out;
+        }
+
+        std::option<A> bind(A action, chord c) mut {
+            std::option<A> previous = this.unbind_chord(c);
+            this.entries.push(binding_entry<A>{ .chord = c, .action = action });
+            return match (previous) {
+                std::some(p) => if (p == action) { std::none } else { std::some(p) },
+                std::none    => std::none,
+            };
+        }
+
+        void unbind(A action) mut {
+            this.entries.retain([action](binding_entry<A>& entry) { return entry.action != action; });
+        }
+
+        std::option<A> unbind_chord(chord c) mut {
+            for (usize i : 0..this.entries.len()) {
+                if (this.entries[i].chord == c) {
+                    return std::some(this.entries.remove(i).action);
+                }
+            }
+            return std::none;
+        }
+
+        void reset(A action) mut {
+            this.unbind(action);
+            bindings<A> fresh = bindings<A>::defaults();
+            for (binding_entry<A>& entry : fresh.entries) {
+                if (entry.action == action) {
+                    _ = this.bind(action, entry.chord);
+                }
+            }
+        }
+
+        void reset_all() mut {
+            mut bindings<A> fresh = bindings<A>::defaults();
+            this.entries = std::take(mut fresh.entries);
+        }
+
+        std::option<A> lookup(chord c) {
+            for (binding_entry<A>& entry : this.entries) {
+                if (entry.chord == c) {
+                    return std::some(entry.action);
+                }
+            }
+            return std::none;
+        }
+
+        std::option<A> action_for(event e) {
+            return match (e) {
+                event::key(k) => match (k.action) {
+                    key_action::pressed => this.lookup(chord::with(k.key, k.modifiers)),
+                    _                   => std::none,
+                },
+                event::mouse_button(b) => match (b.action) {
+                    button_action::pressed => this.lookup(chord{ .trigger = trigger::button(b.button), .modifiers = b.modifiers }),
+                    _                      => std::none,
+                },
+                _ => std::none,
+            };
+        }
+
+        bool is_down(A action, input_state& input) {
+            for (binding_entry<A>& entry : this.entries) {
+                if (entry.action == action && holds(input.modifiers(), entry.chord.modifiers)) {
+                    bool down = match (entry.chord.trigger) {
+                        trigger::key(k)    => input.key_down(k),
+                        trigger::button(b) => input.mouse_down(b),
+                    };
+                    if (down) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        bool was_pressed(A action, input_state& input) {
+            for (binding_entry<A>& entry : this.entries) {
+                if (entry.action == action && holds(input.modifiers(), entry.chord.modifiers)) {
+                    bool pressed = match (entry.chord.trigger) {
+                        trigger::key(k)    => input.key_pressed(k),
+                        trigger::button(b) => input.mouse_pressed(b),
+                    };
+                    if (pressed) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        std::darray<chord> chords(A action) {
+            mut std::darray<chord> out = default;
+            for (binding_entry<A>& entry : this.entries) {
+                if (entry.action == action) {
+                    out.push(entry.chord);
+                }
+            }
+            return out;
+        }
+
+        usize len() { return this.entries.len(); }
+
+        std::string to_text() {
+            mut std::string out = default;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<A>()) {
+                if (!out.is_empty()) {
+                    out.push_str("; ");
+                }
+                out.push_str(a.name);
+                out.push_str(" =");
+                mut bool first = true;
+                for (binding_entry<A>& entry : this.entries) {
+                    if (a.is(entry.action)) {
+                        out.push_str(if (first) { " " } else { ", " });
+                        out.push_str(chord_text(entry.chord).as_str());
+                        first = false;
+                    }
+                }
+            }
+            return out;
+        }
+
+        static std::result<bindings<A>, binding_error> from_text(std::str text) {
+            mut bindings<A> out = bindings<A>{};
+            for (std::str part : text.split(';')) {
+                std::str line = part.trim();
+                if (line.is_empty()) {
+                    continue;
+                }
+                usize equals = line.find("=").or_error(binding_error::bad_syntax)?;
+                std::str name = line.slice(0, equals).trim();
+                A action = std::meta::from_name<A>(name).or_error(binding_error::unknown_action)?;
+                std::str rest = line.slice(equals + 1, line.len()).trim();
+                if (rest.is_empty()) {
+                    continue;                                   // an action with no keys
+                }
+                for (std::str piece : rest.split(',')) {
+                    chord c = parse_chord(piece.trim()).or_error(binding_error::unknown_trigger)?;
+                    _ = out.bind(action, c);
+                }
+            }
+            return std::ok(move out);
+        }
+    private:
+        std::darray<binding_entry<A>> entries = default;
+    }
+
+    std::string chord_text(chord c) {
+        mut std::string out = default;
+        if (c.modifiers.control) { out.push_str("control+"); }
+        if (c.modifiers.shift)   { out.push_str("shift+"); }
+        if (c.modifiers.alt)     { out.push_str("alt+"); }
+        if (c.modifiers.super)   { out.push_str("super+"); }
+        match (c.trigger) {
+            trigger::key(k) => out.push_str(std::meta::name_of(k)),
+            trigger::button(b) => {
+                out.push_str("mouse_");
+                out.push_str(std::meta::name_of(b));
+            },
+        }
+        return out;
+    }
+
+    std::option<chord> parse_chord(std::str text) {
+        mut std::windowing::modifiers mods = default;
+        mut std::str rest = text;
+        while (true) {
+            if (rest.starts_with("control+")) {
+                mods.control = true;
+                rest = rest.slice(8, rest.len());
+            } else if (rest.starts_with("shift+")) {
+                mods.shift = true;
+                rest = rest.slice(6, rest.len());
+            } else if (rest.starts_with("alt+")) {
+                mods.alt = true;
+                rest = rest.slice(4, rest.len());
+            } else if (rest.starts_with("super+")) {
+                mods.super = true;
+                rest = rest.slice(6, rest.len());
+            } else {
+                break;
+            }
+        }
+        if (rest.starts_with("mouse_")) {
+            std::windowing::mouse_button b = std::meta::from_name<std::windowing::mouse_button>(rest.slice(6, rest.len()))?;
+            return std::some(chord{ .trigger = trigger::button(b), .modifiers = mods });
+        }
+        std::windowing::key k = std::meta::from_name<std::windowing::key>(rest)?;
+        return std::some(chord::with(k, mods));
+    }
+}

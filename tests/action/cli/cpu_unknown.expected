@@ -1,5 +1,5 @@
 exit: 2
 --- stdout
 --- stderr
-riftc: error: the CPU level 'armv9' is not for 'x86_64-pc-linux-gnu' (levels for this target: x86_64, x86_64_v2, x86_64_v3, x86_64_v4)
-Run 'riftc --help' for usage.
+edaxc: error: the CPU level 'armv9' is not for 'x86_64-pc-linux-gnu' (levels for this target: x86_64, x86_64_v2, x86_64_v3, x86_64_v4)
+Run 'edaxc --help' for usage.

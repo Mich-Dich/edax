@@ -8,7 +8,7 @@
   - `move x` to transfer ownership; `x` can't be used afterwards (checked at compile time), or
   - `x.clone()` to make a visible copy, which usually allocates.
 
-```rift
+```edax
 std::string a = std::string::from("hi");
 std::string b = a;                // ERROR: std::string is not a copy type
 std::string c = a.clone();        // OK: visible allocation
@@ -45,7 +45,7 @@ If a variable is moved in only some branches, it counts as moved after them. It 
 | Lambda captures (the lambda becomes a view) | |
 
 **Returning a reference:** allowed only if it points into `this` (for methods) or into the **only** reference/view parameter. The compiler checks this inside the function body.
-```rift
+```edax
 std::str trim(std::str s) { ... }                    // OK: borrows from s
 T& operator[](usize i) { ... }                       // OK: borrows from this
 std::str pick(std::str a, std::str b) { ... }        // ERROR: ambiguous source
@@ -57,7 +57,7 @@ Within one function the compiler checks that, while a reference is alive:
 - **a `mut T&` is the only way to reach that object**, and
 - **a `T&` means the object is not changed**.
 
-```rift
+```edax
 for (employee& e : employees) {
     employees.push(e.clone());            // ERROR: employees is borrowed by the loop
 }
@@ -66,7 +66,7 @@ swap(mut a, mut a);                       // ERROR: two mutable references to a
 
 ### `view` types
 A `view` type holds references or pointers into memory it doesn't own. `std::str`, `std::span<T>`, `std::format_args` and iterators are view types. View types follow **the same rules as references**. Both `view struct` and `view class` exist.
-```rift
+```edax
 view struct str {
     std::raw_ptr<u8> data;
     usize            length;

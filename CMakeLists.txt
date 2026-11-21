@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(rift
+project(edax
     VERSION 0.8.0
-    DESCRIPTION "The Rift programming language compiler"
+    DESCRIPTION "The Edax programming language compiler"
     LANGUAGES CXX
 )
 
 # Toolchain: C++26 -----------------------------------------------------------------------------------------------------
-# Rift targets C++26 (-std=c++2c). We rely on Clang 18+ or GCC 14+.
+# Edax targets C++26 (-std=c++2c). We rely on Clang 18+ or GCC 14+.
 # CMake 3.30+ recognizes CMAKE_CXX_STANDARD 26; older CMake needs
 # the flag injected manually.
 # Older CMake knows the flag for some compilers (Clang 18) but not others (GCC 13/14) and then
@@ -51,8 +51,8 @@ add_compile_options(
     -Wformat=2
 )
 
-option(RIFT_WERROR "Treat compiler warnings as errors (used by CI)" OFF)
-if (RIFT_WERROR)
+option(EDAX_WERROR "Treat compiler warnings as errors (used by CI)" OFF)
+if (EDAX_WERROR)
     add_compile_options(-Werror)
 endif()
 
@@ -62,12 +62,12 @@ add_subdirectory(compiler)
 enable_testing()
 add_subdirectory(tests)
 
-# Example programs (example/build.rifts) ------------------------------------------------------------------------------
+# Example programs (example/build.ed) ------------------------------------------------------------------------------
 # `cmake --build build --target examples` builds every example program into build/example/bin.
 add_custom_target(examples
-    COMMAND riftc build --root=${PROJECT_SOURCE_DIR}/example --out-dir=${PROJECT_BINARY_DIR}/example
+    COMMAND edaxc build --root=${PROJECT_SOURCE_DIR}/example --out-dir=${PROJECT_BINARY_DIR}/example
             --bin-dir=${PROJECT_BINARY_DIR}/example/bin
-    DEPENDS riftc
+    DEPENDS edaxc
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     COMMENT "Building the example programs into ${PROJECT_BINARY_DIR}/example/bin"
     USES_TERMINAL)

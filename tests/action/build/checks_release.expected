@@ -1,4 +1,4 @@
 exit: 1
 --- stdout
 --- stderr
-tests/action/build/checks_release.rifts:14:48: error[E4210]: only fails in release builds
+tests/action/build/checks_release.ed:14:48: error[E4210]: only fails in release builds

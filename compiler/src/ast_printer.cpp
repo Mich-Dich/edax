@@ -1,10 +1,10 @@
-#include "rift/ast_printer.hpp"
+#include "edax/ast_printer.hpp"
 
-#include "rift/types.hpp"
+#include "edax/types.hpp"
 
 #include <ostream>
 
-namespace rift::ast {
+namespace edax::ast {
 
 namespace {
 
@@ -147,7 +147,7 @@ S build_param(const Param& p) {
 
 S build_untyped(const Expr& e);
 
-bool g_show_types = false;   // `riftc typed`: append each expression's type
+bool g_show_types = false;   // `edaxc typed`: append each expression's type
 
 S build(const Expr& e) {
     S s = build_untyped(e);
@@ -576,4 +576,4 @@ void print(std::ostream& out, const File& file, bool with_types) {
     g_show_types = false;
 }
 
-} // namespace rift::ast
+} // namespace edax::ast

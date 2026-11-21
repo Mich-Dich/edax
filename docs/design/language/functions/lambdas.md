@@ -18,7 +18,7 @@
 | `[mut &x]` | Mutable reference (`x` must be `mut`) |
 | `[name = expr]` | Initialize a new captured value |
 
-```rift
+```edax
 mut u32 counter = 0;
 u32 threshold = 10;
 

@@ -1,7 +1,7 @@
 # 32 - Events (`std::event`) — DRAFT
 
 > **Status:** design draft for review. Nothing here is implemented.
-> **Source:** the C++ event bus of the GLT engine (`event.h`, `event_bus.h/.inl/.cpp`, `input_event.h`), translated to Rift's rules and widened into a family of dispatchers.
+> **Source:** the C++ event bus of the GLT engine (`event.h`, `event_bus.h/.inl/.cpp`, `input_event.h`), translated to Edax's rules and widened into a family of dispatchers.
 
 An **event** is a value that says something happened. The code that sends it doesn't know who reacts. `std::event` is **one vocabulary** (events, `flow`, handlers, subscriptions, `@std::event::on`) and **several dispatchers**, each with a visible cost:
 
@@ -17,7 +17,7 @@ There is **no global bus**. The bus a function uses is in its signature, like `s
 
 ## 0. The design space
 
-The C++ bus answers six questions one way each. Rift's standard library has to answer them for everybody, so they are listed here with the answer `std::event` gives.
+The C++ bus answers six questions one way each. Edax's standard library has to answer them for everybody, so they are listed here with the answer `std::event` gives.
 
 | Question | Choices | What the choice changes | `std::event` |
 |---|---|---|---|
@@ -28,7 +28,7 @@ The C++ bus answers six questions one way each. Rift's standard library has to a
 | Push or pull? | handlers are called / subscribers drain a queue | Whether the subscriber's state is reachable from the handler | Push for one thread; pull across threads |
 | Ordering and propagation | priority + stop / every subscriber, unordered | | Priority + `flow::stop` for push; every inbox for pull |
 
-**Why not one generic `bus<policies...>`.** A single type with policy parameters would change, depending on its parameters, whether it is `std::shareable`, whether handlers get `mut E&` or `E&`, whether events must be `std::sendable`, and whether handlers run at all (pull). Every one of those would be an `if compile_time` in the API, error messages would talk about policies instead of the code, and the cost would no longer be readable from the type name (principle 7). Rift already splits things this way: `std::thread::spawn` and `pool.spawn` (see 28), `std::channel` and `std::mutex` (see 27). So the split follows **thread and cost**, and everything else is shared:
+**Why not one generic `bus<policies...>`.** A single type with policy parameters would change, depending on its parameters, whether it is `std::shareable`, whether handlers get `mut E&` or `E&`, whether events must be `std::sendable`, and whether handlers run at all (pull). Every one of those would be an `if compile_time` in the API, error messages would talk about policies instead of the code, and the cost would no longer be readable from the type name (principle 7). Edax already splits things this way: `std::thread::spawn` and `pool.spawn` (see 28), `std::channel` and `std::mutex` (see 27). So the split follows **thread and cost**, and everything else is shared:
 
 - the same `std::event::flow`, `subscribe_options`, `subscription` and `@std::event::on` everywhere,
 - immediate vs. queued delivery is a **method** on the same bus (`send` / `enqueue`), because it changes neither safety nor constraints,
@@ -36,11 +36,11 @@ The C++ bus answers six questions one way each. Rift's standard library has to a
 
 ## 1. What changes from the C++ bus
 
-| C++ | Rift | Why |
+| C++ | Edax | Why |
 |---|---|---|
 | Base class `event` with a `handled` field and a virtual `to_string()` | **Any non-view type is an event.** No base class. `@std::derive::formattable` for logs and tools | Events are plain data (05). A vtable per event, and inheritance only to carry one flag, cost without use |
 | A handler sets `handled`; the bus checks it after each call | A handler **returns** `std::event::flow::stop` or `pass` | The decision is the handler's result, visible in its signature. Event types don't need to know about buses |
-| `std::type_index(typeid(T))` as the table key | `std::meta::type_id<T>()` (new, section 9) | Rift has no RTTI. The id is a compile-time constant |
+| `std::type_index(typeid(T))` as the table key | `std::meta::type_id<T>()` (new, section 9) | Edax has no RTTI. The id is a compile-time constant |
 | `std::function<void(T&)>` that captures `this` | Handlers own their captures. The state they change is the bus's **context** `C`, passed to `send` | A stored lambda can't hold references (18). A handler capturing `mut &this` is exactly the dangling pointer C++ allows |
 | `post` from inside a handler runs **depth-first**; a snapshot pool per nesting depth keeps it safe | `d.post(e)` from a handler is a **follow-up**: delivered after the current event is finished, before `send` returns (breadth-first) | `send` is `mut` on the bus, so a handler can't reach the bus (12). No nesting means no snapshots and no half-delivered events |
 | Unsubscribing during a dispatch: `active = false`, the snapshot keeps the entry alive | Same flag, but **shared by the subscription and the bus**; entries are removed after the `send` | The comment in `event_bus.inl` (release the callback when the dispatch ends) still holds |
@@ -51,7 +51,7 @@ The C++ bus answers six questions one way each. Rift's standard library has to a
 | `mouse_event` with a tag and fields that are only valid for some tags | A payload enum | One way to write a sum type (08) |
 
 ### Notes on the C++ code
-Found while translating; worth fixing in GLT regardless of Rift:
+Found while translating; worth fixing in GLT regardless of Edax:
 
 - `mouse_event::m_state` is never set by either constructor, so `get_state()` always returns the default.
 - `event_function<T>` (`bool(*)(T&)`) isn't accepted by the bus, which takes `std::function<void(T&)>`.
@@ -66,7 +66,7 @@ Found while translating; worth fixing in GLT regardless of Rift:
 - Recommended: `@std::derive::formattable` (29), so tracing and the inspector can print events (section 8). The bus checks for it with `std::implements<E, std::formattable>()` and falls back to the type name.
 
 ### 2.2 `flow`
-```rift
+```edax
 namespace std::event {
     enum flow : u8 { pass, stop }
 }
@@ -75,7 +75,7 @@ namespace std::event {
 - `send`, `deliver` and `signal::send` return `stop` if a handler stopped the event, `pass` otherwise. Scripts use it to ask "did anybody consume this?".
 
 ### 2.3 Subscribing
-```rift
+```edax
 namespace std::event {
     struct subscribe_options {
         i32  priority = 0;       // higher runs first; equal priorities run in subscription order
@@ -88,7 +88,7 @@ namespace std::event {
 - Priorities are plain `i32`. Name them: `compile_time i32 armor_priority = 100;`.
 
 ### 2.4 `subscription`
-```rift
+```edax
 namespace std::event {
     class subscription {                        // move-only: not a copy type, not cloneable
     public:
@@ -108,7 +108,7 @@ namespace std::event {
 
 When the listeners are known when the program is compiled (engine systems, a fixed set of components), no table is needed at all.
 
-```rift
+```edax
 namespace std::event {
     annotation(std::meta::target::function) struct on {
         i32 priority = 0;
@@ -131,14 +131,14 @@ namespace std::event {
   | `@on` on a method that doesn't have the handler shape | error at the `@`, naming what's wrong |
   | `@route` on a field whose type has no `@on` methods and no `@route` fields | warning `std::event::empty_route` |
 
-- `std::event::handlers_of<T, E>()` is the `compile_time` list `deliver` uses (name, owning field path, priority). An inspector can print it; `riftc expand` shows the generated `deliver`.
+- `std::event::handlers_of<T, E>()` is the `compile_time` list `deliver` uses (name, owning field path, priority). An inspector can print it; `edaxc expand` shows the generated `deliver`.
 - The target **is** the context: handlers are methods, so they reach their own state through `this`. A `mut` handler needs nothing special, because `deliver` takes `mut T&`.
 
 ## 4. `std::event::signal<E, C>`
 
 One event type, stored in the object that sends it (`button.clicked`, `inventory.changed`). No type ids, no hash map: it's what the bus is built from.
 
-```rift
+```edax
 namespace std::event {
     template<type E, type C>
     class signal {
@@ -163,7 +163,7 @@ namespace std::event {
 
 The translation of the C++ bus: any event type, subscribed at run time, delivered on the calling thread.
 
-```rift
+```edax
 namespace std::event {
     struct bus_options {
         usize max_cascade = 10_000;    // follow-ups per send before it panics (an event loop)
@@ -245,7 +245,7 @@ A handler is **stored**, so its lambda can't capture references (18): no `[mut &
 
 The common case in an engine: a worker finishes something and the main thread should react, in its own time.
 
-```rift
+```edax
 namespace std::event {
     class sender : std::cloneable {               // std::sendable, std::shareable
     public:
@@ -264,7 +264,7 @@ namespace std::event {
 
 For data that several threads each want a copy of (frame statistics to a HUD and a telemetry thread, game state to an audio thread). Nothing runs on the publisher's thread: each subscriber **pulls** from its own inbox, when it chooses. This is the same model as `win.drain_events(...)` in the windowing draft.
 
-```rift
+```edax
 namespace std::event {
     enum when_full : u8 { wait, drop_oldest, drop_newest }
 
@@ -299,9 +299,9 @@ namespace std::event {
 - Each inbox receives events in publish order per publishing thread.
 
 ## 8. Tooling
-- **Who listens:** `bus.describe()` returns, per event type, every subscriber with its priority, `once`, and the `std::call_site` of its `subscribe` (section 2.3). An in-game inspector can list "`game::damage`: 3 subscribers — rules.rifts:21 (200), rules.rifts:30 (100), rules.rifts:39 (0)".
+- **Who listens:** `bus.describe()` returns, per event type, every subscriber with its priority, `once`, and the `std::call_site` of its `subscribe` (section 2.3). An in-game inspector can list "`game::damage`: 3 subscribers — rules.ed:21 (200), rules.ed:30 (100), rules.ed:39 (0)".
 - **What happened:** with `bus_options{ .trace = true }`, every `send` is logged at `trace` (31): the event (`{event}` if it is formattable, its type name otherwise), the number of handlers called, and whether one stopped it. It is an ordinary `std::log::trace` call, so it is removed at compile time where `trace` is off.
-- **Static:** `std::event::handlers_of<T, E>()` and `riftc expand` (section 3).
+- **Static:** `std::event::handlers_of<T, E>()` and `edaxc expand` (section 3).
 
 ## 9. Language and library additions
 
@@ -315,9 +315,9 @@ Everything else is library code on top of 26 (reflection), 27 (channels, atomics
 
 ## Examples
 
-### 1. The GLT input events in Rift
-```rift
-// engine/input/events.rifth
+### 1. The GLT input events in Edax
+```edax
+// engine/input/events.edh
 import std;
 import platform::window;
 import math::vector;
@@ -359,8 +359,8 @@ namespace glt::input {
 - If `std::windowing` lands as drafted, these are thin wrappers or simply `wnd::key_event` itself: an event can be any type.
 
 ### 2. Game rules on a bus
-```rift
-// game/rules.rifts
+```edax
+// game/rules.ed
 import std;
 import game::world;
 
@@ -400,8 +400,8 @@ namespace game {
     }
 }
 ```
-```rift
-// game/main.rifts
+```edax
+// game/main.ed
 mut game::world                    world  = game::world::load(level_path)?;
 mut std::event::bus<game::world>   events = default;
 std::darray<std::event::subscription> rules = game::install_rules(mut events);   // live as long as `rules`
@@ -412,7 +412,7 @@ events.send(mut world, game::damage{ .target = player, .amount = 30, .kind = gam
 
 ### 3. A script that waits for a door
 The C++ comment about `sleep_until_event` describes this case: a handler that removes itself.
-```rift
+```edax
 // wake on any door, once
 script.wake = events.subscribe<door_opened>(std::event::subscribe_options{ .once = true },
     [id = script.id()](mut door_opened& e, mut std::event::dispatch<game::world>& d) {
@@ -433,7 +433,7 @@ script.wake = events.subscribe<door_opened>(
 Assigning to `script.wake` destroys the previous subscription, which unsubscribes it.
 
 ### 4. Static delivery to engine systems
-```rift
+```edax
 namespace game {
     class audio_system {
     public:
@@ -459,13 +459,13 @@ std::event::deliver(mut sys, game::door_opened{ .door = d });         // nobody 
 ```
 ```
 warning[W4300]: no handler of 'game::systems' takes 'game::door_opened'
- --> game/loop.rifts:41:5
+ --> game/loop.ed:41:5
   = note: handlers are methods with @std::event::on in 'game::systems' and its @std::event::route fields
   = note: warning id: std::event::unhandled
 ```
 
 ### 5. A loader thread and a broadcast
-```rift
+```edax
 // The loader posts into the main thread's bus; the main thread handles it once per frame.
 std::thread::handle<void> loader = std::thread::spawn([to_main = events.inbound(), move paths]() {
     for (std::filesystem::path& p : paths) {
@@ -493,19 +493,19 @@ while (running) {
 ```
 
 ### 6. Compile errors
-```rift
+```edax
 mut player p = player::spawn();
 events.subscribe<damage>([mut &p](mut damage& e, mut std::event::dispatch<world>& d) { ... });
 ```
 ```
 error[E4310]: a bus handler is stored by the bus, so it can't capture references: 'mut &p'
- --> game/rules.rifts:12:30
+ --> game/rules.ed:12:30
   = note: handlers reach the state they change through the bus's context ('game::world'): d.context()
 error[E4111]: the result of 'std::event::bus<game::world>::subscribe' must be used
- --> game/rules.rifts:12:5
+ --> game/rules.ed:12:5
   = note: destroying a std::event::subscription unsubscribes: store it, or call .keep() to subscribe for the bus's lifetime
 ```
-```rift
+```edax
 struct game_state {
     game::world                  world;
     std::event::bus<game_state>  events;
@@ -514,14 +514,14 @@ state.events.send(mut state, e);
 ```
 ```
 error: 'state' is borrowed mutably twice: by 'state.events' (the receiver) and by 'mut state'
- --> game/main.rifts:30:23
+ --> game/main.ed:30:23
   = note: keep the bus beside its context: std::event::bus<game::world> and game::world as separate values
 ```
 
 ## Rationale
 - **One vocabulary, several dispatchers:** the costs that differ (compile-time calls, a heap callable per subscriber, a hash lookup, a channel, a copy per inbox) are what decides which one fits. Splitting along them keeps every cost readable from the type name; sharing `flow`, options, subscriptions and `@on` keeps switching cheap.
 - **No base class for events:** in C++ the base class exists for the `handled` flag and `to_string()`. A returned `flow` and `@std::derive::formattable` do both without a vtable, and any existing type (including another module's) can be an event.
-- **The context parameter:** it's what Rift's rules force (stored lambdas own their captures), and it's also the better design: what a handler can change is written in the bus's type, instead of hidden in whatever each lambda captured.
+- **The context parameter:** it's what Edax's rules force (stored lambdas own their captures), and it's also the better design: what a handler can change is written in the bus's type, instead of hidden in whatever each lambda captured.
 - **Follow-ups instead of nested sends:** the borrow rules forbid re-entering a bus, and the result is simpler than the C++ snapshot pool: handlers never see a half-delivered event, and a loop is a clear panic instead of a stack overflow.
 - **The subscription owns a flag, not the bus:** the C++ guard's documented rule ("must not outlive the bus") becomes something the type guarantees. Both orders of destruction are safe.
 - **`deliver` with annotations:** for the fixed parts of an engine there's nothing to register and nothing to forget. An unhandled event is a compile-time warning, which no run-time bus can give.
@@ -538,7 +538,7 @@ error: 'state' is borrowed mutably twice: by 'state.events' (the receiver) and b
 | 50 | **Changing owned captures** | 18 doesn't say whether a lambda may change a value it captured (`[count = 0u32]` then `count += 1`). Handlers with their own counters need it |
 | 51 | **Bounded `inbound`** | `inbound` is unbounded, so a flooding worker grows memory. `bus_options.inbound = std::event::inbound_options{ .capacity, .when_full }` like inboxes |
 | 52 | **`type_id` and dynamic libraries** | Ids are unique per program. With plugins (42), an unloaded module's handlers must be cancelled first, and ids must match across libraries |
-| 53 | **Waiting for an event in a script** | `sleep_until_event` wants something like `co_await bus.next<door_opened>()`. Rift has no coroutines yet |
+| 53 | **Waiting for an event in a script** | `sleep_until_event` wants something like `co_await bus.next<door_opened>()`. Edax has no coroutines yet |
 | 54 | **Producers that don't care where events go** | An `interface std::event::target<E> { void post(E event) mut; }` that a bus, a signal and an inbox all implement, so `std::windowing` could forward input into any of them |
 | 55 | **Registering an object's `@on` methods on a bus** | `bus.subscribe_all<T>(...)` would reach `T` through the context by reflection (26), so one set of annotated methods serves both `deliver` and a bus |
 

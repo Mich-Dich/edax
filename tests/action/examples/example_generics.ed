@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t generics
+// The example program example/generics.ed (built through example/build.ed) keeps working.

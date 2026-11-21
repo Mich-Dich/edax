@@ -1,0 +1,10 @@
+// RUN: edaxc run %s
+// The smallest useful program: text on stdout, exit status 0.
+import std;
+
+void main() {
+    std::println("hello, edax!");
+    std::print("no newline, ");
+    std::println("then one");
+    std::eprintln("this goes to stderr");
+}

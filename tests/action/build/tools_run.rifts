@@ -1,2 +1,0 @@
-// RUN: riftc run --root=%S/tools_project --out-dir=%t app
-// Steps run before the program is built; dependencies' Rift and C code and libm are linked.

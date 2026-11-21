@@ -1,0 +1,145 @@
+// The Edax standard library: module std::windowing::core (see core.edh).
+
+namespace std::windowing {
+    private usize key_index(key k) { return cast<usize>(cast<u8>(k)); }
+    private u8 button_bit(mouse_button b) { return cast::truncate<u8>(1u32 << cast<u32>(cast<u8>(b))); }
+
+    class input_state {
+    public:
+        compile_time check (key_count <= 128) else "std::windowing::input_state keeps 128 key bits";
+
+        bool key_down(key k) { return this.held.test(key_index(k)); }
+        bool key_pressed(key k) { return this.went_down.test(key_index(k)); }
+        bool key_released(key k) { return this.went_up.test(key_index(k)); }
+
+        bool mouse_down(mouse_button b) { return (this.buttons & button_bit(b)) != 0; }
+        bool mouse_pressed(mouse_button b) { return (this.buttons_down & button_bit(b)) != 0; }
+        bool mouse_released(mouse_button b) { return (this.buttons_up & button_bit(b)) != 0; }
+
+        position cursor() { return this.at; }
+        position cursor_delta() { return this.delta; }
+        position scroll() { return this.scrolled; }
+        std::str text() { return this.typed.as_str(); }
+        bool hovered() { return this.inside; }
+
+        std::windowing::modifiers modifiers() { return this.mods; }
+        bool caps_lock() { return this.caps; }
+        bool num_lock() { return this.num; }
+
+        void record_key(key k, key_action action) mut {
+            usize i = key_index(k);
+            match (action) {
+                key_action::pressed => {
+                    this.held.set(i, true);
+                    this.pending_down.set(i, true);
+                },
+                key_action::repeated => {},
+                key_action::released => {
+                    this.held.set(i, false);
+                    this.pending_up.set(i, true);
+                },
+            }
+        }
+
+        void record_button(mouse_button b, button_action action) mut {
+            u8 mask = button_bit(b);
+            match (action) {
+                button_action::pressed => {
+                    this.buttons |= mask;
+                    this.pending_buttons_down |= mask;
+                },
+                button_action::released => {
+                    this.buttons &= ~mask;
+                    this.pending_buttons_up |= mask;
+                },
+            }
+        }
+
+        void record_cursor(position p) mut { this.at = p; }
+
+        void record_scroll(position delta) mut {
+            this.pending_scroll.x += delta.x;
+            this.pending_scroll.y += delta.y;
+        }
+
+        void record_text(char c) mut { this.pending_text.push(c); }
+        void record_hover(bool inside) mut { this.inside = inside; }
+
+        void record_modifiers(std::windowing::modifiers held, bool caps, bool num) mut {
+            this.mods = held;
+            this.caps = caps;
+            this.num = num;
+        }
+
+        // Focus lost: nothing is held any more (the key-up events go to another window).
+        void release_all() mut {
+            for (usize i : 0..128) {
+                if (this.held.test(i)) {
+                    this.held.set(i, false);
+                    this.pending_up.set(i, true);
+                }
+            }
+            this.pending_buttons_up |= this.buttons;
+            this.buttons = 0;
+            this.mods = std::windowing::modifiers{};
+        }
+
+        // What happened since the last frame becomes this frame; the pending state starts over.
+        // Swaps buffers: no allocation once the text buffers have grown.
+        void next_frame() mut {
+            this.went_down = std::take(mut this.pending_down);
+            this.went_up = std::take(mut this.pending_up);
+            this.buttons_down = std::take(mut this.pending_buttons_down);
+            this.buttons_up = std::take(mut this.pending_buttons_up);
+            this.scrolled = std::take(mut this.pending_scroll);
+            this.delta = position{ .x = this.at.x - this.frame_start.x, .y = this.at.y - this.frame_start.y };
+            this.frame_start = this.at;
+            std::string fresh = std::take(mut this.pending_text);
+            mut std::string old = std::replace(mut this.typed, move fresh);
+            old.clear();                      // keeps its capacity for the next frame's text
+            this.pending_text = move old;
+        }
+    private:
+        std::bitset<128> held = default;
+        std::bitset<128> went_down = default;
+        std::bitset<128> went_up = default;
+        std::bitset<128> pending_down = default;
+        std::bitset<128> pending_up = default;
+        u8 buttons = 0;
+        u8 buttons_down = 0;
+        u8 buttons_up = 0;
+        u8 pending_buttons_down = 0;
+        u8 pending_buttons_up = 0;
+        position at = default;
+        position frame_start = default;
+        position delta = default;
+        position scrolled = default;
+        position pending_scroll = default;
+        std::string typed = default;
+        std::string pending_text = default;
+        bool inside = false;
+        std::windowing::modifiers mods = default;
+        bool caps = false;
+        bool num = false;
+    }
+
+    template<type L : input_layer>
+    void route(mut std::darray<event>& events, mut L& layer, input_state& input) {
+        if (!layer.is_active()) {
+            return;
+        }
+        // In place, in order: kept events slide forward over consumed ones. No allocation.
+        mut usize kept = 0;
+        for (usize i : 0..events.len()) {
+            event e = events[i];
+            match (layer.on_event(e, input)) {
+                routing::pass => {
+                    events[kept] = e;
+                    kept += 1;
+                },
+                routing::consume => {},
+            }
+        }
+        events.truncate(kept);
+    }
+}

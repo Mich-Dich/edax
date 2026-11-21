@@ -1,2 +1,0 @@
-// RUN: riftc definition %S/definition_project/main.rifts 10:2
-// riftc definition (editors' go to definition): not a name: no output, exit 1.

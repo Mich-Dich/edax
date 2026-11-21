@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/logging_project --out-dir=%t -Dlog_level=loud
+// -Dlog_level must name a level (spec 31).

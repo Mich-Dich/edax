@@ -1,15 +1,15 @@
-/* A small C library that the ffi example links (built by build.rifts as a C target). */
+/* A small C library that the ffi example links (built by build.ed as a C target). */
 #include <stddef.h>
 #include <stdint.h>
 
-/* Implemented in Rift (ffi.rifts) and exported to C. */
-void rift_log(const char* message, int32_t value);
+/* Implemented in Edax (ffi.ed) and exported to C. */
+void edax_log(const char* message, int32_t value);
 
 double stats_mean(const double* values, size_t count) {
     if (count == 0) return 0.0;
     double sum = 0.0;
     for (size_t i = 0; i < count; ++i) sum += values[i];
-    rift_log("stats_mean summed values", (int32_t)count);
+    edax_log("stats_mean summed values", (int32_t)count);
     return sum / (double)count;
 }
 

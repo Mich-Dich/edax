@@ -1,0 +1,5 @@
+// RUN: edaxc build %s -o %t/prog
+// A program needs a main function in its entry file.
+u32 helper() {
+    return 1;
+}

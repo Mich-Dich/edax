@@ -2,6 +2,6 @@ exit: 1
 --- stdout
 ran step 'generate'
 --- stderr
-riftc: error: step 'generate' changed files it doesn't declare as outputs:
+edaxc: error: step 'generate' changed files it doesn't declare as outputs:
   %t/gen/stray.txt
 note: add them with g.add_outputs(step, [...]), or make the step write only its outputs

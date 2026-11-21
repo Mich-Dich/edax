@@ -1,0 +1,15 @@
+// RUN: edaxc run %s
+// A pointer to an interface is the object and its table (16 bytes): containers of them must
+// allocate that much per element (std::darray<std::unique_ptr<I>> wrote past its block).
+import std;
+interface shape { f64 area(); }
+struct sq : shape { f64 s = 2.0; f64 area() override { return this.s * this.s; } }
+i32 main() {
+    std::println(f"{std::size_of<std::unique_ptr<shape>>()} {std::size_of<std::raw_ptr<shape>>()} {std::size_of<std::unique_ptr<sq>>()}");
+    mut std::darray<std::unique_ptr<shape>> all = default;
+    for (u32 i : 0..10) { all.insert(0, std::unique_ptr<sq>::make(sq{ .s = cast<f64>(i) })); }
+    mut f64 total = 0.0;
+    for (std::unique_ptr<shape>& p : all) { total += p->area(); }
+    std::println(f"{total}");
+    return 0;
+}

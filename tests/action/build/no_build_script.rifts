@@ -1,2 +1,0 @@
-// RUN: riftc build --root=%S --out-dir=%t
-// Without a file, build needs a build.rifts.

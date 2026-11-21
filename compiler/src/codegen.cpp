@@ -1,7 +1,7 @@
-#include "rift/codegen.hpp"
+#include "edax/codegen.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/types.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/types.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,7 +14,7 @@
 #include <sstream>
 #include <vector>
 
-namespace rift {
+namespace edax {
 
 namespace {
 
@@ -190,7 +190,7 @@ std::vector<std::string> split_module(const std::string& name) {
     return out;
 }
 
-// Integer C types and limits, by Rift spelling.
+// Integer C types and limits, by Edax spelling.
 struct IntInfo {
     const char* ctype;
     const char* unsigned_ctype;
@@ -204,13 +204,13 @@ const IntInfo* int_info(const std::string& name) {
         {"i16", {"int16_t", "uint16_t", "INT16_MIN", "INT16_MAX"}},
         {"i32", {"int32_t", "uint32_t", "INT32_MIN", "INT32_MAX"}},
         {"i64", {"int64_t", "uint64_t", "INT64_MIN", "INT64_MAX"}},
-        {"i128", {"rift_i128", "rift_u128", "((rift_i128)1 << 127)", "((rift_i128)(~(rift_u128)0 >> 1))"}},
+        {"i128", {"edax_i128", "edax_u128", "((edax_i128)1 << 127)", "((edax_i128)(~(edax_u128)0 >> 1))"}},
         {"isize", {"int64_t", "uint64_t", "INT64_MIN", "INT64_MAX"}},
         {"u8", {"uint8_t", "uint8_t", "0", "UINT8_MAX"}},
         {"u16", {"uint16_t", "uint16_t", "0", "UINT16_MAX"}},
         {"u32", {"uint32_t", "uint32_t", "0", "UINT32_MAX"}},
         {"u64", {"uint64_t", "uint64_t", "0", "UINT64_MAX"}},
-        {"u128", {"rift_u128", "rift_u128", "0", "(~(rift_u128)0)"}},
+        {"u128", {"edax_u128", "edax_u128", "0", "(~(edax_u128)0)"}},
         {"usize", {"uint64_t", "uint64_t", "0", "UINT64_MAX"}},
     };
     auto it = table.find(name);
@@ -221,7 +221,7 @@ const IntInfo* int_info(const std::string& name) {
 std::string int_constant(u128 v, const std::string& ctype) {
     auto hi = static_cast<std::uint64_t>(v >> 64);
     auto lo = static_cast<std::uint64_t>(v);
-    if (hi != 0) return std::format("(({})(((rift_u128){}ULL << 64) | {}ULL))", ctype, hi, lo);
+    if (hi != 0) return std::format("(({})(((edax_u128){}ULL << 64) | {}ULL))", ctype, hi, lo);
     if (lo <= 0x7FFFFFFF) return std::format("(({}){})", ctype, lo);
     return std::format("(({}){}ULL)", ctype, lo);
 }
@@ -320,7 +320,7 @@ private:
         return nullptr;
     }
 
-    // The declaration that carries the body: the `.rifts` definition when there is a header.
+    // The declaration that carries the body: the `.ed` definition when there is a header.
     static const FunctionDecl* body_decl(const Symbol* s) {
         if (s->definition && s->definition->kind == DeclKind::function) return &s->definition->as<FunctionDecl>();
         return s->function();
@@ -389,12 +389,12 @@ private:
         auto key = std::make_pair(span.file, span.begin);
         auto it  = locs_.find(key);
         if (it == locs_.end()) it = locs_.emplace(key, locs_.size()).first;
-        return std::format("&rift_loc_{}", it->second);
+        return std::format("&edax_loc_{}", it->second);
     }
 
     // --- types ----------------------------------------------------------------------------
 
-    // The C type for a Rift type (references and pointers become C pointers).
+    // The C type for a Edax type (references and pointers become C pointers).
     std::string ctype(const Type* t) {
         if (!t) return "void";
         switch (t->kind) {
@@ -406,7 +406,7 @@ private:
         case Kind::char_: return "uint32_t";
         case Kind::void_:
         case Kind::never: return "void";
-        case Kind::static_str: return "rift_str";
+        case Kind::static_str: return "edax_str";
         case Kind::nullptr_: return "void*";
         case Kind::reference:
         case Kind::pointer: return ctype(t->inner) + "*";
@@ -419,7 +419,7 @@ private:
             break;
         }
         case Kind::external:
-            if (t->name == "std::str") return "rift_str";
+            if (t->name == "std::str") return "edax_str";
             break;
         default: break;
         }
@@ -917,7 +917,7 @@ private:
             dedent();
             line("}");
         }
-        line(std::format("if (!{}) rift_panic({}, \"no match arm matched\");", done, loc(m.span)));
+        line(std::format("if (!{}) edax_panic({}, \"no match arm matched\");", done, loc(m.span)));
     }
 
     // A C condition that is true when `pattern` matches the value `v` of type `t`.
@@ -928,7 +928,7 @@ private:
         case PatternKind::literal: {
             Expr& lit = *p.as<LiteralPattern>().literal;
             if (t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) {
-                return std::format("rift_str_eq({}, {})", v, value(lit));
+                return std::format("edax_str_eq({}, {})", v, value(lit));
             }
             return std::format("({} == {})", v, value_as(lit, t));
         }
@@ -1007,7 +1007,7 @@ private:
 
     // --- expressions ----------------------------------------------------------------------
 
-    // A C condition for a Rift condition (integers and pointers convert contextually, spec 02).
+    // A C condition for a Edax condition (integers and pointers convert contextually, spec 02).
     std::string condition(Expr& e) {
         const Type* t = types::strip_ref(e.type);
         std::string v = value(e);
@@ -1084,9 +1084,9 @@ private:
             auto& lit = e.as<LiteralExpr>();
             if (lit.token_kind == TokenKind::format_string_literal) {
                 unsupported(e.span, "f-strings outside 'std::print', 'std::println', 'std::eprintln' and 'std::panic'");
-                return "((rift_str){0})";
+                return "((edax_str){0})";
             }
-            return std::format("RIFT_STR({}, {})", c_string(lit.value), lit.value.size());
+            return std::format("EDAX_STR({}, {})", c_string(lit.value), lit.value.size());
         }
         case ExprKind::bool_literal: return e.as<LiteralExpr>().bool_value ? "true" : "false";
         case ExprKind::nullptr_literal: return "NULL";
@@ -1105,7 +1105,7 @@ private:
                 unsupported(e.span, "'bit(n)' without an integer type");
                 return "0";
             }
-            return std::format("rift_bit_{}((rift_i128)({}), {})", t->name, value(*b.operand), loc(e.span));
+            return std::format("edax_bit_{}((edax_i128)({}), {})", t->name, value(*b.operand), loc(e.span));
         }
         case ExprKind::struct_literal: return struct_literal(e.as<StructLiteralExpr>());
         case ExprKind::if_:
@@ -1163,9 +1163,9 @@ private:
         case Kind::char_: return std::format("(({})0)", ctype(t));
         case Kind::bool_: return "false";
         case Kind::pointer: return "NULL";
-        case Kind::static_str: return "((rift_str){0})";
+        case Kind::static_str: return "((edax_str){0})";
         case Kind::external:
-            if (t->name == "std::str") return "((rift_str){0})";
+            if (t->name == "std::str") return "((edax_str){0})";
             break;
         case Kind::user:
             if (t->symbol->kind == SymbolKind::struct_ || t->symbol->kind == SymbolKind::class_) {
@@ -1238,10 +1238,10 @@ private:
             if (t && t->is_integer()) {
                 if (u.operand->kind == ExprKind::int_literal) {   // `-128` is a literal, not a negation
                     const Type* rt = types::strip_ref(u.type);
-                    return std::format("(({})((rift_u128)0 - {}))", ctype(rt),
-                                       int_constant(u.operand->as<LiteralExpr>().int_value, "rift_u128"));
+                    return std::format("(({})((edax_u128)0 - {}))", ctype(rt),
+                                       int_constant(u.operand->as<LiteralExpr>().int_value, "edax_u128"));
                 }
-                return std::format("rift_neg_{}({}, {})", t->name, value(*u.operand), loc(u.span));
+                return std::format("edax_neg_{}({}, {})", t->name, value(*u.operand), loc(u.span));
             }
             return std::format("(-{})", value(*u.operand));
         case UnaryOp::logical_not: return std::format("(!{})", condition(*u.operand));
@@ -1269,7 +1269,7 @@ private:
         return sequenced(ops, [&](const std::vector<std::string>& v) { return binary_op(b.op, t, v[0], v[1], b.span); });
     }
 
-    // `a op b` for operand type `t`, with Rift's checked semantics.
+    // `a op b` for operand type `t`, with Edax's checked semantics.
     std::string binary_op(TokenKind op, const Type* t, const std::string& a, const std::string& b, Span span) {
         if (!t) return "0";
         bool integer = t->is_integer();
@@ -1277,7 +1277,7 @@ private:
         case TokenKind::eq_eq:
         case TokenKind::bang_eq: {
             const char* sym = op == TokenKind::eq_eq ? "==" : "!=";
-            if (is_str(t)) return std::format("({}rift_str_eq({}, {}))", op == TokenKind::eq_eq ? "" : "!", a, b);
+            if (is_str(t)) return std::format("({}edax_str_eq({}, {}))", op == TokenKind::eq_eq ? "" : "!", a, b);
             if (t->is(Kind::user) && !(t->symbol->kind == SymbolKind::enum_ && !has_payloads(t->symbol))) {
                 unsupported(span, "user-defined operators");
                 return "0";
@@ -1303,7 +1303,7 @@ private:
             if (integer) {
                 const char* fn = op == TokenKind::plus ? "add" : op == TokenKind::minus ? "sub" : op == TokenKind::star ? "mul"
                                : op == TokenKind::slash ? "div" : "rem";
-                return std::format("rift_{}_{}({}, {}, {})", fn, t->name, a, b, loc(span));
+                return std::format("edax_{}_{}({}, {}, {})", fn, t->name, a, b, loc(span));
             }
             if (t->is_float()) {
                 if (op == TokenKind::percent) return std::format("{}({}, {})", t->bits == 32 ? "fmodf" : "fmod", a, b);
@@ -1317,7 +1317,7 @@ private:
         case TokenKind::star_percent:
             if (integer) {
                 const char* fn = op == TokenKind::plus_percent ? "wadd" : op == TokenKind::minus_percent ? "wsub" : "wmul";
-                return std::format("rift_{}_{}({}, {})", fn, t->name, a, b);
+                return std::format("edax_{}_{}({}, {})", fn, t->name, a, b);
             }
             break;
         case TokenKind::amp:
@@ -1331,7 +1331,7 @@ private:
         case TokenKind::shl:
         case TokenKind::shr:
             if (integer) {
-                return std::format("rift_{}_{}({}, (rift_i128)({}), {})", op == TokenKind::shl ? "shl" : "shr", t->name, a, b,
+                return std::format("edax_{}_{}({}, (edax_i128)({}), {})", op == TokenKind::shl ? "shl" : "shr", t->name, a, b,
                                    loc(span));
             }
             break;
@@ -1488,13 +1488,13 @@ private:
             std::string buf = tmp();
             line("{");
             indent();
-            line(std::format("rift_buf {} = {{ 0, 0, 0 }};", buf));
+            line(std::format("edax_buf {} = {{ 0, 0, 0 }};", buf));
             for (FormatPart& part : arg.as<LiteralExpr>().format_parts) {
                 if (part.expr) format_hole(buf, part);
-                else line(std::format("rift_buf_put(&{}, {}, {});", buf, c_string(part.text), part.text.size()));
+                else line(std::format("edax_buf_put(&{}, {}, {});", buf, c_string(part.text), part.text.size()));
             }
-            if (panic) line(std::format("rift_panic_buf({}, &{});", loc(c.span), buf));
-            else line(std::format("rift_flush({}, &{}, {});", stream, buf, newline ? "true" : "false"));
+            if (panic) line(std::format("edax_panic_buf({}, &{});", loc(c.span), buf));
+            else line(std::format("edax_flush({}, &{}, {});", stream, buf, newline ? "true" : "false"));
             dedent();
             line("}");
             return true;
@@ -1508,38 +1508,38 @@ private:
             unsupported(arg.span, "'std::string'");
             return true;
         }
-        if (panic) line(std::format("rift_panic_str({}, {});", loc(c.span), value(arg)));
-        else line(std::format("rift_write_str({}, {}, {});", stream, value(arg), newline ? "true" : "false"));
+        if (panic) line(std::format("edax_panic_str({}, {});", loc(c.span), value(arg)));
+        else line(std::format("edax_write_str({}, {}, {});", stream, value(arg), newline ? "true" : "false"));
         return true;
     }
 
     void format_hole(const std::string& buf, FormatPart& part) {
         Expr&       e = *part.expr;
         const Type* t = types::strip_ref(e.type);
-        std::string spec = "&rift_no_spec";
+        std::string spec = "&edax_no_spec";
         if (part.spec.present) {
             const FormatSpec& s = part.spec;
-            spec = std::format("&(rift_spec){{ {}, {}, {}, {}, {} }}", s.align ? std::format("'{}'", s.align) : "0",
+            spec = std::format("&(edax_spec){{ {}, {}, {}, {}, {} }}", s.align ? std::format("'{}'", s.align) : "0",
                                s.plus ? "true" : "false", s.width, s.precision, s.radix ? std::format("'{}'", s.radix) : "0");
         }
         std::string v = value(e);
         if (t && t->is_integer()) {
             const IntInfo* info = int_info(t->name);
             if (!t->is_signed) {
-                line(std::format("rift_fmt_u(&{}, (rift_u128)({}), false, {});", buf, v, spec));
+                line(std::format("edax_fmt_u(&{}, (edax_u128)({}), false, {});", buf, v, spec));
             } else if (part.spec.radix) {   // two's complement bits in another base
-                line(std::format("rift_fmt_u(&{}, (rift_u128)({})({}), false, {});", buf, info->unsigned_ctype, v, spec));
+                line(std::format("edax_fmt_u(&{}, (edax_u128)({})({}), false, {});", buf, info->unsigned_ctype, v, spec));
             } else {
-                line(std::format("rift_fmt_i(&{}, (rift_i128)({}), {});", buf, v, spec));
+                line(std::format("edax_fmt_i(&{}, (edax_i128)({}), {});", buf, v, spec));
             }
         } else if (t && t->is_float()) {
-            line(std::format("rift_fmt_f(&{}, (double)({}), {}, {});", buf, v, t->bits == 32 ? "true" : "false", spec));
+            line(std::format("edax_fmt_f(&{}, (double)({}), {}, {});", buf, v, t->bits == 32 ? "true" : "false", spec));
         } else if (t && t->is(Kind::bool_)) {
-            line(std::format("rift_fmt_bool(&{}, {}, {});", buf, v, spec));
+            line(std::format("edax_fmt_bool(&{}, {}, {});", buf, v, spec));
         } else if (t && t->is(Kind::char_)) {
-            line(std::format("rift_fmt_char(&{}, {}, {});", buf, v, spec));
+            line(std::format("edax_fmt_char(&{}, {}, {});", buf, v, spec));
         } else if (is_str(t)) {
-            line(std::format("rift_fmt_str(&{}, {}, {});", buf, v, spec));
+            line(std::format("edax_fmt_str(&{}, {}, {});", buf, v, spec));
         } else {
             unsupported(e.span, std::format("formatting values of type {}", type_text(t)));
         }
@@ -1579,11 +1579,11 @@ private:
             }
             if (from->is_integer()) {
                 if (from->is_signed) {
-                    if (to->is_signed) return std::format("(({})rift_sat_s((rift_i128)({}), {}, {}))", ti->ctype, v, ti->min, ti->max);
-                    return std::format("(({})rift_sat_su((rift_i128)({}), {}))", ti->ctype, v, ti->max);
+                    if (to->is_signed) return std::format("(({})edax_sat_s((edax_i128)({}), {}, {}))", ti->ctype, v, ti->min, ti->max);
+                    return std::format("(({})edax_sat_su((edax_i128)({}), {}))", ti->ctype, v, ti->max);
                 }
-                if (to->is_signed) return std::format("(({})rift_sat_us((rift_u128)({}), {}))", ti->ctype, v, ti->max);
-                return std::format("(({})rift_sat_u((rift_u128)({}), {}))", ti->ctype, v, ti->max);
+                if (to->is_signed) return std::format("(({})edax_sat_us((edax_u128)({}), {}))", ti->ctype, v, ti->max);
+                return std::format("(({})edax_sat_u((edax_u128)({}), {}))", ti->ctype, v, ti->max);
             }
         }
         if (variant == "round" && to->is_float()) return std::format("(({})({}))", ctype(to), v);
@@ -1657,7 +1657,7 @@ private:
         for (const auto& [index, key] : locs) {
             const SourceFile& file = sources_.file(key.first);
             LineCol           lc   = file.line_col(key.second);
-            out << std::format("static const rift_loc rift_loc_{} = {{ {}, {}, {} }};\n", index, c_string(file.path()), lc.line,
+            out << std::format("static const edax_loc edax_loc_{} = {{ {}, {}, {} }};\n", index, c_string(file.path()), lc.line,
                                lc.column);
         }
 
@@ -1670,17 +1670,17 @@ private:
             }
         }
         for (const Symbol* g : globals) out << globals_[g].decl;
-        out << "\nstatic void rift_init_globals(void) {\n";
+        out << "\nstatic void edax_init_globals(void) {\n";
         for (const Symbol* g : globals) out << globals_[g].init;
         out << "}\n\n/* ---- functions ---- */\n\n" << prototypes_ << '\n' << bodies_;
 
         const FunctionDecl* f      = main ? body_decl(main) : nullptr;
         const Type*         result = f && f->result ? lower(*f->result) : tc_.void_();
-        out << "int main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    rift_init_globals();\n";
+        out << "int main(int argc, char** argv) {\n    (void)argc;\n    (void)argv;\n    edax_init_globals();\n";
         if (!main) {
             out << "    return 0;\n";
         } else if (result->is_integer()) {
-            out << std::format("    return rift_exit_status((rift_i128){}(), {});\n", main_name_, loc_text(main->span));
+            out << std::format("    return edax_exit_status((edax_i128){}(), {});\n", main_name_, loc_text(main->span));
         } else {
             out << std::format("    {}();\n    return 0;\n", main_name_);
         }
@@ -1692,7 +1692,7 @@ private:
     std::string loc_text(Span span) {
         const SourceFile& file = sources_.file(span.file);
         LineCol           lc   = file.line_col(span.begin);
-        return std::format("&(rift_loc){{ {}, {}, {} }}", c_string(file.path()), lc.line, lc.column);
+        return std::format("&(edax_loc){{ {}, {}, {} }}", c_string(file.path()), lc.line, lc.column);
     }
 
     Program&              program_;
@@ -1728,4 +1728,4 @@ std::string generate_c(sema::Program& program, const SourceManager& sources, Dia
     return Generator(program, sources, diags, options).run();
 }
 
-} // namespace rift
+} // namespace edax

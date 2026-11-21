@@ -3,22 +3,22 @@
 ## Rules
 
 ### Module = header + source
-- `geometry.rifth` (header) + `geometry.rifts` (source) form the module **`geometry`**.
-- Directories become `::` in module names: `shapes/circle.rifth` is module `shapes::circle`, with paths relative to the project root.
+- `geometry.edh` (header) + `geometry.ed` (source) form the module **`geometry`**.
+- Directories become `::` in module names: `shapes/circle.edh` is module `shapes::circle`, with paths relative to the project root.
 - A module is a unit of compilation, **not** a namespace. Its declarations live in the namespaces they're declared in (`namespace geometry { ... }`, see [Namespaces](namespaces.md)) and are always used by their namespace path: `geometry::circle`. There is no `using`; there are file-local namespace aliases (see [Namespaces](namespaces.md)).
-- A `.rifts` automatically sees its own `.rifth`, so you don't import it.
+- A `.ed` automatically sees its own `.edh`, so you don't import it.
 - Inside a module, declaration order doesn't matter.
 
 ### `import`
-```rift
+```edax
 import std;                 // the whole standard library
 import std::filesystem;     // only std::filesystem
-import geometry;            // ./geometry.rifth
+import geometry;            // ./geometry.edh
 ```
 `import` names a module by its file path. The names it brings are reached through their namespaces (see [Namespaces](namespaces.md)): `std::filesystem::path`. The narrower import only reduces what the compiler loads.
 
 ### What goes where
-| Item | `.rifth` | `.rifts` |
+| Item | `.edh` | `.ed` |
 |---|---|---|
 | Function | Declaration `T f(...);` | Definition with body |
 | Struct | All fields + method declarations | `struct` block with method bodies only (no new fields) |
@@ -30,7 +30,7 @@ import geometry;            // ./geometry.rifth
 | `static` variable | Complete, with its initializer | - |
 | Module-local items | - | Marked `private` |
 
-**Headers never contain function bodies.** Headers never contain `check`s either: checks are written only in the `.rifts` (see [Checks](../errors/checks.md)). **Method bodies are only ever defined inside the `class`/`struct` block in the `.rifts`.** There are no out-of-line `void test::f() { }` definitions.
+**Headers never contain function bodies.** Headers never contain `check`s either: checks are written only in the `.ed` (see [Checks](../errors/checks.md)). **Method bodies are only ever defined inside the `class`/`struct` block in the `.ed`.** There are no out-of-line `void test::f() { }` definitions.
 
 ### Class merge rules
 | Situation | Result |
@@ -45,35 +45,35 @@ import geometry;            // ./geometry.rifth
 **Layout:** header data members in header order, then private fields in source order.
 
 ### `private` at file scope
-In a `.rifts` **that has a `.rifth`**, every top-level item not declared in the header must be marked `private`; otherwise it's an error. In a standalone `.rifts` (no header) nothing can be exported, so `private` isn't needed.
-```rift
-// geometry.rifts
+In a `.ed` **that has a `.edh`**, every top-level item not declared in the header must be marked `private`; otherwise it's an error. In a standalone `.ed` (no header) nothing can be exported, so `private` isn't needed.
+```edax
+// geometry.ed
 private f64 square(f64 x) { return x * x; }       // module-local helper
 f64 geometry::distance(...)                        // ERROR: no out-of-line definitions
 ```
 
 ### Compiled module interface
-The compiler turns each module into a compiled interface. Importers read **only** this file, never the `.rifts`. It contains:
+The compiler turns each module into a compiled interface. Importers read **only** this file, never the `.ed`. It contains:
 
-- every name from the `.rifth`,
+- every name from the `.edh`,
 - the **complete layout** of each class (size, alignment, offsets), with private member *names* hidden,
 - whether each type is a copy type and whether it has a destructor,
 - template bodies and `compile_time` function bodies, in compiled form, so importers can instantiate and evaluate them (see [Templates](../compile-time/templates.md), [Compile-Time Evaluation](../compile-time/compile-time.md)),
 - every function's entry checks and every type-body check, so they run at the importer's calls and instantiations (see [Checks](../errors/checks.md)).
 
-```rift
-// other.rifts
+```edax
+// other.ed
 import test;
 test::test t = test::test{};        // OK: the size is in the interface
 t.private_member_x = 5;             // ERROR: private member not visible
 ```
 
 ### Import graph
-- The compiled interface needs the source to be compiled first, because private layout lives there. So **module imports must form an acyclic graph**, counting imports from both `.rifth` and `.rifts` files.
+- The compiled interface needs the source to be compiled first, because private layout lives there. So **module imports must form an acyclic graph**, counting imports from both `.edh` and `.ed` files.
 - Changing a private field changes the layout, which recompiles importers. Changing only a method body does not.
 
 ## Rationale
 - **What the split is for:** a readable header with only the public interface, private names that can't be reached, and **no PIMPL indirection**. It is not a compile firewall. Layout changes still recompile dependents, and the doc says so openly.
 - **No cycles:** this is the honest cost of putting the full layout into the interface. Cycles between modules are usually a design smell anyway.
-- **One place for method bodies:** inside the type's block in the `.rifts`. Out-of-line `test::f()` definitions would be a second way.
+- **One place for method bodies:** inside the type's block in the `.ed`. Out-of-line `test::f()` definitions would be a second way.
 - **Required `private`:** mirrors the class rule that every public member must be in the header. You can't accidentally export something.

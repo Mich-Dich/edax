@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/steps_project --out-dir=%t
+// A step that writes a file it doesn't declare fails the build, with the files it wrote.

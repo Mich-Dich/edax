@@ -1,15 +1,15 @@
-#include "rift/simd_intrinsics.hpp"
-#include "rift/llvm_backend.hpp"
-#include "rift/check.hpp"
-#include "rift/ast_walk.hpp"
+#include "edax/simd_intrinsics.hpp"
+#include "edax/llvm_backend.hpp"
+#include "edax/check.hpp"
+#include "edax/ast_walk.hpp"
 
-#include "rift/ast_clone.hpp"
-#include "rift/ast_printer.hpp"
-#include "rift/compile_time.hpp"
-#include "rift/lexer.hpp"
-#include "rift/parser.hpp"
-#include "rift/resolve.hpp"
-#include "rift/types.hpp"
+#include "edax/ast_clone.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/compile_time.hpp"
+#include "edax/lexer.hpp"
+#include "edax/parser.hpp"
+#include "edax/resolve.hpp"
+#include "edax/types.hpp"
 
 #include <algorithm>
 #include <format>
@@ -18,7 +18,7 @@
 #include <memory>
 #include <set>
 
-namespace rift {
+namespace edax {
 
 using namespace ast;
 using sema::Module;
@@ -423,17 +423,17 @@ public:
         if (ac.origin->name != "std" && !ac.origin->name.starts_with("std::")) note(d, "the check is here", c.condition->span);
     }
 
-    // build.rifts (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
+    // build.ed (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
     // calls of the graph's methods fill in program_.build_graph.
     void run_build() {
         Module* m = program_.entry;
         if (!m) return;
-        // Everything in build.rifts is declared in namespace build (build system).
+        // Everything in build.ed is declared in namespace build (build system).
         for (const Symbol* item : m->item_order) {
             if (item->ns == "build" || item->ns.starts_with("build::")) continue;
             note(error(DiagCode::E4216, item->span, std::format("'{}' is declared outside namespace build", item->name),
-                       "global name in build.rifts"),
-                 "build.rifts declares everything in 'namespace build { ... }'; every target imports it");
+                       "global name in build.ed"),
+                 "build.ed declares everything in 'namespace build { ... }'; every target imports it");
         }
         const Symbol* fn = m->item("build::build");
         const FunctionDecl* f = fn ? fn->function() : nullptr;
@@ -443,7 +443,7 @@ public:
         }
         Span where = m->source ? Span{m->source->id, 0, 0} : Span{};
         if (!f || !f->is_compile_time || f->params.size() != 1 || !graph) {
-            note(error(DiagCode::E4216, fn ? fn->span : where, "build.rifts defines no 'build' function", "no build function"),
+            note(error(DiagCode::E4216, fn ? fn->span : where, "build.ed defines no 'build' function", "no build function"),
                  "write 'namespace build { compile_time void build(mut std::build::graph& g) { ... } }'");
             return;
         }
@@ -1820,21 +1820,21 @@ private:
     enum class Where { file_scope, type_body, entry, body };
 
     // Whether a check's mode list includes the mode being built (spec 23, 24). Built-in modes
-    // only, until build.rifts can define more.
+    // only, until build.ed can define more.
     bool mode_active(const std::vector<std::string>& modes, Span span) {
         if (modes.empty()) return true;
         const std::string& m      = program_.build_mode;
         bool               active = false;
         constexpr std::string_view prefix = "std::build::mode::";
         for (const std::string& path : modes) {
-            if (path.starts_with("build::")) {   // a mode class of build.rifts (spec 24, open question 31)
+            if (path.starts_with("build::")) {   // a mode class of build.ed (spec 24, open question 31)
                 const Symbol* cls = nullptr;
                 if (auto bm = program_.modules.find("build"); bm != program_.modules.end()) {
                     cls = bm->second->item(path);
                 }
                 if (!cls || cls->kind != SymbolKind::class_) {
                     note(error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode"),
-                         "build.rifts does not define this mode class");
+                         "build.ed does not define this mode class");
                     continue;
                 }
                 for (const Symbol* c = program_.build_mode_class; c; c = c->base_class()) active = active || c == cls;
@@ -1847,7 +1847,7 @@ private:
                     note(d, std::format("write 'std::build::mode::{}': std names are written in full", path));
                 } else {
                     note(d, "the built-in modes are std::build::mode::debug, ::release and ::release_with_debug_info "
-                            "(user modes need build.rifts)");
+                            "(user modes need build.ed)");
                 }
                 continue;
             }
@@ -2938,7 +2938,7 @@ private:
         u128 n = c->as<LiteralExpr>().int_value;
         if (n >= static_cast<u128>(t->bits)) {
             note(error(DiagCode::E4080, count.span,
-                       std::format("shift by {} is not smaller than the width of {} ({} bits)", rift::to_string(n),
+                       std::format("shift by {} is not smaller than the width of {} ({} bits)", edax::to_string(n),
                                    quoted(t), t->bits),
                        "out of range"),
                  "a shift by the full width or more would panic at run time");
@@ -2952,7 +2952,7 @@ private:
             u128 v = operand.as<LiteralExpr>().int_value;
             if (v >= static_cast<u128>(t->bits)) {
                 note(error(DiagCode::E4080, operand.span,
-                           std::format("bit({}) does not exist in {} ({} bits)", rift::to_string(v), quoted(t), t->bits),
+                           std::format("bit({}) does not exist in {} ({} bits)", edax::to_string(v), quoted(t), t->bits),
                            "out of range"),
                      std::format("bit indices of {} are 0 to {}", quoted(t), t->bits - 1));
             }
@@ -3167,7 +3167,7 @@ private:
             if (c.args[0]->constant) c.constant = evaluate(c, "");
             return t;
         }
-        if (name == "meta::compiler_version") {   // the riftc that compiles the program (plugins)
+        if (name == "meta::compiler_version") {   // the edaxc that compiles the program (plugins)
             set(c, tc_.static_str());
             c.constant = evaluate(c, "");
             return tc_.static_str();
@@ -4210,7 +4210,7 @@ private:
         if (!callee || unsafe_depth_ > 0) return;
         const FunctionDecl* f = callee->function();
         if (!f) return;
-        // An extern(c) function written in Rift (one with a body) is safe to call from Rift.
+        // An extern(c) function written in Edax (one with a body) is safe to call from Edax.
         bool foreign = f->is_extern && !f->body && !(callee->definition && callee->definition->as<FunctionDecl>().body);
         if (!f->is_unsafe && !foreign) return;
         note(error(DiagCode::E4101, span,
@@ -5008,7 +5008,7 @@ private:
         };
         if (!in) {
             error(DiagCode::E3020, path.segments[3].span, std::format("cannot find '{}' in namespace 'std::simd::{}'", name, arch),
-                  "not an intrinsic riftc knows");
+                  "not an intrinsic edaxc knows");
             return give_up();
         }
         require_unsafe(c.span, "calling a raw SIMD intrinsic");
@@ -6837,4 +6837,4 @@ void check_types(sema::Program& program, const SourceManager& sources, Diagnosti
     });
 }
 
-} // namespace rift
+} // namespace edax

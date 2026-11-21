@@ -16,7 +16,7 @@ There are no C-style casts (`(T)x`) and no constructor-style casts (`T(x)`). Eve
 
 A `char` is a Unicode scalar value (at most `0x10FFFF`): `cast<u32>(c)` (or any integer of at least 32 bits) is lossless. The other direction can fail, so it is `cast::checked<char>(n)`, which is `none` for surrogates and values above `0x10FFFF`.
 
-```rift
+```edax
 u32 small = 300;
 u64 wide  = cast<u64>(small);                     // OK: lossless
 u8  a     = cast<u8>(small);                      // ERROR: may lose data

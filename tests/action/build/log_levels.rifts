@@ -1,2 +1,0 @@
-// RUN: riftc run --root=%S/logging_project --out-dir=%t game
-// Compile-time log levels from build.rifts (spec 31): info for the target, trace for net/*.rifts.

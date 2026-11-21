@@ -33,11 +33,11 @@
 - Interface methods may be `compile_time` (their implementations must be too); this is how build modes declare their settings (see [Build Modes](../../build/build-modes.md)).
 - An interface may declare `compile_time static` methods (`std::implicit<T>`, see [Functions](../functions/functions.md)). They are implemented with `override`; such an interface is used as a base or a template constraint.
 - **Default methods:** an interface method with a body is used by every implementer that doesn't `override` it.
-  - The header declares the method like any other; its body is in the interface's block in the `.rifts`, like a class's (see [Headers, Sources and Modules](../organization/modules.md)).
+  - The header declares the method like any other; its body is in the interface's block in the `.ed`, like a class's (see [Headers, Sources and Modules](../organization/modules.md)).
   - A default body can only use the interface's own methods (through `this`), since the interface has no fields.
   - Replacing a default still needs `override`.
   - If a type gets two defaults for the same signature (from two interfaces), it must `override` that method; otherwise it's an error naming both interfaces.
-  ```rift
+  ```edax
   interface sink {
       void write(std::str line) mut;
       bool colored() { return false; }          // default: most sinks don't write colors
@@ -53,12 +53,12 @@
 Implementing an interface does **not** change the object's layout. The dispatch table sits beside the pointer, not inside the object. Only `virtual` in a class hierarchy adds a vtable pointer to the object.
 
 ## Example
-```rift
+```edax
 open class shape {
 public:
     std::string name;
     virtual f64 area() abstract;
-    virtual std::string describe();          // has an implementation in .rifts
+    virtual std::string describe();          // has an implementation in .ed
 }
 
 class circle : shape {
@@ -98,7 +98,7 @@ Only the type's own declaration: its base list, or an annotation written on it t
 
 ## Rationale
 - **`virtual` only introduces, `override` only implements:** every method says exactly one thing, and a reader can tell a new dispatch point from an implementation.
-- **`abstract` keyword:** in the header split, *every* method is body-less in the `.rifth`, so "no body" can't mean "pure virtual". It needs its own word.
+- **`abstract` keyword:** in the header split, *every* method is body-less in the `.edh`, so "no body" can't mean "pure virtual". It needs its own word.
 - **Single base class:** this avoids diamond inheritance. Interfaces cover the remaining multiple-inheritance cases.
 - **Default methods with a mandatory `override` to replace them:** interfaces can grow without breaking implementers, and an implementation never replaces a default silently.
 - **Fat pointers for interfaces:** structs can implement interfaces without becoming "non-plain" data, because their layout never changes.

@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t annotations
+// The example program example/annotations.ed (built through example/build.ed) keeps working.

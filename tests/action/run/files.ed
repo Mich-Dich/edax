@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// Files (spec 20): create, write, open, the lines stream, io_error (printed by name), and
+// match on owned results.
+import std;
+i32 main() {
+    std::filesystem::path p = std::filesystem::executable_dir() / "notes.txt";
+    match (std::file::create(p)) {
+        std::ok(f) => {
+            mut std::file out = move f;
+            out.write("first line\nsecond\r\n\nlast").expect("write");
+        },
+        std::error(e) => { std::println("cannot create"); },
+    }
+    mut std::file in = std::file::open(p).expect("open");
+    mut u32 n = 0;
+    for (std::str line : in.lines()) {
+        n += 1;
+        std::println(f"{n}: [{line}]");
+    }
+    std::filesystem::path missing = std::filesystem::executable_dir() / "missing.txt";
+    match (std::file::open(missing)) {
+        std::ok(f) => std::println("unexpected"),
+        std::error(e) => std::println(f"error: {e}"),
+    }
+    return 0;
+}

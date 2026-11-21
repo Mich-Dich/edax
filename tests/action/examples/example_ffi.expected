@@ -4,7 +4,7 @@ exit: 0
 x = 15, p is set: true
 -- raw memory and a C sort
 6 9 2 5 8 1 4 7 -> 1 2 4 5 6 7 8 9 (16 swaps in C)
--- passing a Rift array to C
+-- passing a Edax array to C
   [from C] stats_mean summed values (4)
 mean = 4.0
 -- libm and libc

@@ -1,0 +1,2 @@
+// RUN: edaxc run %S/compile_check.ed
+// The milestone-6 target: the first example compiles to a program that exits 0.

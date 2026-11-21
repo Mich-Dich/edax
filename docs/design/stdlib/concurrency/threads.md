@@ -2,7 +2,7 @@
 
 Threads are part of the standard library (`std::thread`), and **data races are compile errors**. The rules come from what the language already has: references are second-class, views can't outlive what they borrow, `T&` means "not changed", and a `mut T&` is the only way to reach an object while it exists (see [Ownership, Copies, Moves and References](../../language/memory/ownership-and-references.md)). Threads only add two compiler-derived properties of types and a handful of synchronized library types.
 
-Rift prevents **data races**: two threads touching the same memory without synchronization, with at least one writing. It does not prevent deadlocks or logic races (two correct steps in an unlucky order). Those are bugs, not undefined behaviour.
+Edax prevents **data races**: two threads touching the same memory without synchronization, with at least one writing. It does not prevent deadlocks or logic races (two correct steps in an unlucky order). Those are bugs, not undefined behaviour.
 
 ## Rules
 
@@ -26,7 +26,7 @@ How they are derived:
 
 - **`std::raw_ptr` is neither**, because the compiler can't know whether the memory behind it is owned, shared or tied to a thread. Every type that holds one (a container, a C handle) is therefore neither by default.
 - **A type that is safe anyway says so with `unsafe`** in its base list, optionally with a compile-time condition in parentheses, in the same `keyword(parameter)` form as `run_time(std::build::mode::debug)`:
-  ```rift
+  ```edax
   template<type T>
   class darray : unsafe std::sendable(std::implements<T, std::sendable>()),
                  unsafe std::shareable(std::implements<T, std::shareable>()) { ... }
@@ -47,11 +47,11 @@ How they are derived:
 | `std::condition` | Waiting until data behind a mutex reaches a state |
 | `std::channel_sender<T>` / `std::channel_receiver<T>` | Passing values between threads |
 
-These are written in Rift on top of `std::raw` and a few compiler intrinsics (see [Raw Pointers and `unsafe`](../../language/memory/raw-pointers-and-unsafe.md)). Every other type changes only through `mut`, which a second thread can never have at the same time.
+These are written in Edax on top of `std::raw` and a few compiler intrinsics (see [Raw Pointers and `unsafe`](../../language/memory/raw-pointers-and-unsafe.md)). Every other type changes only through `mut`, which a second thread can never have at the same time.
 
 ### Starting a thread: `std::thread::spawn`
 There is **one** function that starts a thread. What it returns depends on what the function **captures**:
-```rift
+```edax
 std::thread::handle<u64> worker = std::thread::spawn([move queue]() { return drain(queue); });   // owns everything
 std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(left); });     // borrows (left is a view)
 ```
@@ -70,12 +70,12 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
 - **Destroying a handle joins the thread.** A `std::thread::handle` that should keep running is given up explicitly with `detach() move`. A `scoped_handle` has no `detach`, because a detached borrowing thread could outlive what it borrows.
 - **A panic in any thread aborts the whole process** (see [Error Handling](../../language/errors/error-handling.md)), so `join()` never fails and returns `R` directly.
 - Options are a second overload:
-  ```rift
+  ```edax
   std::thread::spawn(std::thread::options{ .name = "decoder", .stack_size = 256 * 1024 }, [move input]() { ... });
   ```
   `.name` also names the thread for logs and debuggers. The default stack size is the platform's.
 - **Scheduling, priority and CPU affinity** are platform-specific and are set with the platform's own option struct in `.platform`:
-  ```rift
+  ```edax
   std::thread::spawn(std::thread::options{
       .name     = "control",
       .platform = std::thread::platform_options::linux(std::thread::linux_options{
@@ -86,7 +86,7 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
   }, [move loop]() { ... });
   ```
   `std::thread::platform_options` has one alternative per supported OS (`linux`, `windows`, `macos`) plus `none` (the default). Using an alternative for another platform than the target's is a compile error. Each options struct names exactly what that OS offers, with no portable approximation.
-- **Targets without threads:** on a target without the `threads` capability (see [Rift as a Build System](../../build/build-system.md)), `std::thread::spawn` is a compile error at the call. `std::atomic` still works.
+- **Targets without threads:** on a target without the `threads` capability (see [Edax as a Build System](../../build/build-system.md)), `std::thread::spawn` is a compile error at the call. `std::atomic` still works.
 
 ### The current thread
 | Call | Result |
@@ -106,7 +106,7 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
 
 - `thread_local` is a new keyword, a storage modifier like `static`.
 - A reference to a `thread_local` can't be captured by `std::thread::spawn` (it would reach another thread's copy).
-- **Cost:** because the initializer is evaluated at compile time, accessing a `thread_local` is a load at a fixed offset from the thread pointer. C++ needs a hidden "already initialized?" check for some thread-locals; Rift never does.
+- **Cost:** because the initializer is evaluated at compile time, accessing a `thread_local` is a load at a fixed offset from the thread pointer. C++ needs a hidden "already initialized?" check for some thread-locals; Edax never does.
 
 ### Performance tools
 | Tool | Purpose |
@@ -122,7 +122,7 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
 ## Examples
 
 ### Splitting work over borrowed data
-```rift
+```edax
 f64 parallel_sum(std::span<f64> values) {
     usize half = values.len() / 2;
     std::span<f64> left  = values.slice(0, half);
@@ -136,7 +136,7 @@ f64 parallel_sum(std::span<f64> values) {
 `left` is a view, so the lambda borrows and `spawn` returns a `scoped_handle`. The function can't return before the thread is joined: `other` is a local, and destroying it joins.
 
 ### Changing disjoint parts in parallel
-```rift
+```edax
 void scale_all(mut std::darray<f32>& samples, f32 factor) {
     if (samples.is_empty()) {
         return;
@@ -159,7 +159,7 @@ void scale_all(mut std::darray<f32>& samples, f32 factor) {
 - This shows the borrowing rules, but it starts one OS thread per part. In real code the same loop is one call: `pool.for_chunks(samples.as_mut_span(), 4096, [factor](std::span<mut f32> part) { ... })` (see [Thread Pool](thread-pool.md)).
 
 ### A type that must stay on its thread
-```rift
+```edax
 class window {                       // wraps a GLFW window: must stay on the main thread
 public:
     void draw() mut;
@@ -167,29 +167,29 @@ private:
     std::raw_ptr<mut glfw_window> handle;
 }
 ```
-```rift
+```edax
 std::thread::handle<void> t = std::thread::spawn([move win]() { win.draw(); });
 ```
 ```
 error: the thread's lambda can't be moved to another thread
- --> app.rifts:12:56
+ --> app.ed:12:56
    |
 12 |     std::thread::handle<void> t = std::thread::spawn([move win]() { win.draw(); });
    |                                                        ^^^^^^^^ 'win' has type 'gfx::window'
 note: 'gfx::window' isn't std::sendable because its field 'handle' is a 'std::raw_ptr<mut glfw_window>'
- --> gfx/window.rifts:7:5
+ --> gfx/window.ed:7:5
 ```
 
 ### A data race that doesn't compile
-```rift
+```edax
 mut u32 counter = 0;
 std::thread::scoped_handle<void> a = std::thread::spawn([mut &counter]() { counter += 1; });
 std::thread::scoped_handle<void> b = std::thread::spawn([mut &counter]() { counter += 1; });   // ERROR
 ```
 ```
 error: 'counter' is already borrowed mutably by the thread 'a'
- --> main.rifts:3:61
-note: the borrow lasts until 'a' is joined or destroyed (main.rifts:2:38)
+ --> main.ed:3:61
+note: the borrow lasts until 'a' is joined or destroyed (main.ed:2:38)
 ```
 To count from several threads, use a `std::atomic<u32>` (captured by `&`) or a `std::mutex<u32>`.
 
@@ -199,6 +199,6 @@ To count from several threads, use a `std::atomic<u32>` (captured by `&`) or a `
 - **Derived `sendable` / `shareable`:** like copy types, the answer follows from the fields. Explicit `unsafe` is needed only where the compiler can't see (raw pointers), and that's exactly where a human has to think.
 - **Synchronized types are the one exception to "`T&` doesn't change":** that rule is what makes sharing safe, so its only exceptions are the types whose job is synchronization. That keeps the list short and greppable.
 - **Destroying a handle joins:** this is RAII, where destruction already releases files and memory. A thread that should run on is `detach()`ed, visibly. Destruction that silently kills or abandons a thread (C++'s `std::thread` terminates the program) isn't an option for a safe language.
-- **Threads, not `async`:** threads, the thread pool and channels cover the programs Rift is for (engines, tools, embedded control loops) without function colouring or an executor. A program with ten thousand waiting connections needs another design.
+- **Threads, not `async`:** threads, the thread pool and channels cover the programs Edax is for (engines, tools, embedded control loops) without function colouring or an executor. A program with ten thousand waiting connections needs another design.
 - **Platform options, not portable priorities:** "high priority" means different things on every OS; real-time code needs the exact policy and number, so it writes them.
 - **No unwinding, so join can't fail:** a panic in any thread aborts the process (see [Error Handling](../../language/errors/error-handling.md)). Every thread's result type is just `R`.

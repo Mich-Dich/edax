@@ -13,7 +13,7 @@
 - **Creating, copying and comparing raw pointers is safe.** **Dereferencing them and doing pointer arithmetic is not.**
 - `&x` gives `std::raw_ptr<T>`. `mut &x` gives `std::raw_ptr<mut T>` and requires `x` to be `mut`.
 - In a condition context a raw pointer converts to `bool` (see [Built-in Types and Conversions](../basics/types.md)):
-```rift
+```edax
 mut u32 value = 5;
 std::raw_ptr<mut u32> p = mut &value;
 
@@ -36,7 +36,7 @@ if (p) {                         // OK: contextual bool
 6. Calling the memory intrinsics of `std::raw` (see [Raw Memory: `std::raw`](../../stdlib/memory/raw-memory.md))
 
 Functions whose callers must follow a contract are declared `unsafe`:
-```rift
+```edax
 unsafe u32 read_register(usize address) { ... }
 ```
 

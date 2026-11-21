@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/tools_project --out-dir=%t --list
+// Targets of dependencies are not listed as the project's own.

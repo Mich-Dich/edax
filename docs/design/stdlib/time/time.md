@@ -37,7 +37,7 @@ For showing and storing dates. It can jump (the user or NTP changes it).
 | `t.utc()`, `t.local()` | A `std::time::civil_time` |
 | `t.in_zone(z)` | A `std::time::civil_time` in the time zone `z` |
 
-```rift
+```edax
 struct civil_time {                // std::time::civil_time
     i32 year;
     u8  month;                     // 1..=12

@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/engine_project --out-dir=%t app
+// debug: the option's default comes from mode_is(debug); overflow panics.

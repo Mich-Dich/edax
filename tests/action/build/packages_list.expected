@@ -4,7 +4,7 @@ mini
   source:  local vendor/mini
   version: local
   path:    vendor/mini
-  build:   cmake (CMakeLists.txt, read by riftc)
+  build:   cmake (CMakeLists.txt, read by edaxc)
   no local changes
 hdr
   source:  local vendor/hdr

@@ -1,0 +1,101 @@
+// containers: the standard library's containers and text functions (specs 19, 20).
+// All of them are written in Edax itself (library/std), on top of the std::raw intrinsics.
+import std;
+
+std::static_str text() {
+    return "the quick brown fox jumps over the lazy dog the fox sleeps and the dog barks";
+}
+
+// The primes below N with a sieve: `std::bitset<N>` stores one bit per number, inline.
+template<usize N>
+std::darray<u32> primes_below() {
+    mut std::bitset<N> composite = default;
+    mut std::darray<u32> out = default;
+    for (usize i : 2..N) {
+        if (composite.test(i)) { continue; }
+        out.push(cast::truncate<u32>(i));
+        mut usize multiple = i * i;
+        while (multiple < N) {
+            composite.set(multiple, true);
+            multiple += i;
+        }
+    }
+    return out;
+}
+
+// A `std::span` views part of a container without copying.
+u32 sum(std::span<u32> values) {
+    mut u32 total = 0;
+    for (u32 v : values) { total += v; }
+    return total;
+}
+
+i32 main() {
+    std::println("-- darray: a growable array");
+    mut std::darray<std::string> list = default;
+    list.push(std::string::from("b"));
+    list.push(std::string::from("d"));
+    list.insert(0, std::string::from("a"));
+    list.insert(2, std::string::from("c"));
+    std::string gone = list.remove(3);
+    std::println(f"len {list.len()}, removed {gone}, [1] = {list[1]}");
+    match (list.get(10)) {   // checked access returns std::option<T&>
+        std::some(s) => std::println(f"got {s}"),
+        std::none => std::println("index 10: none"),
+    }
+
+    std::println("-- array and bitset: fixed size, no heap");
+    mut std::array<u32, 5> fib = default;
+    fib[0] = 1;
+    fib[1] = 1;
+    for (usize i : 2..fib.len()) { fib[i] = fib[i - 1] + fib[i - 2]; }
+    std::println(f"fib: {fib[0]} {fib[1]} {fib[2]} {fib[3]} {fib[4]}, size {std::size_of<std::array<u32, 5>>()} bytes");
+    std::darray<u32> primes = primes_below<60>();
+    std::println(f"{primes.len()} primes below 60, the last is {primes[primes.len() - 1]}");
+    std::println(f"sum of all: {sum(primes.as_span())}, bitset<60> takes {std::size_of<std::bitset<60>>()} bytes");
+
+    std::println("-- hash_map: word counts");
+    mut std::hash_map<std::string, u32> counts = default;
+    for (std::str word : text().split(' ')) {
+        std::string key = std::string::from(word);
+        if (counts.contains(key)) {
+            counts[key] += 1;
+        } else {
+            counts.insert(move key, 1);
+        }
+    }
+    std::string the = std::string::from("the");
+    std::string cat = std::string::from("cat");
+    std::println(f"{counts.len()} distinct words; 'the' x{counts[the]}; 'cat' x{counts.get(cat).value_or(0u32)}");
+
+    std::println("-- tree_map: the same counts, sorted by word");
+    mut std::tree_map<std::string, u32> sorted = default;
+    for (std::map_entry<std::string, u32> e : counts.entries()) {
+        sorted.insert(e.key.clone(), e.value);
+    }
+    for (std::map_entry<std::string, u32> e : sorted.entries()) {
+        if (e.value > 1) { std::println(f"  {e.key:<6} {e.value}"); }
+    }
+
+    std::println("-- strings and text");
+    std::str line = "  42, 17 ,x, 8  ";
+    mut u32 total = 0;
+    mut std::string bad = std::string::from("");
+    for (std::str part : line.trim().split(',')) {
+        match (part.trim().parse<u32>()) {
+            std::some(n) => { total += n; },
+            std::none => { bad.push_str(part.trim()); },
+        }
+    }
+    std::println(f"numbers add up to {total}; not a number: '{bad}'");
+    std::str sentence = text();
+    bool starts = sentence.starts_with("the");
+    bool has_fox = sentence.contains("fox");
+    usize lazy_at = sentence.find("lazy").value_or(0);
+    std::println(f"starts with 'the': {starts}, has 'fox': {has_fox}, 'lazy' at {lazy_at}");
+    mut std::string built = std::string::from("Edax");
+    built.push(' ');
+    built.push_str("✓");
+    std::println(f"'{built}' is {built.len()} bytes");
+    return 0;
+}

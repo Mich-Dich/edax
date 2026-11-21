@@ -12,7 +12,7 @@ levels: low critical
 sensor has 4 fields and takes 32 bytes
 --- stderr
 warning[W4210]: old_api() is going away; call set_pin() instead
-   --> example/compile_time_demo.rifts:111:5
+   --> example/compile_time_demo.ed:111:5
     |
 111 |     old_api();
     |     ^^^^^^^^^

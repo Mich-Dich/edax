@@ -1,5 +1,0 @@
-// RUN: riftc build %s -o %t/prog
-// 'riftc build' writes the executable and says where (spec 24: debug is the default mode).
-u32 main() {
-    return 0;
-}

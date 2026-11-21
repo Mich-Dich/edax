@@ -1,9 +1,9 @@
 // Code insights: shows what the compiler does that the source doesn't spell out (stack frames,
 // heap allocations, drops at the end of scopes, moves, copies, temporaries, implicit conversions,
-// virtual calls, run-time checks). The facts come from `riftc insights <file>` (JSON).
+// virtual calls, run-time checks). The facts come from `edaxc insights <file>` (JSON).
 //
-// Off unless asked for: `rift.insights.enabled`, toggled with "Rift: Toggle Code Insights".
-// Each category has its own setting (`rift.insights.show.<category>`).
+// Off unless asked for: `edax.insights.enabled`, toggled with "Edax: Toggle Code Insights".
+// Each category has its own setting (`edax.insights.show.<category>`).
 
 "use strict";
 
@@ -19,7 +19,7 @@ const CATEGORIES = [
     { id: "moves", label: "Moves", icon: "arrow-right", description: "Ownership leaving a variable (`move x`, returning a local)" },
     { id: "copies", label: "Large copies", icon: "copy", description: "Copy types bigger than 16 bytes used by value" },
     { id: "temporaries", label: "Temporaries", icon: "symbol-variable", description: "Unnamed stack slots the compiler needs" },
-    { id: "conversions", label: "Implicit conversions", icon: "arrow-swap", description: "The few conversions Rift does without a cast" },
+    { id: "conversions", label: "Implicit conversions", icon: "arrow-swap", description: "The few conversions Edax does without a cast" },
     { id: "dispatch", label: "Dynamic dispatch", icon: "references", description: "Virtual and interface calls through a table" },
     { id: "checks", label: "Run-time checks", icon: "shield", description: "Overflow, shift and division checks that can panic" },
 ];
@@ -41,37 +41,37 @@ class InsightsController {
         this.rangeTypes = new Map();   // category -> decoration type (highlight)
         for (const c of CATEGORIES) {
             this.rangeTypes.set(c.id, vscode.window.createTextEditorDecorationType({
-                backgroundColor: new vscode.ThemeColor(`rift.insights.${c.id}.background`),
-                borderColor: new vscode.ThemeColor(`rift.insights.${c.id}.foreground`),
+                backgroundColor: new vscode.ThemeColor(`edax.insights.${c.id}.background`),
+                borderColor: new vscode.ThemeColor(`edax.insights.${c.id}.foreground`),
                 borderStyle: "none none dotted none",
                 borderWidth: "1px",
             }));
         }
         this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-        this.status.command = "rift.insights.choose";
+        this.status.command = "edax.insights.choose";
 
         context.subscriptions.push(
             this.status, this.lensEmitter, this.hintEmitter,
-            vscode.languages.registerInlayHintsProvider({ language: "rift" }, {
+            vscode.languages.registerInlayHintsProvider({ language: "edax" }, {
                 onDidChangeInlayHints: this.hintEmitter.event,
                 provideInlayHints: (doc, range) => this.inlayHints(doc, range),
             }),
             ...this.rangeTypes.values(),
-            vscode.languages.registerCodeLensProvider({ language: "rift" }, {
+            vscode.languages.registerCodeLensProvider({ language: "edax" }, {
                 onDidChangeCodeLenses: this.lensEmitter.event,
                 provideCodeLenses: (doc) => this.codeLenses(doc),
             }),
-            vscode.commands.registerCommand("rift.insights.toggle", () => this.toggle()),
-            vscode.commands.registerCommand("rift.insights.choose", () => this.choose()),
-            vscode.commands.registerCommand("rift.insights.refresh", () => this.refreshVisible(true)),
-            vscode.commands.registerCommand("rift.insights.explain", (item) => this.explain(item)),
-            vscode.workspace.onDidSaveTextDocument((doc) => { if (doc.languageId === "rift") this.refresh(doc, true); }),
-            vscode.workspace.onDidChangeTextDocument((e) => { if (e.document.languageId === "rift" && e.contentChanges.length) this.lensEmitter.fire(); }),
+            vscode.commands.registerCommand("edax.insights.toggle", () => this.toggle()),
+            vscode.commands.registerCommand("edax.insights.choose", () => this.choose()),
+            vscode.commands.registerCommand("edax.insights.refresh", () => this.refreshVisible(true)),
+            vscode.commands.registerCommand("edax.insights.explain", (item) => this.explain(item)),
+            vscode.workspace.onDidSaveTextDocument((doc) => { if (doc.languageId === "edax") this.refresh(doc, true); }),
+            vscode.workspace.onDidChangeTextDocument((e) => { if (e.document.languageId === "edax" && e.contentChanges.length) this.lensEmitter.fire(); }),
             vscode.window.onDidChangeVisibleTextEditors(() => this.refreshVisible(false)),
             vscode.window.onDidChangeActiveTextEditor(() => this.updateStatus()),
             vscode.workspace.onDidChangeConfiguration((e) => {
-                if (e.affectsConfiguration("rift.insights")) {
-                    if (e.affectsConfiguration("rift.insights.enabled")) this.cache.clear();
+                if (e.affectsConfiguration("edax.insights")) {
+                    if (e.affectsConfiguration("edax.insights.enabled")) this.cache.clear();
                     this.refreshVisible(false);
                     this.hintEmitter.fire();
                 }
@@ -80,7 +80,7 @@ class InsightsController {
         this.refreshVisible(false);
     }
 
-    settings(doc) { return vscode.workspace.getConfiguration("rift.insights", doc ? doc.uri : undefined); }
+    settings(doc) { return vscode.workspace.getConfiguration("edax.insights", doc ? doc.uri : undefined); }
     enabled(doc) { return this.settings(doc).get("enabled", false); }
     shown(doc, category) {
         const def = CATEGORIES.find((c) => c.id === category);
@@ -90,7 +90,7 @@ class InsightsController {
     async toggle() {
         const now = !this.enabled();
         await this.settings().update("enabled", now, this.target());
-        vscode.window.setStatusBarMessage(`Rift code insights ${now ? "on" : "off"}`, 2000);
+        vscode.window.setStatusBarMessage(`Edax code insights ${now ? "on" : "off"}`, 2000);
     }
 
     target() {
@@ -104,7 +104,7 @@ class InsightsController {
         }));
         const picked = await vscode.window.showQuickPick(items, {
             canPickMany: true,
-            title: `Rift code insights (${this.enabled() ? "on" : "off"}) — what to show`,
+            title: `Edax code insights (${this.enabled() ? "on" : "off"}) — what to show`,
             placeHolder: "Pick the categories; confirming also turns insights on",
         });
         if (!picked) return;
@@ -117,19 +117,19 @@ class InsightsController {
 
     updateStatus() {
         const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.languageId !== "rift") { this.status.hide(); return; }
+        if (!editor || editor.document.languageId !== "edax") { this.status.hide(); return; }
         const on = this.enabled(editor.document);
         const entry = this.cache.get(editor.document.uri.fsPath);
         this.status.text = on ? (entry && entry.error ? "$(eye) Insights $(warning)" : "$(eye) Insights") : "$(eye-closed) Insights";
         this.status.tooltip = on
-            ? (entry && entry.error ? `Rift code insights: ${entry.error}` : "Rift code insights are on — click to choose what to show")
-            : "Rift code insights are off — click to choose and turn on";
+            ? (entry && entry.error ? `Edax code insights: ${entry.error}` : "Edax code insights are on — click to choose what to show")
+            : "Edax code insights are off — click to choose and turn on";
         this.status.show();
     }
 
     refreshVisible(force) {
         for (const editor of vscode.window.visibleTextEditors) {
-            if (editor.document.languageId === "rift") this.refresh(editor.document, force);
+            if (editor.document.languageId === "edax") this.refresh(editor.document, force);
         }
         this.updateStatus();
     }
@@ -144,7 +144,7 @@ class InsightsController {
         }
         const cached = this.cache.get(key);
         if (cached && !force) { this.render(doc, cached.items); this.hintEmitter.fire(); return; }
-        if (doc.isDirty) return;   // riftc reads the file: wait for the save
+        if (doc.isDirty) return;   // edaxc reads the file: wait for the save
         if (this.running.has(key)) return this.running.get(key);
         const job = this.run(doc).then((entry) => {
             this.cache.set(key, entry);
@@ -158,28 +158,28 @@ class InsightsController {
         return job;
     }
 
-    /** riftc insights <file>, from the project root (the folder with build.rifts) or the file's folder. */
+    /** edaxc insights <file>, from the project root (the folder with build.ed) or the file's folder. */
     run(doc) {
         const file = doc.uri.fsPath;
         const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
         const root = projectRoot(file, folder);
-        const riftc = this.env.compilerPath(folder);
+        const edaxc = this.env.compilerPath(folder);
         const args = ["insights", "--color=never", "--diagnostic-format=short"];
         if (root) args.push(`--root=${root}`);
         args.push(file);
         const cwd = root || path.dirname(file);
         return new Promise((resolve) => {
-            cp.execFile(riftc, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+            cp.execFile(edaxc, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
                 if (error && error.code === "ENOENT") {
-                    resolve({ items: [], error: `cannot run riftc (${riftc}); set 'rift.compilerPath'` });
+                    resolve({ items: [], error: `cannot run edaxc (${edaxc}); set 'edax.compilerPath'` });
                     return;
                 }
                 if (/unknown command 'insights'/.test(stderr || "")) {
-                    resolve({ items: [], error: "this riftc has no 'insights' command: rebuild the compiler" });
+                    resolve({ items: [], error: "this edaxc has no 'insights' command: rebuild the compiler" });
                     return;
                 }
                 if (error) {
-                    const first = (stderr || "").split(/\r?\n/).find((l) => /error/.test(l)) || `riftc exited with ${error.code}`;
+                    const first = (stderr || "").split(/\r?\n/).find((l) => /error/.test(l)) || `edaxc exited with ${error.code}`;
                     resolve({ items: [], error: `the file does not compile: ${first}` });
                     return;
                 }
@@ -188,8 +188,8 @@ class InsightsController {
                     const same = (p) => path.resolve(cwd, p) === path.resolve(file);
                     resolve({ items: all.filter((i) => same(i.file)), error: undefined });
                 } catch (e) {
-                    this.env.output.appendLine(`riftc insights: unreadable output: ${e.message}`);
-                    resolve({ items: [], error: "unreadable output from riftc insights" });
+                    this.env.output.appendLine(`edaxc insights: unreadable output: ${e.message}`);
+                    resolve({ items: [], error: "unreadable output from edaxc insights" });
                 }
             });
         });
@@ -277,7 +277,7 @@ class InsightsController {
             lenses.push(new vscode.CodeLens(range, {
                 title: `$(${c.icon}) ${title}`,
                 tooltip: list.map((i) => stripMarkdown(i.detail)).join("\n\n"),
-                command: "rift.insights.explain",
+                command: "edax.insights.explain",
                 arguments: [list],
             }));
         }
@@ -297,7 +297,7 @@ class InsightsController {
 function projectRoot(file, folder) {
     const stop = folder ? folder.uri.fsPath : path.parse(file).root;
     for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
-        if (fs.existsSync(path.join(dir, "build.rifts"))) return dir;
+        if (fs.existsSync(path.join(dir, "build.ed"))) return dir;
         if (dir === stop || dir === path.dirname(dir)) return undefined;
     }
 }

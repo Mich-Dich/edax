@@ -1,3 +1,0 @@
-// RUN: riftc check --stop-after=parse %s
-// Undeclared names are only an error once name resolution runs.
-void f() { u32 x = not_declared; }

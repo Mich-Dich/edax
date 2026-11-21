@@ -1,7 +1,7 @@
 exit: 0
 --- stdout
 E0001  error    cannot read source file
-E0002  error    unsupported source file extension (expected .rifts or .rifth)
+E0002  error    unsupported source file extension (expected .ed or .edh)
 E0003  error    cannot run the C compiler
 E0004  error    cannot write the output file
 E1001  error    invalid character in source
@@ -26,7 +26,7 @@ E2003  error    expected a type
 E2004  error    expected a declaration
 E2005  error    braces are required around this body
 E2006  error    assignment is a statement, not an expression
-E2007  error    Rift has no '++' or '--' operator
+E2007  error    Edax has no '++' or '--' operator
 E2008  error    comparison and range operators cannot be chained
 E2009  error    no ';' after a closing '}'
 E2010  error    variable declared without an initializer
@@ -72,7 +72,7 @@ E3015  error    public member is not declared in the header
 E3016  error    a struct's source block cannot add fields
 E3017  error    item not declared in the header must be 'private'
 E3018  error    enums and interfaces are complete in the header
-E3019  error    checks are written in the .rifts, not in a header
+E3019  error    checks are written in the .ed, not in a header
 E3020  error    cannot find name
 E3021  error    cannot find type
 E3022  error    wrong kind of name (type, value or module)
@@ -177,7 +177,7 @@ E4211  error    this check is not allowed here
 E4212  error    unknown build mode
 E4213  error    a diagnostic id must be a declared 'std::diagnostic'
 E4215  error    a build mode allows undefined behaviour without saying so
-E4216  error    build.rifts has no build function
+E4216  error    build.ed has no build function
 E4214  error    a method of a template instance that does not compile is used
 E4220  error    a consuming ('move') method needs a value the caller owns
 E4230  error    a value that can't be moved to another thread

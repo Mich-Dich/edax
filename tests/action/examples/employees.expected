@@ -2,7 +2,7 @@ exit: 0
 --- stdout
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
-  --> tests/action/examples/employees.rifts:10:26
+  --> tests/action/examples/employees.ed:10:26
    |
 10 |     std::string name   = "";
    |                          ^^ allocates

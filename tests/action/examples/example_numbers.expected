@@ -12,5 +12,5 @@ flags = 101001, bit 3 set: true, shifted: 290
 integers are conditions only in conditions
 0.3333333333333333 0.3333 0.1 10000000000.0
 R = 82, next: S
-fnv1a("rift") = f8477546
+fnv1a("edax") = 57fb56fd
 --- stderr

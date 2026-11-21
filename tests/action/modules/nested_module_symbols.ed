@@ -1,0 +1,1 @@
+// RUN: edaxc symbols --root=tests/feature/09-modules/shapes_project tests/feature/09-modules/shapes_project/shapes/circle.ed

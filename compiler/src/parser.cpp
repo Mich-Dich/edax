@@ -1,13 +1,13 @@
-#include "rift/parser.hpp"
-#include "rift/lexer.hpp"
+#include "edax/parser.hpp"
+#include "edax/lexer.hpp"
 
-#include "rift/ast_printer.hpp"
-#include "rift/ast_clone.hpp"
+#include "edax/ast_printer.hpp"
+#include "edax/ast_clone.hpp"
 
 #include <format>
 #include <optional>
 
-namespace rift {
+namespace edax {
 
 namespace {
 
@@ -508,7 +508,7 @@ private:
         }
         TokenKind next = peek(1).kind;
         if (cur().text == "const" && starts_type(next)) {
-            report(DiagCode::E2019, cur().span, "'const' is not a keyword in Rift",
+            report(DiagCode::E2019, cur().span, "'const' is not a keyword in Edax",
                    "remove 'const'")
                 .notes.push_back(Note{"values are immutable by default; for a compile-time "
                                        "constant write 'compile_time'",
@@ -517,7 +517,7 @@ private:
             return true;
         }
         if (cur().text == "fn" && next == TokenKind::identifier && peek(2).kind == TokenKind::l_paren) {
-            fail(DiagCode::E2019, cur().span, "'fn' is not a keyword in Rift",
+            fail(DiagCode::E2019, cur().span, "'fn' is not a keyword in Edax",
                  "functions start with their return type",
                  {Note{"write e.g. 'void name(...)' or 'u32 name(...)'", std::nullopt}});
         }
@@ -1243,7 +1243,7 @@ private:
             report(DiagCode::E2013, from(start), "out-of-line definitions are not allowed",
                    "qualified name")
                 .notes.push_back(Note{"define methods inside the 'struct' or 'class' block of the "
-                                       "'.rifts' file",
+                                       "'.ed' file",
                                        std::nullopt});
         }
 
@@ -1308,7 +1308,7 @@ private:
             if (!optional) {
                 report(DiagCode::E2010, name_span,
                        std::format("variable '{}' has no initial value", name), "add '= value'")
-                    .notes.push_back(Note{"Rift has no uninitialized variables; use '= default' "
+                    .notes.push_back(Note{"Edax has no uninitialized variables; use '= default' "
                                            "for the type's default value",
                                            std::nullopt});
             }
@@ -2079,7 +2079,7 @@ private:
             adjacent(cur(), peek(1)) && !starts_expression(peek(2).kind)) {
             bool inc = op == TokenKind::plus;
             fail(DiagCode::E2007, Span{id_, cur().span.begin, peek(1).span.end},
-                 inc ? "Rift has no '++' operator" : "Rift has no '--' operator",
+                 inc ? "Edax has no '++' operator" : "Edax has no '--' operator",
                  inc ? "write '+= 1' instead" : "write '-= 1' instead");
         }
     }
@@ -2091,16 +2091,16 @@ private:
         case TokenKind::minus:
             if (peek(1).kind == TokenKind::minus && adjacent(cur(), peek(1))) {
                 fail(DiagCode::E2007, Span{id_, start.begin, peek(1).span.end},
-                     "Rift has no '--' operator", "write 'x -= 1;' instead");
+                     "Edax has no '--' operator", "write 'x -= 1;' instead");
             }
             op = UnaryOp::negate;
             break;
         case TokenKind::plus:
             if (peek(1).kind == TokenKind::plus && adjacent(cur(), peek(1))) {
                 fail(DiagCode::E2007, Span{id_, start.begin, peek(1).span.end},
-                     "Rift has no '++' operator", "write 'x += 1;' instead");
+                     "Edax has no '++' operator", "write 'x += 1;' instead");
             }
-            fail(DiagCode::E2002, cur().span, "Rift has no unary '+'", "remove this '+'");
+            fail(DiagCode::E2002, cur().span, "Edax has no unary '+'", "remove this '+'");
         case TokenKind::bang: op = UnaryOp::logical_not; break;
         case TokenKind::tilde: op = UnaryOp::bit_not; break;
         case TokenKind::star: op = UnaryOp::deref; break;
@@ -2867,4 +2867,4 @@ ast::ExprPtr parse_expression(const SourceFile& file, FileId id, const std::vect
     return Parser(file, id, tokens, diags).parse_single_expression();
 }
 
-} // namespace rift
+} // namespace edax

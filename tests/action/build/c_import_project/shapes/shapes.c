@@ -26,4 +26,4 @@ vec3f abi_vec_scale(vec3f v, float k) { vec3f r = {v.x * k, v.y * k, v.z * k}; r
 mixed abi_mixed_next(mixed m) { mixed r = {m.d + 0.5, m.n + 1}; return r; }
 small_ints abi_small(small_ints s) { small_ints r = {(int8_t)(s.a + 1), (int16_t)(s.b * 2), s.c * 3}; return r; }
 big abi_big_sum(big a, big b) { big r; for (int i = 0; i < 3; ++i) r.m[i] = a.m[i] + b.m[i]; return r; }
-double abi_call_rift(void) { big b = {{1.0, 2.0, 3.0}}; big r = rift_big_twice(b); return r.m[0] + r.m[1] + r.m[2]; }
+double abi_call_edax(void) { big b = {{1.0, 2.0, 3.0}}; big r = edax_big_twice(b); return r.m[0] + r.m[1] + r.m[2]; }

@@ -1,6 +1,6 @@
 # Build Modes
 
-A **build mode** is a named set of settings that applies to a whole build: optimization, debug info, how arithmetic and checks behave, and which mode-gated checks (see [Checks](../language/errors/checks.md)) are compiled in. A mode is a class; the standard library defines `debug` and `release` (and `release_with_debug_info`, derived from `release`). Projects derive their own in `build.rifts` (see [Rift as a Build System](build-system.md)).
+A **build mode** is a named set of settings that applies to a whole build: optimization, debug info, how arithmetic and checks behave, and which mode-gated checks (see [Checks](../language/errors/checks.md)) are compiled in. A mode is a class; the standard library defines `debug` and `release` (and `release_with_debug_info`, derived from `release`). Projects derive their own in `build.ed` (see [Edax as a Build System](build-system.md)).
 
 ## Rules
 
@@ -12,16 +12,16 @@ A **build mode** is a named set of settings that applies to a whole build: optim
 | `release_with_debug_info` | `release` | speed | full | panic | panic | ungated + `release` |
 
 ```
-riftc build                                 # debug (the default)
-riftc build --mode=release
-riftc build --mode=profile                  # a mode defined in build.rifts
+edaxc build                                 # debug (the default)
+edaxc build --mode=release
+edaxc build --mode=profile                  # a mode defined in build.ed
 ```
 
 **All built-in modes are safe.** The language rules from 16 (overflow panics, bounds checks, etc.) hold in each of them.
 
 ### Modes are classes
 A mode is a **class** in `std::build::mode` that implements the interface `std::build::mode::settings`. The settings are its methods, so a mode changes a setting the way any derived class changes behaviour: it **overrides** the method.
-```rift
+```edax
 // in the standard library (std::build::mode)
 interface settings {
     compile_time std::build::optimization    optimization();
@@ -80,23 +80,23 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
 
 `+`, `-`, `*`, `a[i]`, `<<` and `bit(n)` follow the mode.
 
-### How riftc uses the settings
+### How edaxc uses the settings
 - `optimization()`: LLVM's standard pipeline at `-O2` (`speed`) or `-Os` (`size`); none for `none`.
-- `debug_info()`: `line_tables` gives DWARF 5 line tables (statement by statement) for every Rift function, including the standard library's, enough for a debugger's breakpoints, stepping and backtraces. `full` also describes locals, parameters, `this`, loop variables and `match` bindings with their types, so that a debugger shows variables:
-  - Built-in types are typedefs with their Rift names (`u32`, `f64`) of the matching C type; structs and classes are described from the backend's layout (base class first, then the vtable pointer or fields); simple enums are DWARF enumerations; an enum with payloads is `struct { tag; union { <alternative> ... } payload; }`.
+- `debug_info()`: `line_tables` gives DWARF 5 line tables (statement by statement) for every Edax function, including the standard library's, enough for a debugger's breakpoints, stepping and backtraces. `full` also describes locals, parameters, `this`, loop variables and `match` bindings with their types, so that a debugger shows variables:
+  - Built-in types are typedefs with their Edax names (`u32`, `f64`) of the matching C type; structs and classes are described from the backend's layout (base class first, then the vtable pointer or fields); simple enums are DWARF enumerations; an enum with payloads is `struct { tag; union { <alternative> ... } payload; }`.
   - Namespaces are DWARF namespaces (`std::darray<u32>`, `geometry::point`). A function is named by its full path, `namespace::type::name` (`std::darray<u32>::push`), and that is also its DWARF linkage name, so debuggers show it as written.
-  - The standard library's files point at `library/std` of the tree riftc was built from (when it still exists, otherwise at `/<std>/...`).
+  - The standard library's files point at `library/std` of the tree edaxc was built from (when it still exists, otherwise at `/<std>/...`).
   - The prologue has no line, as in C/C++ at `-O0`: stepping into a function stops at its first statement with the parameters in place.
-  - Building a value runs its type's field defaults in place (`default`, or fields left out of `T{...}`). Debug info describes that code as an inlined call of `<type>::default` located at the field declarations, the way C++ inlines a constructor, so Step Into walks `std::darray<T>`'s fields in `std.rifts`.
+  - Building a value runs its type's field defaults in place (`default`, or fields left out of `T{...}`). Debug info describes that code as an inlined call of `<type>::default` located at the field declarations, the way C++ inlines a constructor, so Step Into walks `std::darray<T>`'s fields in `std.ed`.
 - `overflow()`, `shifts()`, `panic()`: how `+ - *`, `<< >> bit(n)` and panics are compiled.
 - `bounds()`: the standard library's index checks are written as `if compile_time (std::build::current_mode().bounds() == std::build::bounds::panic) { run_time check ... }`.
 - `run_time_checks()`: applies to the program's own `run_time` checks; the library's index checks follow `bounds()`.
-- `link_time_optimization()`: a program's Rift code is always one LLVM module; with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.
-- A mode's methods are `compile_time` (the interface declares them so, see [Inheritance and Interfaces](../language/user-types/inheritance-and-interfaces.md)); riftc evaluates them while compiling.
+- `link_time_optimization()`: a program's Edax code is always one LLVM module; with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.
+- A mode's methods are `compile_time` (the interface declares them so, see [Inheritance and Interfaces](../language/user-types/inheritance-and-interfaces.md)); edaxc evaluates them while compiling.
 
 ### Reading the mode in code
 All of these are `compile_time` functions:
-```rift
+```edax
 std::build::mode::settings& m = std::build::current_mode();  // the settings of the mode being built
 bool is_dbg = std::build::mode_is(std::build::mode::debug);  // true for debug and every mode derived from it
 
@@ -105,18 +105,18 @@ if compile_time (std::build::current_mode().debug_info() != std::build::debug_in
 }
 ```
 - `mode_is` with a user mode's name works only if the build defines that mode. Library code should use the built-in modes.
-- Mode lists name a mode of build.rifts by its full name, `build::profile`: build.rifts declares everything in `namespace build` and every target imports it (see [Rift as a Build System](build-system.md#names-from-buildrifts)).
+- Mode lists name a mode of build.ed by its full name, `build::profile`: build.ed declares everything in `namespace build` and every target imports it (see [Edax as a Build System](build-system.md#names-from-builded)).
 - `std::build::current_mode()` returns a reference to the interpreter's value of the mode; compile-time-only functions may return references with no parameter to borrow from (12), since their results live for the whole compilation.
 - Prefer testing a **setting** (`.overflow() == wrap`) over a mode name: the code then also does the right thing in modes it has never heard of.
 
 ### Scope of a mode
 - A build runs in **one mode**. Every module, including dependencies, is compiled in that mode, so compiled interfaces are kept per mode.
-- `build.rifts` may override the mode **per target**, for example to build heavy dependencies with `release` inside a `debug` build (see [Rift as a Build System](build-system.md)). A target then uses that mode for all its own modules.
+- `build.ed` may override the mode **per target**, for example to build heavy dependencies with `release` inside a `debug` build (see [Edax as a Build System](build-system.md)). A target then uses that mode for all its own modules.
 - **Entry checks follow the caller.** A `run_time` entry check (see [Checks](../language/errors/checks.md)) is compiled into each call, so the calling module's mode decides whether it's there. All other checks follow the mode of the module they're written in.
 
 ## Example
-```rift
-// build.rifts (excerpt, see Rift as a Build System)
+```edax
+// build.ed (excerpt, see Edax as a Build System)
 namespace build {
     // release with debug info and link-time optimization, for profiling.
     open class profile : std::build::mode::release_with_debug_info {

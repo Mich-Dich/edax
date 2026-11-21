@@ -5,17 +5,17 @@ A `class` provides **encapsulation**: hidden state, invariants and resource owne
 ## Rules
 
 ### Access sections
-C++-style labels: `public:`, `protected:`, `private:`. Public and protected members are declared in the `.rifth`; private members exist only in the `.rifts` (see [Headers, Sources and Modules](../organization/modules.md)).
+C++-style labels: `public:`, `protected:`, `private:`. Public and protected members are declared in the `.edh`; private members exist only in the `.ed` (see [Headers, Sources and Modules](../organization/modules.md)).
 
 ### Methods and `this`
 - `this` is an implicit, immutable reference to the object. **Members are always accessed through `this.`**: write `this.value`, not `value`.
 - A method that changes the object ends with **`mut`**:
-  ```rift
+  ```edax
   void inc() mut { this.value += 1; }
   ```
   Inside a `mut` method, `this` is a mutable reference.
 - `mut` methods can only be called on `mut` variables or through `mut` references:
-  ```rift
+  ```edax
   counter a = counter{};
   a.inc();                 // ERROR: a is immutable
   mut counter b = counter{};
@@ -27,16 +27,16 @@ C++-style labels: `public:`, `protected:`, `private:`. Public and protected memb
 
 ### Construction
 - `T{ .field = value }` is allowed **wherever every field without a default is visible**. Outside the class's own module, private fields therefore always take their defaults.
-- If the private fields have no defaults, or the class has invariants to enforce, provide `static` factory methods. Inside the class's `.rifts` all fields are visible.
+- If the private fields have no defaults, or the class has invariants to enforce, provide `static` factory methods. Inside the class's `.ed` all fields are visible.
 
 ### Destructor
 - `~name()` runs when the object is destroyed (see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md) for when). It is implicitly `mut`.
-- It is declared in the `.rifth` because whether a class has a destructor affects how it can be copied, and importers need to know that.
+- It is declared in the `.edh` because whether a class has a destructor affects how it can be copied, and importers need to know that.
 - A class with a destructor is never a copy type.
 
 ### Nested types
 A struct, class, enum or interface may be declared **inside** a struct or class. It is a member of the outer type and is named through it:
-```rift
+```edax
 class thread_pool {
 public:
     struct options {
@@ -58,8 +58,8 @@ std::thread_pool::options cfg = std::thread_pool::options{ .threads = 8 };
 
 ## Example
 
-```rift
-// counter.rifth
+```edax
+// counter.edh
 namespace counting {
     class counter {
     public:
@@ -71,8 +71,8 @@ namespace counting {
 }
 ```
 
-```rift
-// counter.rifts
+```edax
+// counter.ed
 namespace counting {
     class counter {
     public:
@@ -94,9 +94,9 @@ namespace counting {
 }
 ```
 
-```rift
-// main.rifts
-import counter;                               // the module: counter.rifth (see Headers, Sources and Modules)
+```edax
+// main.ed
+import counter;                               // the module: counter.edh (see Headers, Sources and Modules)
 
 std::exit_code main() {
     mut counting::counter c = counting::counter::starting_at(10);   // the namespace (see Namespaces)

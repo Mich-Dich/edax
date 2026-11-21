@@ -1,0 +1,2 @@
+// RUN: edaxc definition %S/definition_project/main.ed 12:15
+// edaxc definition (editors' go to definition): a method call.

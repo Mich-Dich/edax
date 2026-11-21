@@ -1,11 +1,11 @@
 #include "project.hpp"
-#include "rift_test.hpp"
+#include "edax_test.hpp"
 
-using rift_test::Project;
+using edax_test::Project;
 
 namespace {
 
-std::string codes(const std::string& main) { return Project({{"main.rifts", "import std;\n" + main}}).codes(); }
+std::string codes(const std::string& main) { return Project({{"main.ed", "import std;\n" + main}}).codes(); }
 
 } // namespace
 

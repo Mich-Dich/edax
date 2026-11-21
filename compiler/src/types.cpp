@@ -1,8 +1,8 @@
-#include "rift/types.hpp"
+#include "edax/types.hpp"
 
-#include "rift/ast_printer.hpp"
+#include "edax/ast_printer.hpp"
 
-namespace rift::types {
+namespace edax::types {
 
 bool Type::is_user(sema::SymbolKind k) const { return kind == Kind::user && symbol && symbol->kind == k; }
 
@@ -295,9 +295,9 @@ const Type* TypeContext::value_arg(u128 bits, const Type* of) {
         text = bits ? "true" : "false";
     } else if (of->is_signed && of->bits < 128 && (bits >> (of->bits - 1)) & 1) {
         u128 magnitude = (~bits + 1) & ((u128{1} << of->bits) - 1);
-        text           = "-" + rift::to_string(magnitude);
+        text           = "-" + edax::to_string(magnitude);
     } else {
-        text = rift::to_string(bits);
+        text = edax::to_string(bits);
     }
     const Type* t = make(Type{Kind::value_arg, 0, false, false, nullptr, of, false, text, {}});
     value_of_[t]  = bits;
@@ -345,7 +345,7 @@ const Type* TypeContext::array(const Type* element, const Type* count) {
     auto key = std::make_pair(element, count);
     if (auto it = arrays_.find(key); it != arrays_.end()) return it->second;
     Type t{Kind::array, 0, false, false, nullptr, element, false,
-           "std::raw::array<" + to_string(element) + ", " + rift::to_string(value_bits(count)) + ">", {}};
+           "std::raw::array<" + to_string(element) + ", " + edax::to_string(value_bits(count)) + ">", {}};
     t.args = {count};
     return arrays_[key] = make(std::move(t));
 }
@@ -637,10 +637,10 @@ std::string integer_range(const Type* t) {
     int bits = t->bits;
     if (!t->is_signed) {
         u128 max = bits == 128 ? ~u128{0} : (u128{1} << bits) - 1;
-        return "0 to " + rift::to_string(max);
+        return "0 to " + edax::to_string(max);
     }
     u128 limit = u128{1} << (bits - 1);
-    return "-" + rift::to_string(limit) + " to " + rift::to_string(limit - 1);
+    return "-" + edax::to_string(limit) + " to " + edax::to_string(limit - 1);
 }
 
-} // namespace rift::types
+} // namespace edax::types

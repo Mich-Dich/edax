@@ -46,7 +46,7 @@ Context comes from:
 4. the other operand of a binary operator, if that operand's type is known,
 5. the element or field type in `T{ ... }` and in container literals.
 
-```rift
+```edax
 u32 a = 0;                 // OK: u32 from the declaration
 u64 b = a + 1;             // ERROR: a is u32 and the result is u64 (no implicit widening)
 u32 c = a + 1;             // OK: 1 becomes u32 from the other operand
@@ -72,7 +72,7 @@ In a **condition context**, integers and `std::raw_ptr` convert to `bool` implic
 
 Not converted: floats (NaN makes "is zero" ambiguous), `char`, enums, `std::option`, smart pointers (never null, see [Raw Pointers and `unsafe`](../memory/raw-pointers-and-unsafe.md)) and user-defined types.
 
-```rift
+```edax
 if (count) { ... }                 // OK
 if (flags & bit(4)) { ... }        // OK: u32 result, condition context
 while (ptr) { ... }                // OK (std::raw_ptr)

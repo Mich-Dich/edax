@@ -10,7 +10,7 @@ A **channel** is a thread-safe queue: values go in at one end and come out at th
 | `std::channel_sender<T>` | An end that puts values in |
 | `std::channel_receiver<T>` | An end that takes values out |
 
-```rift
+```edax
 std::channel<job> jobs = std::channel<job>::bounded(64);   // a queue with room for 64 values
 std::channel_sender<job>   submit = jobs.sender();          // an end to put values in
 std::channel_receiver<job> input  = jobs.receiver();        // an end to take values out
@@ -52,7 +52,7 @@ All of them work on immutable ends, because channels are synchronized types (see
 ## Examples
 
 ### Producer and consumers with a channel
-```rift
+```edax
 struct job {
     u32         id;
     std::string path;

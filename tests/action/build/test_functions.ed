@@ -1,0 +1,2 @@
+// RUN: edaxc test --root=%S/annotated_tests_project --out-dir=%t
+// `@std::test` functions (spec 25, 29): edaxc test runs each one in its own process.

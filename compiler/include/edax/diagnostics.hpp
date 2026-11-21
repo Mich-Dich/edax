@@ -1,0 +1,94 @@
+#pragma once
+// Diagnostics: collection and rendering.
+//
+// Compiler phases never print. They report into a DiagnosticEngine; the driver renders the
+// collected diagnostics at the end in one of two formats:
+//
+//   human  error[E1003]: unterminated string literal           (default; one screen per error)
+//           --> main.ed:3:9
+//            |
+//          3 | u32 x = "abc
+//            |         ^^^^ string literal starts here
+//
+//   short  main.ed:3:9: error[E1003]: unterminated string literal
+//          (one line per diagnostic; stable, used by the feature-test runner)
+
+#include "edax/source.hpp"
+
+#include <iosfwd>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace edax {
+
+enum class Severity { error, warning, note };
+
+enum class DiagCode {
+#define EDAX_DIAG(code, severity, title) code,
+#include "edax/diagnostic_codes.def"
+#undef EDAX_DIAG
+};
+
+std::string_view to_string(Severity severity);
+std::string_view code_name(DiagCode code);       // "E1003"
+std::string_view code_title(DiagCode code);      // "unterminated string literal"
+Severity         code_severity(DiagCode code);
+std::optional<DiagCode> code_from_name(std::string_view name);
+
+struct Note {
+    std::string         message;
+    std::optional<Span> span;
+};
+
+struct Diagnostic {
+    DiagCode          code;
+    Severity          severity;
+    std::string       message;
+    Span              span;
+    std::string       label;   // text next to the carets; may be empty
+    std::vector<Note> notes;
+};
+
+class DiagnosticEngine {
+public:
+    // Reports a diagnostic with the code's default severity and returns it so callers can add
+    // notes: `diags.report(...).notes.push_back(...)`.
+    Diagnostic& report(DiagCode code, Span span, std::string message, std::string label = {});
+
+    [[nodiscard]] const std::vector<Diagnostic>& all() const { return diagnostics_; }
+
+    // Orders diagnostics by file and position (stable), so later phases' errors don't appear
+    // before earlier lines, and drops exact repeats (same code, place and message).
+    void sort_by_location();
+    [[nodiscard]] std::size_t error_count() const;
+    [[nodiscard]] std::size_t warning_count() const;
+    [[nodiscard]] bool        has_errors() const { return error_count() > 0; }
+
+    // The number of diagnostics so far (a mark for `take_since`).
+    [[nodiscard]] std::size_t size() const { return diagnostics_.size(); }
+    // Removes and returns the diagnostics reported after `mark`.
+    std::vector<Diagnostic> take_since(std::size_t mark);
+    // Reports a diagnostic made earlier (see `take_since`).
+    void add(Diagnostic d) { diagnostics_.push_back(std::move(d)); }
+
+private:
+    std::vector<Diagnostic> diagnostics_;
+};
+
+enum class DiagnosticFormat { human, short_form };
+
+struct RenderOptions {
+    DiagnosticFormat format = DiagnosticFormat::human;
+    bool             color  = false;
+};
+
+void render(std::ostream& out, const Diagnostic& diag, const SourceManager& sources,
+            const RenderOptions& options);
+
+// Renders every diagnostic in report order and, in human format, a closing summary line.
+void render_all(std::ostream& out, const DiagnosticEngine& diags, const SourceManager& sources,
+                const RenderOptions& options);
+
+} // namespace edax

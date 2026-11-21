@@ -5,7 +5,7 @@ Two small built-in forms for grouping values: **tuples** group a fixed number of
 ## Rules
 
 ### Tuples
-```rift
+```edax
 (u32, u32) min_max(std::span<u32> values) { ... return (lo, hi); }
 
 (u32 lo, u32 hi) = min_max(samples.as_span());      // destructuring declaration
@@ -24,7 +24,7 @@ u32 low = both.0;                                   // elements by position
 - Tuples have no names and no methods. When the parts have meanings worth naming, use a struct.
 
 ### List literals
-```rift
+```edax
 std::array<u32, 3> sizes = [16, 32, 64];
 std::span<std::static_str> names = ["low", "medium", "high"];       // static data
 g.add_arguments(step, [shader.text, "-o", spirv.text]);             // a std::span<std::str> parameter

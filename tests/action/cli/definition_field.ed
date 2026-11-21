@@ -1,0 +1,2 @@
+// RUN: edaxc definition %S/definition_project/main.ed 14:14
+// edaxc definition (editors' go to definition): a field.

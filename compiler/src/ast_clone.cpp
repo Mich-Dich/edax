@@ -1,6 +1,6 @@
-#include "rift/ast_clone.hpp"
+#include "edax/ast_clone.hpp"
 
-namespace rift::ast {
+namespace edax::ast {
 
 SymbolRef Cloner::ref(SymbolRef s) const {
     if (!s) return nullptr;
@@ -456,4 +456,4 @@ std::unique_ptr<FunctionDecl> Cloner::function(const FunctionDecl& f) {
     return out;
 }
 
-} // namespace rift::ast
+} // namespace edax::ast

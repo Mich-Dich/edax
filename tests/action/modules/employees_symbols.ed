@@ -1,0 +1,1 @@
+// RUN: edaxc symbols %S/../examples/employees.ed

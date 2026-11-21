@@ -1,0 +1,142 @@
+// The Edax standard library: module std::thread (spec 27).
+//
+// One function starts a thread: `std::thread::spawn`. What it returns depends on what the lambda
+// captures: a lambda that owns all its captures gives a `handle<R>`, which may outlive the
+// current function; a lambda that borrows gives a `scoped_handle<R>`, a view that keeps what the
+// lambda borrows borrowed until the thread is joined. Destroying either handle joins the thread.
+
+namespace std::thread {
+    // The scheduling policies of Linux (sched(7)).
+    enum linux_policy : u8 {
+        // SCHED_OTHER: the normal time-sharing policy.
+        other,
+        // SCHED_BATCH: for CPU-bound work that may wait longer to be scheduled.
+        batch,
+        // SCHED_IDLE: runs only when nothing else wants the CPU.
+        idle,
+        // SCHED_FIFO: real time, first in first out (needs privileges).
+        fifo,
+        // SCHED_RR: real time, round robin (needs privileges).
+        round_robin,
+    }
+
+    // Scheduling, priority and CPU affinity of a thread on Linux.
+    view struct linux_options {
+        linux_policy policy = linux_policy::other;
+        // The real-time priority, 1..=99 for `fifo` and `round_robin`; 0 for the others.
+        i32 priority = 0;
+        // The CPUs the thread may run on (numbers below 1024); empty: all of them.
+        std::span<u32> cpus = [];
+    }
+
+    // The priority classes of Windows threads (SetThreadPriority).
+    enum windows_priority : u8 {
+        idle,
+        lowest,
+        below_normal,
+        normal,
+        above_normal,
+        highest,
+        time_critical,
+    }
+
+    // Priority and CPU affinity of a thread on Windows.
+    view struct windows_options {
+        windows_priority priority = windows_priority::normal;
+        // A bit per CPU the thread may run on (SetThreadAffinityMask); 0: all of them.
+        u64 affinity_mask = 0;
+    }
+
+    // The quality-of-service classes of macOS threads.
+    enum macos_qos : u8 {
+        unspecified,
+        user_interactive,
+        user_initiated,
+        utility,
+        background,
+    }
+
+    // The quality of service of a thread on macOS.
+    view struct macos_options {
+        macos_qos qos = macos_qos::unspecified;
+        // Lower is more important: 0 (the class's default) down to -15.
+        i32 relative_priority = 0;
+    }
+
+    // The platform's own thread options: one alternative per supported operating system, or
+    // `none` (the default). An alternative for another operating system than the target's is
+    // an error: at compile time when the options are a compile-time value, else when spawning.
+    enum platform_options : u8 {
+        none,
+        linux(linux_options),
+        windows(windows_options),
+        macos(macos_options),
+    }
+
+    // How to start a thread.
+    view struct options {
+        // The thread's name, shown by debuggers and `top` (the first 15 bytes).
+        std::str name = "";
+        // The stack size in bytes; 0: the platform's default.
+        usize stack_size = 0;
+        // Scheduling, priority and CPU affinity, in the target operating system's own terms.
+        platform_options platform = platform_options::none;
+    }
+
+    // A running thread whose lambda owns everything it uses. `join()` waits for its result;
+    // destroying the handle joins too; `detach()` lets the thread run on alone.
+    template<type R>
+    class handle : unsafe std::sendable, unsafe std::shareable {
+    public:
+        // Waits for the thread and returns its result.
+        R join() move;
+
+        // Lets the thread run on; nobody waits for it or gets its result.
+        void detach() move;
+
+        ~handle();
+    }
+
+    // A running thread whose lambda borrows: a view, so the thread can't outlive what it borrows.
+    // Destroying the handle joins the thread; there is no detach.
+    template<type R>
+    view class scoped_handle : unsafe std::sendable, unsafe std::shareable {
+    public:
+        // Waits for the thread and returns its result.
+        R join() move;
+
+        ~scoped_handle();
+    }
+
+    // Starts a thread running `f` (spec 27). `f` and its result must be std::sendable. Returns a
+    // `handle<R>` when `f` owns all its captures, a `scoped_handle<R>` when it borrows.
+    template<type F : std::sendable>
+    deduce spawn(F f);
+
+    // The same with a name and a stack size.
+    template<type F : std::sendable>
+    deduce spawn(options settings, F f);
+
+    // How many threads can run at the same time (the online CPUs).
+    usize available_parallelism();
+
+    // Names the calling thread (the first 15 bytes): debuggers, `top` and `{thread}` in a log
+    // pattern show it (spec 31). `spawn` with `.name` names the new thread the same way.
+    void set_current_name(std::str name);
+
+    // The calling thread's name: the one it was given, else the operating system's (for the
+    // main thread, the program's name).
+    std::string current_name();
+
+    // An id of the calling thread, unique among running threads.
+    u64 current_id();
+
+    // Sleeps for `d`.
+    void sleep(std::time::duration d);
+
+    // Gives the rest of the time slice to another thread.
+    void yield_now();
+
+    // Tells the CPU the thread is busy-waiting (`pause` on x86, `yield` on ARM).
+    void spin_hint();
+}

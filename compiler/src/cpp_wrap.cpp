@@ -4,10 +4,10 @@
 // class's public constructors, destructor and methods into:
 //   - a C wrapper per function (`extern "C"`, compiled into the C++ target) that catches every
 //     exception and passes results through out-parameters;
-//   - a Rift class that owns the C++ object through a pointer, whose methods call the wrappers.
+//   - a Edax class that owns the C++ object through a pointer, whose methods call the wrappers.
 // A function that may throw returns `std::result<T, std::cpp_exception>`; a `noexcept` one, `T`.
 
-#include "rift/cpp_wrap.hpp"
+#include "edax/cpp_wrap.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -18,7 +18,7 @@
 #include <set>
 #include <sstream>
 
-namespace rift {
+namespace edax {
 namespace {
 
 // --- a small JSON reader (clang's AST dump) ------------------------------------------------------
@@ -155,7 +155,7 @@ private:
 struct Crossing {
     enum class Kind { none, scalar, string_in, string_out, object_in, object_out, unsupported };
     Kind        kind = Kind::none;
-    std::string rift;      // the Rift type of the parameter or result
+    std::string edax;      // the Edax type of the parameter or result
     std::string c;         // scalar: the C type
     std::string object;    // object_in/out: the wrapped class's key
     bool        is_mut = false;   // object_in: a non-const reference or pointer
@@ -191,8 +191,8 @@ std::string last_component(const std::string& name) {
     return name.substr(cut);
 }
 
-// A Rift name for a C++ class or template instance: `Ref<JPH::Shape>` → `Ref_Shape`.
-std::string rift_class_name(const std::string& qualified) {
+// A Edax name for a C++ class or template instance: `Ref<JPH::Shape>` → `Ref_Shape`.
+std::string edax_class_name(const std::string& qualified) {
     std::string last = last_component(qualified);
     std::string out;
     std::size_t lt = last.find('<');
@@ -239,7 +239,7 @@ const std::map<std::string, std::pair<std::string, std::string>>& scalars() {
 
 struct Method {
     std::string              cpp_name;     // "add", "operator==", "" for constructors
-    std::string              rift_name;
+    std::string              edax_name;
     std::vector<Crossing>    params;
     std::vector<std::string> param_names;
     std::vector<std::string> cpp_param_types;
@@ -250,7 +250,7 @@ struct Method {
 struct Class {
     std::string         qualified;   // as listed: "demo::Counter", "demo::Box<int>"
     std::string         key;         // its last component, without spaces: "Counter", "Box<int>"
-    std::string         rift;        // its Rift name
+    std::string         edax;        // its Edax name
     std::vector<Method> methods;
     bool                destructible = true;
 };
@@ -267,7 +267,7 @@ const std::map<std::string, std::string>& operator_names() {
     return m;
 }
 
-const std::set<std::string>& rift_keywords() {
+const std::set<std::string>& edax_keywords() {
     static const std::set<std::string> k = {
         "import", "struct", "class", "interface", "enum", "union", "namespace", "public", "private", "static", "mut", "move",
         "return", "if", "else", "while", "for", "match", "break", "continue", "true", "false", "nullptr", "this", "type",
@@ -276,7 +276,7 @@ const std::set<std::string>& rift_keywords() {
     return k;
 }
 
-std::string safe(const std::string& n) { return rift_keywords().contains(n) ? n + "_" : n; }
+std::string safe(const std::string& n) { return edax_keywords().contains(n) ? n + "_" : n; }
 
 class Generator {
 public:
@@ -289,7 +289,7 @@ public:
             Class c;
             c.qualified = names[i];
             c.key       = without_spaces(last_component(names[i]));
-            c.rift      = rift_class_name(names[i]);
+            c.edax      = edax_class_name(names[i]);
             classes_.push_back(c);
         }
         for (std::size_t i = 0; i < names.size(); ++i) {
@@ -380,14 +380,14 @@ private:
         std::string bare = plain.starts_with("std::") ? plain.substr(5) : plain;
         if (std::string qb = trim(q.starts_with("std::") ? q.substr(5) : q); qb == "size_t") {   // written size_t: usize
             x.kind = Crossing::Kind::scalar;
-            x.rift = "usize";
+            x.edax = "usize";
             x.c    = "size_t";
             return x;
         }
         if (auto it = typedefs.find(bare); it != typedefs.end()) plain = it->second;
         if (auto it = scalars().find(plain); it != scalars().end()) {
             x.kind = Crossing::Kind::scalar;
-            x.rift = it->second.first;
+            x.edax = it->second.first;
             x.c    = it->second.second;
             return x;
         }
@@ -396,13 +396,13 @@ private:
                          sq == "constchar*" || sq == "std::basic_string<char>" || sq == "conststd::basic_string<char>&";
         if (is_string && !result) {
             x.kind       = Crossing::Kind::string_in;
-            x.rift       = "std::str";
+            x.edax       = "std::str";
             x.cpp_string = sq == "constchar*" ? "c_string" : sq.find("string_view") != std::string::npos ? "view" : "string";
             return x;
         }
         if (result && (sq == "std::string" || sq == "conststd::string&" || sq == "std::basic_string<char>")) {
             x.kind = Crossing::Kind::string_out;
-            x.rift = "std::string";
+            x.edax = "std::string";
             return x;
         }
         if (const Class* c = wrapped(q)) {
@@ -412,11 +412,11 @@ private:
             if (result) {
                 if (ref || pointer) {
                     x.kind = Crossing::Kind::unsupported;
-                    x.why  = std::format("returns a reference or pointer to '{}' (the Rift class owns its object)", c->qualified);
+                    x.why  = std::format("returns a reference or pointer to '{}' (the Edax class owns its object)", c->qualified);
                     return x;
                 }
                 x.kind   = Crossing::Kind::object_out;
-                x.rift   = c->rift;
+                x.edax   = c->edax;
                 x.object = c->key;
                 return x;
             }
@@ -424,19 +424,19 @@ private:
             x.object     = c->key;
             x.is_mut     = (ref || pointer) && !is_const;
             x.is_pointer = pointer;
-            x.rift       = std::format("{}{}&", x.is_mut ? "mut " : "", c->rift);
+            x.edax       = std::format("{}{}&", x.is_mut ? "mut " : "", c->edax);
             return x;
         }
         (void)self;
         x.kind = Crossing::Kind::unsupported;
-        x.why  = std::format("the type '{}' has no Rift counterpart here", q);
+        x.why  = std::format("the type '{}' has no Edax counterpart here", q);
         return x;
     }
 
     void read_class(Class& c, const Json& decl) {
         std::string tag    = decl.str("tagUsed");
         bool        public_ = tag != "class";
-        std::map<std::string, int> seen;   // a Rift name used how often
+        std::map<std::string, int> seen;   // a Edax name used how often
         for (const Json& m : decl.inner()) {
             std::string kind = m.str("kind");
             if (kind == "AccessSpecDecl") {
@@ -460,7 +460,7 @@ private:
             std::size_t close = signature.rfind(')');
             f.is_const = close != std::string::npos && signature.find("const", close) != std::string::npos;
             if (f.is_constructor) {
-                // A copy or move constructor: Rift classes are moved, not copied.
+                // A copy or move constructor: Edax classes are moved, not copied.
                 bool copy = false;
                 for (const Json& p : m.inner()) {
                     if (p.str("kind") == "ParmVarDecl" && p.get("type") && wrapped(p.get("type")->str("qualType")) == &c &&
@@ -476,7 +476,7 @@ private:
             if (name.starts_with("operator")) {
                 auto it = operator_names().find(name);
                 if (it == operator_names().end() || name == "operator=") {
-                    if (name != "operator=") result_.report.emplace_back(c.qualified + "::" + name, "an operator without a Rift name: not wrapped");
+                    if (name != "operator=") result_.report.emplace_back(c.qualified + "::" + name, "an operator without a Edax name: not wrapped");
                     continue;
                 }
                 base = it->second;
@@ -528,10 +528,10 @@ private:
                 }
             }
             int n = ++seen[base];
-            f.rift_name = n == 1 ? base : std::format("{}_{}", base, n);
+            f.edax_name = n == 1 ? base : std::format("{}_{}", base, n);
             if (n > 1) {
                 result_.report.emplace_back(std::format("{}::{}({} parameters)", c.qualified, f.is_constructor ? last_component(c.qualified) : name, f.params.size()),
-                                            "an overload, wrapped as '" + f.rift_name + "'");
+                                            "an overload, wrapped as '" + f.edax_name + "'");
             }
             c.methods.push_back(f);
             if (defaults > 0) {   // the call without the defaulted arguments
@@ -539,16 +539,16 @@ private:
                 g.params.resize(f.params.size() - defaults);
                 g.param_names.resize(g.params.size());
                 g.cpp_param_types.resize(g.params.size());
-                g.rift_name = f.rift_name + "_default";
+                g.edax_name = f.edax_name + "_default";
                 result_.report.emplace_back(std::format("{}::{} with its default arguments", c.qualified, f.is_constructor ? last_component(c.qualified) : name),
-                                            "wrapped as '" + g.rift_name + "'");
+                                            "wrapped as '" + g.edax_name + "'");
                 c.methods.push_back(g);
             }
         }
     }
 
     std::string c_name(const Class& c, const std::string& what) const {
-        return std::format("rift_{}_{}_{}", options_.module, c.rift, what);
+        return std::format("edax_{}_{}_{}", options_.module, c.edax, what);
     }
 
     // The C parameters of a wrapper and the C++ argument expressions.
@@ -586,22 +586,22 @@ private:
     void write() {
         std::ostringstream h, src, cpp, ext;
         std::string        ind = options_.ns.empty() ? "" : "    ";
-        h << "// Generated by riftc (g.wrap_cpp): C++ classes through C wrappers. Do not edit.\nimport std;\n\n";
-        src << "// Generated by riftc (g.wrap_cpp): the classes call the C wrappers.\n";
-        cpp << "// Generated by riftc (g.wrap_cpp): C wrappers of C++ classes. Every wrapper catches\n"
+        h << "// Generated by edaxc (g.wrap_cpp): C++ classes through C wrappers. Do not edit.\nimport std;\n\n";
+        src << "// Generated by edaxc (g.wrap_cpp): the classes call the C wrappers.\n";
+        cpp << "// Generated by edaxc (g.wrap_cpp): C wrappers of C++ classes. Every wrapper catches\n"
                "// exceptions; results go through out-parameters.\n";
         for (const std::string& header : options_.headers) cpp << "#include \"" << header << "\"\n";
         cpp << "#include <cstdlib>\n#include <cstring>\n#include <exception>\n#include <new>\n#include <string>\n#include <string_view>\n\n"
                "namespace {\n"
-               "char* rift_copy(const char* text, size_t n) {\n"
+               "char* edax_copy(const char* text, size_t n) {\n"
                "    char* out = static_cast<char*>(std::malloc(n + 1));\n"
                "    if (out) { std::memcpy(out, text, n); out[n] = 0; }\n"
                "    return out;\n"
                "}\n"
-               "int rift_caught(char** error, size_t* error_len) {\n"
+               "int edax_caught(char** error, size_t* error_len) {\n"
                "    try { throw; }\n"
-               "    catch (const std::exception& e) { *error_len = std::strlen(e.what()); *error = rift_copy(e.what(), *error_len); }\n"
-               "    catch (...) { static const char unknown[] = \"an exception that is not a std::exception\"; *error_len = sizeof unknown - 1; *error = rift_copy(unknown, *error_len); }\n"
+               "    catch (const std::exception& e) { *error_len = std::strlen(e.what()); *error = edax_copy(e.what(), *error_len); }\n"
+               "    catch (...) { static const char unknown[] = \"an exception that is not a std::exception\"; *error_len = sizeof unknown - 1; *error = edax_copy(unknown, *error_len); }\n"
                "    return 1;\n"
                "}\n"
                "}\n\n";
@@ -615,16 +615,16 @@ private:
         ext << ind << "    void free(std::raw_ptr<mut u8> p);\n";
         for (const Class& c : classes_) {
             h << ind << std::format("// The C++ class {}, owned through a pointer (g.wrap_cpp).\n", c.qualified);
-            h << ind << "class " << c.rift << " {\n" << ind << "public:\n";
-            src << ind << "class " << c.rift << " {\n" << ind << "public:\n";
+            h << ind << "class " << c.edax << " {\n" << ind << "public:\n";
+            src << ind << "class " << c.edax << " {\n" << ind << "public:\n";
             for (const Method& f : c.methods) write_method(c, f, h, src, cpp, ext);
             if (c.destructible) {
-                h << ind << "    ~" << c.rift << "();\n";
-                src << ind << "    ~" << c.rift << "() {\n" << ind << "        unsafe { " << c_name(c, "drop") << "(this.handle); }\n" << ind << "    }\n";
+                h << ind << "    ~" << c.edax << "();\n";
+                src << ind << "    ~" << c.edax << "() {\n" << ind << "        unsafe { " << c_name(c, "drop") << "(this.handle); }\n" << ind << "    }\n";
                 cpp << std::format("extern \"C\" void {}(void* self) {{ delete static_cast<{}*>(self); }}\n\n", c_name(c, "drop"), c.qualified);
                 ext << ind << std::format("    void {}(std::raw_ptr<mut u8> self);\n", c_name(c, "drop"));
             } else {
-                result_.report.emplace_back(c.qualified + "::~" + last_component(c.qualified), "not public: the Rift class never deletes the object");
+                result_.report.emplace_back(c.qualified + "::~" + last_component(c.qualified), "not public: the Edax class never deletes the object");
             }
             h << ind << "}\n\n";
             src << "\n" << ind << "private:\n" << ind << "    std::raw_ptr<mut u8> handle;\n" << ind << "}\n\n";
@@ -654,7 +654,7 @@ private:
     void write_method(const Class& c, const Method& f, std::ostringstream& h, std::ostringstream& src, std::ostringstream& cpp,
                       std::ostringstream& ext) {
         std::string ind = options_.ns.empty() ? "" : "    ";
-        std::string fn  = c_name(c, f.rift_name);
+        std::string fn  = c_name(c, f.edax_name);
         bool        member = !f.is_constructor && !f.is_static;
         // The C wrapper.
         std::vector<std::string> cparams, args;
@@ -662,7 +662,7 @@ private:
         c_params(f, cparams, args);
         Crossing made;   // a constructor makes an object of its class
         made.kind   = Crossing::Kind::object_out;
-        made.rift   = c.rift;
+        made.edax   = c.edax;
         made.object = c.key;
         const Crossing& r = f.is_constructor ? made : f.result;
         switch (r.kind) {
@@ -692,7 +692,7 @@ private:
         case Crossing::Kind::none: body = call + ";"; break;
         case Crossing::Kind::scalar: body = std::format("*out = {};", call); break;
         case Crossing::Kind::string_out:
-            body = std::format("std::string r = {}; *out_len = r.size(); *out = rift_copy(r.data(), r.size());", call);
+            body = std::format("std::string r = {}; *out_len = r.size(); *out = edax_copy(r.data(), r.size());", call);
             break;
         case Crossing::Kind::object_out:
             body = f.is_constructor ? std::format("*out = {};", call)
@@ -700,15 +700,15 @@ private:
             break;
         default: break;
         }
-        cpp << std::format("extern \"C\" int {}({}) {{\n    try {{ {} return 0; }}\n    catch (...) {{ return rift_caught(error, error_len); }}\n}}\n\n",
+        cpp << std::format("extern \"C\" int {}({}) {{\n    try {{ {} return 0; }}\n    catch (...) {{ return edax_caught(error, error_len); }}\n}}\n\n",
                            fn, joined_params, body);
 
-        // The Rift extern declaration.
+        // The Edax extern declaration.
         std::vector<std::string> rparams;
         if (member) rparams.push_back(std::format("std::raw_ptr<{}u8> self", f.is_const ? "" : "mut "));
         for (std::size_t i = 0; i < f.params.size(); ++i) {
             const Crossing& x = f.params[i];
-            if (x.kind == Crossing::Kind::scalar) rparams.push_back(std::format("{} a{}", x.rift, i));
+            if (x.kind == Crossing::Kind::scalar) rparams.push_back(std::format("{} a{}", x.edax, i));
             if (x.kind == Crossing::Kind::string_in) {
                 rparams.push_back(std::format("std::raw_ptr<u8> a{}", i));
                 rparams.push_back(std::format("usize a{}_len", i));
@@ -716,7 +716,7 @@ private:
             if (x.kind == Crossing::Kind::object_in) rparams.push_back(std::format("std::raw_ptr<{}u8> a{}", x.is_mut ? "mut " : "", i));
         }
         switch (r.kind) {
-        case Crossing::Kind::scalar: rparams.push_back(std::format("std::raw_ptr<mut {}> out", r.rift)); break;
+        case Crossing::Kind::scalar: rparams.push_back(std::format("std::raw_ptr<mut {}> out", r.edax)); break;
         case Crossing::Kind::string_out:
             rparams.push_back("std::raw_ptr<mut std::raw_ptr<mut u8>> out");
             rparams.push_back("std::raw_ptr<mut usize> out_len");
@@ -730,8 +730,8 @@ private:
         for (std::size_t i = 0; i < rparams.size(); ++i) decl += (i ? ", " : "") + rparams[i];
         ext << ind << std::format("    i32 {}({});\n", fn, decl);
 
-        // The Rift method.
-        std::string value = r.kind == Crossing::Kind::none ? "void" : r.rift;
+        // The Edax method.
+        std::string value = r.kind == Crossing::Kind::none ? "void" : r.edax;
         std::string result_type = f.no_throw ? value : std::format("std::result<{}, std::cpp_exception>", value);
         std::vector<std::string> sig;
         for (std::size_t i = 0; i < f.params.size(); ++i) {
@@ -739,18 +739,18 @@ private:
             for (std::size_t j = 0; j < i; ++j) {
                 if (f.param_names[j] == f.param_names[i]) pname = std::format("a{}", i);
             }
-            sig.push_back(std::format("{} {}", f.params[i].rift, pname));
+            sig.push_back(std::format("{} {}", f.params[i].edax, pname));
         }
         std::string sig_text;
         for (std::size_t i = 0; i < sig.size(); ++i) sig_text += (i ? ", " : "") + sig[i];
         bool        mut_self = member && !f.is_const;
-        std::string head = std::format("{}{} {}({}){}", member ? "" : "static ", result_type, f.rift_name, sig_text, mut_self ? " mut" : "");
+        std::string head = std::format("{}{} {}({}){}", member ? "" : "static ", result_type, f.edax_name, sig_text, mut_self ? " mut" : "");
         h << ind << "    " << head << ";\n";
         src << ind << "    " << head << " {\n";
         std::string in = ind + "        ";
         src << in << "mut std::raw_ptr<mut u8> error = nullptr;\n" << in << "mut usize error_len = 0;\n";
         switch (r.kind) {
-        case Crossing::Kind::scalar: src << in << std::format("mut {} out = default;\n", r.rift); break;
+        case Crossing::Kind::scalar: src << in << std::format("mut {} out = default;\n", r.edax); break;
         case Crossing::Kind::string_out:
             src << in << "mut std::raw_ptr<mut u8> out = nullptr;\n" << in << "mut usize out_len = 0;\n";
             break;
@@ -789,7 +789,7 @@ private:
         case Crossing::Kind::none: produced = ""; break;
         case Crossing::Kind::scalar: produced = "out"; break;
         case Crossing::Kind::string_out: produced = "take_string(out, out_len)"; break;
-        case Crossing::Kind::object_out: produced = std::format("{}{{ .handle = out }}", r.rift); break;
+        case Crossing::Kind::object_out: produced = std::format("{}{{ .handle = out }}", r.edax); break;
         default: break;
         }
         if (f.no_throw) {
@@ -828,4 +828,4 @@ CppWrapResult cpp_wrap_generate(const CppWrapOptions& options, const std::vector
     return Generator(options).run(dumps);
 }
 
-} // namespace rift
+} // namespace edax

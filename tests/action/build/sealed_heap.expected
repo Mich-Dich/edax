@@ -3,4 +3,4 @@ exit: 134
 sealed: true, 1 value, 37 bytes
 still running
 --- stderr
-<std>/std.rifts:81:24: panic: allocation after std::seal_heap()
+<std>/std.ed:81:24: panic: allocation after std::seal_heap()

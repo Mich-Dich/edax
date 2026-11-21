@@ -13,7 +13,7 @@ drop circle
 drop shape c
 --- stderr
 warning[W4002]: implicit allocation of a std::string from a string literal
- --> tests/action/run/smart_pointers.rifts:7:24
+ --> tests/action/run/smart_pointers.ed:7:24
   |
 7 |     std::string name = "";
   |                        ^^ allocates

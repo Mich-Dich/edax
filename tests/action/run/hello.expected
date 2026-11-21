@@ -1,6 +1,6 @@
 exit: 0
 --- stdout
-hello, rift!
+hello, edax!
 no newline, then one
 --- stderr
 this goes to stderr

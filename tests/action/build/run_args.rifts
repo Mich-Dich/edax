@@ -1,7 +1,0 @@
-// RUN: riftc run %s -- one two
-// Arguments after '--' go to the program ('main' cannot read them yet).
-import std;
-
-void main() {
-    std::println("ran");
-}

@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/tools_project --out-dir=%t app
+// Steps run before the program is built; dependencies' Edax and C code and libm are linked.

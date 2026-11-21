@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/../../../example --out-dir=%t ownership
+// The example program example/ownership.ed (built through example/build.ed) keeps working.

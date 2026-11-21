@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/allocator_project --out-dir=%t sealed
+// std::sealable_allocator as the global allocator: after std::seal_heap() an allocation panics.

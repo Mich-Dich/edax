@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Rift compiler test runner.
+"""Edax compiler test runner.
 
 Three suites:
 
-  unit     C++ unit tests of compiler internals (the rift_unit_tests binary).
-  feature  Language-feature tests: tests/feature/**/*.rifts with inline expectations.
-           The file is checked with `riftc check --diagnostic-format=short` and every
+  unit     C++ unit tests of compiler internals (the edax_unit_tests binary).
+  feature  Language-feature tests: tests/feature/**/*.ed with inline expectations.
+           The file is checked with `edaxc check --diagnostic-format=short` and every
            error/warning must match an annotation, and vice versa:
 
                u8 y = 0x;        //~ error[E1009]
@@ -14,10 +14,10 @@ Three suites:
                //~v warning[W1001]             (`v` = one line down)
 
            A file without error annotations must compile (exit 0).
-  action   End-to-end runs of riftc: tests/action/**/*.rifts whose first lines hold
-           `// RUN: riftc <args>` (%s = this file, relative to the repo root; %t = a fresh
+  action   End-to-end runs of edaxc: tests/action/**/*.ed whose first lines hold
+           `// RUN: edaxc <args>` (%s = this file, relative to the repo root; %t = a fresh
            temporary directory, spelled `%t` again in the recorded output).
-           `riftc run` tests record the compiled program's own output and exit status.
+           `edaxc run` tests record the compiled program's own output and exit status.
            stdout, stderr and the exit code are compared with the golden file
            <name>.expected next to the test. `--update` (re)writes the golden files.
 
@@ -195,15 +195,15 @@ def inside_project(path: Path) -> bool:
     return any(p.name.endswith("_project") for p in path.parents)
 
 
-def run_feature(path: Path, riftc: Path) -> Result:
-    """`path` is a single test file, or a `*_project` directory whose entry is main.rifts."""
+def run_feature(path: Path, edaxc: Path) -> Result:
+    """`path` is a single test file, or a `*_project` directory whose entry is main.ed."""
     name = rel(path)
     if is_project_dir(path):
-        files = sorted(path.rglob("*.rift[sh]"))
-        entry = path / "main.rifts"
+        files = sorted(list(path.rglob("*.ed")) + list(path.rglob("*.edh")))
+        entry = path / "main.ed"
         extra = [f"--root={name}"]
         if not entry.exists():
-            return Result("feature", name, "FAIL", ["a *_project directory needs a main.rifts entry file"])
+            return Result("feature", name, "FAIL", ["a *_project directory needs a main.ed entry file"])
     else:
         files, entry, extra = [path], path, []
     texts = {f: f.read_text(encoding="utf-8", errors="replace") for f in files}
@@ -212,7 +212,7 @@ def run_feature(path: Path, riftc: Path) -> Result:
     stop = STOP_AFTER_LINE.search(all_text)
     if stop:
         extra.append(f"--stop-after={stop.group('phase')}")
-    proc = run([str(riftc), "check", "--diagnostic-format=short", "--color=never", *extra, rel(entry)])
+    proc = run([str(edaxc), "check", "--diagnostic-format=short", "--color=never", *extra, rel(entry)])
 
     details: list[str] = []
     actual = []
@@ -258,19 +258,19 @@ def format_golden(exit_code: int, stdout: str, stderr: str) -> str:
     return f"exit: {exit_code}\n" + section("stdout", stdout) + section("stderr", stderr)
 
 
-def run_action(path: Path, riftc: Path, update: bool) -> Result:
+def run_action(path: Path, edaxc: Path, update: bool) -> Result:
     name = rel(path)
     text = path.read_text(encoding="utf-8", errors="replace")
     run_lines = [m.group("cmd") for line in text.splitlines()[:20] if (m := RUN_LINE.match(line))]
     if len(run_lines) != 1:
-        return Result("action", name, "FAIL", ["need exactly one '// RUN: riftc ...' line in the first 20 lines"])
+        return Result("action", name, "FAIL", ["need exactly one '// RUN: edaxc ...' line in the first 20 lines"])
 
-    with tempfile.TemporaryDirectory(prefix="rift-action-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="edax-action-") as tmp:
         argv = shlex.split(run_lines[0].replace("%s", name).replace("%S", rel(path.parent)).replace("%t", tmp))
-        if not argv or argv[0] != "riftc":
-            return Result("action", name, "FAIL", ["RUN line must start with 'riftc'"])
+        if not argv or argv[0] != "edaxc":
+            return Result("action", name, "FAIL", ["RUN line must start with 'edaxc'"])
         args = argv[1:]
-        proc = run([str(riftc)] + args)
+        proc = run([str(edaxc)] + args)
         actual = format_golden(proc.returncode, proc.stdout.replace(tmp, "%t"), proc.stderr.replace(tmp, "%t"))
 
     golden = golden_path(path)
@@ -299,7 +299,7 @@ def run_action(path: Path, riftc: Path, update: bool) -> Result:
 def discover(suite_dir: Path, filters: list[str], projects: bool) -> list[Path]:
     """Test files of a suite. Files inside `*_project` directories are fixtures; with
     `projects=True` each such directory is itself one test."""
-    files = sorted(suite_dir.rglob("*.rifts")) + sorted(suite_dir.rglob("*.rifth"))
+    files = sorted(suite_dir.rglob("*.ed")) + sorted(suite_dir.rglob("*.edh"))
     files = [f for f in files if not inside_project(f)]
     if projects:
         files += sorted(d for d in suite_dir.rglob("*_project") if is_project_dir(d) and not inside_project(d))
@@ -309,11 +309,11 @@ def discover(suite_dir: Path, filters: list[str], projects: bool) -> list[Path]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the Rift compiler test suites.")
+    parser = argparse.ArgumentParser(description="Run the Edax compiler test suites.")
     parser.add_argument("--build-dir", default="build", help="CMake build directory (default: build)")
-    parser.add_argument("--riftc", help="path to riftc (default: <build-dir>/compiler/riftc)")
+    parser.add_argument("--edaxc", help="path to edaxc (default: <build-dir>/compiler/edaxc)")
     parser.add_argument("--unit-bin", help="path to the unit test binary "
-                        "(default: <build-dir>/tests/rift_unit_tests)")
+                        "(default: <build-dir>/tests/edax_unit_tests)")
     parser.add_argument("--suite", action="append", choices=["unit", "feature", "action"],
                         help="run only this suite (repeatable; default: all)")
     parser.add_argument("--update", action="store_true", help="rewrite action-test golden files")
@@ -324,13 +324,13 @@ def main() -> int:
     args = parser.parse_args()
 
     build = (REPO / args.build_dir) if not Path(args.build_dir).is_absolute() else Path(args.build_dir)
-    riftc = Path(args.riftc).resolve() if args.riftc else build / "compiler" / "riftc"
-    unit_bin = Path(args.unit_bin).resolve() if args.unit_bin else build / "tests" / "rift_unit_tests"
+    edaxc = Path(args.edaxc).resolve() if args.edaxc else build / "compiler" / "edaxc"
+    unit_bin = Path(args.unit_bin).resolve() if args.unit_bin else build / "tests" / "edax_unit_tests"
     suites = args.suite or ["unit", "feature", "action"]
     style = Style(args.color == "always" or (args.color == "auto" and sys.stdout.isatty()))
 
-    if any(s in suites for s in ("feature", "action")) and not riftc.exists():
-        print(style.red(f"riftc not found at {riftc}; build first (cmake --build {args.build_dir})"))
+    if any(s in suites for s in ("feature", "action")) and not edaxc.exists():
+        print(style.red(f"edaxc not found at {edaxc}; build first (cmake --build {args.build_dir})"))
         return 1
 
     results: list[Result] = []
@@ -339,9 +339,9 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         jobs = []
         if "feature" in suites:
-            jobs += [pool.submit(run_feature, f, riftc) for f in discover(TESTS / "feature", args.filters, projects=True)]
+            jobs += [pool.submit(run_feature, f, edaxc) for f in discover(TESTS / "feature", args.filters, projects=True)]
         if "action" in suites:
-            jobs += [pool.submit(run_action, f, riftc, args.update) for f in discover(TESTS / "action", args.filters, projects=False)]
+            jobs += [pool.submit(run_action, f, edaxc, args.update) for f in discover(TESTS / "action", args.filters, projects=False)]
         results += [j.result() for j in jobs]
 
     colors = {"PASS": style.green, "XFAIL": style.yellow, "NEW": style.yellow, "UPDATED": style.yellow,

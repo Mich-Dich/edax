@@ -1,0 +1,12 @@
+// build.ed with a shared C library (dynamic libraries): built as libgreet.so and loaded by
+// the operating system when the program starts.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target greet = g.add_shared_library(std::build::c_target{ .name = "greet" });
+        g.add_sources(greet, "greet/greet.c");
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        g.link(app, greet);
+    }
+}

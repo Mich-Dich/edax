@@ -1,10 +1,10 @@
 // Importing C headers (C interop, "Importing C headers"): the C compiler preprocesses the headers
 // with the target's include directories and defines (`cc -E -dD`), and this file reads the
-// declarations and writes a Rift header of `extern` declarations, structs with C's layout,
+// declarations and writes a Edax header of `extern` declarations, structs with C's layout,
 // enums, type aliases and constants. What it can't translate faithfully is listed in a report
 // with the reason, never guessed.
 
-#include "rift/c_import.hpp"
+#include "edax/c_import.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -17,7 +17,7 @@
 #include <set>
 #include <sstream>
 
-namespace rift {
+namespace edax {
 namespace {
 
 // --- tokens -------------------------------------------------------------------------------------
@@ -761,9 +761,9 @@ public:
     }
 };
 
-// --- writing Rift ---------------------------------------------------------------------------------
+// --- writing Edax ---------------------------------------------------------------------------------
 
-const std::set<std::string>& rift_keywords() {
+const std::set<std::string>& edax_keywords() {
     static const std::set<std::string> k = {
         "import", "struct", "class", "interface", "enum", "union", "namespace", "public", "private", "static", "mut", "move",
         "return", "if", "else", "while", "for", "match", "break", "continue", "true", "false", "nullptr", "this", "type",
@@ -773,7 +773,7 @@ const std::set<std::string>& rift_keywords() {
     return k;
 }
 
-std::string safe_name(const std::string& n) { return rift_keywords().contains(n) ? n + "_" : n; }
+std::string safe_name(const std::string& n) { return edax_keywords().contains(n) ? n + "_" : n; }
 
 struct Writer {
     const Parser&                                     parser;
@@ -781,7 +781,7 @@ struct Writer {
     std::vector<std::pair<std::string, std::string>>& report;
     std::set<std::string>                             needed;   // records of other headers the translation uses
 
-    // The C typedefs of the system headers that have a Rift spelling of their own.
+    // The C typedefs of the system headers that have a Edax spelling of their own.
     static std::optional<std::string> known_typedef(const std::string& n) {
         static const std::map<std::string, std::string> k = {
             {"size_t", "usize"},    {"ssize_t", "isize"},   {"ptrdiff_t", "isize"},  {"intptr_t", "isize"},  {"uintptr_t", "usize"},
@@ -793,12 +793,12 @@ struct Writer {
         return it->second;
     }
 
-    // The Rift spelling of `t`; empty when it can't be written (`why` says why).
+    // The Edax spelling of `t`; empty when it can't be written (`why` says why).
     std::string type(const CTypePtr& t, std::string& why, bool in_pointer = false) {
         switch (t->kind) {
         case CType::Kind::builtin:
             if (t->name == "long double") {
-                why = "long double has no Rift type";
+                why = "long double has no Edax type";
                 return "";
             }
             if (t->name == "void" && !in_pointer) return "void";
@@ -871,7 +871,7 @@ struct Writer {
             why = "a variadic function pointer";
             return "";
         }
-        // Rift calls a fn_ptr with its own convention, which matches C's for numbers and pointers
+        // Edax calls a fn_ptr with its own convention, which matches C's for numbers and pointers
         // but not for structs passed by value.
         auto by_value = [&](CTypePtr t) {
             while (t->kind == CType::Kind::named && parser.typedefs.contains(t->name)) t = parser.typedefs.at(t->name);
@@ -949,7 +949,7 @@ std::string join_strings(const std::string& text) {
 
 // The value of an object-like macro that is a constant: a string literal, a float literal or
 // an integer expression of literals, enumerators and earlier constants, with an optional cast
-// `((png_uint_32)0x7fffffffL)`. `cast_type` gives the Rift number type of a cast's C type.
+// `((png_uint_32)0x7fffffffL)`. `cast_type` gives the Edax number type of a cast's C type.
 std::string literal_constant(const std::string& body, const std::map<std::string, std::int64_t>& known, std::string& type,
                              const std::function<std::string(const std::string&)>& cast_type) {
     auto strip = [](std::string b) {
@@ -1013,11 +1013,11 @@ std::string literal_constant(const std::string& body, const std::map<std::string
     }
     try {
         // Reuse the parser's expression reader through an enum value.
-        Lexed wrapped = lex("enum __rift_constant { __rift_value = " + b + " };");
+        Lexed wrapped = lex("enum __edax_constant { __edax_value = " + b + " };");
         Parser q(wrapped, [](const std::string&) { return false; });
         q.enum_constants = known;
         q.run();
-        auto it = q.enum_constants.find("__rift_value");
+        auto it = q.enum_constants.find("__edax_value");
         if (it == q.enum_constants.end()) return "";
         std::int64_t v           = it->second;
         bool         is_unsigned = q.unsigned_;
@@ -1108,7 +1108,7 @@ std::string c_macro_probe(const std::string& preprocessed, const CImportOptions&
     auto  wanted = wanted_files(lexed, options);
     std::string out;
     for (const auto& [name, body, file] : lexed.defines) {
-        if (wanted(file) && !name.starts_with("__") && !body.empty()) out += std::format("\n__rift_macro \"{}\"\n{}\n", name, name);
+        if (wanted(file) && !name.starts_with("__") && !body.empty()) out += std::format("\n__edax_macro \"{}\"\n{}\n", name, name);
     }
     return out;
 }
@@ -1119,7 +1119,7 @@ std::map<std::string, std::string> c_macro_values(const std::string& probe_outpu
     std::string        line, pending;
     while (std::getline(in, line)) {
         if (line.starts_with("#")) continue;
-        if (line.starts_with("__rift_macro \"")) {   // the name is a string: not expanded
+        if (line.starts_with("__edax_macro \"")) {   // the name is a string: not expanded
             pending = line.substr(14);
             pending = pending.substr(0, pending.find('"'));
             continue;
@@ -1144,12 +1144,12 @@ CImportResult import_c_headers(const std::string& preprocessed, const CImportOpt
     report.insert(report.end(), parser.skipped.begin(), parser.skipped.end());
     Writer w{parser, wanted, report, {}};
     std::ostringstream out;
-    out << "// Generated by riftc (g.import_c_headers) from:";
+    out << "// Generated by edaxc (g.import_c_headers) from:";
     for (const std::string& h : options.headers) out << " " << h;
     out << "\n// Do not edit: it is written again when the headers change.\nimport std;\n\n";
     if (!options.ns.empty()) out << "namespace " << options.ns << " {\n";
     std::string indent = options.ns.empty() ? "" : "    ";
-    std::ostringstream source;   // the .rifts: the bodies of the union accessors
+    std::ostringstream source;   // the .ed: the bodies of the union accessors
 
     // Enums: simple enums with C's underlying type (int).
     for (const std::string& name : parser.enum_order) {
@@ -1345,8 +1345,8 @@ CImportResult import_c_headers(const std::string& preprocessed, const CImportOpt
             report.emplace_back(name, "a variadic function");
             continue;
         }
-        if (rift_keywords().contains(name)) {   // C's symbol name can't be changed
-            report.emplace_back(name, "its name is a Rift keyword");
+        if (edax_keywords().contains(name)) {   // C's symbol name can't be changed
+            report.emplace_back(name, "its name is a Edax keyword");
             continue;
         }
         std::string r = w.type(f->inner, why);
@@ -1388,11 +1388,11 @@ CImportResult import_c_headers(const std::string& preprocessed, const CImportOpt
     if (!fns.str().empty()) out << "\n" << indent << "extern(std::build::language::c) {\n" << fns.str() << indent << "}\n";
     if (!options.ns.empty()) out << "}\n";
     result.header = out.str();
-    result.source = "// Generated by riftc (g.import_c_headers): the accessors of the C unions.\n";
+    result.source = "// Generated by edaxc (g.import_c_headers): the accessors of the C unions.\n";
     if (!source.str().empty()) {
         result.source += options.ns.empty() ? source.str() : "namespace " + options.ns + " {\n" + source.str() + "}\n";
     }
     return result;
 }
 
-} // namespace rift
+} // namespace edax

@@ -1,8 +1,8 @@
-// Rift for VS Code: build-and-debug on top of CodeLLDB.
+// Edax for VS Code: build-and-debug on top of CodeLLDB.
 //
-// A `rift` launch configuration is resolved here: the program is built with riftc (debug mode:
-// full debug info), riftc's diagnostics go to the Problems panel, and the session is handed to
-// CodeLLDB (`type: lldb`) with Rift's data formatters loaded and stepping into `std::` allowed.
+// A `edax` launch configuration is resolved here: the program is built with edaxc (debug mode:
+// full debug info), edaxc's diagnostics go to the Problems panel, and the session is handed to
+// CodeLLDB (`type: lldb`) with Edax's data formatters loaded and stepping into `std::` allowed.
 
 "use strict";
 
@@ -24,34 +24,34 @@ let extensionPath;
 
 function activate(context) {
     extensionPath = context.extensionPath;
-    output = vscode.window.createOutputChannel("Rift");
-    diagnostics = vscode.languages.createDiagnosticCollection("riftc");
+    output = vscode.window.createOutputChannel("Edax");
+    diagnostics = vscode.languages.createDiagnosticCollection("edaxc");
     context.subscriptions.push(output, diagnostics);
 
-    const provider = new RiftDebugConfigurationProvider();
+    const provider = new EdaxDebugConfigurationProvider();
     context.subscriptions.push(
-        vscode.debug.registerDebugConfigurationProvider("rift", provider),
-        vscode.debug.registerDebugConfigurationProvider("rift", provider, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
-        vscode.commands.registerCommand("rift.debugFile", (uri) => debugFile(uri, false)),
-        vscode.commands.registerCommand("rift.runFile", (uri) => debugFile(uri, true)),
-        vscode.commands.registerCommand("rift.buildFile", async (uri) => {
+        vscode.debug.registerDebugConfigurationProvider("edax", provider),
+        vscode.debug.registerDebugConfigurationProvider("edax", provider, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
+        vscode.commands.registerCommand("edax.debugFile", (uri) => debugFile(uri, false)),
+        vscode.commands.registerCommand("edax.runFile", (uri) => debugFile(uri, true)),
+        vscode.commands.registerCommand("edax.buildFile", async (uri) => {
             const file = fileOf(uri);
             if (file) await buildProgram({ program: file }, folderOf(file));
         }),
     );
-    context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: "rift" }, new RiftDefinitionProvider()));
+    context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: "edax" }, new EdaxDefinitionProvider()));
     new InsightsController(context, { compilerPath, output });
 }
 
 // --- go to definition ---------------------------------------------------------------------------
 
 /**
- * Ctrl+click / F12: `riftc definition <file> <line>:<column>` prints where the name at that place is
- * declared. The project root is the nearest folder above the file with a build.rifts (else the
- * file's folder), so imports resolve as they do when the program is built. riftc reads the file
+ * Ctrl+click / F12: `edaxc definition <file> <line>:<column>` prints where the name at that place is
+ * declared. The project root is the nearest folder above the file with a build.ed (else the
+ * file's folder), so imports resolve as they do when the program is built. edaxc reads the file
  * from disk: in a file with unsaved changes the places are those of the saved text.
  */
-class RiftDefinitionProvider {
+class EdaxDefinitionProvider {
     async provideDefinition(document, position) {
         const file = document.uri.fsPath;
         const folder = folderOf(file);
@@ -60,16 +60,16 @@ class RiftDefinitionProvider {
         if (result.code !== 0) return undefined;
         const match = /^(.*):(\d+):(\d+)\s*$/.exec(result.stdout.trim());
         if (!match) return undefined;
-        const target = path.resolve(path.dirname(file), match[1]);   // riftc ran in the file's folder
+        const target = path.resolve(path.dirname(file), match[1]);   // edaxc ran in the file's folder
         return new vscode.Location(vscode.Uri.file(target), new vscode.Position(Number(match[2]) - 1, Number(match[3]) - 1));
     }
 }
 
-/** The nearest folder above `file` that has a build.rifts, else the file's own folder. */
+/** The nearest folder above `file` that has a build.ed, else the file's own folder. */
 function projectRootOf(file) {
     let dir = path.dirname(file);
     for (;;) {
-        if (fs.existsSync(path.join(dir, "build.rifts"))) return dir;
+        if (fs.existsSync(path.join(dir, "build.ed"))) return dir;
         const parent = path.dirname(dir);
         if (parent === dir) return path.dirname(file);
         dir = parent;
@@ -83,8 +83,8 @@ function deactivate() {}
 function fileOf(uri) {
     if (uri instanceof vscode.Uri) return uri.fsPath;
     const editor = vscode.window.activeTextEditor;
-    if (editor && editor.document.languageId === "rift") return editor.document.uri.fsPath;
-    vscode.window.showErrorMessage("Open a .rifts file first.");
+    if (editor && editor.document.languageId === "edax") return editor.document.uri.fsPath;
+    vscode.window.showErrorMessage("Open a .ed file first.");
     return undefined;
 }
 
@@ -98,7 +98,7 @@ async function debugFile(uri, noDebug) {
     const editor = vscode.window.activeTextEditor;
     if (editor && editor.document.isDirty) await editor.document.save();
     await vscode.debug.startDebugging(folderOf(file), {
-        type: "rift",
+        type: "edax",
         request: "launch",
         name: `${noDebug ? "Run" : "Debug"} ${path.basename(file)}`,
         program: file,
@@ -107,20 +107,20 @@ async function debugFile(uri, noDebug) {
 
 // --- debug configurations ----------------------------------------------------------------------
 
-class RiftDebugConfigurationProvider {
+class EdaxDebugConfigurationProvider {
     provideDebugConfigurations(folder, _token) {
         const configs = [{
-            type: "rift",
+            type: "edax",
             request: "launch",
-            name: "Debug current Rift file",
+            name: "Debug current Edax file",
             program: "${file}",
             args: [],
             cwd: "${fileDirname}",
         }];
         const root = folder ? folder.uri.fsPath : undefined;
-        if (root && fs.existsSync(path.join(root, "build.rifts"))) {
+        if (root && fs.existsSync(path.join(root, "build.ed"))) {
             for (const target of listTargets(root)) {
-                configs.push({ type: "rift", request: "launch", name: `Debug ${target}`, target, args: [], cwd: "${workspaceFolder}" });
+                configs.push({ type: "edax", request: "launch", name: `Debug ${target}`, target, args: [], cwd: "${workspaceFolder}" });
             }
         }
         return configs;
@@ -130,15 +130,15 @@ class RiftDebugConfigurationProvider {
         // F5 without a launch.json: debug the open file.
         if (!config.type && !config.request && !config.name) {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== "rift") return undefined;
-            config.type = "rift";
+            if (!editor || editor.document.languageId !== "edax") return undefined;
+            config.type = "edax";
             config.request = "launch";
-            config.name = "Debug current Rift file";
+            config.name = "Debug current Edax file";
             config.program = "${file}";
             config.cwd = "${fileDirname}";
         }
         if (!config.program && !config.target) {
-            vscode.window.showErrorMessage("A Rift launch configuration needs 'program' (a .rifts file or an executable) or 'target' (a target of build.rifts).");
+            vscode.window.showErrorMessage("A Edax launch configuration needs 'program' (a .ed file or an executable) or 'target' (a target of build.ed).");
             return undefined;
         }
         return config;
@@ -147,16 +147,16 @@ class RiftDebugConfigurationProvider {
     async resolveDebugConfigurationWithSubstitutedVariables(folder, config, _token) {
         if (!vscode.extensions.getExtension(CODELLDB)) {
             const choice = await vscode.window.showErrorMessage(
-                "Debugging Rift needs the CodeLLDB extension (vadimcn.vscode-lldb).", "Install CodeLLDB");
+                "Debugging Edax needs the CodeLLDB extension (vadimcn.vscode-lldb).", "Install CodeLLDB");
             if (choice) await vscode.commands.executeCommand("workbench.extensions.installExtension", CODELLDB);
             return undefined;
         }
         for (const doc of vscode.workspace.textDocuments) {
-            if (doc.languageId === "rift" && doc.isDirty) await doc.save();
+            if (doc.languageId === "edax" && doc.isDirty) await doc.save();
         }
 
         let program = config.program;
-        const needsBuild = config.target || (program && /\.rifts$/.test(program));
+        const needsBuild = config.target || (program && /\.ed$/.test(program));
         if (needsBuild && config.build !== false) {
             program = await buildProgram(config, folder);
             if (!program) return undefined;   // build failed: errors are in Problems
@@ -164,15 +164,15 @@ class RiftDebugConfigurationProvider {
             program = outputPath(config, folder);
         }
 
-        const settings = vscode.workspace.getConfiguration("rift", folder);
-        const initCommands = [`command script import "${path.join(extensionPath, "lldb", "rift_formatters.py")}"`];
+        const settings = vscode.workspace.getConfiguration("edax", folder);
+        const initCommands = [`command script import "${path.join(extensionPath, "lldb", "edax_formatters.py")}"`];
         if (settings.get("debug.stepIntoStandardLibrary", true)) {
-            // lldb skips functions named `std::...` (meant for C++'s library). Rift's is Rift code.
+            // lldb skips functions named `std::...` (meant for C++'s library). Edax's is Edax code.
             initCommands.push("settings set target.process.thread.step-avoid-regexp ''");
         }
         const sourceMap = Object.assign({}, config.sourceMap || {});
         const std = stdLibraryPath(folder);
-        if (std) sourceMap["/<std>"] = std;   // riftc writes this when its library/std is gone
+        if (std) sourceMap["/<std>"] = std;   // edaxc writes this when its library/std is gone
 
         const lldbConfig = {
             type: "lldb",
@@ -199,35 +199,35 @@ class RiftDebugConfigurationProvider {
 
 // --- building ----------------------------------------------------------------------------------
 
-/** riftc: the setting, else a riftc built in this workspace (the Rift repository), else PATH. */
+/** edaxc: the setting, else a edaxc built in this workspace (the Edax repository), else PATH. */
 function compilerPath(folder) {
-    const configured = vscode.workspace.getConfiguration("rift", folder).get("compilerPath");
+    const configured = vscode.workspace.getConfiguration("edax", folder).get("compilerPath");
     if (configured) return configured;
     for (const f of vscode.workspace.workspaceFolders || []) {
-        for (const candidate of ["build/compiler/riftc", "build/compiler/riftc.exe"]) {
+        for (const candidate of ["build/compiler/edaxc", "build/compiler/edaxc.exe"]) {
             const p = path.join(f.uri.fsPath, candidate);
             if (fs.existsSync(p)) return p;
         }
     }
-    return "riftc";
+    return "edaxc";
 }
 
 /** The standard library's source: the setting, else library/std in a workspace folder. */
 function stdLibraryPath(folder) {
-    const configured = vscode.workspace.getConfiguration("rift", folder).get("standardLibraryPath");
+    const configured = vscode.workspace.getConfiguration("edax", folder).get("standardLibraryPath");
     if (configured) return configured;
     for (const f of vscode.workspace.workspaceFolders || []) {
         const p = path.join(f.uri.fsPath, "library", "std");
-        if (fs.existsSync(path.join(p, "std.rifts"))) return p;
+        if (fs.existsSync(path.join(p, "std.ed"))) return p;
     }
     return undefined;
 }
 
 function buildMode(config, folder) {
-    return config.mode || vscode.workspace.getConfiguration("rift", folder).get("debug.buildMode", "debug");
+    return config.mode || vscode.workspace.getConfiguration("edax", folder).get("debug.buildMode", "debug");
 }
 
-/** Where riftc puts the executable (see `riftc --help`). */
+/** Where edaxc puts the executable (see `edaxc --help`). */
 function outputPath(config, folder) {
     const mode = buildMode(config, folder);
     if (config.target) {
@@ -235,7 +235,7 @@ function outputPath(config, folder) {
         return path.join(root, "build", mode, config.target + (process.platform === "win32" ? ".exe" : ""));
     }
     const file = config.program;
-    const stem = path.basename(file, ".rifts");
+    const stem = path.basename(file, ".ed");
     return path.join(path.dirname(file), "build", mode, stem + (process.platform === "win32" ? ".exe" : ""));
 }
 
@@ -245,7 +245,7 @@ function projectRoot(config, folder) {
 
 /** Builds the program of `config`; returns the executable's path, or undefined after errors. */
 async function buildProgram(config, folder) {
-    const riftc = compilerPath(folder);
+    const edaxc = compilerPath(folder);
     const mode = buildMode(config, folder);
     const exe = outputPath(config, folder);
     let args;
@@ -259,21 +259,21 @@ async function buildProgram(config, folder) {
     }
     args.push("--diagnostic-format=short", "--color=never", ...(config.buildArgs || []));
 
-    output.appendLine(`> ${riftc} ${args.join(" ")}   (in ${cwd})`);
+    output.appendLine(`> ${edaxc} ${args.join(" ")}   (in ${cwd})`);
     const result = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Window, title: `riftc: building ${config.target || path.basename(config.program)}` },
-        () => run(riftc, args, cwd));
+        { location: vscode.ProgressLocation.Window, title: `edaxc: building ${config.target || path.basename(config.program)}` },
+        () => run(edaxc, args, cwd));
     output.append(result.stdout);
     output.append(result.stderr);
     publishDiagnostics(result.stderr, cwd, folder);
 
     if (result.error) {
-        vscode.window.showErrorMessage(`Cannot run riftc (${riftc}): ${result.error.message}. Set 'rift.compilerPath'.`);
+        vscode.window.showErrorMessage(`Cannot run edaxc (${edaxc}): ${result.error.message}. Set 'edax.compilerPath'.`);
         return undefined;
     }
     if (result.code !== 0) {
         output.show(true);
-        vscode.window.showErrorMessage(`riftc: the build failed (exit ${result.code}). See Problems.`);
+        vscode.window.showErrorMessage(`edaxc: the build failed (exit ${result.code}). See Problems.`);
         vscode.commands.executeCommand("workbench.actions.view.problems");
         return undefined;
     }
@@ -289,7 +289,7 @@ function run(command, args, cwd) {
     });
 }
 
-/** `file:line:col: error[E1010]: message` (riftc --diagnostic-format=short) to Problems. */
+/** `file:line:col: error[E1010]: message` (edaxc --diagnostic-format=short) to Problems. */
 function publishDiagnostics(text, cwd, folder) {
     diagnostics.clear();
     const byFile = new Map();
@@ -314,7 +314,7 @@ function publishDiagnostics(text, cwd, folder) {
         const severity = m[4] === "error" ? vscode.DiagnosticSeverity.Error
             : m[4] === "warning" ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information;
         const d = new vscode.Diagnostic(new vscode.Range(pos, pos.translate(0, 1)), m[6], severity);
-        d.source = "riftc";
+        d.source = "edaxc";
         if (m[5]) d.code = m[5];
         if (!byFile.has(file)) byFile.set(file, []);
         byFile.get(file).push(d);
@@ -323,7 +323,7 @@ function publishDiagnostics(text, cwd, folder) {
     for (const [file, list] of byFile) diagnostics.set(vscode.Uri.file(file), list);
 }
 
-/** Targets of build.rifts, from `riftc build --list` (synchronous: only for the launch.json generator). */
+/** Targets of build.ed, from `edaxc build --list` (synchronous: only for the launch.json generator). */
 function listTargets(root) {
     try {
         const text = cp.execFileSync(compilerPath(undefined), ["build", "--list", "--color=never"], { cwd: root, encoding: "utf8" });

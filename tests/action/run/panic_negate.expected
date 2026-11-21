@@ -2,4 +2,4 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_negate.rifts:8:13: panic: integer overflow in '-' (i32)
+tests/action/run/panic_negate.ed:8:13: panic: integer overflow in '-' (i32)

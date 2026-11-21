@@ -1,0 +1,23 @@
+// std::windowing::bindings: actions are an enum, default keys are annotations on it.
+import std;
+namespace wnd = std::windowing;
+
+enum action : u8 {
+    @wnd::default_key{ .key = wnd::key::space } jump,
+    @wnd::default_key{ .key = wnd::key::space, .modifiers = wnd::modifiers{ .shift = true } } high_jump,
+    @wnd::default_button{ .button = wnd::mouse_button::left } fire,
+    crouch,
+}
+
+enum clash : u8 {
+    @wnd::default_key{ .key = wnd::key::p } pause,
+    @wnd::default_key{ .key = wnd::key::p } print,
+}
+
+enum payload : u8 { walk(u32), stop }
+
+void f() {
+    wnd::bindings<action> ok = wnd::bindings<action>::defaults();
+    wnd::bindings<clash> bad = wnd::bindings<clash>::defaults();   //~ error: 'pause' and 'print' have the same @default_key
+    wnd::bindings<payload> worse = default;                      //~ error: std::windowing::bindings: action 'walk' has a payload
+}

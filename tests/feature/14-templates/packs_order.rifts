@@ -1,0 +1,3 @@
+// feature 14: a parameter pack is the last template parameter.
+template<type... A, type T>   //~ error[E2001]: a parameter pack is the last template parameter
+void wrong_order(T& t, A&... rest) { }

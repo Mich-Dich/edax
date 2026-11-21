@@ -1,0 +1,19 @@
+// The heap is sealed after start-up: the next allocation panics.
+import std;
+
+i32 main() {
+    mut std::darray<u32> table = std::darray<u32>::with_capacity(4);
+    table.push(1);
+    std::string name = std::string::from("a name longer than twenty-three bytes");
+    std::seal_heap();
+    std::println(f"sealed: {std::is_heap_sealed()}, {table.len()} value, {name.len()} bytes");
+    table.push(2);   // fits in the capacity: no allocation
+    std::println("still running");
+    mut u32 i = 0;
+    while (i < 10) {
+        table.push(i);   // grows: allocates
+        i += 1;
+    }
+    std::println("never printed");
+    return 0;
+}

@@ -1,0 +1,6 @@
+// annotations: only `@std::allow` may be written on a statement.
+import std;
+
+void use() {
+    @std::must_use u32 x = 1;           //~ error[E2035]: only '@std::allow' may be written on a statement
+}

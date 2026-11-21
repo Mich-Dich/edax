@@ -25,7 +25,7 @@ enum class Copy { yes, no, unknown };
 
 std::string quoted(const Type* t) { return "'" + types::to_string(t) + "'"; }
 
-/// Moved locals at one program point. Unreachable states (after return/break) merge as identity.
+// Moved locals at one program point. Unreachable states (after return/break) merge as identity.
 struct State {
     bool                           reachable = true;
     std::map<const Symbol*, Span>  moved;   // local -> where it was moved
@@ -62,7 +62,7 @@ struct LoopContext {
     std::string   var;
 };
 
-/// A local reference `T& r = x...;` keeps `x` borrowed until r's last use.
+// A local reference `T& r = x...;` keeps `x` borrowed until r's last use.
 struct Borrow {
     const Symbol* ref;
     const Symbol* root;
@@ -70,9 +70,9 @@ struct Borrow {
     std::uint32_t live_end;
 };
 
-/// A view held in a local (`holder`) that borrows `root` (spec 12, 27): a lambda with reference
-/// captures, a `std::str` of a string, a thread that borrows, a darray of such handles. While the
-/// holder is alive, `root` is frozen (shared) or not usable at all (exclusive).
+// A view held in a local (`holder`) that borrows `root` (spec 12, 27): a lambda with reference
+// captures, a `std::str` of a string, a thread that borrows, a darray of such handles. While the
+// holder is alive, `root` is frozen (shared) or not usable at all (exclusive).
 struct ViewBorrow {
     const Symbol* holder;
     const Symbol* root;
@@ -99,7 +99,7 @@ public:
         }
     }
 
-    /// The members of a template instance (spec 14), walked with its parameters substituted.
+    // The members of a template instance (spec 14), walked with its parameters substituted.
     void walk_instance(Symbol& inst, ast::Decl& copy) {
         if (copy.kind == DeclKind::enum_) return;
         module_    = inst.module;
@@ -107,13 +107,22 @@ public:
         if (copy.kind == DeclKind::function) {
             walk_function(copy.as<FunctionDecl>());
         } else {
-            for (DeclPtr& m : copy.as<TypeDecl>().members) walk_decl(*m);
+            for (DeclPtr& m : copy.as<TypeDecl>().members) {
+                // A method nobody uses may not compile for these arguments (`clone()` of an
+                // element type that can't be cloned): like the type checker, only used methods count.
+                bool lazy = m->kind == DeclKind::function && !m->as<FunctionDecl>().is_destructor &&
+                            !m->as<FunctionDecl>().is_virtual && !m->as<FunctionDecl>().is_override &&
+                            !program_.used_instance_methods.count(m.get());
+                if (lazy) ++silent_;
+                walk_decl(*m);
+                if (lazy) --silent_;
+            }
         }
         cur_subst_ = nullptr;
     }
 
-    /// Lowers a type written in the code being checked (`owner` null) or in the declaration of
-    /// `owner`, which may belong to a template instance (spec 14).
+    // Lowers a type written in the code being checked (`owner` null) or in the declaration of
+    // `owner`, which may belong to a template instance (spec 14).
     const Type* lower(const TypeExpr& t, const Symbol* owner = nullptr) {
         return tc_.lower(t, owner ? substitution_of(owner) : cur_subst_);
     }
@@ -146,6 +155,11 @@ private:
         case Kind::external: return external_copy(t);
         case Kind::function: return Copy::no;   // owns its callable on the heap (spec 18)
         case Kind::array: return copy_kind(t->inner);
+        case Kind::tuple: {   // a tuple is a copy type if all its elements are
+            Copy c = Copy::yes;
+            for (const Type* e : t->args) c = combine(c, copy_kind(e));
+            return c;
+        }
         case Kind::closure: {   // a lambda copies like its captured values (references are views)
             Copy c = Copy::yes;
             if (const LambdaExpr* l = tc_.lambda_of(t)) {
@@ -218,9 +232,12 @@ private:
 
     bool is_view(const Type* t) {
         if (!t) return false;
+        if (t->is_c_function()) return true;   // a view of its std::c_library
         switch (t->kind) {
         case Kind::reference: return true;
         case Kind::array: return is_view(t->inner);
+        case Kind::tuple:   // a view if any element is
+            return std::any_of(t->args.begin(), t->args.end(), [&](const Type* e) { return is_view(e); });
         case Kind::closure: {   // a lambda with reference captures is a view (spec 18)
             const LambdaExpr* l = tc_.lambda_of(t);
             if (!l) return false;
@@ -262,11 +279,17 @@ private:
         }
     }
 
-    /// Why a type cannot be cloned (empty if it can, or if unknown).
+    // Why a type cannot be cloned (empty if it can, or if unknown).
     std::string clone_blocker(const Type* t, int depth = 0) {
         if (!t || depth > 8 || copy_kind(t) == Copy::yes) return "";
         if (t->is(Kind::function)) return std::format("{} cannot be cloned (it owns a callable)", quoted(t));
         if (t->is(Kind::array)) return clone_blocker(t->inner, depth + 1);
+        if (t->is(Kind::tuple)) {
+            for (const Type* e : t->args) {
+                if (std::string b = clone_blocker(e, depth + 1); !b.empty()) return b;
+            }
+            return "";
+        }
         if (t->is(Kind::external)) {
             std::string_view base = t->external_base();
             if (base == "std::unique_ptr" || base == "std::file" || base == "std::mutex" || base == "std::atomic") {
@@ -337,7 +360,7 @@ private:
         }
     }
 
-    /// A function returning a reference or view must have one place to borrow from (spec 12).
+    // A function returning a reference or view must have one place to borrow from (spec 12).
     void check_signature(const Symbol& s, bool is_method) {
         const FunctionDecl* f = s.function();
         if (!f || !f->result || f->is_destructor) return;
@@ -414,8 +437,8 @@ private:
         frame_ = std::move(saved);
     }
 
-    /// For every local: the position up to which it is used. A use inside a loop that the
-    /// local was declared outside of keeps it alive until the end of that loop.
+    // For every local: the position up to which it is used. A use inside a loop that the
+    // local was declared outside of keeps it alive until the end of that loop.
     void compute_live_ranges(BlockExpr& body) {
         std::vector<Span> loop_spans;
         std::function<void(Expr&)> visit = [&](Expr& e) {
@@ -437,7 +460,7 @@ private:
         visit(body);
     }
 
-    /// Calls `f` on every direct sub-expression (statements included).
+    // Calls `f` on every direct sub-expression (statements included).
     static void for_each_child(Expr& e, const std::function<void(Expr&)>& f) {
         auto stmt = [&](Stmt& s) {
             switch (s.kind) {
@@ -449,6 +472,7 @@ private:
                 f(*s.as<AssignStmt>().value);
                 break;
             case StmtKind::discard: f(*s.as<DiscardStmt>().value); break;
+            case StmtKind::destructure: f(*s.as<DestructureStmt>().init); break;
             case StmtKind::expression: f(*s.as<ExprStmt>().expr); break;
             case StmtKind::check: {   // only the run-time part runs in the program (spec 23)
                 Check& c = s.as<CheckStmt>().check;
@@ -473,6 +497,7 @@ private:
         case ExprKind::call:
             f(*e.as<CallExpr>().callee);
             for (ExprPtr& a : e.as<CallExpr>().args) f(*a);
+            if (e.as<CallExpr>().wrapped) f(*e.as<CallExpr>().wrapped);
             break;
         case ExprKind::index:
             f(*e.as<IndexExpr>().object);
@@ -489,6 +514,12 @@ private:
         case ExprKind::bit: f(*e.as<BitExpr>().operand); break;
         case ExprKind::struct_literal:
             for (FieldInit& fi : e.as<StructLiteralExpr>().fields) f(*fi.value);
+            break;
+        case ExprKind::tuple:
+            for (ExprPtr& x : e.as<TupleExpr>().elements) f(*x);
+            break;
+        case ExprKind::list:
+            for (ExprPtr& x : e.as<ListExpr>().elements) f(*x);
             break;
         case ExprKind::lambda:
             for (Capture& c : e.as<LambdaExpr>().captures) {
@@ -546,7 +577,7 @@ private:
         return s && s->kind == SymbolKind::local ? s : nullptr;
     }
 
-    /// The local an expression's place is rooted in: `a.b[i].c` -> a. `this` has its own root.
+    // The local an expression's place is rooted in: `a.b[i].c` -> a. `this` has its own root.
     const Symbol* root_of(const Expr& e) {
         switch (e.kind) {
         case ExprKind::path: return local_of(e);
@@ -614,7 +645,7 @@ private:
 
     // --- consumption: copies and implicit moves -------------------------------------------
 
-    /// `value` is stored into a place of type `target` (or returned / passed by value).
+    // `value` is stored into a place of type `target` (or returned / passed by value).
     void consume(Expr& value, const Type* target, bool is_return = false) {
         // binds a reference or view (std::string -> std::str): no copy. A std::format_args is a view
         // that moves: formatting it consumes it (spec 31).
@@ -693,11 +724,13 @@ private:
 
     std::map<const Symbol*, int> holder_depth_;
 
-    /// Whether destroying a value of `t` runs code (a destructor somewhere inside).
+    // Whether destroying a value of `t` runs code (a destructor somewhere inside).
     bool drops(const Type* t, int depth = 0) {
         if (!t || depth > 20) return false;
         switch (t->kind) {
         case Kind::array: return drops(t->inner, depth + 1);
+        case Kind::tuple:
+            return std::any_of(t->args.begin(), t->args.end(), [&](const Type* e) { return drops(e, depth + 1); });
         case Kind::function: return true;
         case Kind::closure: {
             const LambdaExpr* l = tc_.lambda_of(t);
@@ -721,7 +754,7 @@ private:
         }
     }
 
-    /// What the value of `e` borrows: (root, exclusive) pairs.
+    // What the value of `e` borrows: (root, exclusive) pairs.
     std::vector<std::pair<const Symbol*, bool>> borrows_of(const Expr& e) {
         std::vector<std::pair<const Symbol*, bool>> out;
         auto add_holder = [&](const Symbol* holder) {
@@ -784,7 +817,7 @@ private:
         }
     }
 
-    /// `holder` (declared at `at`) now borrows what `value` borrows.
+    // `holder` (declared at `at`) now borrows what `value` borrows.
     void hold(const Symbol* holder, const Expr& value, Span at) {
         if (!holder) return;
         int depth = holder_depth_.contains(holder) ? holder_depth_[holder] : frame_.depth;
@@ -867,6 +900,18 @@ private:
         }
         case StmtKind::discard: walk(*s.as<DiscardStmt>().value); return;
         case StmtKind::expression: walk(*s.as<ExprStmt>().expr); return;
+        case StmtKind::destructure: {   // consumes the tuple: its elements move into the new variables
+            auto& d = s.as<DestructureStmt>();
+            walk(*d.init);
+            consume(*d.init, d.init->type);
+            for (DestructureBinding& b : d.bindings) {
+                if (!b.symbol) continue;
+                frame_.state.moved.erase(b.symbol);
+                holder_depth_[b.symbol] = frame_.depth;
+                if (b.symbol->type && is_view(b.symbol->type)) hold(b.symbol, *d.init, d.span);
+            }
+            return;
+        }
         }
     }
 
@@ -888,7 +933,15 @@ private:
             }
             return;
         }
-        case ExprKind::call: walk_call(e.as<CallExpr>()); return;
+        case ExprKind::call:
+            if (e.as<CallExpr>().wrapped) {   // the wrapped function body: its returns end only the body
+                State saved = frame_.state;
+                walk_block(*e.as<CallExpr>().wrapped);
+                frame_.state = saved;
+                return;
+            }
+            walk_call(e.as<CallExpr>());
+            return;
         case ExprKind::try_: {
             Expr& operand = *e.as<TryExpr>().operand;
             walk(operand);
@@ -907,6 +960,27 @@ private:
                     }
                 }
                 consume(*f.value, ft);
+            }
+            return;
+        }
+        case ExprKind::tuple: {
+            auto&       te = e.as<TupleExpr>();
+            const Type* t  = types::strip_ref(e.type);
+            for (std::size_t i = 0; i < te.elements.size(); ++i) {
+                walk(*te.elements[i]);
+                consume(*te.elements[i], t && t->is(Kind::tuple) && i < t->args.size() ? t->args[i] : nullptr);
+            }
+            return;
+        }
+        case ExprKind::list: {
+            auto&       le = e.as<ListExpr>();
+            const Type* lt = types::strip_ref(e.type);
+            const Type* el = nullptr;   // the element type: std::span<T>, std::array<T, N>, std::raw::array<T, N>
+            if (lt && lt->is(Kind::array)) el = lt->inner;
+            else if (lt && lt->is(Kind::user) && !lt->symbol->template_args.empty()) el = lt->symbol->template_args[0];
+            for (ExprPtr& x : le.elements) {
+                walk(*x);
+                consume(*x, el ? el : x->type);
             }
             return;
         }
@@ -1147,7 +1221,7 @@ private:
         check_aliasing(c, receiver, mut_receiver);
     }
 
-    /// One mutable reference at a time: `f(mut a, a)`, `f(mut a, mut a)`, `a.push(mut a)`.
+    // One mutable reference at a time: `f(mut a, a)`, `f(mut a, mut a)`, `a.push(mut a)`.
     void check_aliasing(CallExpr& c, const Symbol* receiver, bool mut_receiver) {
         struct Arg {
             const Symbol* root;
@@ -1219,7 +1293,7 @@ private:
         frame_ = std::move(saved);
     }
 
-    /// A returned reference must point into `this` or into a reference parameter.
+    // A returned reference must point into `this` or into a reference parameter.
     void check_returned_reference(Expr& value) {
         if (value.kind == ExprKind::lambda) {   // what a returned lambda refers to must outlive the call
             for (Capture& c : value.as<LambdaExpr>().captures) {

@@ -1,0 +1,7 @@
+// feature 12: a function of a std::c_library is a view of the library: it can't outlive it.
+import std;
+
+std::c_library::function<f64(f64)> escapes() {   //~ error[E5012]
+    std::c_library lib = std::c_library::load("libm.so.6").expect("libm");
+    return lib.function<f64(f64)>(c"cos").expect("cos");
+}

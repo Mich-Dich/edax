@@ -1,5 +1,5 @@
 // feature 07: interfaces are method signatures only.
 interface printable {
-    std::string to_text() { return ""; }    //~ error[E2028]
+    std::string to_text() { return std::string::from(""); }   // a default method (spec 07)
     u32 count;                               //~ error[E2001]: interfaces cannot have fields
 }

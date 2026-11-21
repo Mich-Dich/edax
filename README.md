@@ -3,20 +3,28 @@
 The Rift programming language - C++-inspired, but explicitly simpler,
 safer, and more consistent. The language design lives in [`docs/design/`](docs/design/README.md).
 
-**Status: v0.1.0** - everything in [`docs/design/`](docs/design/README.md) except the SIMD sketch
-(spec 21) is implemented. `riftc build` turns a program into a native executable through LLVM (no C
-code is generated; the system's `cc` only links). Supported: checked arithmetic, structs and
-classes with destructors and operators, inheritance with virtual calls, interfaces (references,
-smart pointers to them, `cast::dynamic`), enums with payloads and `match`, templates with
-constraints, lambdas and `std::function`, ownership and borrow checks, raw pointers and
-`extern(std::build::language::c)`, compile-time code, checks (spec 23) and reflection (spec 26).
-The standard library (`library/std`) is written in Rift on the `std::raw` intrinsics:
-`option`/`result`, `darray`, `array`, `span`, `bitset`, `hash_map`, `tree_map`, `string` and the
-`str` methods, smart pointers, `file`, `filesystem`, `env`, and `std::build` for build scripts.
+**Status: v0.8.0** - the language and standard library of [`docs/design/`](docs/design/README.md),
+with the gaps listed under "Known limits" below. `riftc build` turns a program into a native
+executable through LLVM (no C code is generated; the system's `cc` only links). Supported: checked
+arithmetic, structs and classes with destructors, operators and nested types, inheritance with
+virtual calls, interfaces with default methods, enums with payloads and `match`, tuples and list
+literals, templates with constraints and default arguments, lambdas, `std::function` and
+`std::fn_ptr`, ownership and borrow checks, raw pointers and `extern(std::build::language::c)`,
+compile-time code, `compile_time` and `implicit` parameters, checks, reflection and registries
+(`std::meta::functions_with`), annotations (checks, `generate`, `wrap`), and SIMD vector types
+(`f32x8`, masks, blocks). The standard library (`library/std`) is written in Rift on the `std::raw`
+intrinsics: `option`/`result`, `darray`, `array`, `span`, `bitset`, `hash_map`, `tree_map`,
+`string` and the `str` methods, smart pointers, threads, synchronization, channels, the thread pool
+and `std::parallel`, `std::time`, `std::log`, `file`, `filesystem`, `env`, `std::windowing`
+(several windows with OpenGL share groups and Vulkan surfaces, input layers and key bindings, on
+X11; see `example/windowing/`), and `std::build` for build scripts.
 
-**Projects** are built by a `build.rifts` (spec 25): targets (Rift programs, libraries and tests,
-C/C++ libraries, system libraries), build modes as classes (spec 24), options, settings, custom
-steps, and path or git dependencies pinned in `build.lock`:
+**Projects** are built by a `build.rifts`: everything in it is declared in `namespace build` and
+every target imports it. It describes targets (Rift programs, libraries and tests, C/C++ libraries,
+system libraries), build modes as classes with `compile_time` settings, declared settings
+(`compile_time std::build::setting<bool> validation = default;`, read in code as
+`build::validation.value()`), options, custom steps, and path or git dependencies pinned in
+`build.lock`:
 
 ```bash
 riftc build                      # every program of ./build.rifts, in debug
@@ -40,9 +48,32 @@ deterministic reductions). **Data races are compile errors:** the compiler deriv
 `std::sendable` / `std::shareable` from a type's fields, and a thread that borrows keeps what it
 borrows borrowed until it is joined. See `example/concurrency.rifts`.
 
-Known limits of 0.1.0: no cross compiling (`--target=`), steps run one after the other,
-`build.rifts` is evaluated on every run, debug info is line tables only, and
-`link_time_optimization()` has no effect yet.
+Also in 0.8.0: **packages** (`g.package` with git (commit or tag), archive and local sources,
+`.path`, `.options`, `.uses`, `.patches`, locked in `build.lock`; packages with a `build.rifts`,
+a `CMakeLists.txt` read by riftc's own CMake reader, or only headers; `riftc package
+list|fetch|status`), **C and C++ interop** (`g.import_c_headers` turns C headers into a Rift module,
+`g.wrap_cpp` wraps C++ classes through generated C wrappers with exceptions as
+`std::cpp_exception` errors, structs passed by value to and from C as the C calling convention
+does on x86-64 and AArch64), shared C libraries and Rift plugins (`g.add_shared_library` of a C
+target, `g.add_plugin`, `std::plugin<I>`, `std::c_library`), allocators (`std::allocator`, arenas,
+`g.set_global_allocator`, a sealable heap), target platforms and CPU levels (`--target`, `--cpu`,
+target descriptions), step verification, parameter packs, file annotation checks, SIMD
+multiversioning, `must_vectorize`, raw SIMD intrinsics and `riftc simd-report`, `std::rw_mutex`
+and the timed waits, thread platform options, time zones, and wrapping annotations on templates.
+
+Known limits of 0.8.0 (designed, not implemented yet):
+- Shared **Rift** libraries (`g.add_shared_library(std::build::rift_target{...})`); a shared C or
+  C++ library works.
+- Package descriptions in the project (`packages/<name>.rifts`, `package_build::script`), the
+  CMake converter (`riftc package convert`), `riftc package update`, and
+  `package_build::cmake_external`. The CMake reader stops, with the command's file and line, at
+  what it doesn't translate (`execute_process`, `ExternalProject_Add`, `FetchContent`, ...).
+- An allocator parameter for `std::tree_map` and `std::string_with<A>`.
+- `g.wrap_cpp` reads the headers with clang (`clang++`, or `$RIFT_CLANGXX`); it wraps numbers,
+  `bool`, strings (`std::string`, `std::string_view`, `const char*`) and the wrapped classes
+  themselves, and lists everything else in its report.
+- Structs by value through `extern` functions are supported on x86-64 (System V) and AArch64; other
+  targets report it.
 
 ## Building
 
@@ -64,16 +95,16 @@ The binary is `build/compiler/riftc`:
 
 ```bash
 $ ./build/compiler/riftc --version
-riftc 0.1.0
-$ ./build/compiler/riftc run examples/hello.rifts           # build in a temp dir and run
-$ ./build/compiler/riftc build examples/hello.rifts         # -> examples/build/debug/hello
-$ ./build/compiler/riftc build --mode=release examples/hello.rifts   # -> examples/build/release/hello
-$ ./build/compiler/riftc emit-llvm examples/hello.rifts      # the generated LLVM IR
-$ ./build/compiler/riftc check examples/employees.rifts     # silent + exit 0 when clean
-$ ./build/compiler/riftc lex examples/compile_check.rifts   # token dump
-$ ./build/compiler/riftc parse examples/employees.rifts     # syntax tree (S-expressions)
-$ ./build/compiler/riftc symbols examples/employees.rifts   # merged module symbol table
-$ ./build/compiler/riftc typed examples/employees.rifts     # syntax tree with every expression's type
+riftc 0.8.0
+$ ./build/compiler/riftc run example/hello.rifts           # build in a temp dir and run
+$ ./build/compiler/riftc build example/hello.rifts         # -> example/build/debug/hello
+$ ./build/compiler/riftc build --mode=release example/hello.rifts   # -> example/build/release/hello
+$ ./build/compiler/riftc emit-llvm example/hello.rifts      # the generated LLVM IR
+$ ./build/compiler/riftc check example/zoo.rifts     # silent + exit 0 when clean
+$ ./build/compiler/riftc lex example/hello.rifts   # token dump
+$ ./build/compiler/riftc parse example/zoo.rifts     # syntax tree (S-expressions)
+$ ./build/compiler/riftc symbols example/zoo.rifts   # merged module symbol table
+$ ./build/compiler/riftc typed example/zoo.rifts     # syntax tree with every expression's type
 $ ./build/compiler/riftc check --root=proj proj/main.rifts  # project root for imports
 $ ./build/compiler/riftc explain E1003                      # what a diagnostic code means
 ```
@@ -115,7 +146,6 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 | `tests/run_tests.py` | Test runner for all three suites |
 | `tests/unit/`, `tests/feature/`, `tests/action/` | The test suites |
 | `scripts/test.sh` | Build + test in one command |
-| `examples/` | Example `.rifts` programs used in the docs and tests |
 | `example/` | Showcase programs (`--target examples`) |
 | `bench/` | Standard library benchmarks against C++ STL / Abseil / Boost |
-| `docs/design/` | Language specification (v0.7) |
+| `docs/design/` | Language and standard library design (`language/`, `stdlib/`, `build/`) |

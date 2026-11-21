@@ -1,0 +1,10 @@
+// RUN: riftc check %s
+// A user target description (build system, "Target platforms"): a bare-metal x86-64 board
+// without an operating system, threads or files. target_capabilities.rifts is checked for it.
+import std;
+
+compile_time std::build::platform target = std::build::platform{
+    .triple       = "x86_64-unknown-none",
+    .cpu          = std::build::cpu::x86_64_v2,
+    .capabilities = [std::build::capability::heap, std::build::capability::simd],
+};

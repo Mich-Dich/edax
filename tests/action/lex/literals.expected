@@ -8,7 +8,7 @@ exit: 0
 3:36    string_literal          "a\tb"  value="a\tb"
 3:43    raw_string_literal      r"C:\x"  value="C:\\x"
 3:51    format_string_literal   f"{n}\n"  value="{n}\n"
-4:1     doc_comment             /// documented  value=" documented"
+4:1     doc_comment             // documented  value=" documented"
 5:1     underscore              _
 5:3     identifier              x
 6:1     eof

@@ -21,7 +21,7 @@ public:
     static u32 version() { return 7; }
 }
 
-/// The command table is the methods themselves (spec 26, example 5).
+// The command table is the methods themselves (spec 26, example 5).
 bool dispatch(mut shell& sh, std::str input) {
     for compile_time (std::meta::function m : std::meta::methods<shell>()) {
         if compile_time (m.has<command>()) {

@@ -1,0 +1,9 @@
+// feature 20: functions of a std::c_library are called in unsafe.
+import std;
+
+f64 call() {
+    std::c_library lib = std::c_library::load("libm.so.6").expect("libm");
+    std::c_library::function<f64(f64)> cosine = lib.function<f64(f64)>(c"cos").expect("cos");
+    f64 outside = cosine(1.0);   //~ error[E4100]
+    unsafe { return cosine(0.0); }
+}

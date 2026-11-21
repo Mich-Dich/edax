@@ -1,0 +1,2 @@
+// RUN: riftc definition %S/definition_project/main.rifts 11:22
+// riftc definition (editors' go to definition): a static function, and (next column) its type.

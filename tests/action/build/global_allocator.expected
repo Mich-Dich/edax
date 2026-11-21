@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+47 1: 2 blocks in use
+after: 0 blocks in use, true
+--- stderr

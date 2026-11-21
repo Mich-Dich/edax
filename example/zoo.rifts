@@ -1,17 +1,17 @@
 // zoo: classes, inheritance, interfaces, smart pointers and destructors (specs 06, 07, 12, 13).
 import std;
 
-/// Something that can introduce itself.
+// Something that can introduce itself.
 interface named {
     std::string name();
 }
 
-/// Things that make a sound. Interfaces extend other interfaces.
+// Things that make a sound. Interfaces extend other interfaces.
 interface noisy : named {
     std::string sound();
 }
 
-/// An `open` class can be derived from; `abstract` methods must be overridden.
+// An `open` class can be derived from; `abstract` methods must be overridden.
 open class animal : noisy {
 public:
     std::string given_name = std::string::from("");
@@ -44,19 +44,19 @@ public:
     std::string sound() override { return std::string::from("tweet"); }
 }
 
-/// A struct can implement an interface too, without changing its layout.
+// A struct can implement an interface too, without changing its layout.
 struct robot : noisy {
     u32 serial = 0;
     std::string name() override { return std::format(f"unit-{this.serial}"); }
     std::string sound() override { return std::string::from("beep"); }
 }
 
-/// Dynamic dispatch through an interface reference (a fat pointer: object + table).
+// Dynamic dispatch through an interface reference (a fat pointer: object + table).
 void introduce(noisy& n) {
     std::println(f"{n.name()}: {n.sound()}!");
 }
 
-/// Static dispatch: a template constrained by an interface, resolved at compile time.
+// Static dispatch: a template constrained by an interface, resolved at compile time.
 template<type T : named>
 std::string shout(T& thing) {
     return std::format(f"HEY {thing.name()}");

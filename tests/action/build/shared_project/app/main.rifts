@@ -1,0 +1,8 @@
+import std;
+
+extern(std::build::language::c) i32 greet_twice(i32 x);
+
+i32 main() {
+    unsafe { std::println(f"from libgreet.so: {greet_twice(21)}"); }
+    return 0;
+}

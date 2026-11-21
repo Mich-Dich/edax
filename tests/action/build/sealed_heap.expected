@@ -1,0 +1,6 @@
+exit: 134
+--- stdout
+sealed: true, 1 value, 37 bytes
+still running
+--- stderr
+<std>/std.rifts:81:24: panic: allocation after std::seal_heap()

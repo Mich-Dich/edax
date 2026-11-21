@@ -1,0 +1,21 @@
+// SIMD: vectors behave like numbers lane by lane; scalars never turn into vectors by themselves,
+// vector types don't mix, and masks are not booleans.
+import std;
+
+void use(f32x8 v, f32x4 w, i32x8 n) {
+    f32x8 a = v * f32x8::splat(2.0);
+    f32x8 b = v * 2.0;                          //~ error[E4010]: a scalar never turns into 'f32x8' by itself
+    f32x8 c = v + w;                            //~ error[E4011]: 'f32x8' and 'f32x4' can't be mixed
+    std::simd::mask<8> m = v > a;
+    if (v > a) { }                              //~ error[E4012]: 'std::simd::mask<8>' does not convert to bool
+    if ((v > a).any()) { }
+    f32x8 d = [1.0, 2.0, 3.0];                  //~ error[E4253]: 'f32x8' has 8 elements, but the list has 3
+    f32 e = v[9];                               //~ error[E4013]: 'f32x8' has lanes 0 to 7
+    f64x8 f = cast<f64x8>(v);
+    f32x8 g = cast<f32x8>(n);                   //~ error[E4090]: cast<f32x8> from 'i32x8' may lose data
+    f32x8 h = v.sqrt().min(a).clamp(a, a);
+    i32x8 k = n.saturating_add(n);
+    f32x8 bad = v.saturating_add(v);            //~ error[E4013]: saturating arithmetic is for integer vectors
+    f32 total = v.reduce_add();
+    f32x8 r = v.shuffle([0, 1, 2, 3, 4, 5, 6, 9]);   //~ error[E4200]: a lane index from 0 to 7
+}

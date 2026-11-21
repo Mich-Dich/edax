@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+mini_value = 11714
+--- stderr

@@ -1,4 +1,4 @@
-/// Highlighting showcase for Rift (spec v0.3).
+// Highlighting showcase for Rift (spec v0.3).
 import std;
 import std::filesystem;
 

@@ -2,58 +2,58 @@
 // (spec 24, 25). Everything here runs at compile time.
 
 namespace std::build {
-    /// How much the optimizer works (spec 24).
+    // How much the optimizer works (spec 24).
     enum optimization : u8 {
         none,
         size,
         speed,
     }
 
-    /// How much debug information goes into the program.
+    // How much debug information goes into the program.
     enum debug_info : u8 {
         none,
         line_tables,
         full,
     }
 
-    /// What `+`, `-` and `*` do when the result does not fit.
+    // What `+`, `-` and `*` do when the result does not fit.
     enum overflow : u8 {
         panic,
         wrap,
     }
 
-    /// What `<<`, `>>` and `bit(n)` do with a count of at least the width.
+    // What `<<`, `>>` and `bit(n)` do with a count of at least the width.
     enum shifts : u8 {
         panic,
         mask,
     }
 
-    /// Whether `a[i]` checks `i` (unchecked allows undefined behaviour).
+    // Whether `a[i]` checks `i` (unchecked allows undefined behaviour).
     enum bounds : u8 {
         panic,
         unchecked,
     }
 
-    /// Which `run_time` checks are compiled in (anything but `all` allows undefined behaviour).
+    // Which `run_time` checks are compiled in (anything but `all` allows undefined behaviour).
     enum run_time_checks : u8 {
         all,
         gated_only,
         none,
     }
 
-    /// What a panic does: print and abort, or a CPU trap instruction without a message.
+    // What a panic does: print and abort, or a CPU trap instruction without a message.
     enum panic_behavior : u8 {
         abort,
         trap,
     }
 
-    /// A language that `extern(...)` and C targets name (spec 13, 25).
+    // A language that `extern(...)` and C targets name (spec 13, 25).
     enum language : u8 {
         c,
         cpp,
     }
 
-    /// The standard a C or C++ target is compiled with.
+    // The standard a C or C++ target is compiled with.
     enum cpp_standard : u8 {
         c11,
         c17,
@@ -62,48 +62,67 @@ namespace std::build {
         cpp23,
     }
 
-    /// Whether a target's include directories and defines also apply to the targets that link it.
+    // Whether a target's include directories and defines also apply to the targets that link it.
     enum visibility : u8 {
         own,
         shared,
+        users,
     }
 
-    /// A target of the build graph: what `g.add_executable(...)` and friends return. A copy type.
+    // A target of the build graph: what `g.add_executable(...)` and friends return. A copy type.
     struct target {
         u32 id = 0;
     }
 
-    /// A Rift program, library or test: `root` is its main `.rifts` file.
+    // A Rift program, library or test: `root` is its main `.rifts` file.
     struct rift_target {
         std::static_str name = "";
         std::static_str root = "";
     }
 
-    /// A static library compiled from C or C++ sources (`g.add_sources`).
+    // A static library compiled from C or C++ sources (`g.add_sources`).
     struct c_target {
         std::static_str name = "";
         std::build::language language = std::build::language::c;
         std::build::cpp_standard standard = std::build::cpp_standard::c17;
     }
 
-    /// A file in the project, relative to its root (spec 25). Its methods work on the text.
+    // The C headers `g.import_c_headers` turns into a Rift module (C interop): `module` is the
+    // generated `<module>.rifth`, `namespace` the namespace of its declarations.
+    view struct c_import {
+        std::span<std::static_str> headers = [];
+        std::static_str module = "";
+        std::static_str namespace = "";
+    }
+
+    // C++ classes `g.wrap_cpp` makes usable from Rift (C interop): `classes` qualified
+    // (`"JPH::PhysicsSystem"`), `templates` the instances to wrap, written out.
+    view struct cpp_wrap {
+        std::span<std::static_str> headers = [];
+        std::span<std::static_str> classes = [];
+        std::span<std::static_str> templates = [];
+        std::static_str module = "";
+        std::static_str namespace = "";
+    }
+
+    // A file in the project, relative to its root (spec 25). Its methods work on the text.
     struct path {
         std::static_str text = "";
 
-        /// The file name without its extension: `shaders/blur.slang` → `blur`.
+        // The file name without its extension: `shaders/blur.slang` → `blur`.
         compile_time std::static_str stem();
-        /// The extension with its dot: `.slang`, or "".
+        // The extension with its dot: `.slang`, or "".
         compile_time std::static_str extension();
-        /// The same path with another extension: `with_extension("spv")`.
+        // The same path with another extension: `with_extension("spv")`.
         compile_time std::build::path with_extension(std::static_str extension);
     }
 
-    /// An external program a step runs (`g.find_program("slangc")`).
+    // An external program a step runs (`g.find_program("slangc")`).
     struct program {
         std::static_str path = "";
     }
 
-    /// A custom step of the build: a program run with declared inputs and outputs.
+    // A custom step of the build: a program run with declared inputs and outputs.
     struct step {
         u32 id = 0;
     }
@@ -113,116 +132,295 @@ namespace std::build {
         std::build::program program = std::build::program{};
     }
 
-    /// A library installed on the system: linked as `-l<name>`, from `<root>/lib` when given.
+    // A library installed on the system: linked as `-l<name>`, from `<root>/lib` when given.
     struct system_library {
         std::static_str name = "";
         std::static_str root = "";
     }
 
-    /// A dependency pinned to a git commit (never a branch).
-    struct git {
-        std::static_str url = "";
-        std::static_str commit = "";
+    // Where a package comes from (packages): `std::build::git`, `std::build::archive` or
+    // `std::build::local`.
+    interface package_source {
     }
 
-    /// A dependency in a directory of this machine.
-    struct local {
+    // A dependency pinned to a git commit (never a branch). A package may name a `.tag`
+    // instead, resolved to its commit once and recorded in build.lock.
+    struct git : std::build::package_source {
+        std::static_str url = "";
+        std::static_str commit = "";
+        std::static_str tag = "";
+    }
+
+    // A package downloaded as an archive (.tar.gz, .tar.xz, .zip), checked against its SHA-256.
+    struct archive : std::build::package_source {
+        std::static_str url = "";
+        std::static_str sha256 = "";
+    }
+
+    // A dependency in a directory of this machine.
+    struct local : std::build::package_source {
         std::static_str path = "";
     }
 
-    /// Another project this build uses (`g.dependency(...)`).
+    // How riftc learns a package's targets (packages, section 3).
+    enum package_build : u8 {
+        // Its build.rifts, else its CMakeLists.txt, else its headers.
+        automatic,
+        // Its own build.rifts.
+        rift,
+        // Its CMakeLists.txt, read by riftc's CMake reader.
+        cmake,
+        // One header-only target named after the package; the payload is its include directory
+        // ("" for `include/` if it exists, else the package's root).
+        headers_only(std::static_str),
+    }
+
+    // A package (packages): outside code fetched into the project and built with it.
+    view struct package_spec {
+        std::build::package_source& source;
+        // Where it lives, relative to the project root; "" for `build/packages/<name>`.
+        std::static_str path = "";
+        // Its name in messages and build.lock; "" for the last part of the URL or path.
+        std::static_str name = "";
+        std::build::package_build build = std::build::package_build::automatic;
+        // Settings for its build: CMake options and cache variables.
+        std::span<(std::static_str, std::static_str)> options = [];
+        // Targets that answer the package's own `find_package(NAME)`.
+        std::span<(std::static_str, std::build::target)> uses = [];
+        // Patch files of the project, applied after fetching, in order.
+        std::span<std::static_str> patches = [];
+    }
+
+    // A package of the build (`g.package(...)`).
+    struct package {
+        u32 id = 0;
+        // Its directory, relative to the project root.
+        std::static_str path = "";
+
+        // One of its targets (an unknown name is an error that lists them).
+        compile_time std::build::target target(std::static_str name);
+        // The files of the package matching a pattern (absolute paths).
+        compile_time std::span<std::build::path> glob(std::static_str pattern);
+    }
+
+    // Another project this build uses (`g.dependency(...)`).
     struct project {
         u32 id = 0;
     }
 
-    /// The build graph that `build.rifts`' `build(mut std::build::graph& g)` describes (spec 25).
-    /// Its methods record what the build needs; riftc builds it afterwards.
+    // The build graph that `build.rifts`' `build(mut std::build::graph& g)` describes (spec 25).
+    // Its methods record what the build needs; riftc builds it afterwards.
+    // A value build.rifts passes to code: a declared name (`compile_time std::build::setting<bool>
+    // vulkan_validation = default;`), so a typo is an unknown name on both sides. `T` is bool, an
+    // integer type, std::static_str or a simple enum.
+    template<type T>
+    struct setting {
+        u8 unused = 0;
+
+        // The value build.rifts set for this target; a compile error when it set none.
+        compile_time T value();
+
+        // The value for the file of `where`, else the target's, else none.
+        compile_time std::option<T> value_at(std::call_site where);
+    }
+
     class graph {
     public:
-        /// A program (a module with `main`).
-        compile_time std::build::target add_executable(std::build::rift_target t) mut;
-        /// A library of Rift modules.
-        compile_time std::build::target add_library(std::build::rift_target t) mut;
-        /// A test program: `riftc test` builds and runs it.
-        compile_time std::build::target add_test(std::build::rift_target t) mut;
-        /// A static library compiled from C or C++.
-        compile_time std::build::target add_c_library(std::build::c_target t) mut;
+        // The option `-D<name>=<value>` for a setting (its name without the namespace).
+        template<type T>
+        compile_time T option(std::build::setting<T> s, T fallback, std::static_str help) mut;
+        // Gives target `t` the value of a setting.
+        template<type T>
+        compile_time void set(std::build::target t, std::build::setting<T> s, T value) mut;
+        // Gives the files of `t` matching `pattern` (relative to its root file's directory) a value.
+        template<type T>
+        compile_time void set_for_files(std::build::target t, std::static_str pattern, std::build::setting<T> s, T value) mut;
+        // Include directories for C/C++ code: `visibility::shared` also for what links `t`,
+        // `own` for `t` only, `users` only for what links it.
+        compile_time void add_include_dirs(std::build::target t, std::span<std::static_str> dirs, std::build::visibility v) mut;
+        // The arguments, inputs and outputs of a step, as lists.
+        compile_time void add_arguments(std::build::step s, std::span<std::static_str> arguments) mut;
+        compile_time void add_inputs(std::build::step s, std::span<std::build::path> files) mut;
+        compile_time void add_outputs(std::build::step s, std::span<std::build::path> files) mut;
 
-        /// `user` imports `used`'s modules and links it.
+        // A program (a module with `main`).
+        compile_time std::build::target add_executable(std::build::rift_target t) mut;
+        // A library of Rift modules.
+        compile_time std::build::target add_library(std::build::rift_target t) mut;
+        // A test program: `riftc test` builds and runs it.
+        compile_time std::build::target add_test(std::build::rift_target t) mut;
+        // A static library compiled from C or C++.
+        compile_time std::build::target add_c_library(std::build::c_target t) mut;
+        // A shared C or C++ library (`lib<name>.so`), loaded by the operating system when a
+        // program that links it starts. Its sources are added like a static one's.
+        compile_time std::build::target add_shared_library(std::build::c_target spec) mut;
+        // A Rift plugin (dynamic libraries): its `@std::plugin_entry` class, built as
+        // `<name>.so` in the `plugins` directory next to the programs, which load it with
+        // `std::plugin<I>::load`. Built with the programs of the build.
+        compile_time std::build::target add_plugin(std::build::rift_target spec) mut;
+        // Turns C headers of the C target `t` into a Rift module: preprocessed with `t`'s include
+        // directories and defines. Programs that link `t` import it. What can't be translated is
+        // listed in `<module>.report.txt` next to the generated header.
+        compile_time void import_c_headers(std::build::target t, std::build::c_import spec) mut;
+        // Generates C wrappers (compiled into the C++ target `t`) and a Rift module with a class per
+        // listed C++ class. Reads the headers with clang (`clang++`, or $RIFT_CLANGXX). What isn't
+        // wrapped, and the Rift names of overloads and operators, are in `<module>.report.txt`.
+        compile_time void wrap_cpp(std::build::target t, std::build::cpp_wrap spec) mut;
+
+        // `user` imports `used`'s modules and links it.
         compile_time void link(std::build::target user, std::build::target used) mut;
-        /// Adds a source file to a C target.
+        // Adds a source file to a C target.
         compile_time void add_sources(std::build::target t, std::static_str file) mut;
-        /// Adds an include directory to a C target.
+        // Adds an include directory to a C target.
         compile_time void add_include_dir(std::build::target t, std::static_str dir, std::build::visibility v) mut;
-        /// Defines a preprocessor macro for a C target.
+        // Defines a preprocessor macro for a C target.
         compile_time void define(std::build::target t, std::static_str name, std::static_str value) mut;
 
-        /// Makes a mode class of build.rifts selectable with `--mode=` (spec 24).
+        // Makes a mode class of build.rifts selectable with `--mode=` (spec 24).
         compile_time void add_mode(type mode) mut;
-        /// Builds `t` in `mode`, whatever the build's mode.
+        // Builds `t` in `mode`, whatever the build's mode.
         compile_time void set_mode(std::build::target t, type mode) mut;
 
-        /// A value given on the command line as `-Dname=value`, or `fallback`.
+        // A value given on the command line as `-Dname=value`, or `fallback`.
         template<type T>
         compile_time T option(std::static_str name, T fallback, std::static_str help) mut;
-        /// Passes a compile-time value to `t`'s code: `std::build::setting<T>(name)` (spec 25).
+        // Passes a compile-time value to `t`'s code: `std::build::setting<T>(name)` (spec 25).
         template<type T>
         compile_time void set(std::build::target t, std::static_str name, T value) mut;
-        /// Passes a value to the files of `t` that match `pattern` (relative to the target's root,
-        /// `*` within a name, `**` across directories): `std::build::setting_at<T>(where, name)`
-        /// (spec 31). A pattern that matches no file is an error.
+        // Passes a value to the files of `t` that match `pattern` (relative to the target's root,
+        // `*` within a name, `**` across directories): `std::build::setting_at<T>(where, name)`
+        // (spec 31). A pattern that matches no file is an error.
         template<type T>
         compile_time void set_for_files(std::build::target t, std::static_str pattern, std::static_str name, T value) mut;
 
-        /// An environment variable (recorded as an input of the build), or "".
+        // An environment variable (recorded as an input of the build), or "".
         compile_time std::static_str env(std::static_str name);
 
-        /// The files matching a pattern relative to the root: `*` within a name, `**` across
-        /// directories. Sorted.
+        // The files matching a pattern relative to the root: `*` within a name, `**` across
+        // directories. Sorted.
         compile_time std::span<std::build::path> glob(std::static_str pattern);
-        /// Adds every file of a list to a C target.
+        // Adds every file of a list to a C target.
         compile_time void add_sources(std::build::target t, std::span<std::build::path> files) mut;
-        /// A program on the PATH; the build fails when it is missing.
+        // A program on the PATH; the build fails when it is missing.
         compile_time std::build::program find_program(std::static_str name);
-        /// Where a generated file goes: the same relative path under the build directory.
+        // Where a generated file goes: the same relative path under the build directory.
         compile_time std::build::path output_path(std::build::path file);
-        /// A step: `program` run with the arguments added to it.
+        // A step: `program` run with the arguments added to it.
         compile_time std::build::step add_step(std::build::step_spec spec) mut;
         compile_time void add_argument(std::build::step s, std::static_str argument) mut;
         compile_time void add_argument(std::build::step s, std::build::path argument) mut;
-        /// A file the step reads: the step runs again when it changes.
+        // A file the step reads: the step runs again when it changes.
         compile_time void add_input(std::build::step s, std::build::path file) mut;
-        /// A file the step writes: it must exist after the step ran.
+        // A file the step writes: it must exist after the step ran.
         compile_time void add_output(std::build::step s, std::build::path file) mut;
-        /// `t` is built after `s` ran.
+        // `t` is built after `s` ran.
         compile_time void depends_on(std::build::target t, std::build::step s) mut;
-        /// A library of the system, linked by name.
+        // A library of the system, linked by name.
         compile_time std::build::target add_system_library(std::build::system_library lib) mut;
-        /// Another project: its build.rifts adds its targets (`g.target_of(p, "name")`).
+        // Another project: its build.rifts adds its targets (`g.target_of(p, "name")`).
         compile_time std::build::project dependency(std::build::git source) mut;
         compile_time std::build::project dependency(std::build::local source) mut;
-        /// The files of a dependency matching a pattern (absolute paths): the sources of a
-        /// dependency that has no build.rifts of its own.
+        // The files of a dependency matching a pattern (absolute paths): the sources of a
+        // dependency that has no build.rifts of its own.
         compile_time std::span<std::build::path> glob_in(std::build::project p, std::static_str pattern);
-        /// A target of a dependency.
+        // A target of a dependency.
         compile_time std::build::target target_of(std::build::project p, std::static_str name);
-        /// The platform riftc runs on and the one it builds for: `x86_64-linux`.
-        compile_time std::static_str host();
-        compile_time std::static_str target_platform();
+        // A package (packages): fetched into `.path`, locked in build.lock, built with the project.
+        compile_time std::build::package package(std::build::package_spec spec) mut;
+        // Gives `t` another global allocator (allocators): a type implementing std::allocator,
+        // std::shareable, with a default: `g.set_global_allocator(app, std::sealable_allocator)`.
+        compile_time void set_global_allocator(std::build::target t, type allocator) mut;
+        // The same with an allocator type of the program, which build.rifts can't see:
+        // `g.set_global_allocator(app, "engine::frame_heap")`.
+        compile_time void set_global_allocator(std::build::target t, std::static_str allocator) mut;
+        // The platform riftc runs on and the one it builds for.
+        compile_time std::build::platform host();
+        compile_time std::build::platform target_platform();
     }
 
-    /// A value that build.rifts passed to this target with `g.set(...)`; an error when it did not.
-    template<type T>
-    compile_time T setting(std::static_str name);
 
-    /// The value build.rifts passed for the file of `where` (`g.set_for_files`), else the one it
-    /// passed to the target (`g.set`), else none (spec 31).
+    // What a target platform offers (build system, "Target platforms").
+    enum capability : u8 {
+        // An operating system is present.
+        os,
+        // std::thread, the thread pool and blocking synchronization work.
+        threads,
+        // The global allocator exists.
+        heap,
+        // std::file and std::filesystem work.
+        files,
+        // Shared libraries and plugins can be loaded.
+        dynamic_libraries,
+        // The CPU has vector registers (otherwise vector types are computed lane by lane).
+        simd,
+    }
+
+    // The operating system of a platform.
+    enum os : u8 {
+        none,
+        linux,
+        windows,
+        macos,
+    }
+
+    // A CPU level: which instructions code may use. `baseline` is the first level of the
+    // architecture (`x86_64`, `armv8`, `riscv64`).
+    enum cpu : u8 {
+        baseline,
+        x86_64,
+        x86_64_v2,
+        x86_64_v3,
+        x86_64_v4,
+        armv8,
+        armv9,
+        riscv64,
+        riscv64_v,
+    }
+
+    // A single CPU feature a level may include.
+    enum cpu_feature : u8 {
+        sse, sse2, sse3, ssse3, sse4_1, sse4_2, popcnt,
+        avx, avx2, fma, bmi1, bmi2, f16c, lzcnt,
+        avx512f, avx512bw, avx512cd, avx512dq, avx512vl,
+        neon, sve, sve2,
+        rvv,
+    }
+
+    // A platform: what `g.target_platform()` and `std::build::target_platform()` return, and what a user
+    // target description (`riftc build --target=board.rifts`) declares as
+    // `compile_time std::build::platform target = ...;`.
+    view struct platform {
+        // The LLVM triple: `x86_64-pc-linux-gnu`, `aarch64-unknown-none`.
+        std::static_str triple;
+        std::build::os os = std::build::os::none;
+        std::build::cpu cpu = std::build::cpu::baseline;
+        std::span<std::build::capability> capabilities;
+
+        // Whether the platform has `c`.
+        compile_time bool has(std::build::capability c);
+    }
+
+    // The platform being built for.
+    compile_time std::build::platform target_platform();
+
+    // The global allocator build.rifts chose for the target being built, or `void` (the C
+    // library's heap).
+    compile_time type global_allocator_type();
+
+    // Whether the platform being built for has `c`: `if compile_time (std::build::target_has(...))`.
+    compile_time bool target_has(std::build::capability c);
+
+    // Whether the CPU level being built for includes `f`.
+    compile_time bool target_has_cpu_feature(std::build::cpu_feature f);
+
+    // The value build.rifts passed for the file of `where` (`g.set_for_files`), else the one it
+    // passed to the target (`g.set`), else none (spec 31).
     template<type T>
     compile_time std::option<T> setting_at(std::call_site where, std::static_str name);
 
-    /// Whether the mode being built is `mode` or derived from it: `mode_is(std::build::mode::debug)`.
+    // Whether the mode being built is `mode` or derived from it: `mode_is(std::build::mode::debug)`.
     compile_time bool mode_is(type mode);
 
-    /// The settings of the mode being built.
+    // The settings of the mode being built.
     compile_time std::build::mode::settings& current_mode();
 }

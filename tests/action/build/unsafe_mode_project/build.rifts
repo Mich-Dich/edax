@@ -1,11 +1,13 @@
 // A mode that turns bounds checks off without allowing undefined behaviour (spec 24).
 import std;
 
-class reckless : std::build::mode::release {
-public:
-    std::build::bounds bounds() override { return std::build::bounds::unchecked; }
-}
+namespace build {
+    class reckless : std::build::mode::release {
+    public:
+        compile_time std::build::bounds bounds() override { return std::build::bounds::unchecked; }
+    }
 
-compile_time void build(mut std::build::graph& g) {
-    g.add_mode(reckless);
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(reckless);
+    }
 }

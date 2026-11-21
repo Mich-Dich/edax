@@ -1,0 +1,2 @@
+// RUN: riftc definition %S/definition_project/main.rifts 12:15
+// riftc definition (editors' go to definition): a method call.

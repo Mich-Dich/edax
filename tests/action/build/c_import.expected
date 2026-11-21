@@ -1,0 +1,17 @@
+exit: 0
+--- stdout
+version 258 of 'shapes', limit 4128, pi 3.25
+2 shapes, scale 3
+areas 4.0 3.0
+squares: 1
+registry 12
+union 2.5
+union 42
+pair 2 1
+vec 2.0 4.0 6.0
+mixed 1.5 42
+small 2 4 9
+big 11.0 22.0 33.0
+C calls Rift: 12.0
+enum any = -1
+--- stderr

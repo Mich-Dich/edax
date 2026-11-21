@@ -11,7 +11,7 @@ using rift_test::Project;
 
 namespace {
 
-/// Generated LLVM IR for a one-file program, plus the diagnostic codes.
+// Generated LLVM IR for a one-file program, plus the diagnostic codes.
 struct Generated {
     std::string ir;
     std::string codes;

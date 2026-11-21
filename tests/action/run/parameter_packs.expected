@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+1 two 3.0 (3 values)
+(0 values)
+again: x true (2 values)
+2
+--- stderr

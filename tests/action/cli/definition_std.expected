@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+library/std/std.rifth:163:11
+--- stderr

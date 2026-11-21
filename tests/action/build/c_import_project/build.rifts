@@ -1,0 +1,19 @@
+// build.rifts with g.import_c_headers (C interop): the C library's header becomes the Rift
+// module `shapes_c`, which the program imports.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target shapes = g.add_c_library(std::build::c_target{ .name = "shapes" });
+        g.add_sources(shapes, "shapes/shapes.c");
+        g.add_include_dir(shapes, "shapes/include", std::build::visibility::shared);
+        g.define(shapes, "SHAPES_SCALE", "3");
+        g.import_c_headers(shapes, std::build::c_import{
+            .headers   = ["shapes/shapes.h", "shapes/abi.h"],
+            .module    = "shapes_c",
+            .namespace = "sh",
+        });
+        std::build::target app = g.add_executable(std::build::rift_target{ .name = "app", .root = "app/main.rifts" });
+        g.link(app, shapes);
+    }
+}

@@ -23,11 +23,13 @@ TypeContext::TypeContext() {
     nullptr_t_     = make(Type{Kind::nullptr_, 0, false, false, nullptr, nullptr, false, "nullptr", {}});
     static_str_    = make(Type{Kind::static_str, 0, false, false, nullptr, nullptr, false, "std::static_str", {}});
     untyped_default_ = make(Type{Kind::untyped_default, 0, false, false, nullptr, nullptr, false, "{default}", {}});
+    untyped_list_    = make(Type{Kind::untyped_list, 0, false, false, nullptr, nullptr, false, "{list}", {}});
     type_value_      = make(Type{Kind::type_value, 0, false, false, nullptr, nullptr, false, "type", {}});
     meta_field_      = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::field", {}});
     meta_alternative_ = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::alternative", {}});
     meta_function_    = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::function", {}});
     meta_parameter_   = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::parameter", {}});
+    meta_file_        = make(Type{Kind::meta, 0, false, false, nullptr, nullptr, false, "std::meta::file", {}});
     builtins_["type"] = type_value_;
     builtins_["bool"]  = bool_t_;
     builtins_["char"]  = char_t_;
@@ -100,17 +102,35 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
     using namespace ast;
     switch (t.kind) {
     case TypeKind::auto_:
-    case TypeKind::deduce:
-    case TypeKind::function: return error_;
+    case TypeKind::deduce: return error_;
+    case TypeKind::function: {   // `R(A...)` as a type: a C function signature (std::c_library)
+        const auto& f = t.as<FunctionType>();
+        std::vector<const Type*> params;
+        for (const TypePtr& p : f.params) params.push_back(lower(*p, subst));
+        return c_function(std::move(params), f.result ? lower(*f.result, subst) : void_t_);
+    }
     case TypeKind::reference: {
         const auto& r = t.as<ReferenceType>();
         return reference(lower(*r.inner, subst), r.is_mut);
+    }
+    case TypeKind::tuple: {
+        std::vector<const Type*> elements;
+        for (const TypePtr& e : t.as<TupleType>().elements) {
+            const Type* et = lower(*e, subst);
+            if (et->is(Kind::error)) return error_;
+            elements.push_back(et);
+        }
+        return tuple(std::move(elements));
     }
     case TypeKind::named: break;
     }
     const auto& nt   = t.as<NamedType>();
     const auto& segs = nt.path.segments;
     // `std::function<R(A...)>` and `std::fn_ptr<R(A...)>` (spec 18): built-in callable types.
+    if (!nt.symbol && segs.size() == 3 && segs[0].name == "std" && segs[1].name == "c_library" && segs[2].name == "function" &&
+        segs[2].template_args.size() == 1 && segs[2].template_args[0].type && segs[2].template_args[0].type->kind == TypeKind::function) {
+        return lower(*segs[2].template_args[0].type, subst);   // `std::c_library::function<R(A...)>`
+    }
     if (!nt.symbol && segs.size() == 2 && segs[0].name == "std" && (segs[1].name == "function" || segs[1].name == "fn_ptr") &&
         segs[1].template_args.size() == 1 && segs[1].template_args[0].type &&
         segs[1].template_args[0].type->kind == TypeKind::function) {
@@ -121,13 +141,17 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
         return callable(segs[1].name == "function" ? Kind::function : Kind::fn_ptr, std::move(params), result);
     }
     if (segs.size() == 1 && !nt.symbol) {
-        if (const Type* b = builtin(segs[0].name)) return b;
+        if (const Type* b = builtin_or_vector(segs[0].name)) return b;
     }
     if (nt.symbol) {
         const sema::Symbol* s = nt.symbol;
         if (s->kind == sema::SymbolKind::type_param) {
             if (subst) {
                 if (auto it = subst->find(s); it != subst->end()) return it->second;
+                // The same parameter from another resolution of its template (a default argument).
+                for (const auto& [k, v] : *subst) {
+                    if (k->template_param && k->template_param == s->template_param) return v;
+                }
             }
             return type_param(s);
         }
@@ -162,8 +186,28 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
                 }
                 const Type* v = value_args_ && a.value ? value_args_(s, i, *a.value, subst) : nullptr;
                 if (!v) return error_;
-                if (!v->is_unknown()) a.evaluated = v;
+                if (!v->is_unknown() && (!subst || subst->empty())) a.evaluated = v;   // a value that depends on no parameter
                 args.push_back(v);
+            }
+            // Default template arguments: `std::darray<u32>` is `std::darray<u32, std::global_allocator>`.
+            // A default may name earlier parameters.
+            const auto& params = s->decl->template_params;
+            if (args.size() < params.size() && args.size() == seg_args.size()) {
+                std::map<const sema::Symbol*, const Type*> inner;
+                const auto& syms = s->decl->template_param_symbols;
+                for (std::size_t i = args.size(); i < params.size(); ++i) {
+                    for (std::size_t j = 0; j < i && j < syms.size(); ++j) inner[syms[j]] = args[j];
+                    const TemplateParam& p = params[i];
+                    if (p.default_type) {
+                        args.push_back(lower(*p.default_type, &inner));
+                    } else if (p.default_value && value_args_) {
+                        const Type* v = value_args_(s, i, *p.default_value, &inner);
+                        if (!v) return error_;
+                        args.push_back(v);
+                    } else {
+                        break;
+                    }
+                }
             }
             std::optional<Span> saved = site_;
             site_                     = nt.span;
@@ -187,11 +231,39 @@ const Type* TypeContext::lower(const ast::TypeExpr& t, const std::map<const sema
             const TemplateArg& arg = segs[1].template_args[0];
             return pointer(lower(*arg.type, subst), arg.is_mut);
         }
+        // `std::simd::vec<T, N>` and `std::simd::mask<N>` (SIMD).
+        if (segs.size() == 3 && segs[1].name == "simd" && (segs[2].name == "vec" || segs[2].name == "mask")) {
+            const auto& targs = segs[2].template_args;
+            bool        is_vec = segs[2].name == "vec";
+            if (targs.size() != (is_vec ? 2u : 1u)) return error_;
+            const TemplateArg& count = targs.back();
+            const Type*        n     = count.value && value_args_ ? value_args_(nullptr, targs.size() - 1, *count.value, subst) : nullptr;
+            if (!n && count.type && count.type->kind == ast::TypeKind::named && value_args_) {
+                // a bare name (`w`, `N`) parsed as a type: evaluated as a value
+                auto pe = std::make_unique<ast::PathExpr>(count.type->span, ast::Path{});
+                for (const auto& sg : count.type->as<NamedType>().path.segments) {
+                    ast::PathSegment c;
+                    c.name = sg.name;
+                    c.span = sg.span;
+                    pe->path.segments.push_back(std::move(c));
+                }
+                pe->symbol = count.type->as<NamedType>().symbol;
+                n          = value_args_(nullptr, targs.size() - 1, *pe, subst);
+            }
+            if (!n || !n->is(Kind::value_arg)) return error_;
+            u128 lanes = value_bits(n);
+            if (lanes < 2 || lanes > 64 || (lanes & (lanes - 1)) != 0) return error_;
+            if (!is_vec) return mask(static_cast<int>(lanes));
+            const Type* lane = targs[0].type ? lower(*targs[0].type, subst) : error_;
+            if (!lane->is_numeric() || lane->bits > 64 || lane->is_size) return error_;
+            return vector(lane, static_cast<int>(lanes));
+        }
         std::string spelling = ast::to_string(nt.path);
         if (spelling == "std::meta::field") return meta_field_;
         if (spelling == "std::meta::alternative") return meta_alternative_;
         if (spelling == "std::meta::function") return meta_function_;
         if (spelling == "std::meta::parameter") return meta_parameter_;
+        if (spelling == "std::meta::file") return meta_file_;
         const Type*              ext = external(spelling);
         std::vector<const Type*> args;
         for (const TemplateArg& a : segs.back().template_args) {
@@ -257,6 +329,18 @@ const Type* TypeContext::callable(Kind kind, std::vector<const Type*> params, co
     return callables_[key] = make(std::move(t));
 }
 
+const Type* TypeContext::c_function(std::vector<const Type*> params, const Type* result) {
+    params.push_back(result);
+    auto key = std::make_pair(Kind::pointer, params);   // a key of its own, apart from std::fn_ptr's
+    if (auto it = callables_.find(key); it != callables_.end()) return it->second;
+    std::string sig = to_string(result) + "(";
+    for (std::size_t i = 0; i + 1 < params.size(); ++i) sig += (i ? ", " : "") + to_string(params[i]);
+    sig += ")";
+    Type t{Kind::fn_ptr, 0, false, true, nullptr, nullptr, false, "std::c_library::function<" + sig + ">", {}};
+    t.args = std::move(params);
+    return callables_[key] = make(std::move(t));
+}
+
 const Type* TypeContext::array(const Type* element, const Type* count) {
     auto key = std::make_pair(element, count);
     if (auto it = arrays_.find(key); it != arrays_.end()) return it->second;
@@ -264,6 +348,42 @@ const Type* TypeContext::array(const Type* element, const Type* count) {
            "std::raw::array<" + to_string(element) + ", " + rift::to_string(value_bits(count)) + ">", {}};
     t.args = {count};
     return arrays_[key] = make(std::move(t));
+}
+
+const Type* TypeContext::tuple(std::vector<const Type*> elements) {
+    if (auto it = tuples_.find(elements); it != tuples_.end()) return it->second;
+    std::string name = "(";
+    for (std::size_t i = 0; i < elements.size(); ++i) name += (i ? ", " : "") + to_string(elements[i]);
+    name += ")";
+    Type t{Kind::tuple, 0, false, false, nullptr, nullptr, false, name, {}};
+    t.args = elements;
+    return tuples_[elements] = make(std::move(t));
+}
+
+const Type* TypeContext::vector(const Type* lane, int lanes) {
+    auto key = std::make_pair(lane, lanes);
+    if (auto it = vectors_.find(key); it != vectors_.end()) return it->second;
+    Type t{Kind::vector, lanes, false, false, nullptr, lane, false, to_string(lane) + "x" + std::to_string(lanes), {}};
+    return vectors_[key] = make(std::move(t));
+}
+
+const Type* TypeContext::mask(int lanes) {
+    if (auto it = masks_.find(lanes); it != masks_.end()) return it->second;
+    Type t{Kind::mask, lanes, false, false, nullptr, nullptr, false, "std::simd::mask<" + std::to_string(lanes) + ">", {}};
+    return masks_[lanes] = make(std::move(t));
+}
+
+const Type* TypeContext::builtin_or_vector(std::string_view name) {
+    if (const Type* b = builtin(name)) return b;
+    std::size_t x = name.rfind('x');   // `f32x8`: a number type, 'x', a power of two from 2 to 64
+    if (x == std::string_view::npos || x == 0 || x + 1 >= name.size()) return nullptr;
+    const Type* lane = builtin(name.substr(0, x));
+    if (!lane || !lane->is_numeric() || lane->bits > 64 || lane->is_size) return nullptr;
+    std::string_view digits = name.substr(x + 1);
+    if (digits.find_first_not_of("0123456789") != std::string_view::npos || digits.size() > 2 || digits[0] == '0') return nullptr;
+    int n = std::stoi(std::string(digits));
+    if (n < 2 || n > 64 || (n & (n - 1)) != 0) return nullptr;
+    return vector(lane, n);
 }
 
 std::uint64_t TypeContext::array_count(const Type* array) const {
@@ -317,6 +437,11 @@ std::string type_name(const Type* t, bool qualified) {
     case Kind::reference: return (t->is_mut ? "mut " : "") + to_string(t->inner) + "&";
     case Kind::pointer: return std::string("std::raw_ptr<") + (t->is_mut ? "mut " : "") + to_string(t->inner) + ">";
     case Kind::range: return "range<" + to_string(t->inner) + ">";
+    case Kind::tuple: {
+        std::string out = "(";
+        for (std::size_t i = 0; i < t->args.size(); ++i) out += (i ? ", " : "") + to_string(t->args[i]);
+        return out + ")";
+    }
     case Kind::closure: {
         std::string out = "lambda(";
         for (std::size_t i = 0; i + 1 < t->args.size(); ++i) out += (i ? ", " : "") + to_string(t->args[i]);
@@ -329,16 +454,20 @@ std::string type_name(const Type* t, bool qualified) {
         // Standard-library types are written `std::option<u32>`; instances show their arguments.
         const sema::Symbol* s = t->symbol;
         std::string name = s->name;
-        if (s->ns == "std" && sema::is_std_nested_type(name)) {
-            name = "thread_pool::" + name.substr(std::string_view("thread_pool_").size());   // written as a member type
-        }
         // Names are written with their namespace (spec 30): `std::darray`, `geometry::vec2`.
         std::string out = (s->ns.empty() ? "" : s->ns + "::") + name;
         const sema::Symbol* templ = s->template_of ? s->template_of : s;
         if (templ->name == "span_mut" && templ->module && templ->module->name == "std" && s->template_args.size() == 1) {
             return "std::span<mut " + to_string(s->template_args[0]) + ">";   // how it is written (spec 20)
         }
-        const std::vector<const Type*>& args = t->kind == Kind::pending ? t->args : s->template_args;
+        const std::vector<const Type*>& all = t->kind == Kind::pending ? t->args : s->template_args;
+        // The default allocator is left out, as it is written: `std::darray<u32>` (allocators).
+        std::size_t shown = all.size();
+        while (shown > 1 && all[shown - 1] && all[shown - 1]->kind == Kind::user && all[shown - 1]->symbol->name == "global_allocator" &&
+               all[shown - 1]->symbol->ns == "std") {
+            --shown;
+        }
+        const std::vector<const Type*> args(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(shown));
         if (!args.empty()) {
             out += '<';
             for (std::size_t i = 0; i < args.size(); ++i) out += (i ? ", " : "") + (args[i] ? to_string(args[i]) : "?");
@@ -390,11 +519,29 @@ Layout TypeContext::layout(const Type* t) {
     case Kind::char_: return {4, 4};
     case Kind::reference:
     case Kind::pointer:
+        // A pointer or reference to an interface is the object and its interface's table.
+        if (t->inner && t->inner->is(Kind::user) && t->inner->symbol && t->inner->symbol->kind == sema::SymbolKind::interface) return {16, 8};
+        return {8, 8};
+    case Kind::fn_ptr:
     case Kind::nullptr_: return {8, 8};
     case Kind::static_str: return {16, 8};
     case Kind::array: {
         Layout e = layout(t->inner);
         return {e.size * array_count(t), e.align};
+    }
+    case Kind::vector: {
+        std::uint64_t lane = static_cast<std::uint64_t>(t->inner->bits) / 8;
+        std::uint64_t size = lane * static_cast<std::uint64_t>(t->bits);
+        return {size, std::min<std::uint64_t>(size, 64)};
+    }
+    case Kind::tuple: {
+        std::uint64_t size = 0, align = 1;
+        for (const Type* e : t->args) {
+            Layout l = layout(e);
+            size     = align_up(size, l.align) + l.size;
+            align    = std::max(align, l.align);
+        }
+        return {align_up(size, align), align};
     }
     case Kind::external: return t->name == "std::str" ? Layout{16, 8} : Layout{};
     case Kind::user: break;
@@ -432,11 +579,12 @@ Layout TypeContext::layout(const Type* t) {
     for (const sema::Symbol* f : s->member_order) {
         if (f->kind != sema::SymbolKind::field || f->is_static) continue;
         Layout l = layout(lower(*f->decl->as<ast::VariableDecl>().type, subst));
+        if (l.size == 0 && !l.empty) return {};   // not known
         offset   = align_up(offset, l.align) + l.size;
         align    = std::max(align, l.align);
         any      = true;
     }
-    if (!any) return {1, 1};   // an empty struct holds one byte
+    if (!any || offset == 0) return {0, 1, true};   // an empty struct takes no space
     return {align_up(offset, align), align};
 }
 

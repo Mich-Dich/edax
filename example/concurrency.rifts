@@ -3,13 +3,13 @@
 // is joined, and only synchronized types (std::atomic, std::mutex, channels) change through `T&`.
 import std;
 
-/// A statistic that several threads update at once: behind a mutex, which owns it.
+// A statistic that several threads update at once: behind a mutex, which owns it.
 struct stats {
     u32 batches = 0;
     u64 largest = 0;
 }
 
-/// Counted from every thread without a lock.
+// Counted from every thread without a lock.
 private static std::atomic<u64> items_seen = default;
 
 u64 checksum(std::span<u64> values) {
@@ -20,8 +20,8 @@ u64 checksum(std::span<u64> values) {
     return sum;
 }
 
-/// Splitting borrowed data over two threads: `left` is a view, so the thread borrows and
-/// `spawn` returns a scoped handle; the function can't return before the thread is joined.
+// Splitting borrowed data over two threads: `left` is a view, so the thread borrows and
+// `spawn` returns a scoped handle; the function can't return before the thread is joined.
 u64 two_halves(std::span<u64> values) {
     usize half = values.len() / 2;
     std::span<u64> left  = values.slice(0, half);
@@ -31,7 +31,7 @@ u64 two_halves(std::span<u64> values) {
     return other.join() +% mine;
 }
 
-/// A pipeline: a producer, three workers and a collector, connected by channels.
+// A pipeline: a producer, three workers and a collector, connected by channels.
 u64 pipeline() {
     std::channel<u64> jobs    = std::channel<u64>::bounded(8);     // room for 8: the producer waits when it is full
     std::channel<u64> squares = std::channel<u64>::unbounded();
@@ -70,7 +70,7 @@ u64 pipeline() {
     return total;
 }
 
-/// The thread pool: a parallel loop that changes disjoint chunks, and a deterministic reduction.
+// The thread pool: a parallel loop that changes disjoint chunks, and a deterministic reduction.
 void pool_work(std::thread_pool& pool) {
     mut std::darray<f64> samples = default;
     for (u32 i : 0..100000) {

@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+16 16 8
+285.0
+--- stderr

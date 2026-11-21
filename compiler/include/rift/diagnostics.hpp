@@ -53,24 +53,24 @@ struct Diagnostic {
 
 class DiagnosticEngine {
 public:
-    /// Reports a diagnostic with the code's default severity and returns it so callers can add
-    /// notes: `diags.report(...).notes.push_back(...)`.
+    // Reports a diagnostic with the code's default severity and returns it so callers can add
+    // notes: `diags.report(...).notes.push_back(...)`.
     Diagnostic& report(DiagCode code, Span span, std::string message, std::string label = {});
 
     [[nodiscard]] const std::vector<Diagnostic>& all() const { return diagnostics_; }
 
-    /// Orders diagnostics by file and position (stable), so later phases' errors don't appear
-    /// before earlier lines, and drops exact repeats (same code, place and message).
+    // Orders diagnostics by file and position (stable), so later phases' errors don't appear
+    // before earlier lines, and drops exact repeats (same code, place and message).
     void sort_by_location();
     [[nodiscard]] std::size_t error_count() const;
     [[nodiscard]] std::size_t warning_count() const;
     [[nodiscard]] bool        has_errors() const { return error_count() > 0; }
 
-    /// The number of diagnostics so far (a mark for `take_since`).
+    // The number of diagnostics so far (a mark for `take_since`).
     [[nodiscard]] std::size_t size() const { return diagnostics_.size(); }
-    /// Removes and returns the diagnostics reported after `mark`.
+    // Removes and returns the diagnostics reported after `mark`.
     std::vector<Diagnostic> take_since(std::size_t mark);
-    /// Reports a diagnostic made earlier (see `take_since`).
+    // Reports a diagnostic made earlier (see `take_since`).
     void add(Diagnostic d) { diagnostics_.push_back(std::move(d)); }
 
 private:
@@ -87,7 +87,7 @@ struct RenderOptions {
 void render(std::ostream& out, const Diagnostic& diag, const SourceManager& sources,
             const RenderOptions& options);
 
-/// Renders every diagnostic in report order and, in human format, a closing summary line.
+// Renders every diagnostic in report order and, in human format, a closing summary line.
 void render_all(std::ostream& out, const DiagnosticEngine& diags, const SourceManager& sources,
                 const RenderOptions& options);
 

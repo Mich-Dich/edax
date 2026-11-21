@@ -1,0 +1,229 @@
+// The Rift standard library: module std::windowing::x11 (see x11.rifth).
+
+namespace std::windowing::x11 {
+    private extern(std::build::language::c) {
+        std::raw_ptr<mut u8> dlopen(std::raw_ptr<u8> file, i32 mode);
+        std::raw_ptr<mut u8> dlsym(std::raw_ptr<mut u8> handle, std::raw_ptr<u8> name);
+        i32 dlclose(std::raw_ptr<mut u8> handle);
+    }
+
+    private compile_time i32 rtld_now = 2;
+
+    unsafe std::option<library> open_library(std::raw_ptr<u8> name) {
+        std::raw_ptr<mut u8> handle = dlopen(name, rtld_now);
+        if (!handle) {
+            return std::none;
+        }
+        return std::some(library{ .handle = handle });
+    }
+
+    unsafe void close_library(library lib) {
+        if (lib.handle) {
+            _ = dlclose(lib.handle);
+        }
+    }
+
+    unsafe std::raw_ptr<mut u8> symbol(library lib, std::str name) {
+        // C wants a NUL-terminated name: copied to the stack (symbol names are short).
+        mut std::raw::array<u8, 128> buffer = default;
+        run_time check (name.len() < 128) else f"std::windowing: symbol name too long: {name}";
+        std::raw_ptr<mut u8> bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer);
+        std::raw::copy(bytes, name.as_ptr(), name.len());
+        std::raw::write(bytes.offset(name.len()), 0u8);
+        return dlsym(lib.handle, bytes);
+    }
+
+    unsafe template<type T>
+    std::result<T, std::static_str> load_table(library lib) {
+        // The table is built in raw memory, one field at a time at its offset, then moved out:
+        // function pointers have no "empty" value to start from.
+        std::raw_ptr<mut T> block = std::raw::allocate<T>(1);
+        std::raw_ptr<mut u8> base = cast::reinterpret<std::raw_ptr<mut u8>>(block);
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type field_type = f.type;
+            std::raw_ptr<mut u8> address = symbol(lib, f.name);
+            if (!address) {
+                std::raw::free(block);
+                return std::error(f.name);
+            }
+            std::raw::write(cast::reinterpret<std::raw_ptr<mut field_type>>(base.offset(f.offset)),
+                            cast::reinterpret<field_type>(address));
+        }
+        T table = std::raw::read(block);
+        std::raw::free(block);
+        return std::ok(move table);
+    }
+
+    // ---- events ----------------------------------------------------------------------------------
+
+    private std::raw_ptr<u8> event_bytes(x_event& e) {
+        return unsafe { cast::reinterpret<std::raw_ptr<u8>>(&e.words) };
+    }
+
+    private std::raw_ptr<mut u8> event_bytes_mut(mut x_event& e) {
+        return unsafe { cast::reinterpret<std::raw_ptr<mut u8>>(mut &e.words) };
+    }
+
+    i32 event_i32(x_event& e, usize offset) {
+        run_time(std::build::mode::debug) check (offset + 4 <= 192) else "std::windowing::x11: event offset out of range";
+        unsafe { return *cast::reinterpret<std::raw_ptr<i32>>(event_bytes(e).offset(offset)); }
+    }
+
+    u32 event_u32(x_event& e, usize offset) {
+        run_time(std::build::mode::debug) check (offset + 4 <= 192) else "std::windowing::x11: event offset out of range";
+        unsafe { return *cast::reinterpret<std::raw_ptr<u32>>(event_bytes(e).offset(offset)); }
+    }
+
+    u64 event_u64(x_event& e, usize offset) {
+        run_time(std::build::mode::debug) check (offset + 8 <= 192) else "std::windowing::x11: event offset out of range";
+        unsafe { return *cast::reinterpret<std::raw_ptr<u64>>(event_bytes(e).offset(offset)); }
+    }
+
+    i64 event_i64(x_event& e, usize offset) {
+        run_time(std::build::mode::debug) check (offset + 8 <= 192) else "std::windowing::x11: event offset out of range";
+        unsafe { return *cast::reinterpret<std::raw_ptr<i64>>(event_bytes(e).offset(offset)); }
+    }
+
+    void set_event_i32(mut x_event& e, usize offset, i32 value) {
+        unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut i32>>(event_bytes_mut(mut e).offset(offset)), value); }
+    }
+
+    void set_event_u64(mut x_event& e, usize offset, u64 value) {
+        unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut u64>>(event_bytes_mut(mut e).offset(offset)), value); }
+    }
+
+    void set_event_i64(mut x_event& e, usize offset, i64 value) {
+        unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut i64>>(event_bytes_mut(mut e).offset(offset)), value); }
+    }
+
+    // ---- keys ------------------------------------------------------------------------------------
+
+    std::windowing::key key_of_keysym(u64 keysym) {
+        return match (keysym) {
+            0x20 => key::space,
+            0x27 => key::apostrophe,
+            0x2c => key::comma,
+            0x2d => key::minus,
+            0x2e => key::period,
+            0x2f => key::slash,
+            0x30 => key::digit_0,
+            0x31 => key::digit_1,
+            0x32 => key::digit_2,
+            0x33 => key::digit_3,
+            0x34 => key::digit_4,
+            0x35 => key::digit_5,
+            0x36 => key::digit_6,
+            0x37 => key::digit_7,
+            0x38 => key::digit_8,
+            0x39 => key::digit_9,
+            0x3b => key::semicolon,
+            0x3d => key::equal,
+            0x5b => key::left_bracket,
+            0x5c => key::backslash,
+            0x5d => key::right_bracket,
+            0x60 => key::grave_accent,
+            0x61 => key::a,
+            0x62 => key::b,
+            0x63 => key::c,
+            0x64 => key::d,
+            0x65 => key::e,
+            0x66 => key::f,
+            0x67 => key::g,
+            0x68 => key::h,
+            0x69 => key::i,
+            0x6a => key::j,
+            0x6b => key::k,
+            0x6c => key::l,
+            0x6d => key::m,
+            0x6e => key::n,
+            0x6f => key::o,
+            0x70 => key::p,
+            0x71 => key::q,
+            0x72 => key::r,
+            0x73 => key::s,
+            0x74 => key::t,
+            0x75 => key::u,
+            0x76 => key::v,
+            0x77 => key::w,
+            0x78 => key::x,
+            0x79 => key::y,
+            0x7a => key::z,
+            0xff08 => key::backspace,
+            0xff09 => key::tab,
+            0xff0d => key::enter,
+            0xff13 => key::pause,
+            0xff14 => key::scroll_lock,
+            0xff1b => key::escape,
+            0xff50 => key::home,
+            0xff51 => key::left,
+            0xff52 => key::up,
+            0xff53 => key::right,
+            0xff54 => key::down,
+            0xff55 => key::page_up,
+            0xff56 => key::page_down,
+            0xff57 => key::end,
+            0xff61 => key::print_screen,
+            0xff63 => key::insert,
+            0xff67 => key::menu,
+            0xff7f => key::num_lock,
+            0xff8d => key::keypad_enter,
+            0xffaa => key::keypad_multiply,
+            0xffab => key::keypad_add,
+            0xffad => key::keypad_subtract,
+            0xffae => key::keypad_decimal,
+            0xffaf => key::keypad_divide,
+            0xffb0 => key::keypad_0,
+            0xffb1 => key::keypad_1,
+            0xffb2 => key::keypad_2,
+            0xffb3 => key::keypad_3,
+            0xffb4 => key::keypad_4,
+            0xffb5 => key::keypad_5,
+            0xffb6 => key::keypad_6,
+            0xffb7 => key::keypad_7,
+            0xffb8 => key::keypad_8,
+            0xffb9 => key::keypad_9,
+            0xffbd => key::keypad_equal,
+            0xffbe => key::f1,
+            0xffbf => key::f2,
+            0xffc0 => key::f3,
+            0xffc1 => key::f4,
+            0xffc2 => key::f5,
+            0xffc3 => key::f6,
+            0xffc4 => key::f7,
+            0xffc5 => key::f8,
+            0xffc6 => key::f9,
+            0xffc7 => key::f10,
+            0xffc8 => key::f11,
+            0xffc9 => key::f12,
+            0xffe1 => key::left_shift,
+            0xffe2 => key::right_shift,
+            0xffe3 => key::left_control,
+            0xffe4 => key::right_control,
+            0xffe5 => key::caps_lock,
+            0xffe9 => key::left_alt,
+            0xffea => key::right_alt,
+            0xffeb => key::left_super,
+            0xffec => key::right_super,
+            0xffff => key::delete,
+            _ => key::unknown,
+        };
+    }
+
+    std::option<char> char_of_keysym(u64 keysym) {
+        if ((keysym >= 0x20 && keysym <= 0x7e) || (keysym >= 0xa0 && keysym <= 0xff)) {
+            return cast::checked<char>(cast::truncate<u32>(keysym));
+        }
+        if (keysym >= 0x1000100 && keysym <= 0x110ffff) {
+            return cast::checked<char>(cast::truncate<u32>(keysym - 0x1000000));
+        }
+        return match (keysym) {
+            0xffaa => std::some('*'),
+            0xffab => std::some('+'),
+            0xffad => std::some('-'),
+            0xffae => std::some('.'),
+            0xffaf => std::some('/'),
+            0xffb0..=0xffb9 => cast::checked<char>(cast::truncate<u32>(keysym - 0xffb0 + 0x30)),
+            _ => std::none,
+        };
+    }
+}

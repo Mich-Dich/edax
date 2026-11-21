@@ -1,0 +1,11 @@
+// annotations: on a statement only `@std::allow` may be written; it silences that warning for
+// that one statement.
+import std;
+
+@std::deprecated{ .message = "use draw_quad2" }
+void draw_quad(f32 x, f32 y) { }
+
+void use() {
+    @std::allow{ .id = std::deprecated } draw_quad(1.0, 2.0);
+    draw_quad(3.0, 4.0);                //~ warning[W4210]: 'draw_quad' is deprecated: use draw_quad2
+}

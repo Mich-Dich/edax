@@ -46,6 +46,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 TESTS = REPO / "tests"
 TIMEOUT_SECONDS = 20
+UNIT_TIMEOUT_SECONDS = 180   # the unit binary runs every unit test in one process
 
 SHORT_DIAG = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+): (?P<sev>error|warning)\[(?P<code>[EW]\d{4})\]: (?P<msg>.*)$"
@@ -89,13 +90,13 @@ def rel(path: Path) -> str:
     return path.resolve().relative_to(REPO).as_posix()
 
 
-def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def run(cmd: list[str], timeout: int = TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, NO_COLOR="1", LC_ALL="C.UTF-8")
     try:
         return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True,
-                              timeout=TIMEOUT_SECONDS, env=env, errors="replace")
+                              timeout=timeout, env=env, errors="replace")
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, -999, "", f"<timed out after {TIMEOUT_SECONDS}s>")
+        return subprocess.CompletedProcess(cmd, -999, "", f"<timed out after {timeout}s>")
     except OSError as e:
         return subprocess.CompletedProcess(cmd, -998, "", f"<cannot run {cmd[0]}: {e}>")
 
@@ -121,7 +122,7 @@ def exit_code_note(code: int) -> str:
 def run_unit(binary: Path, filters: list[str]) -> list[Result]:
     if not binary.exists():
         return [Result("unit", rel_or_abs(binary), "FAIL", ["unit test binary not found; build first"])]
-    proc = run([str(binary), "--verbose"] + filters)
+    proc = run([str(binary), "--verbose"] + filters, timeout=UNIT_TIMEOUT_SECONDS)
     results: list[Result] = []
     current: Result | None = None
     for line in proc.stdout.splitlines():

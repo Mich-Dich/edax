@@ -31,7 +31,7 @@ using types::Type;
 
 bool is_void_like(const Type* t) { return !t || t->is(Kind::void_) || t->is(Kind::never); }
 
-/// Every direct child expression of `e` (statements included), for scans like "has a call".
+// Every direct child expression of `e` (statements included), for scans like "has a call".
 void visit_children(Expr& e, const std::function<void(Expr&)>& f) {
     auto stmt = [&](Stmt& s) {
         switch (s.kind) {
@@ -109,11 +109,11 @@ void visit_children(Expr& e, const std::function<void(Expr&)>& f) {
     }
 }
 
-/// What evaluating an operand can do besides producing a value. C leaves the order of operands
-/// unspecified, so operands are put into temporaries (left to right) when the order shows.
+// What evaluating an operand can do besides producing a value. C leaves the order of operands
+// unspecified, so operands are put into temporaries (left to right) when the order shows.
 enum class Effect { none, may_panic, side_effects };
 
-/// Checked integer operations (spec 16) panic on overflow, division by zero or a bad shift.
+// Checked integer operations (spec 16) panic on overflow, division by zero or a bad shift.
 bool may_panic_here(Expr& e) {
     auto integer = [](const Expr& x) {
         const types::Type* t = types::strip_ref(x.type);
@@ -154,7 +154,7 @@ Effect effect_of(Expr& e) {
     return worst;
 }
 
-/// A C string literal for arbitrary bytes.
+// A C string literal for arbitrary bytes.
 std::string c_string(std::string_view bytes) {
     std::string out = "\"";
     for (char ch : bytes) {
@@ -171,7 +171,7 @@ std::string c_string(std::string_view bytes) {
     return out + "\"";
 }
 
-/// Length-prefixed name parts: ["main", "add"] -> "4main3add". Unambiguous for any names.
+// Length-prefixed name parts: ["main", "add"] -> "4main3add". Unambiguous for any names.
 std::string mangle_parts(const std::vector<std::string>& parts) {
     std::string out;
     for (const std::string& p : parts) out += std::to_string(p.size()) + p;
@@ -190,7 +190,7 @@ std::vector<std::string> split_module(const std::string& name) {
     return out;
 }
 
-/// Integer C types and limits, by Rift spelling.
+// Integer C types and limits, by Rift spelling.
 struct IntInfo {
     const char* ctype;
     const char* unsigned_ctype;
@@ -217,7 +217,7 @@ const IntInfo* int_info(const std::string& name) {
     return it == table.end() ? nullptr : &it->second;
 }
 
-/// A C constant expression for an unsigned 128-bit magnitude, converted to `ctype`.
+// A C constant expression for an unsigned 128-bit magnitude, converted to `ctype`.
 std::string int_constant(u128 v, const std::string& ctype) {
     auto hi = static_cast<std::uint64_t>(v >> 64);
     auto lo = static_cast<std::uint64_t>(v);
@@ -320,13 +320,13 @@ private:
         return nullptr;
     }
 
-    /// The declaration that carries the body: the `.rifts` definition when there is a header.
+    // The declaration that carries the body: the `.rifts` definition when there is a header.
     static const FunctionDecl* body_decl(const Symbol* s) {
         if (s->definition && s->definition->kind == DeclKind::function) return &s->definition->as<FunctionDecl>();
         return s->function();
     }
 
-    /// Modules in dependency order (imports first), for global initialization.
+    // Modules in dependency order (imports first), for global initialization.
     std::vector<const Module*> module_order() {
         std::vector<const Module*> out;
         std::set<const Module*>    seen;
@@ -394,7 +394,7 @@ private:
 
     // --- types ----------------------------------------------------------------------------
 
-    /// The C type for a Rift type (references and pointers become C pointers).
+    // The C type for a Rift type (references and pointers become C pointers).
     std::string ctype(const Type* t) {
         if (!t) return "void";
         switch (t->kind) {
@@ -451,7 +451,7 @@ private:
         return false;
     }
 
-    /// Tag value of each alternative (explicit values, otherwise previous + 1).
+    // Tag value of each alternative (explicit values, otherwise previous + 1).
     std::map<const Symbol*, u128> tag_values(const Symbol* e) {
         std::map<const Symbol*, u128> out;
         u128                          next = 0;
@@ -481,7 +481,7 @@ private:
         return ctype(lower(*d.tag_type));
     }
 
-    /// Value of an alternative without payload, or the tag constant for comparisons.
+    // Value of an alternative without payload, or the tag constant for comparisons.
     std::string tag_constant(const Symbol* alt) {
         const Symbol* e = alt->parent;
         return int_constant(tag_values(e)[alt], enum_tag_ctype(e));
@@ -656,7 +656,7 @@ private:
     void indent() { ++outs_.back().indent; }
     void dedent() { --outs_.back().indent; }
 
-    /// Runs `body` with its own buffer and returns a GNU statement expression `({ ... })`.
+    // Runs `body` with its own buffer and returns a GNU statement expression `({ ... })`.
     std::string statement_expr(const std::function<void()>& body) {
         int base = outs_.back().indent;
         outs_.push_back(Out{"", base + 1});
@@ -736,7 +736,7 @@ private:
         }
     }
 
-    /// `e` as a statement.
+    // `e` as a statement.
     void exec(Expr& e) {
         Span saved = cur_;
         cur_       = e.span;
@@ -780,7 +780,7 @@ private:
         if (b.tail) exec(*b.tail);
     }
 
-    /// Evaluates `e` and stores its value in `target` (nothing for void/never values).
+    // Evaluates `e` and stores its value in `target` (nothing for void/never values).
     void exec_into(Expr& e, const std::string& target) {
         if (is_void_like(e.type)) {
             exec(e);
@@ -920,7 +920,7 @@ private:
         line(std::format("if (!{}) rift_panic({}, \"no match arm matched\");", done, loc(m.span)));
     }
 
-    /// A C condition that is true when `pattern` matches the value `v` of type `t`.
+    // A C condition that is true when `pattern` matches the value `v` of type `t`.
     std::string pattern_test(Pattern& p, const std::string& v, const Type* t) {
         switch (p.kind) {
         case PatternKind::wildcard:
@@ -1007,7 +1007,7 @@ private:
 
     // --- expressions ----------------------------------------------------------------------
 
-    /// A C condition for a Rift condition (integers and pointers convert contextually, spec 02).
+    // A C condition for a Rift condition (integers and pointers convert contextually, spec 02).
     std::string condition(Expr& e) {
         const Type* t = types::strip_ref(e.type);
         std::string v = value(e);
@@ -1015,7 +1015,7 @@ private:
         return v;
     }
 
-    /// `e` converted to `want` (a never-typed value becomes an unreachable placeholder).
+    // `e` converted to `want` (a never-typed value becomes an unreachable placeholder).
     std::string value_as(Expr& e, const Type* want) {
         if (e.type && e.type->is(Kind::never) && want && !is_void_like(want)) {
             std::string ct = ctype(types::strip_ref(want));
@@ -1027,7 +1027,7 @@ private:
         return value(e);
     }
 
-    /// A pointer to `e`'s object; temporaries get storage in a compound literal.
+    // A pointer to `e`'s object; temporaries get storage in a compound literal.
     std::string address(Expr& e) {
         if (e.kind == ExprKind::unary) {
             UnaryOp op = e.as<UnaryExpr>().op;
@@ -1269,7 +1269,7 @@ private:
         return sequenced(ops, [&](const std::vector<std::string>& v) { return binary_op(b.op, t, v[0], v[1], b.span); });
     }
 
-    /// `a op b` for operand type `t`, with Rift's checked semantics.
+    // `a op b` for operand type `t`, with Rift's checked semantics.
     std::string binary_op(TokenKind op, const Type* t, const std::string& a, const std::string& b, Span span) {
         if (!t) return "0";
         bool integer = t->is_integer();
@@ -1358,9 +1358,9 @@ private:
         return Operand{address(e), ctype(types::strip_ref(e.type)) + "*", effect_of(e)};
     }
 
-    /// Builds an expression from operands, evaluating them left to right (C leaves the order
-    /// of operands and arguments unspecified). Temporaries are needed when any operand has side
-    /// effects, or when two operands could panic (which panic is reported must not vary).
+    // Builds an expression from operands, evaluating them left to right (C leaves the order
+    // of operands and arguments unspecified). Temporaries are needed when any operand has side
+    // effects, or when two operands could panic (which panic is reported must not vary).
     std::string sequenced(std::vector<Operand>& ops, const std::function<std::string(const std::vector<std::string>&)>& build) {
         std::vector<std::string> codes;
         bool                     side_effects = false;
@@ -1471,8 +1471,8 @@ private:
         return n == "print" || n == "println" || n == "eprint" || n == "eprintln" || n == "panic";
     }
 
-    /// std::print / println / eprint / eprintln / panic, written straight into the current
-    /// buffer. Returns false for any other call.
+    // std::print / println / eprint / eprintln / panic, written straight into the current
+    // buffer. Returns false for any other call.
     bool exec_std_call(CallExpr& c) {
         if (!is_std_output(c)) return false;
         std::string name    = std_name(c);
@@ -1688,7 +1688,7 @@ private:
         return out.str();
     }
 
-    /// A location spelled inline (main's wrapper is written after the location table).
+    // A location spelled inline (main's wrapper is written after the location table).
     std::string loc_text(Span span) {
         const SourceFile& file = sources_.file(span.file);
         LineCol           lc   = file.line_col(span.begin);

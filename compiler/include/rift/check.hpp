@@ -14,7 +14,7 @@
 
 namespace rift {
 
-/// Also makes the instances of template types that the program uses (spec 14).
+// Also makes the instances of template types that the program uses (spec 14).
 void check_types(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags);
 
 } // namespace rift

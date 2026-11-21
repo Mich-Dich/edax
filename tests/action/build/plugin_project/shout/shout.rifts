@@ -1,0 +1,22 @@
+import std;
+import api::greeter;
+
+namespace shout {
+    @std::plugin_entry
+    class loud : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"HELLO, {who}!"); }
+
+        u32 calls() mut override {
+            this.count += 1;
+            return this.count;
+        }
+
+        static loud make() { return loud{}; }
+
+        ~loud() { std::println("shout: the object is destroyed before the library is unloaded"); }
+
+    private:
+        u32 count = 0;
+    }
+}

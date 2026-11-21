@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+app.log log jsonl
+rotated: true true true true
+true
+json objects: 40
+true
+true
+true
+--- stderr

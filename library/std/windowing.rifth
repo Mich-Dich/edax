@@ -1,0 +1,354 @@
+// The Rift standard library: module std::windowing, windows for OpenGL and Vulkan.
+//
+// A GLFW-style window and input library, written in Rift on the system's own libraries (see
+// std::windowing::x11). The basic shape:
+//
+//     namespace wnd = std::windowing;
+//     mut wnd::system sys = wnd::system::start()?;                      // glfwInit
+//     mut wnd::gl_window win = sys.create_gl_window(wnd::window::config{ .title = "demo" },
+//                                                   wnd::opengl::config{}, wnd::opengl::sharing::automatic)?;
+//     mut std::darray<wnd::event> events = default;
+//     while (!win.should_close()) {
+//         sys.poll();                                                    // glfwPollEvents
+//         win.drain_events(mut events);                                  // this window's events
+//         for (wnd::event e : events) { ... }
+//         mut wnd::opengl::frame frame = win.begin_frame();             // glfwMakeContextCurrent
+//         ... draw ...
+//         frame.present();                                               // glfwSwapBuffers
+//     }
+//
+// What the types guarantee:
+// - **A window's kind is its type.** window has no graphics; gl_window has an OpenGL context;
+//   vulkan_window gives Vulkan a surface. OpenGL calls on a Vulkan window don't compile. Every kind
+//   is a std::windowing::window, so code that only handles input or titles takes a `window&`.
+// - **Several windows, each independent:** its own event queue, input state, cursor, swap interval
+//   and redraw policy. sys.poll() reads the system's queue once and sorts events by window.
+// - **GPU resources shared when they can be:** OpenGL windows join share groups
+//   (opengl::sharing): a texture made in one window is usable in every window of its group.
+// - **A current OpenGL context is a value.** begin_frame() makes it current and returns a frame
+//   that borrows the window; GL code takes the frame (or an opengl::current) as proof that a
+//   context is current. Only one frame per thread exists at a time (checked in debug builds).
+// - **Main thread only.** system, the windows and share groups are std::thread_bound; events,
+//   keys and images are plain data and can go anywhere.
+// - **RAII:** destroying a window closes it; the connection to the window system closes when the
+//   system and every window, share group and Vulkan loader are gone, in any order.
+
+namespace std::windowing {
+    // ---- window settings ----------------------------------------------------------------------------
+
+    // How often a window is drawn.
+    enum redraw : u8 {
+        // Every frame: window.should_draw() is true unless the window is minimized. Games.
+        continuous,
+        // Only when something changed: after window.request_redraw(), an expose or a resize.
+        // Tools, editors, debug panels: an idle window costs nothing.
+        on_demand,
+    }
+
+    // What role a window plays next to the others.
+    enum window_kind : u8 {
+        // A normal top-level window.
+        normal,
+        // A tool window of the window with this id: stays above it, has no taskbar entry.
+        tool(u32),
+        // A borderless popup of the window with this id: menus, tooltips, a debug UI's panels
+        // dragged out of the main window. Not managed by the window manager.
+        popup(u32),
+    }
+
+    // What the cursor does over a window.
+    enum cursor_mode : u8 {
+        normal,
+        // Invisible over the window, but free to leave it.
+        hidden,
+        // Invisible and held in the window: input().cursor_delta() keeps counting while the
+        // cursor can't move. Mouse look.
+        captured,
+    }
+
+    // The standard cursor images.
+    enum cursor_shape : u8 {
+        arrow,
+        text,
+        crosshair,
+        hand,
+        resize_horizontal,
+        resize_vertical,
+        resize_all,
+        not_allowed,
+    }
+
+    // Whether a window covers a monitor.
+    enum window_mode : u8 {
+        windowed,
+        // Fullscreen on the monitor with this id.
+        fullscreen(u32),
+    }
+
+    // A display connected to the computer.
+    struct monitor {
+        u32         id = 0;
+        std::string name = default;
+        // Where it is on the desktop, and its size in screen units.
+        rect        area = default;
+        // In Hz; 0 when the system doesn't say.
+        u32         refresh_rate = 0;
+        scale       content_scale = default;
+        bool        primary = false;
+    }
+
+    // ---- OpenGL ------------------------------------------------------------------------------------
+
+    namespace opengl {
+        enum profile : u8 {
+            // Only the modern API (3.2 and later).
+            core,
+            // The modern API and the old fixed-function one.
+            compatibility,
+        }
+
+        // The context and framebuffer an OpenGL window asks for. Windows whose configs are equal
+        // can share a group (see sharing).
+        @std::derive::formattable
+        struct config {
+            u8      major = 3;
+            u8      minor = 3;
+            opengl::profile profile = opengl::profile::core;
+            // A debug context (GL_KHR_debug messages).
+            bool    debug = false;
+            u8      depth_bits = 24;
+            u8      stencil_bits = 8;
+            // Multisampling: 0, 2, 4, 8.
+            u8      samples = 0;
+            // An sRGB-capable framebuffer.
+            bool    srgb = false;
+
+            bool operator==(config& other) = default;
+        }
+
+        // The GL objects of a share group (textures, buffers, shaders, programs) exist in every
+        // context of the group. A counted handle: `.clone()` is another owner; the group, and its
+        // objects, end with the last owner. Every gl_window of the group is an owner.
+        //
+        // A group has a hidden 1x1 context of its own, so objects can be made before any window
+        // exists (make_current) and outlive every window.
+        class share_group {
+        public:
+            // The group's number, the same for every handle and window of the group.
+            u32 id();
+            // The config every context of the group has.
+            opengl::config config();
+            // Another owner of the group.
+            share_group clone();
+            // Makes the group's own context current, for work that belongs to no window (uploads
+            // at load time). The result borrows the group.
+            current make_current() mut;
+            ~share_group();
+        }
+
+        // Which share group a new OpenGL window goes into.
+        enum sharing : u8 {
+            // A group whose config equals the window's, else a new one. What you want unless you
+            // know you don't: windows share what they can.
+            automatic,
+            // This group; error::share_incompatible if its config differs from the window's.
+            join(share_group),
+            // A new group of its own, which no other window joins automatically.
+            independent,
+        }
+
+        // A window's context, current while the frame exists. Borrows the window: it can't be
+        // closed, resized or moved away during the frame. present() shows what was drawn.
+        view class frame {
+        public:
+            // The window being drawn.
+            std::windowing::window& window();
+            // The size of the framebuffer in pixels: what glViewport wants.
+            std::windowing::size framebuffer_size();
+            // The address of an OpenGL function (`"glClearColor"`), or none. Calling it needs
+            // `cast::reinterpret` to its exact std::fn_ptr type, in `unsafe`.
+            std::option<std::raw_ptr<u8>> proc_address(std::str name);
+            // Swaps the buffers: what was drawn becomes visible. Consumes the frame.
+            void present() move;
+            ~frame();
+        }
+
+        // A share group's own context, current while this exists (share_group.make_current()).
+        view class current {
+        public:
+            std::option<std::raw_ptr<u8>> proc_address(std::str name);
+            ~current();
+        }
+    }
+
+    // ---- Vulkan --------------------------------------------------------------------------------------
+
+    namespace vulkan {
+        // The Vulkan loader (libvulkan), from system.vulkan(). Keeps the window system's connection
+        // open, like a window.
+        class loader {
+        public:
+            // vkGetInstanceProcAddr, where every other Vulkan function comes from.
+            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> instance_proc_address();
+            // The instance extensions a surface needs on this platform, NUL-terminated for
+            // VkInstanceCreateInfo::ppEnabledExtensionNames.
+            std::array<std::raw_ptr<u8>, 2> required_extensions();
+            ~loader();
+        }
+    }
+
+    // ---- windows -------------------------------------------------------------------------------------
+
+    // A window without graphics (software rendering, or input only). The base of every kind:
+    // gl_window and vulkan_window are windows too, and a `window&` accepts all of them.
+    open class window {
+    public:
+        // How a window starts. Fields not written keep their defaults.
+        view struct config {
+            std::str            title = "Rift";
+            std::windowing::size size = std::windowing::size{ .width = 1280, .height = 720 };
+            // Where on the desktop; none: the window manager decides.
+            std::option<point>  position = std::none;
+            bool                resizable = true;
+            // A title bar and borders.
+            bool                decorated = true;
+            // Shown when made; else it appears with show().
+            bool                visible = true;
+            window_kind         kind = window_kind::normal;
+            std::windowing::redraw redraw = std::windowing::redraw::continuous;
+        }
+
+        // The window's number: unique while the system runs; tool and popup windows name their
+        // owner by it.
+        u32 id();
+
+        // The graphics API the window was made for.
+        graphics_api graphics();
+
+        // Moves the window's events since the last call into `out` (cleared first) and starts a
+        // new input frame (input()). Keeps `out`'s capacity: no allocation once it has grown.
+        void drain_events(mut std::darray<event>& out) mut;
+
+        // The keyboard and mouse as they are now (see input_state).
+        input_state& input();
+
+        // Whether the user asked to close the window, or request_close() was called.
+        bool should_close();
+        void request_close() mut;
+        // Keeps the window open after a close request ("save changes?").
+        void cancel_close() mut;
+
+        // Whether to draw the window now: always for redraw::continuous (unless minimized); for
+        // redraw::on_demand after request_redraw(), an expose or a resize. Drawing a frame resets it.
+        bool should_draw();
+        void request_redraw() mut;
+
+        void set_title(std::str title) mut;
+        // The window's icon (copied by the window system).
+        void set_icon(image& icon) mut;
+        void set_cursor_mode(cursor_mode mode) mut;
+        void set_cursor(cursor_shape shape) mut;
+
+        window_mode mode();
+        void enter_fullscreen(u32 monitor) mut;
+        // Back to the size and place the window had before.
+        void leave_fullscreen() mut;
+
+        void show() mut;
+        void hide() mut;
+        void minimize() mut;
+        // Asks for the keyboard focus (the window manager may refuse).
+        void focus() mut;
+
+        // The size in screen units.
+        std::windowing::size size();
+        // The size in pixels: what rendering uses. Differs from size() on HiDPI screens.
+        std::windowing::size framebuffer_size();
+        std::windowing::point position();
+        scale content_scale();
+        void set_size(std::windowing::size size) mut;
+        void set_position(std::windowing::point position) mut;
+
+        bool is_focused();
+        bool is_minimized();
+        bool is_visible();
+
+        ~window();
+    }
+
+    // A window with an OpenGL context. Its context is in a share group (opengl::sharing).
+    class gl_window : window {
+    public:
+        // Makes the window's context current and starts a frame (see opengl::frame).
+        opengl::frame begin_frame() mut;
+
+        // How many screen refreshes a present() waits for: 1 is vsync, 0 doesn't wait. Per
+        // window, because it belongs to the context. Default: 1.
+        void set_swap_interval(u32 interval) mut;
+
+        // The share group of the window's context.
+        opengl::share_group share_group();
+    }
+
+    // A window Vulkan renders to: the program makes the VkInstance and the device; the window
+    // makes and owns the surface.
+    class vulkan_window : window {
+    public:
+        // Makes the window's VkSurfaceKHR for `instance` (a VkInstance with
+        // loader.required_extensions() enabled). The window owns the surface and destroys it
+        // before itself; `instance` must therefore outlive the window, which the compiler can't
+        // check: hence `unsafe`. Error: the VkResult.
+        unsafe std::result<u64, i32> create_surface(u64 instance) mut;
+
+        // The surface made by create_surface, or 0.
+        u64 surface();
+
+        // Whether queue family `family` of `physical_device` can present to this window's
+        // surfaces (vkGetPhysicalDeviceXlibPresentationSupportKHR).
+        unsafe bool presentation_support(u64 instance, u64 physical_device, u32 family);
+    }
+
+    // The connection to the window system: monitors, events, and where windows come from.
+    // One at a time per program. Destroying it doesn't close the windows; they close themselves.
+    class system {
+    public:
+        // Connects to the window system (glfwInit). error::no_display without one,
+        // error::already_started while another system (or its windows) is still alive.
+        static std::result<system, error> start();
+
+        std::windowing::platform platform();
+
+        // The monitors; the first one is the primary.
+        std::darray<monitor> monitors();
+        std::option<u32> primary_monitor();
+
+        // A window without graphics.
+        std::result<window, error> create_window(window::config config) mut;
+
+        // A window with an OpenGL context of `gl`, in the share group `sharing` chooses.
+        std::result<gl_window, error> create_gl_window(window::config config, opengl::config gl,
+                                                       opengl::sharing sharing) mut;
+
+        // A window for Vulkan.
+        std::result<vulkan_window, error> create_vulkan_window(window::config config) mut;
+
+        // A share group with no window yet (its own hidden context).
+        std::result<opengl::share_group, error> create_share_group(opengl::config gl) mut;
+
+        // The Vulkan loader; error::vulkan_unavailable without libvulkan.
+        std::result<vulkan::loader, error> vulkan() mut;
+
+        // Reads every event waiting in the window system and sorts it into the queues of the
+        // windows (and the system's own). Doesn't wait (glfwPollEvents).
+        void poll() mut;
+        // Waits until there is at least one event, then polls (glfwWaitEvents).
+        void wait() mut;
+        // Waits at most `limit` for an event, then polls (glfwWaitEventsTimeout).
+        void wait_for(std::time::duration limit) mut;
+
+        // Moves the events that belong to no window into `out` (cleared first).
+        void drain_events(mut std::darray<system_event>& out) mut;
+
+        ~system();
+    }
+}

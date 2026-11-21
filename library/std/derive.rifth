@@ -2,30 +2,30 @@
 // type's fields (spec 29). They are ordinary annotations with generate blocks, written in Rift.
 
 namespace std::derive {
-    /// Implements std::formattable from the fields: `point { x: 1.0, y: 2.5 }`. On an enum, the
-    /// compiler prints the alternative's name and its payload: `circle(2.0)`.
+    // Implements std::formattable from the fields: `point { x: 1.0, y: 2.5 }`. On an enum, the
+    // compiler prints the alternative's name and its payload: `circle(2.0)`.
     annotation(std::meta::target::type)
     struct formattable {
         generate : std::formattable {
-            void format(mut std::string& out) override {
-                out.push_str(std::type_name<annotated>());
-                out.push_str(" {");
+            void format(mut std::formatter& out) override {
+                out.write(std::type_name<annotated>());
+                out.write(" {");
                 for compile_time (std::meta::field f : std::meta::fields<annotated>()) {
                     if compile_time (f.index > 0) {
-                        out.push_str(",");
+                        out.write(",");
                     }
-                    out.push_str(" ");
-                    out.push_str(f.name);
-                    out.push_str(": ");
-                    out.push_str(std::format(f"{f.get(this)}"));
+                    out.write(" ");
+                    out.write(f.name);
+                    out.write(": ");
+                    out.write(std::format(f"{f.get(this)}"));
                 }
-                out.push_str(" }");
+                out.write(" }");
             }
         }
     }
 
-    /// Implements std::hashable (`u64 hash()`) from all fields, so the type can be a
-    /// std::hash_map key. Its `==` is still needed: `bool operator==(T& other) = default;`.
+    // Implements std::hashable (`u64 hash()`) from all fields, so the type can be a
+    // std::hash_map key. Its `==` is still needed: `bool operator==(T& other) = default;`.
     annotation(std::meta::target::type)
     struct hashable {
         generate : std::hashable {
@@ -39,8 +39,8 @@ namespace std::derive {
         }
     }
 
-    /// Generates `operator<=>` comparing the fields in declaration order (spec 16): the first
-    /// field that differs decides.
+    // Generates `operator<=>` comparing the fields in declaration order (spec 16): the first
+    // field that differs decides.
     annotation(std::meta::target::type)
     struct ordered {
         generate {

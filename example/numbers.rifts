@@ -2,7 +2,7 @@
 // No implicit conversions, overflow is never silent, and every lossy cast says how it loses.
 import std;
 
-/// FNV-1a: a hash that *wants* to wrap, so it says so with `^` and `*%`.
+// FNV-1a: a hash that *wants* to wrap, so it says so with `^` and `*%`.
 u32 fnv1a(std::str text) {
     mut u32 h = 2166136261;
     for (usize i : 0..text.len()) {

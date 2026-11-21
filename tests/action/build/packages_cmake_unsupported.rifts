@@ -1,0 +1,2 @@
+// RUN: riftc build --root=%S/packages_bad_project --out-dir=%t
+// The CMake reader stops at a command it doesn't translate, with its file and line.

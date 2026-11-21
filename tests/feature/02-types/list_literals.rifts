@@ -1,0 +1,15 @@
+// feature: list literals take their type from context: std::array<T, N> or std::span<T>.
+import std;
+
+u32 sum(std::span<u32> values) { return 0; }
+
+void use() {
+    std::array<u32, 3> sizes = [16, 32, 64];
+    std::array<u32, 2> wrong = [1, 2, 3];          //~ error[E4253]: 'std::array<u32, 2>' has 2 elements, but the list has 3
+    std::span<std::static_str> names = ["a", "b"];
+    u32 total = sum([1, 2, 3]);
+    auto x = [1, 2];                               //~ error[E4001]: this list literal has no type ('auto' needs a value whose type is known on its own)
+    std::darray<u32> d = [1, 2];                   //~ error[E4253]: a list literal can't be 'std::darray<u32>'
+    std::darray<u32> e = std::darray<u32>::from([1, 2]);
+    auto l = [](u32 v) { return v; };
+}

@@ -1,3 +1,5 @@
+#include "rift/simd_intrinsics.hpp"
+#include "rift/llvm_backend.hpp"
 #include "rift/check.hpp"
 #include "rift/ast_walk.hpp"
 
@@ -12,6 +14,7 @@
 #include <algorithm>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <set>
 
@@ -28,7 +31,7 @@ namespace {
 
 std::string quoted(const Type* t) { return "'" + types::to_string(t) + "'"; }
 
-/// cast<T> conversions that never lose information (spec 17).
+// cast<T> conversions that never lose information (spec 17).
 bool lossless(const Type* from, const Type* to) {
     if (from == to) return true;
     if (from->is(Kind::bool_) && to->is_integer()) return true;
@@ -71,7 +74,7 @@ bool is_bitwise(TokenKind op) {
 
 bool is_shift(TokenKind op) { return op == TokenKind::shl || op == TokenKind::shr; }
 
-/// The binary operator a compound assignment applies: `+=` -> `+`.
+// The binary operator a compound assignment applies: `+=` -> `+`.
 TokenKind compound_base(TokenKind op) {
     switch (op) {
     case TokenKind::plus_eq: return TokenKind::plus;
@@ -91,8 +94,8 @@ TokenKind compound_base(TokenKind op) {
     }
 }
 
-/// Does evaluating this expression/statement always leave the function (return, panic, an
-/// endless loop)? Used for "may end without returning" and for `never` block types.
+// Does evaluating this expression/statement always leave the function (return, panic, an
+// endless loop)? Used for "may end without returning" and for `never` block types.
 bool diverges(const Expr& e);
 
 bool diverges_block(const BlockExpr& b) {
@@ -106,6 +109,9 @@ bool diverges_block(const BlockExpr& b) {
             break;
         case StmtKind::discard:
             if (diverges(*s->as<DiscardStmt>().value)) return true;
+            break;
+        case StmtKind::destructure:
+            if (diverges(*s->as<DestructureStmt>().init)) return true;
             break;
         case StmtKind::assign:
         case StmtKind::check: break;
@@ -147,6 +153,10 @@ bool diverges(const Expr& e) {
     case ExprKind::block: return diverges_block(e.as<BlockExpr>());
     case ExprKind::if_: {
         const auto& i = e.as<IfExpr>();
+        if (i.is_compile_time && i.taken >= 0) {   // only the taken branch exists (spec 15)
+            if (i.taken == 0) return diverges_block(*i.then_block);
+            return i.else_branch && diverges(*i.else_branch);
+        }
         return i.else_branch && diverges_block(*i.then_block) && diverges(*i.else_branch);
     }
     case ExprKind::match: {
@@ -166,6 +176,8 @@ bool diverges(const Expr& e) {
 }
 
 struct FunctionState {
+    bool                entry_failed = false;   // one of its own compile_time entry checks fails without arguments
+    bool                entry_known  = false;   // entry_failed has been worked out
     const Type*         result      = nullptr;   // null: unknown (lambda without '->')
     bool                in_function = false;
     Symbol*             self        = nullptr;
@@ -179,7 +191,7 @@ struct FunctionState {
     const FunctionDecl* decl = nullptr;   // the function being checked (not for lambdas)
 };
 
-/// Where an expression's value lives, for assignment and `mut` checks.
+// Where an expression's value lives, for assignment and `mut` checks.
 struct Place {
     bool        is_place   = false;
     bool        is_mutable = false;
@@ -196,19 +208,164 @@ public:
     Checker(sema::Program& program, DiagnosticEngine& diags, Instantiator* instantiator = nullptr)
         : program_(program), diags_(diags), tc_(*program.types), instantiator_(instantiator) {}
 
+    // `annotated` in wrap blocks (annotations, section 8): the wrapped function. Also for the
+    // wraps of template instances, which are made while checking.
+    void bind_wrap_handles() {
+        for (auto& [handle, fn] : program_.wrap_handles) {
+            if (handle->ct_value) continue;
+            ct::Value h;
+            h.kind       = ct::Value::Kind::function;
+            h.type       = tc_.meta_function();
+            h.symbol     = fn;
+            h.type_value = fn->parent && fn->parent->is_type() ? tc_.user(fn->parent) : nullptr;
+            handle->ct_value = std::make_shared<const ct::Value>(std::move(h));
+        }
+    }
+
     void run() {
         setup_mode();
+        bind_wrap_handles();
         for (auto& [name, m] : program_.modules) {
             module_ = m.get();
             if (m->header) check_file(m->header->ast);
             if (m->source) check_file(m->source->ast);
         }
         if (program_.entry) check_main(*program_.entry);
+        make_versions();
+        if (program_.is_plugin) find_plugin_entry();
     }
 
-    /// The checks of one annotation use (spec 29): run once for every place the annotation is
-    /// written, with `annotated` set to what it's written on. A failure is reported at the
-    /// annotation, with a note pointing into the check.
+    // A plugin (`g.add_plugin`): its one `@std::plugin_entry` class T, which implements an
+    // interface I and has `static T make()`; its `create` is std::plugin_create<T, I>.
+    void find_plugin_entry() {
+        Module* m = program_.entry;
+        if (!m) return;
+        std::vector<Symbol*> entries;
+        for (Symbol* item : m->item_order) {
+            if (item->is_type() && item->decl && sema::find_annotation(item->decl->annotations, "std::plugin_entry")) entries.push_back(item);
+        }
+        Span where = m->source ? Span{m->source->id, 0, 0} : Span{};
+        if (entries.size() != 1) {
+            Diagnostic& d = error(DiagCode::E4210, entries.size() > 1 ? entries[1]->span : where,
+                                  entries.empty() ? "a plugin needs a class marked '@std::plugin_entry'" : "a plugin has exactly one '@std::plugin_entry' class",
+                                  entries.empty() ? "no entry class" : "a second entry class");
+            note(d, "the loader makes the plugin's object with its 'static T make()'");
+            return;
+        }
+        Symbol*       t     = entries[0];
+        const Symbol* iface = nullptr;
+        for (const Symbol* b : t->bases) {
+            if (b->kind == SymbolKind::interface) iface = b;
+        }
+        if (!iface) {
+            error(DiagCode::E4210, t->span, std::format("the plugin's entry class '{}' implements no interface", t->name),
+                  "the program uses the plugin through an interface");
+            return;
+        }
+        const Symbol* make = nullptr;
+        if (auto it = t->members.find("make"); it != t->members.end()) {
+            for (const Symbol* f : it->second) {
+                const FunctionDecl* fd = f->function();
+                if (fd && fd->is_static && fd->params.empty()) make = f;
+            }
+        }
+        if (!make) {
+            error(DiagCode::E4210, t->span, std::format("the plugin's entry class '{}' needs 'static {} make()'", t->name, t->name),
+                  "no make()");
+            return;
+        }
+        program_.plugin_class          = t;
+        program_.plugin_interface      = iface;
+        program_.plugin_make           = make;
+        program_.plugin_interface_hash = ct::interface_hash(iface);
+    }
+
+    // `@std::simd::multiversion{ .levels = [...] }`: a copy of the function per level, checked
+    // with that level's vector widths and CPU features, and one with the build's own level for
+    // CPUs below all of them. The backend calls the best one for the running CPU.
+    void make_versions() {
+        std::vector<Symbol*> functions;
+        for (auto& [name, m] : program_.modules) {
+            for (Symbol* item : m->item_order) {
+                if (item->kind == SymbolKind::function) functions.push_back(item);
+                if (item->is_type()) {
+                    for (Symbol* member : item->member_order) {
+                        if (member->kind == SymbolKind::method) functions.push_back(member);
+                    }
+                }
+            }
+        }
+        for (Symbol* f : functions) {
+            const Decl* d = f->definition ? f->definition : f->decl;
+            if (!d || d->kind != DeclKind::function || !f->decl) continue;
+            const AnnotationUse* u = sema::find_annotation(f->decl->annotations, "std::simd::multiversion");
+            if (!u) continue;
+            const auto& fd = d->as<FunctionDecl>();
+            if (fd.is_template || !fd.body || (f->parent && f->parent->decl && f->parent->decl->is_template)) {
+                error(DiagCode::E4210, u->span, "@std::simd::multiversion works on functions that are not templates", "on a template");
+                continue;
+            }
+            std::shared_ptr<const ct::Value> v = u->value_symbol ? ensure_constant(u->value_symbol) : nullptr;
+            if (!v || v->elements.empty()) continue;
+            std::vector<std::string> levels;
+            for (const ct::Value& level : v->elements[0].elements) {
+                if (level.symbol) levels.push_back(level.symbol->name);
+            }
+            std::vector<std::string> known = cpu_levels();
+            for (const std::string& level : levels) {
+                if (std::find(known.begin(), known.end(), level) == known.end()) {
+                    std::string list;
+                    for (const std::string& k : known) list += (list.empty() ? "" : ", ") + k;
+                    error(DiagCode::E4210, u->span, std::format("'{}' is not a CPU level of the target (its levels: {})", level, list),
+                          "not for this target");
+                    levels.clear();
+                    break;
+                }
+            }
+            if (levels.empty()) continue;
+            levels.push_back("");   // the build's own level, for CPUs below every listed one
+            for (const std::string& level : levels) {
+                Symbol* copy = make_version(f, fd, level);
+                if (copy) f->versions.push_back(copy);
+            }
+        }
+    }
+
+    // A copy of `f` (declared by `fd`) checked for the CPU level `level`.
+    Symbol* make_version(Symbol* f, const FunctionDecl& fd, const std::string& level) {
+        Module* home = f->module;
+        ast::Cloner cloner([home](const Symbol& original) {
+            Symbol* copy  = home->make(original.kind, original.name, original.span);
+            Module* owner = copy->module;
+            *copy         = original;
+            copy->module  = owner;
+            copy->type    = nullptr;
+            copy->ct_value.reset();
+            return copy;
+        });
+        std::unique_ptr<FunctionDecl> copy = cloner.function(fd);
+        Symbol* version     = home->make(f->kind, f->name, f->span);
+        version->decl       = copy.get();
+        version->parent     = f->parent;
+        version->access     = f->access;
+        version->ns         = f->ns;
+        version->is_static  = f->is_static;
+        version->cpu_level  = level;
+        version->version_of = f;
+        FunctionDecl& raw   = *copy;
+        program_.cloned_decls.push_back(std::move(copy));
+        std::string before = set_cpu_level_override(level);
+        Module*     saved  = module_;
+        module_            = home;
+        check_function(raw, f->parent && f->parent->is_type() ? f->parent : nullptr);
+        module_ = saved;
+        set_cpu_level_override(before);
+        return version;
+    }
+
+    // The checks of one annotation use (spec 29): run once for every place the annotation is
+    // written, with `annotated` set to what it's written on. A failure is reported at the
+    // annotation, with a note pointing into the check.
     void run_annotation_check(sema::AnnotationCheck& ac) {
         if (ac.done) return;
         ac.done = true;
@@ -227,6 +384,21 @@ public:
                 h.type  = tc_.meta_parameter();
                 h.index = ac.param_index;
                 break;
+            case sema::AnnotationTarget::file: {   // a std::meta::file: the file's name and its module
+                h.kind   = ct::Value::Kind::file;
+                h.type   = tc_.meta_file();
+                h.string = source_path(ac.use->span);
+                for (const auto& [name, m] : program_.modules) {
+                    if (m->source && m->source->id == ac.use->span.file) {
+                        ct::Value mod;
+                        mod.kind   = ct::Value::Kind::string;
+                        mod.type   = tc_.static_str();
+                        mod.string = name;
+                        h.elements.push_back(std::move(mod));
+                    }
+                }
+                break;
+            }
             default: return;
             }
             ac.handle->ct_value = std::make_shared<const ct::Value>(std::move(h));
@@ -251,12 +423,19 @@ public:
         if (ac.origin->name != "std" && !ac.origin->name.starts_with("std::")) note(d, "the check is here", c.condition->span);
     }
 
-    /// build.rifts (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
-    /// calls of the graph's methods fill in program_.build_graph.
+    // build.rifts (spec 25): runs `compile_time void build(mut std::build::graph& g)`, whose
+    // calls of the graph's methods fill in program_.build_graph.
     void run_build() {
         Module* m = program_.entry;
         if (!m) return;
-        const Symbol* fn = m->item("build");
+        // Everything in build.rifts is declared in namespace build (build system).
+        for (const Symbol* item : m->item_order) {
+            if (item->ns == "build" || item->ns.starts_with("build::")) continue;
+            note(error(DiagCode::E4216, item->span, std::format("'{}' is declared outside namespace build", item->name),
+                       "global name in build.rifts"),
+                 "build.rifts declares everything in 'namespace build { ... }'; every target imports it");
+        }
+        const Symbol* fn = m->item("build::build");
         const FunctionDecl* f = fn ? fn->function() : nullptr;
         const Symbol* graph = nullptr;
         if (auto bm = program_.modules.find("std::build"); bm != program_.modules.end()) {
@@ -265,7 +444,7 @@ public:
         Span where = m->source ? Span{m->source->id, 0, 0} : Span{};
         if (!f || !f->is_compile_time || f->params.size() != 1 || !graph) {
             note(error(DiagCode::E4216, fn ? fn->span : where, "build.rifts defines no 'build' function", "no build function"),
-                 "write 'compile_time void build(mut std::build::graph& g) { ... }' (spec 25)");
+                 "write 'namespace build { compile_time void build(mut std::build::graph& g) { ... } }'");
             return;
         }
         ct::Value g;
@@ -274,7 +453,7 @@ public:
         evaluator().call(fn, {g}, fn->span);
     }
 
-    /// `if compile_time (c) { checks }` as a statement of a function's entry, or null.
+    // `if compile_time (c) { checks }` as a statement of a function's entry, or null.
     static IfExpr* entry_gate(Stmt& st) {
         if (st.kind != StmtKind::expression) return nullptr;
         Expr& e = *st.as<ExprStmt>().expr;
@@ -287,16 +466,18 @@ public:
         return &i;
     }
 
-    /// The class of the build mode and the values of its settings (spec 24): the interpreter
-    /// runs the mode's methods once. A mode that removes guards safe code relies on must also
-    /// return true from `allow_undefined_behavior()` (E4215).
+    // The class of the build mode and the values of its settings (spec 24): the interpreter
+    // runs the mode's methods once. A mode that removes guards safe code relies on must also
+    // return true from `allow_undefined_behavior()` (E4215).
     void setup_mode() {
         if (!program_.build_mode_class) {
             for (const char* module : {"std::build::mode", "build"}) {
                 auto m = program_.modules.find(module);
                 if (m == program_.modules.end()) continue;
-                const Symbol* cls = m->second->item(std::string(module) == "build" ? program_.build_mode
-                                                                                    : "std::build::mode::" + program_.build_mode);
+                std::string   key = std::string(module) == "build"
+                                        ? (program_.build_mode.starts_with("build::") ? program_.build_mode : "build::" + program_.build_mode)
+                                        : "std::build::mode::" + program_.build_mode;
+                const Symbol* cls = m->second->item(key);
                 if (cls && cls->kind == SymbolKind::class_) {
                     program_.build_mode_class = cls;
                     break;
@@ -325,12 +506,12 @@ public:
                                   std::format("the mode '{}' turns off {} but does not allow undefined behaviour", mode->name,
                                               ms["bounds"] == "unchecked" ? "bounds checks" : "run_time checks"),
                                   "unsafe mode");
-            note(d, "override 'bool allow_undefined_behavior() override { return true; }' to say so (spec 24)");
+            note(d, "override 'compile_time bool allow_undefined_behavior() override { return true; }' to say so");
         }
     }
 
-    /// A template value argument written in a type (`box<N + 1>`), with `subst` for the
-    /// template parameters in scope there.
+    // A template value argument written in a type (`box<N + 1>`), with `subst` for the
+    // template parameters in scope there.
     const Type* value_arg_for(const Symbol* templ, std::size_t index, Expr& value,
                               const std::map<const Symbol*, const Type*>* subst) {
         if (subst) subst_ = *subst;
@@ -341,7 +522,7 @@ public:
         return evaluate_value_arg(templ, index, value);
     }
 
-    /// The count of a `std::raw::array<T, N>`: a compile-time usize.
+    // The count of a `std::raw::array<T, N>`: a compile-time usize.
     const Type* count_for(Expr& value, const std::map<const Symbol*, const Type*>* subst) {
         if (subst) subst_ = *subst;
         for (const auto& [p, t] : subst_) {
@@ -358,8 +539,8 @@ public:
         return tc_.value_arg(v->integer, want);
     }
 
-    /// Checks one function on demand (a compile_time function that compile-time code calls
-    /// before the normal pass reaches it).
+    // Checks one function on demand (a compile_time function that compile-time code calls
+    // before the normal pass reaches it).
     void check_function_symbol(const Symbol* s) {
         const Decl* d = s->definition ? s->definition : s->decl;
         if (!d || d->kind != DeclKind::function) return;
@@ -369,7 +550,7 @@ public:
         check_function(const_cast<FunctionDecl&>(d->as<FunctionDecl>()), self);
     }
 
-    /// Checks (and evaluates) a global compile_time constant on demand.
+    // Checks (and evaluates) a global compile_time constant on demand.
     void check_global_symbol(const Symbol* g) {
         if (!g->decl) return;
         module_        = g->module;
@@ -377,9 +558,10 @@ public:
         check_decl(const_cast<Decl&>(*g->decl), nullptr);
     }
 
-    /// Checks the members of a template instance (spec 14): `copy` is the instance's own copy of
-    /// the template's declaration, checked with the parameters replaced by their arguments.
+    // Checks the members of a template instance (spec 14): `copy` is the instance's own copy of
+    // the template's declaration, checked with the parameters replaced by their arguments.
     void check_instance(Symbol* inst, Decl& copy) {
+        bind_wrap_handles();
         module_ = inst->module;
         subst_  = inst->template_subst;
         if (copy.kind == DeclKind::enum_) {
@@ -418,10 +600,11 @@ public:
         }
     }
 
-    /// A method of a template instance is used (called, or an operator): its deferred errors
-    /// are reported now, at the use.
+    // A method of a template instance is used (called, or an operator): its deferred errors
+    // are reported now, at the use.
     void use_method(const Symbol* s, Span at) {
         if (!s || !s->decl) return;
+        program_.used_instance_methods.insert(s->decl);
         auto it = program_.deferred_errors.find(s->decl);
         if (it == program_.deferred_errors.end()) return;
         std::vector<Diagnostic> found = std::move(it->second);
@@ -446,8 +629,8 @@ private:
 
     // --- lowering written types -----------------------------------------------------------
 
-    /// A type written in the code being checked: template parameters are those of the instance
-    /// being checked (`subst_`), if any.
+    // A type written in the code being checked: template parameters are those of the instance
+    // being checked (`subst_`), if any.
     const Type* lower(const TypeExpr& t, const std::map<const Symbol*, const Type*>* subst = nullptr) {
         const TypeExpr* named = t.kind == TypeKind::reference ? t.as<ReferenceType>().inner.get() : &t;
         if (named->kind == TypeKind::named && named->as<NamedType>().symbol) deprecated_use(named->as<NamedType>().symbol, named->span);
@@ -456,7 +639,7 @@ private:
 
     // --- the standard library's annotations (spec 29) --------------------------------------
 
-    /// The types an annotation's fields may have (spec 29, rule 1).
+    // The types an annotation's fields may have (spec 29, rule 1).
     bool annotation_value_type(const Type* t, std::set<const Symbol*>& seen) {
         if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || t->is(Kind::type_value)) return true;
         if (t->is(Kind::external) && t->external_base() == "std::span") {
@@ -476,7 +659,7 @@ private:
         return true;
     }
 
-    /// The annotations written on what `s` declares (an instance: on its template).
+    // The annotations written on what `s` declares (an instance: on its template).
     static const std::vector<AnnotationUse>* annotations_of(const Symbol* s) {
         if (!s) return nullptr;
         if (s->kind == SymbolKind::alternative) return s->alternative ? &s->alternative->annotations : nullptr;
@@ -484,7 +667,7 @@ private:
         return s->decl ? &s->decl->annotations : nullptr;
     }
 
-    /// A string field of an annotation's value (`message` of std::deprecated), or "".
+    // A string field of an annotation's value (`message` of std::deprecated), or "".
     std::string annotation_text(const AnnotationUse& u, std::string_view field) {
         std::shared_ptr<const ct::Value> v = u.value_symbol ? ensure_constant(u.value_symbol) : nullptr;
         if (!v || v->kind != ct::Value::Kind::aggregate || !u.symbol) return {};
@@ -497,8 +680,8 @@ private:
         return {};
     }
 
-    /// `@std::deprecated`: a warning at every use of what it's written on (id std::deprecated),
-    /// except inside its own declaration.
+    // `@std::deprecated`: a warning at every use of what it's written on (id std::deprecated),
+    // except inside its own declaration.
     void deprecated_use(const Symbol* s, Span at) {
         const std::vector<AnnotationUse>* uses = annotations_of(s);
         const AnnotationUse*              u    = uses ? sema::find_annotation(*uses, "std::deprecated") : nullptr;
@@ -520,14 +703,14 @@ private:
         note(d, "marked here", u->span);
     }
 
-    /// The function or method a checked call calls, or null.
+    // The function or method a checked call calls, or null.
     static const Symbol* called_symbol(const CallExpr& c) {
         if (c.callee->kind == ExprKind::path) return c.callee->as<PathExpr>().symbol;
         if (c.callee->kind == ExprKind::member) return c.callee->as<MemberExpr>().symbol;
         return nullptr;
     }
 
-    /// The warning ids `@std::allow{ .id = ... }` names on a function (spec 29).
+    // The warning ids `@std::allow{ .id = ... }` names on a function (spec 29).
     static std::vector<std::string> allowed_ids(const FunctionDecl& fn) {
         std::vector<std::string> out;
         for (const AnnotationUse& u : fn.annotations) {
@@ -543,8 +726,8 @@ private:
         return out;
     }
 
-    /// The parameter substitution of the template instance that declares `s` (a member, payload
-    /// or alternative), or null outside instances.
+    // The parameter substitution of the template instance that declares `s` (a member, payload
+    // or alternative), or null outside instances.
     static const std::map<const Symbol*, const Type*>* substitution_of(const Symbol* s) {
         for (; s; s = s->parent) {
             if (!s->template_subst.empty()) return &s->template_subst;
@@ -552,8 +735,8 @@ private:
         return nullptr;
     }
 
-    /// The alternative that `alt` stands for in the enum type `enum_type`: an instance of a template
-    /// enum has its own alternatives (spec 14). `alt` itself otherwise.
+    // The alternative that `alt` stands for in the enum type `enum_type`: an instance of a template
+    // enum has its own alternatives (spec 14). `alt` itself otherwise.
     static Symbol* instance_alternative(Symbol* alt, const Type* enum_type) {
         const Symbol* templ = alt->parent;
         if (!templ || !templ->decl || !templ->decl->is_template || templ->template_of) return alt;
@@ -562,8 +745,8 @@ private:
         return it == enum_type->symbol->members.end() ? alt : it->second.front();
     }
 
-    /// The enum type that an alternative path names: `maybe<u32>::some` names `maybe<u32>`
-    /// (spec 14). A plain enum's alternative names the enum.
+    // The enum type that an alternative path names: `maybe<u32>::some` names `maybe<u32>`
+    // (spec 14). A plain enum's alternative names the enum.
     const Type* enum_type_of(const Symbol* alt, const Path& path) {
         const Symbol* templ = alt->parent;
         if (!templ || !templ->decl || !templ->decl->is_template || templ->template_of || path.segments.size() < 2) {
@@ -572,6 +755,11 @@ private:
         const PathSegment& seg = path.segments[path.segments.size() - 2];
         std::vector<const Type*> args;
         for (const TemplateArg& a : seg.template_args) args.push_back(a.type ? lower(*a.type) : tc_.error());
+        for (std::size_t i = args.size(); i < templ->decl->template_params.size(); ++i) {
+            const TemplateParam& p = templ->decl->template_params[i];
+            if (!p.default_type) break;
+            args.push_back(lower(*p.default_type));
+        }
         if (args.size() != templ->decl->template_params.size()) {
             error(DiagCode::E4180, path.span,
                   std::format("'{}' takes {} template argument{}, but {} {} given", templ->name,
@@ -583,8 +771,8 @@ private:
         return tc_.instance(templ, args);
     }
 
-    /// A type written in the declaration of `owner` (a field, payload, method signature, ...),
-    /// which may belong to a template instance other than the code being checked (spec 14).
+    // A type written in the declaration of `owner` (a field, payload, method signature, ...),
+    // which may belong to a template instance other than the code being checked (spec 14).
     const Type* lower_owned(const Symbol* owner, const TypeExpr& t) { return tc_.lower(t, substitution_of(owner)); }
 
     void set_local(sema::Symbol* sym, const Type* t) {
@@ -616,7 +804,7 @@ private:
         return false;
     }
 
-    /// 0 = exact, 1 = upcast, -1 = not assignable. `from` is the value's type, `to` the target.
+    // 0 = exact, 1 = upcast, -1 = not assignable. `from` is the value's type, `to` the target.
     int assign_cost(const Type* from, const Type* to) {
         if (!from || !to) return 0;
         bool to_ref = to->is(Kind::reference) || to->is(Kind::pointer);
@@ -624,7 +812,11 @@ private:
         const Type* t = types::strip_ref(to);
         if (f->is_unknown() || t->is_unknown()) return 0;
         if (f == t || f->is(Kind::never)) return 0;
-        if (f->is(Kind::external) && t->is(Kind::external)) return 0;
+        if (f->is(Kind::external) && t->is(Kind::external)) {
+            // An f-string is a std::format_args: it doesn't become text without std::format (spec 19).
+            if (f->name == "std::format_args" && t->name != "std::format_args") return -1;
+            return 0;
+        }
         if (f->is(Kind::static_str) && t->is(Kind::external)) return 0;
         if (is_std_string(f) && t->is(Kind::external) && t->name == "std::str" && !to_ref) return 0;   // a borrow (spec 19)
         if (f->is(Kind::static_str) && is_std_string(t) && !to_ref) return 0;   // allocates, with a warning
@@ -641,15 +833,15 @@ private:
         return -1;
     }
 
-    /// Whether `t` is `std::string`: the library's class, or the name before std is imported.
+    // Whether `t` is `std::string`: the library's class, or the name before std is imported.
     bool is_std_string(const Type* t) const {
         if (!t) return false;
         if (t->is(Kind::user)) return t->symbol == std_item("string");
         return t->is(Kind::external) && t->name == "std::string";
     }
 
-    /// A lambda converts to `std::function<R(A...)>` with the same signature, and to
-    /// `std::fn_ptr<R(A...)>` when it captures nothing (spec 18).
+    // A lambda converts to `std::function<R(A...)>` with the same signature, and to
+    // `std::fn_ptr<R(A...)>` when it captures nothing (spec 18).
     bool lambda_fits(const Type* f, const Type* t) const {
         if (!f || !t || !f->is(Kind::closure) || !(t->is(Kind::function) || t->is(Kind::fn_ptr))) return false;
         if (f->args != t->args) return false;
@@ -660,14 +852,17 @@ private:
         return true;
     }
 
-    /// `std::unique_ptr<circle>` → `std::unique_ptr<shape>` (and shared_ptr, weak_ptr): an
-    /// implicit upcast, like `circle&` → `shape&` (spec 07, 13).
+    // `std::unique_ptr<circle>` → `std::unique_ptr<shape>` (and shared_ptr, weak_ptr): an
+    // implicit upcast, like `circle&` → `shape&` (spec 07, 13).
     bool smart_upcast(const Type* f, const Type* t) const {
         if (!f || !t || !f->is(Kind::user) || !t->is(Kind::user) || f == t) return false;
         for (const char* name : {"unique_ptr", "shared_ptr", "weak_ptr"}) {
             const Symbol* templ = std_item(name);
             if (!templ || f->symbol->template_of != templ || t->symbol->template_of != templ) continue;
-            if (f->symbol->template_args.size() != 1 || t->symbol->template_args.size() != 1) return false;
+            const auto& fa_all = f->symbol->template_args;
+            const auto& ta_all = t->symbol->template_args;
+            if (fa_all.empty() || fa_all.size() != ta_all.size()) return false;
+            if (!std::equal(fa_all.begin() + 1, fa_all.end(), ta_all.begin() + 1)) return false;   // the same allocator
             const Type* fa = f->symbol->template_args[0];
             const Type* ta = t->symbol->template_args[0];
             return fa->is(Kind::user) && ta->is(Kind::user) && is_ancestor(fa->symbol, ta->symbol);
@@ -711,8 +906,8 @@ private:
 
     // --- the standard library's core types (spec 08, 11) ------------------------------------
 
-    /// The modules whose items code in this module can name (spec 30): itself, its imports and,
-    /// after `import std;`, the standard library's modules.
+    // The modules whose items code in this module can name (spec 30): itself, its imports and,
+    // after `import std;`, the standard library's modules.
     std::vector<const Module*> visible_modules() const {
         std::vector<const Module*> out;
         if (!module_) return out;
@@ -730,24 +925,24 @@ private:
         return out;
     }
 
-    /// An item of the built-in std module (`option`, `result`, `exit_code`), or null when no
-    /// file imports std.
+    // An item of the built-in std module (`option`, `result`, `exit_code`), or null when no
+    // file imports std.
     const Symbol* std_item(std::string_view name) const {
         const Module* m = program_.std_module;
         if (!m) return nullptr;
         return m->item("std::" + std::string(name));
     }
 
-    /// `std::ordering`, the result of `<=>` (spec 16).
+    // `std::ordering`, the result of `<=>` (spec 16).
     const Type* ordering_type() {
         if (const Symbol* o = std_item("ordering")) return tc_.user(o);
         return tc_.external("std::ordering");
     }
 
-    /// Whether `t` (references removed) is an instance of the std template `name`: `std::option<u32>`.
+    // Whether `t` (references removed) is an instance of the std template `name`: `std::option<u32>`.
     static bool is_std_instance(const Type* t, std::string_view name) { return types::is_std_instance(t, name); }
 
-    /// `r?` (spec 11): unwraps `ok`/`some`, or returns the error / `none` from the function.
+    // `r?` (spec 11): unwraps `ok`/`some`, or returns the error / `none` from the function.
     const Type* infer_try(TryExpr& t) {
         const Type* o = infer(*t.operand);
         const Type* s = types::strip_ref(o);
@@ -789,8 +984,8 @@ private:
         return set(t, s->symbol->template_args[0]);
     }
 
-    /// `value_or`, `expect`, `or_error`, `map_error` on std::option / std::result (spec 11). They
-    /// consume the receiver.
+    // `value_or`, `expect`, `or_error`, `map_error` on std::option / std::result (spec 11). They
+    // consume the receiver.
     const Type* infer_std_method(CallExpr& c, const Type* t, const std::string& name, std::vector<Expr*>& args) {
         c.callee->type     = tc_.error();
         const Type* value  = t->symbol->template_args[0];
@@ -855,8 +1050,8 @@ private:
         return set(c, tc_.error());
     }
 
-    /// `std::some`, `std::none`, `std::ok`, `std::error` written without template arguments: the
-    /// alternatives std exports directly, whose arguments come from context (spec 08).
+    // `std::some`, `std::none`, `std::ok`, `std::error` written without template arguments: the
+    // alternatives std exports directly, whose arguments come from context (spec 08).
     static bool is_std_export(const PathExpr& pe) {
         const Symbol* s = pe.symbol;
         return s && s->kind == SymbolKind::alternative && pe.path.segments.size() == 2 &&
@@ -864,7 +1059,7 @@ private:
                s->parent->decl && s->parent->decl->is_template && !s->parent->template_of;
     }
 
-    /// Index of the template parameter that the payload of `alt` is (`some(T)` -> T), or -1.
+    // Index of the template parameter that the payload of `alt` is (`some(T)` -> T), or -1.
     static int payload_param(const Symbol* alt) {
         const TypeExpr* p = alt->alternative->payload.get();
         if (!p || p->kind != TypeKind::named) return -1;
@@ -877,8 +1072,8 @@ private:
         return -1;
     }
 
-    /// The type of `std::ok(x)` / `std::none`: the instance when the payload fixes every
-    /// template argument, otherwise a pending type that context completes later.
+    // The type of `std::ok(x)` / `std::none`: the instance when the payload fixes every
+    // template argument, otherwise a pending type that context completes later.
     const Type* std_alternative_type(PathExpr& pe, Expr* payload) {
         const Symbol*            alt   = pe.symbol;
         const Symbol*            templ = alt->parent;
@@ -897,7 +1092,7 @@ private:
         return et;
     }
 
-    /// A pending `std::ok(x)` / `std::none` meets the type `t` it is used as.
+    // A pending `std::ok(x)` / `std::none` meets the type `t` it is used as.
     void settle_pending(Expr& e, const Type* t) {
         const Type* p       = e.type;
         auto&       pe      = e.kind == ExprKind::call ? e.as<CallExpr>().callee->as<PathExpr>() : e.as<PathExpr>();
@@ -948,8 +1143,8 @@ private:
 
     // --- untyped values -------------------------------------------------------------------
 
-    /// Gives an untyped value (literal, `bit(n)`, `default`, or arithmetic on those) the type
-    /// `target`, checking that it fits.
+    // Gives an untyped value (literal, `bit(n)`, `default`, or arithmetic on those) the type
+    // `target`, checking that it fits.
     void settle(Expr& e, const Type* target, bool negative = false) {
         const Type* t = types::strip_ref(target);
         if (t->is_untyped()) return;   // still no context: leave it untyped
@@ -1020,6 +1215,8 @@ private:
             e.type = t;
             check_has_default(t, e.span);
             return;
+        case ExprKind::tuple: settle_tuple(e.as<TupleExpr>(), t); return;
+        case ExprKind::list: settle_list(e.as<ListExpr>(), t); return;
         case ExprKind::block: {
             auto& b = e.as<BlockExpr>();
             if (b.tail) settle(*b.tail, target, negative);
@@ -1042,8 +1239,8 @@ private:
         }
     }
 
-    /// The expression's value is used where `target` is expected: settle untyped values,
-    /// otherwise check assignability.
+    // The expression's value is used where `target` is expected: settle untyped values,
+    // otherwise check assignability.
     void coerce(Expr& e, const Type* target) {
         if (!target || !e.type) return;
         if (e.type->is_untyped()) {
@@ -1065,6 +1262,10 @@ private:
             }
         }
         const Type* t = types::strip_ref(target);
+        if (e.kind == ExprKind::tuple && t->is(Kind::tuple)) {
+            settle_tuple(e.as<TupleExpr>(), t);
+            return;
+        }
         if (some_reference(e, t)) return;
         if (e.type->is(Kind::void_) && !t->is(Kind::void_) && !t->is_unknown()) {
             Span end = Span{e.span.file, e.span.end > 0 ? e.span.end - 1 : 0, e.span.end};
@@ -1107,8 +1308,8 @@ private:
         }
     }
 
-    /// `std::some(x)` where a `std::option<T&>` is expected: the option refers to the place x
-    /// (spec 11, 20: `a.get(i)`). True when `e` was such a call and is now typed `t`.
+    // `std::some(x)` where a `std::option<T&>` is expected: the option refers to the place x
+    // (spec 11, 20: `a.get(i)`). True when `e` was such a call and is now typed `t`.
     bool some_reference(Expr& e, const Type* t) {
         if (e.kind != ExprKind::call || !is_std_instance(t, "option") || t->symbol->template_args.size() != 1) return false;
         const Type* want = t->symbol->template_args[0];
@@ -1135,10 +1336,23 @@ private:
         return true;
     }
 
-    /// An untyped value in a place without any context (`auto x = 5;`, `if (3 < 4)`).
+    // An untyped value in a place without any context (`auto x = 5;`, `if (3 < 4)`).
     void no_context(Expr& e, std::string_view where) {
         if (e.type && e.type->is(Kind::pending)) {
             no_context_pending(e, where);
+            return;
+        }
+        if (e.kind == ExprKind::list) {
+            Diagnostic& d = error(DiagCode::E4001, e.span, std::format("this list literal has no type {}", where), "type unknown");
+            note(d, "a list literal becomes a std::array or a std::span: write e.g. 'std::array<u32, 3> x = [1, 2, 3];'");
+            e.type = tc_.error();
+            return;
+        }
+        if (e.kind == ExprKind::tuple) {
+            for (ExprPtr& x : e.as<TupleExpr>().elements) {
+                if (x->type && x->type->is_untyped()) no_context(*x, where);
+            }
+            e.type = tc_.error();
             return;
         }
         std::string what = e.type == tc_.untyped_default() ? "'default'"
@@ -1157,10 +1371,10 @@ private:
         e.type = tc_.error();
     }
 
-    /// `{expr:spec}` in an f-string: the value needs a type, and the spec must fit it (spec 19).
-    /// An f-string passed to a function's `std::format_args` parameter is evaluated only if the
-    /// function formats it (spec 31), so its holes can't change anything. (std::println,
-    /// std::format and std::panic always format it, once.)
+    // `{expr:spec}` in an f-string: the value needs a type, and the spec must fit it (spec 19).
+    // An f-string passed to a function's `std::format_args` parameter is evaluated only if the
+    // function formats it (spec 31), so its holes can't change anything. (std::println,
+    // std::format and std::panic always format it, once.)
     void check_lazy_holes(Expr& arg) {
         if (arg.kind != ExprKind::string_literal || arg.as<LiteralExpr>().token_kind != TokenKind::format_string_literal) return;
         for (FormatPart& part : arg.as<LiteralExpr>().format_parts) {
@@ -1278,6 +1492,20 @@ private:
                 return;
             }
             if (!begin_check(&d)) return;
+            if (d.kind == DeclKind::field && v.init->kind == ExprKind::default_ && !subst_.empty()) {
+                // `A alloc = default;` in an instance: without a default for this argument the
+                // instance just has no default either (allocators: `std::arena_allocator`).
+                const Type* declared = lower(*v.type);
+                std::size_t mark     = diags_.size();
+                check_has_default(declared, v.init->span);
+                if (diags_.size() != mark) {
+                    (void)diags_.take_since(mark);
+                    if (Symbol* f = symbol_for(d)) f->no_default = true;
+                    v.init->type = declared;
+                    end_check(&d);
+                    return;
+                }
+            }
             std::size_t   errors = diags_.error_count();
             FunctionState saved = fn_;
             fn_                 = FunctionState{};
@@ -1359,6 +1587,11 @@ private:
         return it->second.front()->is_type() ? it->second.front() : nullptr;
     }
 
+    // Whether `fn` is a template with a parameter pack (templates, "Parameter packs").
+    static bool has_pack(const FunctionDecl& fn) {
+        return fn.is_template && std::any_of(fn.template_params.begin(), fn.template_params.end(), [](const TemplateParam& p) { return p.is_pack; });
+    }
+
     void check_function(FunctionDecl& fn, Symbol* self) {
         if (!fn.body) return;
         if (!begin_check(&fn)) return;   // checked already (on demand, for compile-time code)
@@ -1379,6 +1612,11 @@ private:
         fn_.name            = fn.name;
         fn_.generic         = (fn.is_template && subst_.empty()) ||
                       (self && self->decl && self->decl->is_template && !self->template_of);
+        if (has_pack(fn)) {   // a pack template's body is checked per argument count, in its instances
+            fn_ = saved;
+            end_check(&fn);
+            return;
+        }
         if (fn.is_unsafe) ++unsafe_depth_;
         std::vector<std::string> allowed = allowed_ids(fn);   // `@std::allow{ .id = ... }` (spec 29)
         program_.allowed_warnings.insert(program_.allowed_warnings.end(), allowed.begin(), allowed.end());
@@ -1442,7 +1680,7 @@ private:
 
     // --- compile time (spec 15, 26) -------------------------------------------------------
 
-    /// Types whose values exist only at compile time: `type`, std::meta data, lists of them.
+    // Types whose values exist only at compile time: `type`, std::meta data, lists of them.
     bool compile_time_only(const Type* t) const {
         t = types::strip_ref(t);
         if (!t) return false;
@@ -1505,11 +1743,11 @@ private:
         return *evaluator_;
     }
 
-    /// Evaluates a checked expression at compile time; null when it cannot be (reported, or it
-    /// depends on a template parameter, see `evaluator().unknown()`).
-    /// A call of a compile_time-only function in run-time code runs at compile time: its
-    /// result is a constant (spec 15). So does a settings method called on the build mode
-    /// (`std::build::current_mode().optimization()`, spec 24).
+    // Evaluates a checked expression at compile time; null when it cannot be (reported, or it
+    // depends on a template parameter, see `evaluator().unknown()`).
+    // A call of a compile_time-only function in run-time code runs at compile time: its
+    // result is a constant (spec 15). So does a settings method called on the build mode
+    // (`std::build::current_mode().optimization()`, spec 24).
     void fold_compile_time_call(CallExpr& c) {
         if (c.constant || fn_.is_compile_time || fn_.generic || !c.type || c.type->is_unknown()) return;
         const Symbol* s = nullptr;
@@ -1540,7 +1778,7 @@ private:
         return evaluator().evaluate(e, why);
     }
 
-    /// The compile-time value a template value argument stands for.
+    // The compile-time value a template value argument stands for.
     ct::Value value_of_arg(const Type* arg) const {
         if (std::shared_ptr<const void> rich = tc_.value_payload(arg)) return *std::static_pointer_cast<const ct::Value>(rich);
         const Type* of = arg->inner;
@@ -1548,7 +1786,7 @@ private:
         return ct::Value::of_integer(tc_.value_bits(arg), of);
     }
 
-    /// Evaluates a template value argument for the parameter `index` of `templ` (spec 14).
+    // Evaluates a template value argument for the parameter `index` of `templ` (spec 14).
     const Type* evaluate_value_arg(const Symbol* templ, std::size_t index, Expr& value) {
         if (!templ->decl || index >= templ->decl->template_params.size() || templ->decl->template_params[index].is_type ||
             !templ->decl->template_params[index].value_type) {
@@ -1571,7 +1809,7 @@ private:
         return tc_.value_arg(v->kind == ct::Value::Kind::boolean ? u128{v->boolean} : v->integer, want);
     }
 
-    /// The type a type value denotes, when the expression is one (`u32`, `point`, `T`).
+    // The type a type value denotes, when the expression is one (`u32`, `point`, `T`).
     const Type* denoted_type(const Expr& e) const {
         if (!e.constant || e.constant->kind != ct::Value::Kind::type) return nullptr;
         return e.constant->type_value;
@@ -1581,8 +1819,8 @@ private:
 
     enum class Where { file_scope, type_body, entry, body };
 
-    /// Whether a check's mode list includes the mode being built (spec 23, 24). Built-in modes
-    /// only, until build.rifts can define more.
+    // Whether a check's mode list includes the mode being built (spec 23, 24). Built-in modes
+    // only, until build.rifts can define more.
     bool mode_active(const std::vector<std::string>& modes, Span span) {
         if (modes.empty()) return true;
         const std::string& m      = program_.build_mode;
@@ -1592,7 +1830,7 @@ private:
             if (path.starts_with("build::")) {   // a mode class of build.rifts (spec 24, open question 31)
                 const Symbol* cls = nullptr;
                 if (auto bm = program_.modules.find("build"); bm != program_.modules.end()) {
-                    cls = bm->second->item(path.substr(7));
+                    cls = bm->second->item(path);
                 }
                 if (!cls || cls->kind != SymbolKind::class_) {
                     note(error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode"),
@@ -1669,7 +1907,7 @@ private:
         fn_.is_compile_time = saved;
     }
 
-    /// A file-scope or type-body compile_time check: evaluated once (per instance for templates).
+    // A file-scope or type-body compile_time check: evaluated once (per instance for templates).
     void run_check_now(Check& c, Span span, Symbol* self) {
         if (self && self->decl && self->decl->is_template && !self->template_of) return;   // the generic template
         if (c.block) {
@@ -1687,11 +1925,12 @@ private:
         (void)span;
     }
 
-    /// The entry checks of `callee` for one call (spec 23): compile_time checks are evaluated with
-    /// the call's arguments, which must then be compile-time values; `compile_time run_time`
-    /// checks are evaluated when the arguments happen to be known.
+    // The entry checks of `callee` for one call (spec 23): compile_time checks are evaluated with
+    // the call's arguments, which must then be compile-time values; `compile_time run_time`
+    // checks are evaluated when the arguments happen to be known.
     void run_entry_checks(const Symbol* callee, CallExpr& c, const std::vector<Expr*>& args) {
         if (fn_.is_compile_time) return;   // compile-time code: the evaluator runs them when it calls
+        if (own_entry_fails()) return;     // a body that is never reached
         const Decl* d = callee->definition ? callee->definition : callee->decl;
         if (!d || d->kind != DeclKind::function) return;
         const auto& f = d->as<FunctionDecl>();
@@ -1758,11 +1997,41 @@ private:
             if (!v || v->kind != ct::Value::Kind::boolean || v->boolean) continue;
             ctx.quiet = true;   // the arguments are known now
             std::shared_ptr<const ct::Value> m = evaluator().evaluate_in(*k.message, "", ctx);
+            // The author's message is the only one for this call: errors from instantiating the
+            // callee's body (outside the call's own text) are dropped (spec 23, "Order").
+            if (auto mark = call_marks_.find(&c); mark != call_marks_.end() && mark->second <= diags_.size()) {
+                for (Diagnostic& found : diags_.take_since(mark->second)) {
+                    bool inside = found.span.file == c.span.file && found.span.begin >= c.span.begin && found.span.end <= c.span.end;
+                    if (inside) diags_.add(std::move(found));
+                }
+            }
             Diagnostic& e = error(DiagCode::E4210, c.span, m && m->kind == ct::Value::Kind::string ? m->string : "check failed",
                                   "this call fails the check");
             note(e, std::format("the check of '{}' is here", callee->name), k.condition->span);
         }
     }
+
+    // Whether one of the current function's own compile_time entry checks fails whatever the
+    // arguments (a capability the target lacks). Such a body is never reached, so the checks of
+    // the calls in it stay quiet and the caller gets the author's message once (spec 23,
+    // "Order"). Evaluated at the first call in the body, when the entry has been checked.
+    bool own_entry_fails() {
+        if (fn_.entry_known || !fn_.decl || !fn_.decl->body) return fn_.entry_failed;
+        fn_.entry_known = true;
+        for (StmtPtr& st : fn_.decl->body->statements) {
+            if (st->kind != StmtKind::check) break;
+            Check& k = st->as<CheckStmt>().check;
+            if (!k.is_compile_time || k.is_run_time || !k.condition || !k.condition->type) continue;
+            ct::Evaluator::Context q;
+            q.quiet = true;
+            std::shared_ptr<const ct::Value> v = evaluator().evaluate_in(*k.condition, "", q);
+            if (v && v->kind == ct::Value::Kind::boolean && !v->boolean) fn_.entry_failed = true;
+        }
+        return fn_.entry_failed;
+    }
+
+    // The number of diagnostics when the inference of each call began.
+    std::map<const CallExpr*, std::size_t> call_marks_;
 
     LineCol sources_line(Span span) const;
 
@@ -1811,6 +2080,19 @@ private:
     }
 
     void check_stmt(Stmt& s) {
+        if (s.allowed.empty()) return check_stmt_inner(s);
+        std::size_t n = 0;   // `@std::allow{ .id = ... } stmt;`: silenced for this statement alone
+        for (ExprPtr& id : s.allowed) {
+            const Symbol* sym = id->kind == ExprKind::path ? id->as<PathExpr>().symbol : nullptr;
+            if (!sym) continue;   // unknown: reported by name resolution
+            program_.allowed_warnings.push_back(sym->key());
+            ++n;
+        }
+        check_stmt_inner(s);
+        program_.allowed_warnings.resize(program_.allowed_warnings.size() - n);
+    }
+
+    void check_stmt_inner(Stmt& s) {
         switch (s.kind) {
         case StmtKind::variable: {
             auto& v = s.as<VariableStmt>();
@@ -1857,6 +2139,7 @@ private:
             check_check(c, c.is_entry ? Where::entry : Where::body, s.span);
             return;
         }
+        case StmtKind::destructure: check_destructure(s.as<DestructureStmt>()); return;
         case StmtKind::discard: {
             Expr& v = *s.as<DiscardStmt>().value;
             if (infer(v)->is(Kind::pending)) no_context(v, "here ('_ =' needs a value whose type is known)");
@@ -2007,8 +2290,19 @@ private:
             return p;
         }
         case ExprKind::index: {
-            Place base = place_of(*e.as<IndexExpr>().object);
+            const auto& ix   = e.as<IndexExpr>();
+            Place       base = place_of(*ix.object);
             base.name += "[...]";
+            // `std::span<mut T>`: a non-mut `operator[]` that gives `mut T&` (spec 20).
+            const Type* ot = ix.object->type ? types::strip_ref(ix.object->type) : nullptr;
+            bool span_mut  = (ot && ot->is_unknown()) || (ot && ot->is(Kind::user) && (ot->symbol->name == "span_mut" ||
+                                                          (ot->symbol->template_of && ot->symbol->template_of->name == "span_mut")));
+            if (const FunctionDecl* f = ix.op_symbol ? ix.op_symbol->function() : nullptr;
+                span_mut || (f && !f->is_mut && f->result && f->result->kind == TypeKind::reference && f->result->as<ReferenceType>().is_mut)) {
+                base.is_place   = true;
+                base.is_mutable = true;
+                return base;
+            }
             if (!base.is_place) {
                 base.is_place = base.is_mutable = true;
             }
@@ -2159,6 +2453,10 @@ private:
         case ExprKind::cast: return infer_cast(e.as<CastExpr>());
         case ExprKind::bit: return infer_bit(e.as<BitExpr>());
         case ExprKind::struct_literal: return infer_struct_literal(e.as<StructLiteralExpr>());
+        case ExprKind::tuple: return infer_tuple(e.as<TupleExpr>());
+        case ExprKind::list:
+            for (ExprPtr& x : e.as<ListExpr>().elements) infer(*x);
+            return set(e, tc_.untyped_list());
         case ExprKind::lambda: return infer_lambda(e.as<LambdaExpr>());
         case ExprKind::if_: return infer_if(e.as<IfExpr>());
         case ExprKind::match: return infer_match(e.as<MatchExpr>());
@@ -2231,7 +2529,32 @@ private:
         Diagnostic& d = error(DiagCode::E4012, e.span, std::format("{} does not convert to bool", quoted(t)),
                               "not a condition");
         if (t->is_float()) note(d, "floats are not conditions (NaN makes \"is zero\" ambiguous); write 'x != 0.0'");
+        else if (t->is(Kind::mask)) note(d, "a mask has one answer per lane: write '.any()' or '.all()'");
         else note(d, "only bool, integers and std::raw_ptr can be conditions");
+    }
+
+    // The limit constants of a number type: `T::min`, `T::max`, `T::bits`; floats also
+    // `infinity`, `nan`, `epsilon`.
+    std::optional<ct::Value> number_limit(const Type* t, std::string_view name) {
+        if (name == "bits") return ct::Value::of_integer(static_cast<u128>(t->bits), tc_.builtin("u32"));
+        if (t->is_integer()) {
+            u128 one = 1;
+            u128 umax = t->bits >= 128 ? ~u128{0} : (one << t->bits) - 1;
+            if (name == "max") return ct::Value::of_integer(t->is_signed ? umax >> 1 : umax, t);
+            if (name == "min") return ct::Value::of_integer(t->is_signed ? (umax >> 1) + 1 : 0, t);
+            return std::nullopt;
+        }
+        ct::Value v;
+        v.kind = ct::Value::Kind::floating;
+        v.type = t;
+        bool f32 = t->bits == 32;
+        if (name == "max") v.floating = f32 ? static_cast<double>(std::numeric_limits<float>::max()) : std::numeric_limits<double>::max();
+        else if (name == "min") v.floating = f32 ? -static_cast<double>(std::numeric_limits<float>::max()) : -std::numeric_limits<double>::max();
+        else if (name == "infinity") v.floating = std::numeric_limits<double>::infinity();
+        else if (name == "nan") v.floating = std::numeric_limits<double>::quiet_NaN();
+        else if (name == "epsilon") v.floating = f32 ? static_cast<double>(std::numeric_limits<float>::epsilon()) : std::numeric_limits<double>::epsilon();
+        else return std::nullopt;
+        return v;
     }
 
     const Type* infer_path(PathExpr& pe) {
@@ -2242,6 +2565,26 @@ private:
                 if (const Type* b = tc_.builtin(pe.path.segments[0].name)) {
                     pe.constant = std::make_shared<const ct::Value>(ct::Value::of_type(b, tc_.type_value()));
                     return set(pe, tc_.type_value());
+                }
+            }
+            // `std::fn_ptr<R(A...)>`, `std::function<R(A...)>`: built-in callable types as values.
+            if (const auto& segs = pe.path.segments; segs.size() >= 2 && segs[0].name == "std" && segs.back().template_args.size() == 1 &&
+                segs.back().template_args[0].type && segs.back().template_args[0].type->kind == TypeKind::function) {
+                set(pe, tc_.type_value());
+                pe.constant = evaluate(pe, "");
+                return set(pe, pe.constant ? tc_.type_value() : tc_.error());
+            }
+            // `u32::max`, `i8::min`, `u64::bits`, `f32::infinity` (limits of number types).
+            if (pe.path.segments.size() == 2 && !pe.path.segments[0].has_template_args) {
+                if (const Type* b = tc_.builtin(pe.path.segments[0].name); b && b->is_numeric()) {
+                    if (auto v = number_limit(b, pe.path.segments[1].name)) {
+                        pe.constant = std::make_shared<const ct::Value>(*v);
+                        return set(pe, v->type);
+                    }
+                    error(DiagCode::E3025, pe.path.segments[1].span,
+                          std::format("'{}' has no constant '{}'", b->name, pe.path.segments[1].name),
+                          b->is_integer() ? "integers have min, max and bits" : "floats have min, max, bits, infinity, nan and epsilon");
+                    return set(pe, tc_.error());
                 }
             }
             return set(pe, tc_.error());
@@ -2285,9 +2628,9 @@ private:
         }
     }
 
-    /// `x.join()` where `join` ends with `move` (spec 06, 27): `x` must be a value the caller owns,
-    /// a local variable, a by-value parameter or a temporary, never something reached through a
-    /// reference, a field or `this` of a method that doesn't consume it.
+    // `x.join()` where `join` ends with `move` (spec 06, 27): `x` must be a value the caller owns,
+    // a local variable, a by-value parameter or a temporary, never something reached through a
+    // reference, a field or `this` of a method that doesn't consume it.
     void check_consumed_receiver(const Expr& object, const std::string& name, Span span) {
         const Expr* o = &object;
         if (o->kind == ExprKind::unary && o->as<UnaryExpr>().op == UnaryOp::move) o = o->as<UnaryExpr>().operand.get();
@@ -2361,7 +2704,7 @@ private:
         return l;
     }
 
-    /// Checks that `op` applies to values of type `t` (already unified).
+    // Checks that `op` applies to values of type `t` (already unified).
     bool check_operator_type(TokenKind op, const Type* t, Span span) {
         if (t->is_unknown() || t->is_untyped() || t->is(Kind::external)) return true;
         std::string_view o = token_kind_spelling(op);
@@ -2383,8 +2726,8 @@ private:
         return false;
     }
 
-    /// A user-defined operator for `l op r`: a method `operator op` on `l` or a free function.
-    /// `found` (if given) receives the operator's symbol.
+    // A user-defined operator for `l op r`: a method `operator op` on `l` or a free function.
+    // `found` (if given) receives the operator's symbol.
     const Type* find_operator(std::string_view op, const Type* l, const Type* r, Symbol** found = nullptr) {
         auto try_fn = [&](Symbol* s, bool is_method) -> const Type* {
             const Type* t = match_operator(s, is_method, op, l, r);
@@ -2410,8 +2753,8 @@ private:
         }
     }
 
-    /// Whether an operand of type `from` can be passed for an operator parameter of type `to`;
-    /// an untyped literal takes the parameter's type (spec 02).
+    // Whether an operand of type `from` can be passed for an operator parameter of type `to`;
+    // an untyped literal takes the parameter's type (spec 02).
     bool operand_fits(const Type* from, const Type* to) {
         const Type* t = types::strip_ref(to);
         switch (from->kind) {
@@ -2422,7 +2765,7 @@ private:
         }
     }
 
-    /// Gives the untyped literal operands of the operator call the types of its parameters.
+    // Gives the untyped literal operands of the operator call the types of its parameters.
     void settle_operands(const Symbol* s, Expr* lhs, Expr& rhs) {
         const FunctionDecl* f = s->function();
         if (!f) return;
@@ -2471,6 +2814,26 @@ private:
         const Type* l = types::strip_ref(infer(*b.lhs));
         const Type* r = types::strip_ref(infer(*b.rhs));
 
+        if (l->is(Kind::vector) || r->is(Kind::vector) || l->is(Kind::mask) || r->is(Kind::mask)) return infer_vector_binary(b, l, r);
+        if (l->is(Kind::tuple) || r->is(Kind::tuple)) {   // element by element
+            const Type* t = l->is(Kind::tuple) ? l : r;
+            coerce(*b.lhs, t);
+            coerce(*b.rhs, t);
+            bool is_eq   = op == TokenKind::eq_eq || op == TokenKind::bang_eq;
+            bool ordered = op == TokenKind::spaceship || is_comparison(op);
+            if (!is_eq && !ordered) {
+                error(DiagCode::E4013, b.span, std::format("operator '{}' is not defined for tuples", token_kind_spelling(op)),
+                      "no such operator");
+                return set(b, tc_.error());
+            }
+            if (!tuple_comparable(t, ordered)) {
+                note(error(DiagCode::E4013, b.span, std::format("{} values cannot be {}", quoted(t), ordered ? "ordered" : "compared"),
+                           "not comparable"),
+                     "tuples compare element by element; every element must support the operator");
+            }
+            return set(b, op == TokenKind::spaceship ? ordering_type() : tc_.bool_());
+        }
+
         if (op == TokenKind::spaceship) {
             if (l->is(Kind::user) || r->is(Kind::user)) {
                 if (const Type* res = find_operator("<=>", l, r, &b.op_symbol)) {
@@ -2515,6 +2878,9 @@ private:
                 unify_operands(*b.lhs, *b.rhs, l, r, b.span, "operands");
                 return set(b, tc_.error());
             }
+            // The generic check of a template: one side depends on a template parameter, so its
+            // operators are only known per instantiation, which is checked again.
+            if (l->is_unknown() || r->is_unknown()) return set(b, is_eq || is_comparison(op) ? tc_.bool_() : tc_.error());
             error(DiagCode::E4013, b.span,
                   std::format("operator '{}' is not defined for {}", token_kind_spelling(op), quoted(l->is(Kind::user) ? l : r)),
                   "no such operator");
@@ -2564,7 +2930,7 @@ private:
                            [](const Symbol* a) { return a->alternative && a->alternative->payload; });
     }
 
-    /// Constant shift counts must be smaller than the width (spec 16).
+    // Constant shift counts must be smaller than the width (spec 16).
     void check_shift_count(const Expr& count, const Type* t) {
         if (!t->is_integer()) return;
         const Expr* c = &count;
@@ -2613,6 +2979,14 @@ private:
                   "no such operator");
             return set(u, tc_.error());
         }
+        if ((s->is(Kind::vector) || s->is(Kind::mask)) && (u.op == UnaryOp::negate || u.op == UnaryOp::bit_not || u.op == UnaryOp::logical_not)) {
+            bool ok = s->is(Kind::mask) ? u.op == UnaryOp::logical_not
+                    : u.op == UnaryOp::negate ? (s->inner->is_float() || s->inner->is_signed) : u.op == UnaryOp::bit_not && s->inner->is_integer();
+            if (!ok) {
+                error(DiagCode::E4013, u.span, std::format("this operator does not apply to {}", quoted(s)), "not defined");
+            }
+            return set(u, s);
+        }
         switch (u.op) {
         case UnaryOp::negate:
             if (s->is_untyped()) return set(u, s);
@@ -2644,6 +3018,10 @@ private:
             return set(u, tc_.pointer(s, true));
         case UnaryOp::move:
         case UnaryOp::mut_marker: return set(u, t);
+        case UnaryOp::spread:
+            error(DiagCode::E4030, u.span, "only a parameter pack is passed on with '...', as an argument for another pack",
+                  "not a pack");
+            return set(u, tc_.error());
         }
         return set(u, tc_.error());
     }
@@ -2722,6 +3100,17 @@ private:
             }
             return set(m, tc_.error());
         }
+        if (t->is(Kind::tuple)) {   // `t.0`: an element by position
+            std::size_t i = 0;
+            bool        ok = !name.empty() && name.find_first_not_of("0123456789") == std::string::npos;
+            if (ok) i = static_cast<std::size_t>(std::stoull(name));
+            if (!ok || i >= t->args.size()) {
+                error(DiagCode::E4070, m.name.span,
+                      std::format("{} has elements .0 to .{}", quoted(t), t->args.size() - 1), "no such element");
+                return set(m, tc_.error());
+            }
+            return set(m, t->args[i]);
+        }
         if (!t->is(Kind::user)) return set(m, tc_.error());
         bool    opaque = false;
         Symbol* mem    = m.symbol ? m.symbol : find_member(t->symbol, name, opaque);
@@ -2752,8 +3141,8 @@ private:
 
     // --- reflection (spec 26) -------------------------------------------------------------
 
-    /// `std::is_integer<T>()`, `std::size_of<T>()`, `std::meta::fields<T>()`, ...: compile-time
-    /// functions of the compiler. Their value is computed here, so run-time code gets a constant.
+    // `std::is_integer<T>()`, `std::size_of<T>()`, `std::meta::fields<T>()`, ...: compile-time
+    // functions of the compiler. Their value is computed here, so run-time code gets a constant.
     const Type* infer_builtin(CallExpr& c, const std::string& name) {
         if (name.starts_with("compile_")) return infer_diagnostic(c, name);
         if (name == "is_compile_time" || name == "location_of" || name == "literal_text") return infer_parameter_query(c, name);
@@ -2778,6 +3167,11 @@ private:
             if (c.args[0]->constant) c.constant = evaluate(c, "");
             return t;
         }
+        if (name == "meta::compiler_version") {   // the riftc that compiles the program (plugins)
+            set(c, tc_.static_str());
+            c.constant = evaluate(c, "");
+            return tc_.static_str();
+        }
         auto&       seg   = c.callee->as<PathExpr>().path.segments.back();
         std::size_t wants = name == "is_same" || name == "implements" || name == "meta::annotation" || name == "meta::has_annotation" ? 2 : 1;
         if (seg.template_args.size() != wants || !c.args.empty()) {
@@ -2795,25 +3189,27 @@ private:
                       : name == "meta::result_of"                 ? tc_.type_value()
                       : name == "meta::fields"                    ? list_of(tc_.meta_field())
                       : name == "meta::alternatives"              ? list_of(tc_.meta_alternative())
-                      : name == "meta::methods"                   ? list_of(tc_.meta_function())
+                      : name == "meta::methods" || name == "meta::functions_with" ? list_of(tc_.meta_function())
+                      : name == "meta::types_with"                ? list_of(tc_.type_value())
                       : name == "meta::interfaces" || name == "meta::template_args" ? list_of(tc_.type_value())
                       : name == "meta::annotation"                ? option_of_annotation(seg.template_args[0], c.span)
+                      : name == "meta::interface_hash"            ? tc_.builtin("u64")
                                                                   : tc_.bool_();
         set(c, t);
         c.constant = evaluate(c, "");
         return t;
     }
 
-    /// `std::raw::allocate<T>(n)`, `reallocate(p, n)`, `free(p)`, `read(p)`, `write(p, v)`,
-    /// `drop(p)` and `copy(to, from, n)`: the memory operations the library is written with
-    /// (spec 13). All of them require `unsafe`.
-    /// The thread intrinsics of std::raw (spec 27): atomic operations on memory, the futex and
-    /// the spin-loop hint. The library's synchronized types are written with them.
+    // `std::raw::allocate<T>(n)`, `reallocate(p, n)`, `free(p)`, `read(p)`, `write(p, v)`,
+    // `drop(p)` and `copy(to, from, n)`: the memory operations the library is written with
+    // (spec 13). All of them require `unsafe`.
+    // The thread intrinsics of std::raw (spec 27): atomic operations on memory, the futex and
+    // the spin-loop hint. The library's synchronized types are written with them.
     const Type* infer_thread_raw(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
         static const std::map<std::string, std::size_t> arity{
             {"atomic_load", 2}, {"atomic_store", 3}, {"atomic_exchange", 3}, {"atomic_compare_exchange", 6},
             {"atomic_fetch_add", 3}, {"atomic_fetch_sub", 3}, {"atomic_fetch_and", 3}, {"atomic_fetch_or", 3},
-            {"atomic_fetch_xor", 3}, {"atomic_fence", 1}, {"futex_wait", 2}, {"futex_wake", 2}, {"spin_hint", 0}};
+            {"atomic_fetch_xor", 3}, {"atomic_fence", 1}, {"futex_wait", 2}, {"futex_wait_for", 3}, {"futex_wake", 2}, {"spin_hint", 0}};
         auto it = arity.find(name);
         if (it == arity.end() || args.size() != it->second) {
             error(DiagCode::E4030, c.span, std::format("'std::raw::{}' takes {} arguments", name, it == arity.end() ? 0 : it->second),
@@ -2843,9 +3239,10 @@ private:
             ordering(*args[0]);
             return set(c, tc_.void_());
         }
-        if (name == "futex_wait" || name == "futex_wake") {
+        if (name == "futex_wait" || name == "futex_wake" || name == "futex_wait_for") {
             coerce(*args[0], tc_.pointer(tc_.builtin("u32"), false));
             coerce(*args[1], tc_.builtin("u32"));
+            if (name == "futex_wait_for") coerce(*args[2], tc_.builtin("u64"));   // the longest wait in nanoseconds
             return set(c, tc_.void_());
         }
         const Type* v = atomic_pointer(*args[0]);
@@ -2877,7 +3274,7 @@ private:
         auto& seg = c.callee->as<PathExpr>().path.segments.back();
         std::size_t want = name == "allocate" || name == "free" || name == "read" || name == "drop" ? 1
                          : name == "copy"                                                         ? 3
-                                                                                                  : 2;   // reallocate, write, str_from
+                                                                                                  : 2;   // reallocate, write, str_from, static_str_from
         bool templ = name == "allocate";
         if (args.size() != want || seg.template_args.size() != (templ ? 1u : 0u)) {
             error(DiagCode::E4030, c.span,
@@ -2886,7 +3283,7 @@ private:
                               : name == "reallocate" ? "a pointer and a count"
                               : name == "write"      ? "a pointer and a value"
                               : name == "copy"       ? "a destination, a source and a count"
-                              : name == "str_from"   ? "a 'std::raw_ptr<u8>' and a length"
+                              : name == "str_from" || name == "static_str_from" ? "a 'std::raw_ptr<u8>' and a length"
                                                      : "a pointer"),
                   "wrong arguments");
             for (Expr* a : args) {
@@ -2928,11 +3325,11 @@ private:
             if (const Type* p = pointer(*args[0], true)) coerce(*args[1], p->inner);
             return set(c, tc_.void_());
         }
-        if (name == "str_from") {   // UTF-8 bytes as a std::str (the caller vouches for them)
-            const Type* p = pointer(*args[0], false);
+        if (name == "str_from" || name == "static_str_from") {   // UTF-8 bytes as text (the caller vouches for them;
+            const Type* p = pointer(*args[0], false);                // static_str_from: and that they live forever)
             if (p && p->inner != tc_.builtin("u8")) mismatch(args[0]->span, p, tc_.pointer(tc_.builtin("u8"), false));
             count(*args[1]);
-            return set(c, tc_.external("std::str"));
+            return set(c, name == "str_from" ? tc_.external("std::str") : tc_.static_str());
         }
         const Type* to   = pointer(*args[0], true);   // copy
         const Type* from = pointer(*args[1], false);
@@ -2943,8 +3340,8 @@ private:
         return set(c, tc_.void_());
     }
 
-    /// `std::is_compile_time(param)` and `std::location_of(param)` (spec 23): about the argument
-    /// a call gives a parameter, so only in a function's compile-time code.
+    // `std::is_compile_time(param)` and `std::location_of(param)` (spec 23): about the argument
+    // a call gives a parameter, so only in a function's compile-time code.
     const Type* infer_parameter_query(CallExpr& c, const std::string& name) {
         const Symbol* loc_sym = std_item("source_location");
         const Type*   result  = name == "is_compile_time" ? tc_.bool_()
@@ -2967,9 +3364,9 @@ private:
         return set(c, result);
     }
 
-    /// std::compile_error([id,] msg), std::compile_warning(id, msg), std::compile_note(msg) (spec 23).
-    /// In compile-time code they run when that code runs; elsewhere (a taken `if compile_time`
-    /// branch) when the code is checked.
+    // std::compile_error([id,] msg), std::compile_warning(id, msg), std::compile_note(msg) (spec 23).
+    // In compile-time code they run when that code runs; elsewhere (a taken `if compile_time`
+    // branch) when the code is checked.
     const Type* infer_diagnostic(CallExpr& c, const std::string& name) {
         std::size_t first = 0;   // an optional std::source_location: where to report (spec 23)
         if (!c.args.empty()) {
@@ -3007,8 +3404,8 @@ private:
         return result;
     }
 
-    /// The id of a warning or error is the name of a declared `compile_time std::diagnostic`
-    /// (spec 23): `std::compile_warning(gfx::deprecated, ...)`, never a string.
+    // The id of a warning or error is the name of a declared `compile_time std::diagnostic`
+    // (spec 23): `std::compile_warning(gfx::deprecated, ...)`, never a string.
     void check_diagnostic_id(Expr& a) {
         const Symbol* diag = std_item("diagnostic");
         const Type*   t    = types::strip_ref(a.type);
@@ -3023,7 +3420,7 @@ private:
         if (a.type && a.type->is_untyped()) settle(a, tc_.error());
     }
 
-    /// `std::span<T>` of compile-time data: the result of `std::meta::fields<T>()`.
+    // `std::span<T>` of compile-time data: the result of `std::meta::fields<T>()`.
     const Type* list_of(const Type* element) {
         std::string spelling = "std::span<" + types::to_string(element) + ">";
         const Type* t        = tc_.external(spelling);
@@ -3031,7 +3428,7 @@ private:
         return t;
     }
 
-    /// `std::option<A>` for `annotation<A>()`: A must be an annotation (spec 29).
+    // `std::option<A>` for `annotation<A>()`: A must be an annotation (spec 29).
     const Type* option_of_annotation(const TemplateArg& arg, Span span) {
         const Symbol* option = std_item("option");
         if (!arg.type || !option) return tc_.error();
@@ -3046,20 +3443,21 @@ private:
         return tc_.instance(option, {a});
     }
 
-    /// The `std::meta::passing` enum of the library, or an error type without it.
+    // The `std::meta::passing` enum of the library, or an error type without it.
     const Type* passing_type() {
         auto m = program_.modules.find("std::meta");
         const Symbol* p = m == program_.modules.end() ? nullptr : m->second->item("std::meta::passing");
         return p ? tc_.user(p) : tc_.error();
     }
 
-    /// `f.name`, `a.payload`, `m.parameters`, ...: the parts of the std::meta handles.
+    // `f.name`, `a.payload`, `m.parameters`, ...: the parts of the std::meta handles.
     const Type* infer_meta_member(MemberExpr& m, const Type* t, const std::string& name) {
         bool        field = t == tc_.meta_field();
         bool        alt   = t == tc_.meta_alternative();
         bool        fn    = t == tc_.meta_function();
         bool        param = t == tc_.meta_parameter();
-        const Type* r     = name == "name"                                                  ? tc_.static_str()
+        bool        file  = t == tc_.meta_file();
+        const Type* r     = name == "name" || (fn && name == "namespace_name") || (file && name == "module") ? tc_.static_str()
                           : (field || alt) && (name == "index" || (field && name == "offset")) ? tc_.builtin("usize")
                           : (field || param) && name == "type"                               ? tc_.type_value()
                           : alt && name == "payload"                                         ? tc_.type_value()
@@ -3079,8 +3477,8 @@ private:
         return r;
     }
 
-    /// `f.get(value)`, `a.is(value)`, `a.get(value)`, `a.make(...)` (spec 26). The handle must be
-    /// a compile-time value: what the call does depends on which field or alternative it is.
+    // `f.get(value)`, `a.is(value)`, `a.get(value)`, `a.make(...)` (spec 26). The handle must be
+    // a compile-time value: what the call does depends on which field or alternative it is.
     const Type* infer_meta_method(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name, std::vector<Expr*>& args) {
         c.callee->type = tc_.error();
         bool field     = t == tc_.meta_field();
@@ -3160,8 +3558,8 @@ private:
         return set(c, tc_.instance(option, {tc_.reference(lower_owned(alt, *alt->alternative->payload), false)}));
     }
 
-    /// `m.call(value, args...)` (spec 26): checked and compiled like `value.name(args...)`, so it
-    /// is rewritten into that call. `m` must be known at compile time.
+    // `m.call(value, args...)` (spec 26): checked and compiled like `value.name(args...)`, so it
+    // is rewritten into that call. `m` must be known at compile time.
     const Type* infer_meta_call(CallExpr& c, MemberExpr& me, std::vector<Expr*>& args) {
         const ct::Value* handle = me.object->constant.get();
         if (!handle || handle->kind != ct::Value::Kind::function) {
@@ -3173,7 +3571,7 @@ private:
         }
         Symbol* method = const_cast<Symbol*>(handle->symbol);
         Span    at     = me.name.span;
-        if (method->is_static) {
+        if (method->is_static || method->kind == SymbolKind::function) {   // a static method or a free function
             Path p;
             p.span = at;
             PathSegment seg;
@@ -3223,14 +3621,14 @@ private:
         bool                                    undeducible = false;
         std::string                             undeduced_name;
         bool                                    mismatch = false;   // an argument is an instance of another template
-        /// Arguments the compiler supplies for `implicit` parameters the call leaves out (spec 31).
+        // Arguments the compiler supplies for `implicit` parameters the call leaves out (spec 31).
         std::vector<ExprPtr>                    synth;
-        /// The hidden template parameter of each `compile_time` parameter and its argument.
+        // The hidden template parameter of each `compile_time` parameter and its argument.
         std::vector<std::pair<const Symbol*, Expr*>> ct_args;
     };
 
-    /// Whether `at` can be an instance of what the parameter pattern names: `std::span<T>` never
-    /// accepts a `std::span<mut f32>`, so such a template overload is not viable.
+    // Whether `at` can be an instance of what the parameter pattern names: `std::span<T>` never
+    // accepts a `std::span<mut f32>`, so such a template overload is not viable.
     static bool shape_fits(const TypeExpr& pattern, const Type* at) {
         if (!at || at->is_unknown() || at->is_untyped()) return true;
         if (pattern.kind == TypeKind::reference) return shape_fits(*pattern.as<ReferenceType>().inner, types::strip_ref(at));
@@ -3247,7 +3645,7 @@ private:
         return at->is(Kind::user) && at->symbol->template_of == sym;
     }
 
-    /// The template parameter symbol a parameter type is spelled as (`T` or `T&`), if any.
+    // The template parameter symbol a parameter type is spelled as (`T` or `T&`), if any.
     static const Symbol* param_template_symbol(const TypeExpr& t) {
         const TypeExpr* inner = t.kind == TypeKind::reference ? t.as<ReferenceType>().inner.get() : &t;
         if (inner->kind != TypeKind::named) return nullptr;
@@ -3255,7 +3653,7 @@ private:
         return s && s->kind == SymbolKind::type_param ? s : nullptr;
     }
 
-    /// Template parameter symbols of a function, by matching the names used in its signature.
+    // Template parameter symbols of a function, by matching the names used in its signature.
     std::vector<const Symbol*> template_symbols(const FunctionDecl& f) {
         std::vector<const Symbol*> out(f.template_params.size(), nullptr);
         std::function<void(const TypeExpr&)> scan = [&](const TypeExpr& t) {
@@ -3290,7 +3688,7 @@ private:
         return out;
     }
 
-    /// Whether `t` is unknown or built from an unknown type (`std::raw_ptr<node<T>>` in a generic check).
+    // Whether `t` is unknown or built from an unknown type (`std::raw_ptr<node<T>>` in a generic check).
     static bool deep_unknown(const Type* t) {
         if (!t) return false;
         if (t->is_unknown()) return true;
@@ -3303,8 +3701,8 @@ private:
         return false;
     }
 
-    /// The template parameters a parameter type mentions stay unknown (an argument whose type is
-    /// not known yet, inside a template's generic check): no "cannot deduce" error.
+    // The template parameters a parameter type mentions stay unknown (an argument whose type is
+    // not known yet, inside a template's generic check): no "cannot deduce" error.
     static void unknown_params(const TypeExpr& pattern, const Type* unknown, std::map<const Symbol*, const Type*>& subst) {
         if (pattern.kind == TypeKind::reference) {
             unknown_params(*pattern.as<ReferenceType>().inner, unknown, subst);
@@ -3320,8 +3718,8 @@ private:
         }
     }
 
-    /// Deduces template parameters by matching a parameter's type against an argument's type:
-    /// `std::darray<T>&` against `std::darray<u32>` gives T = u32 (spec 14).
+    // Deduces template parameters by matching a parameter's type against an argument's type:
+    // `std::darray<T>&` against `std::darray<u32>` gives T = u32 (spec 14).
     static void unify(const TypeExpr& pattern, const Type* at, std::map<const Symbol*, const Type*>& subst) {
         if (!at) return;
         if (pattern.kind == TypeKind::reference) {
@@ -3363,8 +3761,8 @@ private:
 
     // --- implicit and compile_time parameters (spec 31) ----------------------------------------
 
-    /// A candidate for a call: missing trailing `implicit` arguments are supplied, and the
-    /// arguments of `compile_time` parameters are noted for call_target.
+    // A candidate for a call: missing trailing `implicit` arguments are supplied, and the
+    // arguments of `compile_time` parameters are noted for call_target.
     Candidate make_call_candidate(Symbol* s, const std::vector<Expr*>& given, const PathSegment* explicit_args, Span at) {
         const FunctionDecl*  f    = s->function();
         std::vector<Expr*>   args = given;
@@ -3398,15 +3796,15 @@ private:
         return c;
     }
 
-    /// The call takes over the arguments supplied for its `implicit` parameters (spec 31).
+    // The call takes over the arguments supplied for its `implicit` parameters (spec 31).
     static void adopt_implicit(CallExpr& c, const Candidate& chosen) {
         for (ExprPtr& s : const_cast<Candidate&>(chosen).synth) c.args.push_back(std::move(s));
     }
 
-    /// The path of the file `span` is in, as the compiler was given it.
+    // The path of the file `span` is in, as the compiler was given it.
     std::string source_path(Span span) const;
 
-    /// The function being checked, with its namespace and type: `gfx::vulkan::create_pipeline`.
+    // The function being checked, with its namespace and type: `gfx::vulkan::create_pipeline`.
     std::string current_function_name() const {
         std::string name = fn_.decl ? fn_.decl->name : fn_.name;
         std::string prefix;
@@ -3419,7 +3817,7 @@ private:
         return prefix.empty() ? name : prefix + "::" + name;
     }
 
-    /// The symbol of the function being checked (null at file scope and in lambdas).
+    // The symbol of the function being checked (null at file scope and in lambdas).
     const Symbol* current_function_symbol() const {
         if (!fn_.decl) return nullptr;
         if (fn_.self) {
@@ -3443,7 +3841,7 @@ private:
         return nullptr;
     }
 
-    /// The `std::call_site` value of code at `span` (spec 31): static data computed here.
+    // The `std::call_site` value of code at `span` (spec 31): static data computed here.
     std::shared_ptr<const ct::Value> call_site_value(Span span) {
         const Symbol* cs = std_item("call_site");
         if (!cs) return nullptr;
@@ -3480,8 +3878,8 @@ private:
         return v;
     }
 
-    /// The argument the compiler supplies for an `implicit` parameter of type `pt` at a call at
-    /// `at` (spec 31): the call site itself, or `T::from_call(<call site>)` evaluated now.
+    // The argument the compiler supplies for an `implicit` parameter of type `pt` at a call at
+    // `at` (spec 31): the call site itself, or `T::from_call(<call site>)` evaluated now.
     ExprPtr implicit_argument(const Type* pt, Span at) {
         auto e  = std::make_unique<SimpleExpr>(ExprKind::default_, at);
         e->type = pt;
@@ -3532,7 +3930,7 @@ private:
     }
     std::vector<ExprPtr> implicit_calls_;   // the `T::from_call(...)` calls evaluated for implicit arguments
 
-    /// The template value argument for a `compile_time` parameter (spec 31): any compile-time value.
+    // The template value argument for a `compile_time` parameter (spec 31): any compile-time value.
     const Type* compile_time_argument(Expr& arg, std::string_view display) {
         const Type* t = types::strip_ref(arg.type);
         if (!t || t->is_unknown() || t->is_untyped()) return tc_.error();
@@ -3548,6 +3946,15 @@ private:
     }
 
     Candidate make_candidate(Symbol* s, const std::vector<Expr*>& args, const PathSegment* explicit_args) {
+        if (const FunctionDecl* pf = s->function(); pf && has_pack(*pf) && instantiator_) {
+            // A pack template becomes an ordinary template for this many arguments.
+            std::size_t fixed = 0;
+            for (const Param& p : pf->params) {
+                if (!p.is_pack && !p.is_implicit) ++fixed;
+            }
+            std::size_t n = args.size() > fixed ? args.size() - fixed : 0;
+            if (Symbol* expanded = instantiator_pack_variant(s, n)) s = expanded;
+        }
         Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}, false, {}, {}};
         const FunctionDecl& f = *c.decl;
         if (f.is_template) {
@@ -3591,6 +3998,8 @@ private:
                     }
                     if (from_lambda) {
                         c.subst[tp] = from_lambda;
+                    } else if (s->pack_origin && at == tc_.untyped_float() && tp->name.find('$') != std::string::npos) {
+                        c.subst[tp] = tc_.builtin("f64");   // an element of a pack: a float literal is an f64
                     } else {
                         c.undeducible    = true;
                         c.undeduced_name = tp->name;
@@ -3610,7 +4019,7 @@ private:
         return c;
     }
 
-    /// Cost of passing `arg` to a parameter of type `param`, or -1.
+    // Cost of passing `arg` to a parameter of type `param`, or -1.
     int arg_cost(const Expr& arg, const Type* param) {
         const Type* at = arg.type;
         const Type* p  = types::strip_ref(param);
@@ -3640,9 +4049,9 @@ private:
         return e;
     }
 
-    /// The function a call to `chosen` runs (spec 14): for a function template, its instance for the
-    /// deduced arguments. Arguments that are still unknown (inside a template that is not instantiated)
-    /// keep the template itself. Null, after reporting, when a parameter could not be deduced.
+    // The function a call to `chosen` runs (spec 14): for a function template, its instance for the
+    // deduced arguments. Arguments that are still unknown (inside a template that is not instantiated)
+    // keep the template itself. Null, after reporting, when a parameter could not be deduced.
     Symbol* call_target(const Candidate& chosen, Span span, std::string_view display) {
         if (!chosen.decl->is_template) return chosen.symbol;
         std::vector<const Symbol*> syms = template_symbols(*chosen.decl);
@@ -3669,7 +4078,7 @@ private:
         return instantiate_function(chosen.symbol, args);
     }
 
-    /// Picks an overload, reports problems, coerces the arguments. Returns the chosen symbol.
+    // Picks an overload, reports problems, coerces the arguments. Returns the chosen symbol.
     const Candidate* resolve_overload(std::vector<Candidate>& cands, std::vector<Expr*>& args, Span span,
                                       std::string_view display) {
         std::vector<Candidate*> arity;
@@ -3748,7 +4157,7 @@ private:
         return chosen;
     }
 
-    /// Call-site `mut` (spec 04) and the argument's type.
+    // Call-site `mut` (spec 04) and the argument's type.
     void check_argument(Expr& arg, const Type* param) {
         bool marked  = arg.kind == ExprKind::unary && arg.as<UnaryExpr>().op == UnaryOp::mut_marker;
         bool mut_ref = param->is(Kind::reference) && param->is_mut;
@@ -3812,6 +4221,13 @@ private:
     }
 
     const Type* infer_call(CallExpr& c) {
+        call_marks_[&c] = diags_.size();   // errors from here on that a failing entry check suppresses
+        if (c.wrapped) {   // `std::meta::wrapped_body()`: the function's own body; its returns give the value
+            bool saved_unsafe = unsafe_depth_ > 0;
+            (void)saved_unsafe;
+            infer_block(*c.wrapped);
+            return set(c, fn_.result ? fn_.result : tc_.void_());
+        }
         std::vector<Expr*> args;
         for (ExprPtr& a : c.args) {
             infer(*a);
@@ -3836,6 +4252,14 @@ private:
                 return set(c, tc_.error());
             }
             if (!s) {
+                if (const Type* vt = vector_of_static_path(pe.path)) return infer_vector_static(c, vt, pe.path.segments.back().name, args);
+                if (pe.path.segments.size() == 3 && pe.path.segments[0].name == "std" && pe.path.segments[1].name == "simd") {
+                    return infer_simd_free(c, pe.path.segments[2], args);
+                }
+                if (pe.path.segments.size() == 4 && pe.path.segments[0].name == "std" && pe.path.segments[1].name == "simd" &&
+                    (pe.path.segments[2].name == "x86" || pe.path.segments[2].name == "arm")) {
+                    return infer_simd_intrinsic(c, pe.path, args);
+                }
                 if (!pe.path.segments.empty() && pe.path.segments[0].name == "std" &&
                     pe.path.segments.back().name == "panic") {
                     return set(c, tc_.never());
@@ -3851,6 +4275,23 @@ private:
                 }
                 for (Expr* a : args) {
                     if (a->type && a->type->is_untyped() && a->type != tc_.untyped_default()) settle(*a, tc_.error());
+                }
+                const auto& segs = pe.path.segments;
+                static const std::set<std::string> printing{"print", "println", "eprint", "eprintln"};
+                bool plain = segs.size() == 2 || (segs.size() == 3 && segs[1].name == "meta" && !segs[1].has_template_args);
+                if (plain && segs[0].name == "std" && !(segs.size() == 2 && printing.contains(segs[1].name)) && !fn_.generic) {
+                    // The resolver leaves std paths it can't find to the compiler's own names.
+                    std::string ns = segs[0].name;
+                    for (std::size_t i = 1; i + 1 < segs.size(); ++i) ns += "::" + segs[i].name;
+                    error(DiagCode::E3020, segs.back().span, std::format("cannot find '{}' in namespace '{}'", segs.back().name, ns),
+                          "not found");
+                } else if (segs.size() == 3 && segs[0].name == "std" && !segs[1].has_template_args && !fn_.generic) {
+                    // `std::str::nope(...)`: a static function the std type doesn't have.
+                    const Symbol* owner = std_item(segs[1].name);
+                    if ((owner && owner->is_type() && owner->decl && !owner->decl->is_template) || segs[1].name == "str" || segs[1].name == "static_str") {
+                        error(DiagCode::E3025, segs.back().span, std::format("'std::{}' has no member '{}'", segs[1].name, segs.back().name),
+                              "not found");
+                    }
                 }
                 return set(c, tc_.error());   // std::... and unresolved names
             }
@@ -3967,6 +4408,11 @@ private:
             }
             if (types::is_std_builtin_method(t, name)) return infer_std_method(c, t, name, args);
             if (t->is(Kind::meta)) return infer_meta_method(c, me, t, name, args);
+            if (t->is(Kind::vector) || t->is(Kind::mask)) return infer_vector_method(c, me, t, name, args);
+            if ((is_std_instance(t, "span") || is_std_instance(t, "span_mut")) && (name == "load" || name == "store") &&
+                !args.empty() && is_simd_block(types::strip_ref(args[0]->type))) {
+                return infer_span_block(c, me, t, name, args);
+            }
             if (t->is(Kind::pointer) && !me.arrow) {   // spec 13: `p.offset(n)` is the only method
                 callee.type = tc_.error();
                 if (name != "offset") {
@@ -4196,6 +4642,22 @@ private:
             from = types::strip_ref(c.operand->type);
         }
         if (from->is_unknown() || to->is_unknown() || from->is(Kind::external) || to->is(Kind::external)) return c.type;
+        if (from->is(Kind::vector) || to->is(Kind::vector)) {   // lane by lane, the scalar rules (SIMD, section 7)
+            if (!from->is(Kind::vector) || !to->is(Kind::vector) || from->bits != to->bits) {
+                error(DiagCode::E4091, c.span, std::format("casts convert vectors with the same number of lanes, not {} to {}", quoted(from), quoted(to)),
+                      "different lanes");
+                return c.type;
+            }
+            if (v == "checked") {
+                error(DiagCode::E4092, c.span, "cast::checked on vectors is not supported yet", "not supported");
+                return c.type;
+            }
+            if (v.empty() && !lossless(from->inner, to->inner) && from->inner != to->inner) {
+                note(error(DiagCode::E4090, c.span, std::format("cast<{}> from {} may lose data", types::to_string(to), quoted(from)), "lossy conversion"),
+                     std::format("say how: 'cast::truncate<{0}>', 'cast::saturate<{0}>' or 'cast::round<{0}>'", types::to_string(to)));
+            }
+            return c.type;
+        }
         auto invalid = [&](std::string_view why) {
             error(DiagCode::E4091, c.span,
                   std::format("{} cannot convert {} to {}", v.empty() ? "cast" : "cast::" + v, quoted(from), quoted(to)),
@@ -4274,7 +4736,7 @@ private:
                 if (b->kind == SymbolKind::class_) walk(b);
             }
             for (const Symbol* m : ts->member_order) {
-                if (m->kind == SymbolKind::field && !m->is_static && !m->decl->as<VariableDecl>().init) {
+                if (m->kind == SymbolKind::field && !m->is_static && (!m->decl->as<VariableDecl>().init || m->no_default)) {
                     missing.push_back("'" + m->name + "'");
                 }
             }
@@ -4285,6 +4747,508 @@ private:
         for (std::size_t i = 0; i < missing.size(); ++i) list += (i ? ", " : "") + missing[i];
         Diagnostic& d = error(DiagCode::E4140, span, std::format("'{}' has no default value", sym->name), "no default");
         note(d, std::format("{} {} no default", missing.size() == 1 ? "field" : "fields", list + (missing.size() == 1 ? " has" : " have")));
+    }
+
+    // --- tuples and list literals ------------------------------------------------------------
+
+    // `(a, b)`: a tuple of the elements' types, or untyped while an element is an untyped literal.
+    const Type* infer_tuple(TupleExpr& te) {
+        std::vector<const Type*> elements;
+        bool                     untyped = false;
+        for (ExprPtr& x : te.elements) {
+            const Type* t = types::strip_ref(infer(*x));
+            if (t->is_untyped()) untyped = true;
+            if (t->is(Kind::void_) || t->is(Kind::never)) {
+                error(DiagCode::E4010, x->span, "a tuple element needs a value", "no value");
+                t = tc_.error();
+            }
+            elements.push_back(t);
+        }
+        if (untyped) return set(te, tc_.untyped_list());
+        for (const Type* t : elements) {
+            if (t->is(Kind::error)) return set(te, tc_.error());
+        }
+        return set(te, tc_.tuple(std::move(elements)));
+    }
+
+    // A tuple value where the tuple type `t` is expected: each element gets its element type.
+    void settle_tuple(TupleExpr& te, const Type* t) {
+        if (t->is(Kind::tuple) && t->args.size() == te.elements.size()) {
+            for (std::size_t i = 0; i < te.elements.size(); ++i) coerce(*te.elements[i], t->args[i]);
+            te.type = t;
+            return;
+        }
+        for (ExprPtr& x : te.elements) {
+            if (x->type && x->type->is_untyped()) settle(*x, tc_.error());
+        }
+        if (!t->is_unknown()) {
+            error(DiagCode::E4010, te.span,
+                  t->is(Kind::tuple) ? std::format("expected {}, found a tuple of {} elements", quoted(t), te.elements.size())
+                                     : std::format("expected {}, found a tuple", quoted(t)),
+                  "wrong type");
+        }
+        te.type = tc_.error();
+    }
+
+    // The element type and count a list literal takes in `t`: `std::array<T, N>` (count N) or
+    // `std::span<T>` / `std::span<mut T>` (any count). Null when `t` takes no list literal.
+    const Type* list_element(const Type* t, std::optional<std::uint64_t>& count) {
+        count.reset();
+        if (is_std_instance(t, "array") && t->symbol->template_args.size() == 2) {
+            count = static_cast<std::uint64_t>(tc_.value_bits(t->symbol->template_args[1]));
+            return t->symbol->template_args[0];
+        }
+        if ((is_std_instance(t, "span") || is_std_instance(t, "span_mut")) && t->symbol->template_args.size() == 1) {
+            return t->symbol->template_args[0];
+        }
+        if (t->is(Kind::array)) {
+            count = tc_.array_count(t);
+            return t->inner;
+        }
+        if (t->is(Kind::vector)) {   // `f32x8 ramp = [0.0, 1.0, ...]`: exactly N lanes
+            count = static_cast<std::uint64_t>(t->bits);
+            return t->inner;
+        }
+        return nullptr;
+    }
+
+    // `[a, b, c]` where `t` is expected (spec: tuples and list literals).
+    void settle_list(ListExpr& l, const Type* t) {
+        std::optional<std::uint64_t> count;
+        const Type*                  element = t->is_unknown() ? nullptr : list_element(t, count);
+        if (!element) {
+            for (ExprPtr& x : l.elements) {
+                if (x->type && x->type->is_untyped()) settle(*x, tc_.error());
+            }
+            if (!t->is_unknown()) {
+                note(error(DiagCode::E4253, l.span, std::format("a list literal can't be {}", quoted(t)), "list literal"),
+                     "a list literal becomes a std::array<T, N> or a std::span<T>; a std::darray is made with std::darray<T>::from([...])");
+            }
+            l.type = tc_.error();
+            return;
+        }
+        if (count && *count != l.elements.size()) {
+            error(DiagCode::E4253, l.span,
+                  std::format("{} has {} element{}, but the list has {}", quoted(t), *count, *count == 1 ? "" : "s",
+                              l.elements.size()),
+                  "wrong count");
+        }
+        for (ExprPtr& x : l.elements) coerce(*x, element);
+        l.type = t;
+    }
+
+    // Whether values of `t` can be compared with `==` (and ordered, when `ordered`) element by
+    // element inside a tuple.
+    bool tuple_comparable(const Type* t, bool ordered) {
+        t = types::strip_ref(t);
+        if (t->is_unknown() || t->is_numeric() || t->is(Kind::char_) || t->is(Kind::static_str)) return true;
+        if (t->is(Kind::external) && t->name == "std::str") return true;
+        if (t->is(Kind::bool_)) return !ordered;
+        if (is_std_string(t)) return !ordered;
+        if (t->is_user(SymbolKind::enum_) && !enum_has_payload(t->symbol)) return !ordered;
+        if (t->is(Kind::tuple)) {
+            return std::all_of(t->args.begin(), t->args.end(), [&](const Type* e) { return tuple_comparable(e, ordered); });
+        }
+        return false;
+    }
+
+    // `(T1 a, T2 b) = expr;` / `auto (a, b) = expr;`: the tuple is consumed into new variables.
+    void check_destructure(DestructureStmt& d) {
+        const Type* t = infer(*d.init);
+        if (t->is_untyped() && d.init->kind == ExprKind::tuple) {
+            auto& te = d.init->as<TupleExpr>();
+            if (te.elements.size() == d.bindings.size()) {
+                std::vector<const Type*> elements;
+                for (std::size_t i = 0; i < te.elements.size(); ++i) {
+                    const DestructureBinding& b = d.bindings[i];
+                    if (b.type) {
+                        coerce(*te.elements[i], lower(*b.type));
+                    } else if (te.elements[i]->type->is_untyped()) {
+                        no_context(*te.elements[i], d.is_auto ? "('auto' needs values whose types are known on their own)"
+                                                              : "('_' gives it no type)");
+                    }
+                    elements.push_back(types::strip_ref(te.elements[i]->type));
+                }
+                t       = tc_.tuple(std::move(elements));
+                te.type = t;
+            }
+        } else if (t->is_untyped()) {
+            no_context(*d.init, "(a destructuring declaration needs a tuple)");
+            t = tc_.error();
+        }
+        t = types::strip_ref(t);
+        if (!t->is(Kind::tuple) && !t->is_unknown()) {
+            error(DiagCode::E4010, d.init->span, std::format("only a tuple can be destructured, but this is {}", quoted(t)),
+                  "not a tuple");
+            t = tc_.error();
+        } else if (t->is(Kind::tuple) && t->args.size() != d.bindings.size()) {
+            error(DiagCode::E4010, d.init->span,
+                  std::format("this tuple has {} elements, but {} names are given", t->args.size(), d.bindings.size()),
+                  "wrong number of names");
+            t = tc_.error();
+        }
+        for (std::size_t i = 0; i < d.bindings.size(); ++i) {
+            DestructureBinding& b  = d.bindings[i];
+            const Type*         el = t->is(Kind::tuple) ? t->args[i] : tc_.error();
+            const Type*         bt = b.type ? lower(*b.type) : el;
+            if (b.type && !el->is_unknown() && !bt->is_unknown() && assign_cost(el, bt) != 0) {
+                error(DiagCode::E4010, b.span, std::format("element {} is {}, not {}", i, quoted(el), quoted(bt)), "wrong type");
+            }
+            if (b.symbol) set_local(b.symbol, bt);
+        }
+    }
+
+    // --- SIMD ------------------------------------------------------------------------------------
+
+    // `f32x8::splat` / `std::simd::vec<f32, 8>::splat`: the vector type a static path names.
+    const Type* vector_of_static_path(const Path& p) {
+        const auto& segs = p.segments;
+        if (segs.size() == 2 && !segs[0].has_template_args) {
+            const Type* t = tc_.builtin_or_vector(segs[0].name);
+            return t && t->is(Kind::vector) ? t : nullptr;
+        }
+        if (segs.size() == 4 && segs[0].name == "std" && segs[1].name == "simd" && (segs[2].name == "vec" || segs[2].name == "mask")) {
+            Path         head;
+            for (std::size_t i = 0; i < 3; ++i) {
+                PathSegment c;
+                c.name              = segs[i].name;
+                c.span              = segs[i].span;
+                c.has_template_args = segs[i].has_template_args;
+                for (const TemplateArg& a : segs[i].template_args) {
+                    TemplateArg ca;
+                    if (a.type) ca.type = ast::Cloner([](const Symbol&) { return nullptr; }).type(*a.type);
+                    if (a.value) ca.value = ast::Cloner([](const Symbol&) { return nullptr; }).expr(*a.value);
+                    ca.span = a.span;
+                    c.template_args.push_back(std::move(ca));
+                }
+                head.segments.push_back(std::move(c));
+            }
+            NamedType   nt(p.span, std::move(head));
+            const Type* t = lower(nt);
+            return t->is(Kind::vector) || t->is(Kind::mask) ? t : nullptr;
+        }
+        return nullptr;
+    }
+
+    bool is_simd_block(const Type* t) const {
+        return t && t->is(Kind::user) && t->symbol->template_of && t->symbol->template_of->name == "block" && t->symbol->ns == "std::simd";
+    }
+
+    const Type* lane_count_type() { return tc_.builtin("usize"); }
+
+    // The unsigned vector with lanes as wide as `t`'s (`f32x8` → `u32x8`).
+    const Type* bits_vector(const Type* t) {
+        return tc_.vector(tc_.builtin("u" + std::to_string(t->inner->bits)), t->bits);
+    }
+
+    void wrong_args(CallExpr& c, std::vector<Expr*>& args, const std::string& how) {
+        error(DiagCode::E4030, c.span, how, "wrong arguments");
+        for (Expr* a : args) {
+            if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+        }
+    }
+
+    // `f32x8::splat(x)`, `iota()`, `load(s, i)`, `from_bits(u)`, `gather(s, idx)`; on masks `prefix(k)`.
+    const Type* infer_vector_static(CallExpr& c, const Type* vt, const std::string& name, std::vector<Expr*>& args) {
+        c.callee->type = vt;
+        std::string what = types::to_string(vt);
+        if (vt->is(Kind::mask)) {
+            if (name == "prefix" && args.size() == 1) {   // lanes below k are set
+                coerce(*args[0], tc_.builtin("usize"));
+                return set(c, vt);
+            }
+            wrong_args(c, args, std::format("'{}::{}' is not a function of masks (they come from comparisons)", what, name));
+            return set(c, tc_.error());
+        }
+        const Type* lane = vt->inner;
+        if (name == "splat" && args.size() == 1) {
+            coerce(*args[0], lane);
+            return set(c, vt);
+        }
+        if (name == "iota" && args.empty()) return set(c, vt);
+        if ((name == "load" || name == "load_unchecked") && args.size() == 2) {
+            if (name == "load_unchecked") require_unsafe(c.span, "an unchecked vector load");
+            const Type* st = types::strip_ref(args[0]->type);
+            if (!(is_std_instance(st, "span") || is_std_instance(st, "span_mut")) || st->symbol->template_args[0] != lane) {
+                if (!st->is_unknown()) mismatch(args[0]->span, st, tc_.external(std::format("std::span<{}>", types::to_string(lane))));
+            }
+            coerce(*args[1], tc_.builtin("usize"));
+            return set(c, vt);
+        }
+        if ((name == "gather" || name == "gather_unchecked") && args.size() == 2) {
+            if (name == "gather_unchecked") require_unsafe(c.span, "an unchecked gather");
+            const Type* idx = types::strip_ref(args[1]->type);
+            if (!idx->is(Kind::vector) || idx->bits != vt->bits || !idx->inner->is_integer() || idx->inner->is_signed) {
+                if (!idx->is_unknown()) error(DiagCode::E4010, args[1]->span, std::format("the indices are a u32x{0} or u64x{0}", vt->bits), "not indices");
+            }
+            return set(c, vt);
+        }
+        if (name == "from_bits" && args.size() == 1) {
+            coerce(*args[0], bits_vector(vt));
+            return set(c, vt);
+        }
+        wrong_args(c, args, std::format("'{}' has no function '{}' with these arguments", what, name));
+        return set(c, tc_.error());
+    }
+
+    // The CPU features code is checked for: the build's CPU level, or a multiversion copy's.
+    bool has_cpu_feature(const std::string& feature) const { return target_platform().has_feature(feature); }
+
+    // `std::simd::x86::mm256_shuffle_epi8(a, b)`: a raw intrinsic under its vendor's name (SIMD,
+    // "Raw intrinsics"). `unsafe`, and an error when the CPU level lacks its feature.
+    const Type* infer_simd_intrinsic(CallExpr& c, const Path& path, std::vector<Expr*>& args) {
+        const std::string& arch = path.segments[2].name;
+        const std::string& name = path.segments[3].name;
+        const simd::Intrinsic* in = simd::find_intrinsic(arch, name);
+        auto give_up = [&] {
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        };
+        if (!in) {
+            error(DiagCode::E3020, path.segments[3].span, std::format("cannot find '{}' in namespace 'std::simd::{}'", name, arch),
+                  "not an intrinsic riftc knows");
+            return give_up();
+        }
+        require_unsafe(c.span, "calling a raw SIMD intrinsic");
+        if (!has_cpu_feature(std::string(in->feature))) {
+            std::string level = target_platform().cpu;
+            Diagnostic& d = error(DiagCode::E4255, c.span,
+                                  std::format("'std::simd::{}::{}' needs {}, which the CPU level '{}' doesn't have", arch, name, in->feature, level),
+                                  "not on this CPU level");
+            note(d, std::format("build for a level with it (--cpu=...), or test 'std::build::target_has_cpu_feature(std::build::cpu_feature::{})' "
+                                "in 'if compile_time'", in->feature));
+            return give_up();
+        }
+        if (args.size() != in->params.size()) {
+            wrong_args(c, args, std::format("'std::simd::{}::{}' takes {} argument{}", arch, name, in->params.size(), in->params.size() == 1 ? "" : "s"));
+            return give_up();
+        }
+        auto int_type = [&](int bits, bool is_signed) { return tc_.builtin(std::format("{}{}", is_signed ? "i" : "u", bits)); };
+        auto float_type = [&](int bits) { return tc_.builtin(std::format("f{}", bits)); };
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const simd::Shape& p = in->params[i];
+            const Type*        t = types::strip_ref(args[i]->type);
+            bool ok = true;
+            std::string want;
+            switch (p.kind) {
+            case simd::Shape::Kind::int_vector:
+                want = std::format("an integer vector of {} bits", p.bits);
+                ok   = t->is(Kind::vector) && t->inner->is_integer() && t->inner->bits * t->bits == p.bits;
+                break;
+            case simd::Shape::Kind::float_vector:
+                want = types::to_string(tc_.vector(float_type(p.lane_bits), p.lanes));
+                coerce(*args[i], tc_.vector(float_type(p.lane_bits), p.lanes));
+                continue;
+            case simd::Shape::Kind::scalar_int: coerce(*args[i], int_type(p.lane_bits, p.is_signed)); continue;
+            case simd::Shape::Kind::scalar_float: coerce(*args[i], float_type(p.lane_bits)); continue;
+            case simd::Shape::Kind::same_as_first: continue;
+            }
+            if (!ok && !t->is_unknown()) {
+                error(DiagCode::E4010, args[i]->span, std::format("'std::simd::{}::{}' takes {} here, not {}", arch, name, want, quoted(t)),
+                      "wrong type");
+                return give_up();
+            }
+        }
+        const simd::Shape& r = in->result;
+        switch (r.kind) {
+        case simd::Shape::Kind::same_as_first: return set(c, types::strip_ref(args[0]->type));
+        case simd::Shape::Kind::int_vector: return set(c, tc_.vector(int_type(r.lane_bits, r.is_signed), r.bits / r.lane_bits));
+        case simd::Shape::Kind::float_vector: return set(c, tc_.vector(float_type(r.lane_bits), r.lanes));
+        case simd::Shape::Kind::scalar_int: return set(c, int_type(r.lane_bits, r.is_signed));
+        case simd::Shape::Kind::scalar_float: return set(c, float_type(r.lane_bits));
+        }
+        return give_up();
+    }
+
+    // `std::simd::native_lanes<T>()`, `std::simd::join(lo, hi)`.
+    const Type* infer_simd_free(CallExpr& c, const PathSegment& seg, std::vector<Expr*>& args) {
+        if (seg.name == "native_lanes" && seg.template_args.size() == 1 && seg.template_args[0].type && args.empty()) {
+            const Type* lane = lower(*seg.template_args[0].type);
+            u128        reg  = target_platform().vector_bytes;   // the widest register of the CPU level
+            u128        n    = lane->is_numeric() ? std::max<u128>(1, reg / std::max<u128>(1, static_cast<u128>(lane->bits) / 8)) : 4;
+            c.constant = std::make_shared<const ct::Value>(ct::Value::of_integer(n, tc_.builtin("usize")));
+            return set(c, tc_.builtin("usize"));
+        }
+        if (seg.name == "join" && args.size() == 2) {
+            const Type* lo = types::strip_ref(args[0]->type);
+            const Type* hi = types::strip_ref(args[1]->type);
+            if (!lo->is(Kind::vector) || lo != hi || lo->bits >= 64) {
+                wrong_args(c, args, "'std::simd::join' takes two vectors of the same type");
+                return set(c, tc_.error());
+            }
+            return set(c, tc_.vector(lo->inner, lo->bits * 2));
+        }
+        for (Expr* a : args) {
+            if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+        }
+        return set(c, tc_.error());   // the library's std::simd functions resolve normally
+    }
+
+    // Methods of vectors and masks (SIMD, sections 3, 4, 5, 7).
+    const Type* infer_vector_method(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name, std::vector<Expr*>& args) {
+        me.type = tc_.error();
+        auto same = [&](std::size_t n) {
+            if (args.size() != n) return false;
+            for (Expr* a : args) coerce(*a, t);
+            return true;
+        };
+        if (t->is(Kind::mask)) {
+            if ((name == "any" || name == "all" || name == "none") && args.empty()) return set(c, tc_.bool_());
+            if (name == "count" && args.empty()) return set(c, tc_.builtin("usize"));
+            if (name == "first" && args.empty()) {
+                if (const Symbol* opt = std_item("option")) return set(c, tc_.instance(opt, {tc_.builtin("usize")}));
+                return set(c, tc_.error());
+            }
+            if (name == "select" && args.size() == 2) {
+                const Type* a = types::strip_ref(args[0]->type);
+                if (a->is_untyped()) {
+                    no_context(*args[0], "(write the vector type)");
+                    return set(c, tc_.error());
+                }
+                if (!a->is(Kind::vector) || a->bits != t->bits) {
+                    if (!a->is_unknown()) error(DiagCode::E4010, args[0]->span, std::format("select takes vectors of {} lanes", t->bits), "not a vector");
+                    return set(c, tc_.error());
+                }
+                coerce(*args[1], a);
+                return set(c, a);
+            }
+            wrong_args(c, args, std::format("{} has no method '{}' with these arguments", quoted(t), name));
+            return set(c, tc_.error());
+        }
+        const Type* lane    = t->inner;
+        bool        is_int  = lane->is_integer();
+        bool        is_flt  = lane->is_float();
+        if ((name == "min" || name == "max" || name == "saturating_add" || name == "saturating_sub") && same(1)) {
+            if (!is_int && name.starts_with("saturating")) error(DiagCode::E4013, c.span, "saturating arithmetic is for integer vectors", "floats");
+            return set(c, t);
+        }
+        if (name == "clamp" && same(2)) return set(c, t);
+        if (name == "mul_add" && same(2)) return set(c, t);
+        if ((name == "abs") && args.empty()) return set(c, t);
+        if ((name == "sqrt" || name == "floor" || name == "ceil" || name == "round" || name == "trunc") && args.empty()) {
+            if (!is_flt) error(DiagCode::E4013, c.span, std::format("'{}' is for float vectors", name), "integers");
+            return set(c, t);
+        }
+        if ((name == "reduce_add" || name == "reduce_mul" || name == "reduce_min" || name == "reduce_max") && args.empty()) return set(c, lane);
+        if ((name == "reduce_and" || name == "reduce_or" || name == "reduce_xor") && args.empty()) {
+            if (!is_int) error(DiagCode::E4013, c.span, std::format("'{}' is for integer vectors", name), "floats");
+            return set(c, lane);
+        }
+        if (name == "with" && args.size() == 2) {
+            coerce(*args[0], tc_.builtin("usize"));
+            coerce(*args[1], lane);
+            return set(c, t);
+        }
+        if ((name == "store" || name == "store_unchecked" || name == "scatter" || name == "scatter_unchecked") && args.size() == 2) {
+            if (name.ends_with("unchecked")) require_unsafe(c.span, "an unchecked vector store");
+            Expr*       target = args[0];
+            if (target->kind == ExprKind::unary && target->as<UnaryExpr>().op == UnaryOp::mut_marker) target = target->as<UnaryExpr>().operand.get();
+            const Type* st = types::strip_ref(target->type);
+            if (!is_std_instance(st, "span_mut") || st->symbol->template_args[0] != lane) {
+                if (!st->is_unknown()) mismatch(args[0]->span, st, tc_.external(std::format("std::span<mut {}>", types::to_string(lane))));
+            }
+            if (name.starts_with("store")) coerce(*args[1], tc_.builtin("usize"));
+            return set(c, tc_.void_());
+        }
+        if (name == "to_bits" && args.empty()) {
+            if (!is_flt) return set(c, t);
+            return set(c, bits_vector(t));
+        }
+        if ((name == "reverse") && args.empty()) return set(c, t);
+        if (name == "rotate_lanes" && args.size() == 1) {
+            coerce(*args[0], tc_.builtin("usize"));
+            return set(c, t);
+        }
+        if ((name == "interleave_low" || name == "interleave_high") && same(1)) return set(c, t);
+        if ((name == "shuffle" && args.size() == 1) || (name == "shuffle_with" && args.size() == 2)) {
+            if (name == "shuffle_with") coerce(*args[0], t);
+            Expr& order = *args.back();
+            std::size_t limit = static_cast<std::size_t>(t->bits) * (name == "shuffle" ? 1 : 2);
+            if (order.kind != ExprKind::list || order.as<ListExpr>().elements.size() != static_cast<std::size_t>(t->bits)) {
+                error(DiagCode::E4200, order.span, std::format("the order is a list of {} constant lane indices", t->bits), "not a lane order");
+            } else {
+                for (ExprPtr& x : order.as<ListExpr>().elements) {
+                    coerce(*x, tc_.builtin("u32"));
+                    if (x->kind != ExprKind::int_literal || x->as<LiteralExpr>().int_value >= limit) {
+                        error(DiagCode::E4200, x->span, std::format("a lane index from 0 to {}", limit - 1), "not a constant lane index");
+                    }
+                }
+                order.type = tc_.array(tc_.builtin("u32"), tc_.value_arg(static_cast<u128>(t->bits), tc_.builtin("usize")));
+            }
+            return set(c, t);
+        }
+        if (name == "split" && args.empty()) {
+            const Type* half = tc_.vector(lane, t->bits / 2);
+            return set(c, tc_.tuple({half, half}));
+        }
+        wrong_args(c, args, std::format("{} has no method '{}' with these arguments", quoted(t), name));
+        return set(c, tc_.error());
+    }
+
+    // `s.load(at)` / `s.store(at, v)` on a span with a `std::simd::block<N>` (SIMD, section 5).
+    const Type* infer_span_block(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name, std::vector<Expr*>& args) {
+        me.type = tc_.error();
+        const Type* lane  = t->symbol->template_args[0];
+        const Type* block = types::strip_ref(args[0]->type);
+        u128        n     = block->symbol->template_args.empty() ? 0 : tc_.value_bits(block->symbol->template_args[0]);
+        if (!lane->is_numeric() || n < 2 || n > 64 || (n & (n - 1)) != 0) {
+            error(DiagCode::E4010, c.span, "vector loads and stores need a span of numbers and a block of 2 to 64 lanes", "not a vector");
+            return set(c, tc_.error());
+        }
+        const Type* vt = tc_.vector(lane, static_cast<int>(n));
+        if (name == "load" && args.size() == 1) return set(c, vt);
+        if (name == "store" && args.size() == 2) {
+            if (!is_std_instance(t, "span_mut")) {
+                error(DiagCode::E4022, c.span, "storing needs a std::span<mut T>", "not mutable");
+            }
+            coerce(*args[1], vt);
+            return set(c, tc_.void_());
+        }
+        wrong_args(c, args, "write 's.load(at)' or 's.store(at, v)'");
+        return set(c, tc_.error());
+    }
+
+    // Operators on vectors and masks: lane by lane, no broadcast, no mixing (SIMD, section 3).
+    const Type* infer_vector_binary(BinaryExpr& b, const Type* l, const Type* r) {
+        const Type* t = l->is(Kind::vector) || l->is(Kind::mask) ? l : r;
+        TokenKind   op = b.op;
+        if (l->is_untyped() || r->is_untyped()) {
+            Expr& lit = l->is_untyped() ? *b.lhs : *b.rhs;
+            note(error(DiagCode::E4010, lit.span, std::format("a scalar never turns into {} by itself", quoted(t)), "no broadcast"),
+                 t->is(Kind::vector) ? std::format("write '{}::splat(...)'", types::to_string(t)) : "combine masks with masks");
+            settle(lit, tc_.error());
+            return set(b, tc_.error());
+        }
+        if (l != r) {
+            if (!l->is_unknown() && !r->is_unknown()) {
+                note(error(DiagCode::E4011, b.span, std::format("{} and {} can't be mixed", quoted(l), quoted(r)), "different vector types"),
+                     "convert one with a cast; scalars become vectors with ::splat");
+            }
+            return set(b, tc_.error());
+        }
+        bool cmp = op == TokenKind::eq_eq || op == TokenKind::bang_eq || is_comparison(op);
+        if (t->is(Kind::mask)) {
+            if (op == TokenKind::amp || op == TokenKind::pipe || op == TokenKind::caret) return set(b, t);
+            error(DiagCode::E4013, b.span, std::format("operator '{}' is not defined for masks", token_kind_spelling(op)), "masks combine with & | ^ !");
+            return set(b, tc_.error());
+        }
+        if (cmp) return set(b, tc_.mask(t->bits));
+        if (op == TokenKind::spaceship) {
+            error(DiagCode::E4013, b.span, "vectors have no '<=>'; compare lane by lane with < and ==", "no ordering");
+            return set(b, tc_.error());
+        }
+        bool is_int = t->inner->is_integer();
+        bool ok = op == TokenKind::plus || op == TokenKind::minus || op == TokenKind::star || op == TokenKind::slash ||
+                  (is_int && (op == TokenKind::percent || op == TokenKind::plus_percent || op == TokenKind::minus_percent ||
+                              op == TokenKind::star_percent || op == TokenKind::amp || op == TokenKind::pipe || op == TokenKind::caret ||
+                              op == TokenKind::shl || op == TokenKind::shr));
+        if (!ok) {
+            error(DiagCode::E4013, b.span, std::format("operator '{}' is not defined for {}", token_kind_spelling(op), quoted(t)), "no such operator");
+            return set(b, tc_.error());
+        }
+        return set(b, t);
     }
 
     const Type* infer_struct_literal(StructLiteralExpr& sl) {
@@ -4347,8 +5311,9 @@ private:
         return set(l, t);   // a type of its own (spec 18)
     }
 
-    /// `f(args)` where `f` holds a lambda.
+    // `f(args)` where `f` holds a lambda.
     const Type* infer_closure_call(CallExpr& c, const Type* closure, std::vector<Expr*>& args) {
+        if (closure->is_c_function()) require_unsafe(c.span, "calling a C function of a library (std::c_library)");
         std::size_t n = closure->args.size() - 1;
         if (args.size() != n) {
             error(DiagCode::E4030, c.span, std::format("this lambda takes {} argument{}, but {} {} given", n, n == 1 ? "" : "s",
@@ -4391,8 +5356,8 @@ private:
         return result ? result : tc_.never();
     }
 
-    /// `if compile_time (c)` (spec 15): the branch that is not taken is not checked. Nullopt when
-    /// the condition depends on a template parameter (the generic check): then both are checked.
+    // `if compile_time (c)` (spec 15): the branch that is not taken is not checked. Nullopt when
+    // the condition depends on a template parameter (the generic check): then both are checked.
     std::optional<const Type*> infer_if_compile_time(IfExpr& i) {
         const Type* ct = types::strip_ref(infer(*i.condition));
         if (ct->is_untyped()) settle(*i.condition, tc_.bool_());
@@ -4417,7 +5382,7 @@ private:
         return set(i, infer(*i.else_branch));
     }
 
-    /// Two pending values of the same template: the arguments either knows. Error on a conflict.
+    // Two pending values of the same template: the arguments either knows. Error on a conflict.
     const Type* merge_pending(const Type* a, const Type* b) {
         std::vector<const Type*> args = a->args;
         for (std::size_t i = 0; i < args.size(); ++i) {
@@ -4446,6 +5411,17 @@ private:
                 note(d, "'f(...) else { ... }' runs the block when the call returns false");
                 infer_block(*i.then_block);
                 return set(i, tc_.void_());
+            }
+            if (call.kind == ExprKind::call) {   // only a `@std::check_result` function (spec 10)
+                const Symbol* f = called_symbol(call.as<CallExpr>());
+                const Symbol* g = f && f->template_of && f->template_of->kind == f->kind ? f->template_of : f;
+                const std::vector<AnnotationUse>* on_f = annotations_of(g);
+                if (g && !(on_f && sema::find_annotation(*on_f, "std::check_result"))) {
+                    Diagnostic& d = error(DiagCode::E4254, call.span,
+                                          std::format("'else' after a call to '{}', which is not '@std::check_result'", g->name),
+                                          "not a checking function");
+                    note(d, "write 'if (!f(...)) { ... }'; 'f(...) else { ... }' is for functions that report their own failure");
+                }
             }
             set(*i.condition, tc_.bool_());
         } else {
@@ -4477,9 +5453,9 @@ private:
         return seen.size() > 1;
     }
 
-    /// `c[i]` on the std containers: sequences take a 'usize' index, maps their key type.
-    /// Everything else is a library type the checker does not know (unknown, never an error).
-    /// `operator[]` of a user type: the `mut` overload when `want_mut`, if there is one (spec 16).
+    // `c[i]` on the std containers: sequences take a 'usize' index, maps their key type.
+    // Everything else is a library type the checker does not know (unknown, never an error).
+    // `operator[]` of a user type: the `mut` overload when `want_mut`, if there is one (spec 16).
     Symbol* index_operator(const Type* obj, bool want_mut) {
         auto it = obj->symbol->members.find("[]");
         if (it == obj->symbol->members.end()) return nullptr;
@@ -4496,6 +5472,13 @@ private:
     const Type* infer_index(IndexExpr& i) {
         const Type* obj = types::strip_ref(infer(*i.object));
         const Type* idx = infer(*i.index);
+        if (obj->is(Kind::vector)) {   // `v[i]`: lane i (SIMD)
+            coerce(*i.index, tc_.builtin("usize"));
+            if (i.index->kind == ExprKind::int_literal && i.index->as<LiteralExpr>().int_value >= static_cast<u128>(obj->bits)) {
+                error(DiagCode::E4013, i.index->span, std::format("{} has lanes 0 to {}", quoted(obj), obj->bits - 1), "no such lane");
+            }
+            return obj->inner;
+        }
         if (obj->is(Kind::user)) {
             Symbol* op = index_operator(obj, false);
             if (!op) {
@@ -4571,8 +5554,8 @@ private:
         return n == "trailing_zeros" || n == "leading_zeros" || n == "count_ones" || n == "rotate_left" || n == "rotate_right";
     }
 
-    /// `std::trailing_zeros(x)`, `leading_zeros`, `count_ones` (a u32: the width for 0) and
-    /// `std::rotate_left(x, n)` / `rotate_right` (spec 16): single instructions on most CPUs.
+    // `std::trailing_zeros(x)`, `leading_zeros`, `count_ones` (a u32: the width for 0) and
+    // `std::rotate_left(x, n)` / `rotate_right` (spec 16): single instructions on most CPUs.
     const Type* infer_bits(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
         bool rotate = name.starts_with("rotate");
         if (args.size() != (rotate ? 2u : 1u)) {
@@ -4604,8 +5587,8 @@ private:
                n == "saturating_sub" || n == "saturating_mul";
     }
 
-    /// `std::checked_add(a, b)` (a `std::option`: `none` on overflow) and `std::saturating_add(a, b)`
-    /// (clamped), and the same for sub and mul (spec 16). Both operands have one integer type.
+    // `std::checked_add(a, b)` (a `std::option`: `none` on overflow) and `std::saturating_add(a, b)`
+    // (clamped), and the same for sub and mul (spec 16). Both operands have one integer type.
     const Type* infer_arith(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
         bool checked = name.starts_with("checked");
         if (args.size() != 2) {
@@ -4632,9 +5615,9 @@ private:
         return set(c, option ? tc_.instance(option, {t}) : tc_.external("std::option<" + types::to_string(t) + ">"));
     }
 
-    /// `text.split(',')`, `text.parse<u32>()`, ...: the methods of `std::str` are functions of
-    /// the library, `str_split(std::str text, char separator)`, called with the text first.
-    /// Null when the library has no such function.
+    // `text.split(',')`, `text.parse<u32>()`, ...: the methods of `std::str` are functions of
+    // the library, `str_split(std::str text, char separator)`, called with the text first.
+    // Null when the library has no such function.
     const Type* infer_str_method(CallExpr& c, MemberExpr& me, const std::string& name, const std::vector<Expr*>& args) {
         const Module* m = program_.std_module;
         if (!m) return nullptr;
@@ -4657,8 +5640,8 @@ private:
         return set(c, chosen->result);
     }
 
-    /// `operator*` of a user type (a smart pointer, spec 13 and 16): the `mut` one when `object` is a
-    /// mutable place. Sets `op` and returns the target type, or null when there is none.
+    // `operator*` of a user type (a smart pointer, spec 13 and 16): the `mut` one when `object` is a
+    // mutable place. Sets `op` and returns the target type, or null when there is none.
     const Type* smart_target(Expr& object, const Type* t, SymbolRef& op) {
         if (!t->is(Kind::user)) return nullptr;
         auto it = t->symbol->members.find("*");
@@ -4677,8 +5660,8 @@ private:
         return types::strip_ref(lower_owned(chosen, *chosen->function()->result));
     }
 
-    /// `std::unique_ptr<circle>::make(...)`: the resolver names the template's member; the call
-    /// uses the member of the instance the path spells. Null when the path names no instance.
+    // `std::unique_ptr<circle>::make(...)`: the resolver names the template's member; the call
+    // uses the member of the instance the path spells. Null when the path names no instance.
     Symbol* instance_member(PathExpr& pe, Symbol* s) {
         if (!s || !s->parent || !s->parent->decl || !s->parent->decl->is_template || s->parent->template_of) return nullptr;
         auto& segs = pe.path.segments;
@@ -4689,6 +5672,16 @@ private:
             const Type* t = lower(*a.type);
             if (t->is_unknown() || t->is(Kind::type_param)) return nullptr;
             args.push_back(t);
+        }
+        {   // default template arguments: `std::darray<u32>::from` is `std::darray<u32, std::global_allocator>::from`
+            const auto& params = s->parent->decl->template_params;
+            const auto& syms   = s->parent->decl->template_param_symbols;
+            for (std::size_t i = args.size(); i < params.size(); ++i) {
+                if (!params[i].default_type) break;
+                std::map<const Symbol*, const Type*> inner;
+                for (std::size_t j = 0; j < i && j < syms.size(); ++j) inner[syms[j]] = args[j];
+                args.push_back(tc_.lower(*params[i].default_type, &inner));
+            }
         }
         const Type* inst = tc_.instance(s->parent, args);
         if (!inst->is(Kind::user)) return nullptr;
@@ -4709,8 +5702,8 @@ private:
 
     // --- template constraints (spec 14) -----------------------------------------------------
 
-    /// The constraints of the template parameter `p`, lowered: interfaces, or std's
-    /// `comparable`, `cloneable`, `formattable` (externals).
+    // The constraints of the template parameter `p`, lowered: interfaces, or std's
+    // `comparable`, `cloneable`, `formattable` (externals).
     std::vector<const Type*> constraints_of(const Symbol* p) {
         std::vector<const Type*> out;
         if (!p || !p->template_param) return out;
@@ -4720,7 +5713,7 @@ private:
 
     // --- threads (spec 27): std::sendable and std::shareable ---------------------------------
 
-    /// `unsafe std::sendable(cond)` in a base list: the condition is evaluated per instance.
+    // `unsafe std::sendable(cond)` in a base list: the condition is evaluated per instance.
     void check_promises(TypeDecl& d, DeclKind kind) {
         for (ThreadPromise& p : d.promises) {
             std::string name = ast::to_string(p.path);
@@ -4747,9 +5740,9 @@ private:
         }
     }
 
-    /// Whether a value of type `t` may be moved to another thread (`shareable` false) or used
-    /// through `T&` from several threads at once (`shareable` true), derived from its parts like
-    /// copy-ness (spec 27). `why` says which part isn't, `where` points at it.
+    // Whether a value of type `t` may be moved to another thread (`shareable` false) or used
+    // through `T&` from several threads at once (`shareable` true), derived from its parts like
+    // copy-ness (spec 27). `why` says which part isn't, `where` points at it.
     bool thread_safe(const Type* t, bool shareable, std::string* why = nullptr, std::optional<Span>* where = nullptr, int depth = 0) {
         if (!t || depth > 40) return true;
         auto fail = [&](std::string w, std::optional<Span> at = std::nullopt) {
@@ -4859,7 +5852,7 @@ private:
     std::map<std::pair<const Type*, bool>, bool> thread_memo_;
     std::set<const Symbol*>                      thread_local_refs_;   // local references into a thread_local
 
-    /// Whether `e` names a thread_local (or a part of one, or a reference to one).
+    // Whether `e` names a thread_local (or a part of one, or a reference to one).
     bool reaches_thread_local(const Expr& e) const {
         switch (e.kind) {
         case ExprKind::path: {
@@ -4879,8 +5872,8 @@ private:
         }
     }
 
-    /// Whether values of `t` borrow (spec 12): references, views, lambdas with reference
-    /// captures, containers of views. The same rule as the ownership checker's.
+    // Whether values of `t` borrow (spec 12): references, views, lambdas with reference
+    // captures, containers of views. The same rule as the ownership checker's.
     bool view_type(const Type* t, int depth = 0) {
         if (!t || depth > 40) return false;
         switch (t->kind) {
@@ -4916,7 +5909,7 @@ private:
         }
     }
 
-    /// Whether `t` satisfies the constraint `c`; `why` says what is missing.
+    // Whether `t` satisfies the constraint `c`; `why` says what is missing.
     bool satisfies(const Type* t, const Type* c, std::string& why) {
         if (c->is(Kind::external) && (c->name == "std::sendable" || c->name == "std::shareable")) {
             if (t->is_unknown()) return true;
@@ -4957,9 +5950,9 @@ private:
         return true;
     }
 
-    /// What an f-string can print (spec 19): numbers, bools, chars, strings, simple enums, types
-    /// with a `format(mut std::string&)` method (std::formattable), and enums with
-    /// `@std::derive::formattable` whose payloads are formattable.
+    // What an f-string can print (spec 19): numbers, bools, chars, strings, simple enums, types
+    // with a `format(mut std::string&)` method (std::formattable), and enums with
+    // `@std::derive::formattable` whose payloads are formattable.
     bool formattable(const Type* t) {
         t = types::strip_ref(t);
         if (t->is_unknown() || t->is(Kind::type_param)) return true;
@@ -4979,7 +5972,7 @@ private:
         return format_method(t->symbol) != nullptr;
     }
 
-    /// The `void format(mut std::string& out)` method of a type (or a base class), or null.
+    // The `void format(mut std::formatter& out)` method of a type (or a base class), or null.
     static const Symbol* format_method(const Symbol* type) {
         for (const Symbol* t = type; t; t = t->base_class()) {
             auto it = t->members.find("format");
@@ -4992,7 +5985,7 @@ private:
         return nullptr;
     }
 
-    /// A std::hash_map key (spec 20): integers, chars, bools, strings, or a type with `u64 hash()`.
+    // A std::hash_map key (spec 20): integers, chars, bools, strings, or a type with `u64 hash()`.
     bool hashable(const Type* t) {
         t = types::strip_ref(t);
         if (t->is_unknown() || t->is(Kind::type_param)) return true;
@@ -5011,7 +6004,7 @@ private:
         return false;
     }
 
-    /// Checks the arguments of a template against the constraints of its parameters (E4161).
+    // Checks the arguments of a template against the constraints of its parameters (E4161).
     bool check_constraints(const std::vector<const Symbol*>& params, const std::vector<const Type*>& args, Span span,
                            std::string_view display) {
         bool ok = true;
@@ -5046,8 +6039,8 @@ private:
         return ok;
     }
 
-    /// A method call on a value of a constrained template parameter: only the methods of the
-    /// constraining interfaces exist (spec 14). Null when `t` is not constrained by an interface.
+    // A method call on a value of a constrained template parameter: only the methods of the
+    // constraining interfaces exist (spec 14). Null when `t` is not constrained by an interface.
     const Type* infer_constrained_call(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name,
                                        std::vector<Expr*>& args) {
         std::vector<const Type*> cs = constraints_of(t->symbol);
@@ -5076,7 +6069,7 @@ private:
         return set(c, chosen ? chosen->result : tc_.error());
     }
 
-    /// A method of `t` named `name` that takes no arguments, or null.
+    // A method of `t` named `name` that takes no arguments, or null.
     Symbol* nullary_method(const Type* t, const std::string& name) {
         for (Symbol* m : find_methods(t->symbol, name)) {
             if (m->function() && m->function()->params.empty() && !m->function()->is_template) return m;
@@ -5084,9 +6077,9 @@ private:
         return nullptr;
     }
 
-    /// `for (T& x : c)` over a user type (spec 10): a container has `len()` and `operator[]`
-    /// (the loop visits every index); a stream has `next() mut` returning a `std::option` (the
-    /// loop runs until `none`).
+    // `for (T& x : c)` over a user type (spec 10): a container has `len()` and `operator[]`
+    // (the loop visits every index); a stream has `next() mut` returning a `std::option` (the
+    // loop runs until `none`).
     void infer_for_over(ForExpr& f, const Type* t, const Type* var) {
         bool want_mut = var->is(Kind::reference) && var->is_mut;
         Symbol* len   = nullary_method(t, "len");
@@ -5136,9 +6129,9 @@ private:
         note(d, "a 'for' loop needs 'len()' and 'operator[]' (a container), or 'next()' returning a std::option (a stream)");
     }
 
-    /// `for compile_time` (spec 26): the body is copied once per element and each copy is
-    /// checked with the loop variable as a compile-time constant. False when the elements depend
-    /// on a template parameter (the generic check): then the body is checked once as usual.
+    // `for compile_time` (spec 26): the body is copied once per element and each copy is
+    // checked with the loop variable as a compile-time constant. False when the elements depend
+    // on a template parameter (the generic check): then the body is checked once as usual.
     bool infer_for_compile_time(ForExpr& f) {
         std::size_t errors = diags_.error_count();
         const Type* it     = infer(*f.iterable);
@@ -5223,7 +6216,7 @@ private:
         return set(m, t);
     }
 
-    /// The payload type of std::ok/error/some patterns, from the subject's template arguments.
+    // The payload type of std::ok/error/some patterns, from the subject's template arguments.
     const Type* std_payload(const Type* s, const std::string& alt) {
         const std::vector<const Type*>* found = tc_.external_args(s);
         if (!found) return tc_.error();
@@ -5238,6 +6231,17 @@ private:
         switch (p.kind) {
         case PatternKind::wildcard:
         case PatternKind::error: return;
+        case PatternKind::tuple: {
+            auto& tp = p.as<TuplePattern>();
+            bool  fits = s->is(Kind::tuple) && s->args.size() == tp.elements.size();
+            if (!fits && !s->is_unknown()) {
+                error(DiagCode::E4061, p.span,
+                      std::format("this pattern is a tuple of {} elements, but the match subject is {}", tp.elements.size(), quoted(s)),
+                      "wrong type");
+            }
+            for (std::size_t i = 0; i < tp.elements.size(); ++i) check_pattern(*tp.elements[i], fits ? s->args[i] : tc_.error(), mut_ref);
+            return;
+        }
         case PatternKind::binding: {
             auto& b = p.as<BindingPattern>();
             if (b.symbol) {
@@ -5322,22 +6326,26 @@ private:
         }
     }
 
-    /// Matches every value: `_`, a binding, or a struct pattern made only of such patterns.
+    // Matches every value: `_`, a binding, or a struct pattern made only of such patterns.
     static bool irrefutable(const Pattern& p) {
         if (p.kind == PatternKind::wildcard || p.kind == PatternKind::binding) return true;
+        if (p.kind == PatternKind::tuple) {
+            const auto& tp = p.as<TuplePattern>();
+            return std::all_of(tp.elements.begin(), tp.elements.end(), [](const PatternPtr& e) { return irrefutable(*e); });
+        }
         if (p.kind != PatternKind::struct_) return false;
         const auto& sp = p.as<StructPattern>();
         return std::all_of(sp.fields.begin(), sp.fields.end(),
                            [](const FieldPattern& f) { return !f.pattern || irrefutable(*f.pattern); });
     }
 
-    /// Does this arm match every value on its own (no guard, `_` or a binding)?
+    // Does this arm match every value on its own (no guard, `_` or a binding)?
     static bool is_catch_all(const MatchArm& a) {
         return !a.guard && (a.pattern->kind == PatternKind::wildcard || a.pattern->kind == PatternKind::binding);
     }
 
-    /// Whether the patterns together match every value of `t` (spec 10): nested enum patterns
-    /// count, so `std::error(io_error::full)` and `std::error(io_error::closed)` cover `std::error`.
+    // Whether the patterns together match every value of `t` (spec 10): nested enum patterns
+    // count, so `std::error(io_error::full)` and `std::error(io_error::closed)` cover `std::error`.
     bool covers(const std::vector<const Pattern*>& pats, const Type* t) {
         for (const Pattern* p : pats) {
             if (irrefutable(*p)) return true;
@@ -5361,7 +6369,7 @@ private:
         return false;
     }
 
-    /// Whether the patterns cover the alternative `name` of the enum `e`, payload included.
+    // Whether the patterns cover the alternative `name` of the enum `e`, payload included.
     bool alternative_covered(const std::vector<const Pattern*>& pats, const Symbol* e, const std::string& name) {
         std::vector<const Pattern*> payloads;
         for (const Pattern* p : pats) {
@@ -5430,8 +6438,8 @@ private:
             } else if (p.kind == PatternKind::literal && s->is(Kind::bool_)) {
                 const Expr& lit = *p.as<LiteralPattern>().literal;
                 if (lit.kind == ExprKind::bool_literal) seen.insert(lit.as<LiteralExpr>().bool_value ? "true" : "false");
-            } else if (p.kind == PatternKind::struct_) {
-                if (irrefutable(p)) return;   // a struct pattern with only bindings matches everything
+            } else if (p.kind == PatternKind::struct_ || p.kind == PatternKind::tuple) {
+                if (irrefutable(p)) return;   // a struct or tuple pattern with only bindings matches everything
             }
         }
         if (all.empty()) {
@@ -5483,15 +6491,17 @@ private:   // compile-time values that depend on a template parameter
     std::shared_ptr<const ct::Value> ensure_constant(const Symbol* g);
     void ensure_field(const Symbol* f);
 
-    /// The instance of the function template `templ` for `args` (spec 14), defined after Instantiator.
+    // The instance of the function template `templ` for `args` (spec 14), defined after Instantiator.
     Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args);
+    // The pack template `templ` as an ordinary template for `n` pack arguments.
+    Symbol* instantiator_pack_variant(const Symbol* templ, std::size_t n);
     Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args);
 };
 
-/// Makes the instances of template types (spec 14). An instance is a copy of the template's
-/// declaration, re-parsed from its source text so that it has an AST of its own; it is resolved
-/// in the template's module and checked with the parameters replaced by the arguments. Instances
-/// are created on demand, wherever a type `box<u32>` is lowered.
+// Makes the instances of template types (spec 14). An instance is a copy of the template's
+// declaration, re-parsed from its source text so that it has an AST of its own; it is resolved
+// in the template's module and checked with the parameters replaced by the arguments. Instances
+// are created on demand, wherever a type `box<u32>` is lowered.
 class Instantiator {
 public:
     Instantiator(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags)
@@ -5523,7 +6533,7 @@ public:
         return t;
     }
 
-    /// The instance of the function template `templ` for `args`, made once per argument list.
+    // The instance of the function template `templ` for `args`, made once per argument list.
     Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args) {
         auto key = std::make_pair(templ, args);
         if (auto it = fn_memo_.find(key); it != fn_memo_.end()) return it->second;
@@ -5543,9 +6553,9 @@ public:
         return inst;
     }
 
-    /// The instance of the method template `templ` for `args` (spec 14). The resolved method is
-    /// copied (its body refers to the class's parameters, which the class instance substitutes);
-    /// the copy's own parameters are replaced by `args`.
+    // The instance of the method template `templ` for `args` (spec 14). The resolved method is
+    // copied (its body refers to the class's parameters, which the class instance substitutes);
+    // the copy's own parameters are replaced by `args`.
     Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args) {
         auto key = std::make_pair(templ, args);
         if (auto it = fn_memo_.find(key); it != fn_memo_.end()) return it->second;
@@ -5582,11 +6592,84 @@ public:
         return inst;
     }
 
+    // The template `templ` with its parameter pack expanded for `n` arguments: an ordinary
+    // function template (templates, "Parameter packs"). Made once per count.
+    Symbol* pack_variant(const Symbol* templ, std::size_t n) {
+        auto key = std::make_pair(templ, n);
+        if (auto it = pack_memo_.find(key); it != pack_memo_.end()) return it->second;
+        Decl* copy = copy_of(*templ);
+        if (!copy || copy->kind != DeclKind::function) return nullptr;
+        expand_pack(copy->as<FunctionDecl>(), n);
+        std::vector<Symbol*> params;
+        Symbol* variant      = resolve_function_instance(program_, diags_, templ, copy->as<FunctionDecl>(), params);
+        variant->pack_origin = templ;
+        variant->pack_count  = n;
+        variant->parent      = templ->parent;
+        variant->access      = templ->access;
+        pack_memo_[key]      = variant;
+        return variant;
+    }
+
+    // Replaces the pack `type... A` by `A$0, ..., A$n-1`, the pack parameter `A&... values` by
+    // `A$0& values$0, ...`, and expands the uses of the pack in the body.
+    static void expand_pack(FunctionDecl& f, std::size_t n) {
+        auto none = [](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); };
+        std::string type_name;
+        std::vector<TemplateParam> tparams;
+        for (TemplateParam& p : f.template_params) {
+            if (!p.is_pack) {
+                tparams.push_back(std::move(p));
+                continue;
+            }
+            type_name = p.name;
+            for (std::size_t i = 0; i < n; ++i) {
+                TemplateParam e;
+                e.is_type = true;
+                e.name    = p.name + "$" + std::to_string(i);
+                e.span    = p.span;
+                tparams.push_back(std::move(e));
+            }
+        }
+        f.template_params = std::move(tparams);
+        std::string value_name;
+        std::vector<Param> params;
+        for (Param& p : f.params) {
+            if (!p.is_pack) {
+                params.push_back(std::move(p));
+                continue;
+            }
+            value_name = p.name;
+            for (std::size_t i = 0; i < n; ++i) {
+                ast::Cloner c(none);
+                c.rename(type_name, type_name + "$" + std::to_string(i));
+                Param e;
+                e.is_mut = p.is_mut;
+                e.type   = c.type(*p.type);
+                e.name   = p.name + "$" + std::to_string(i);
+                e.span   = p.span;
+                params.push_back(std::move(e));
+            }
+        }
+        f.params = std::move(params);
+        if (f.body && !value_name.empty()) {
+            ast::Cloner c(none);
+            c.expand_pack(type_name, value_name, n);
+            f.body = c.block(*f.body);
+        }
+    }
+
+    std::map<std::pair<const Symbol*, std::size_t>, Symbol*> pack_memo_;
+
 private:
-    /// A fresh copy of the template's declaration, re-parsed from its source text, so that the
-    /// instance has an AST of its own. It lives as long as the program: symbols refer to it.
-    /// Null when the source does not hold exactly one declaration.
+    // A fresh copy of the template's declaration, re-parsed from its source text, so that the
+    // instance has an AST of its own. It lives as long as the program: symbols refer to it.
+    // Null when the source does not hold exactly one declaration.
     Decl* copy_of(const Symbol& templ) {
+        if (templ.pack_origin) {   // a pack template made ordinary: the original, expanded again
+            Decl* copy = copy_of(*templ.pack_origin);
+            if (copy && copy->kind == DeclKind::function) expand_pack(copy->as<FunctionDecl>(), templ.pack_count);
+            return copy;
+        }
         Decl* copy = reparse(templ.definition ? *templ.definition : *templ.decl);
         if (copy && templ.source_block) merge_source_block(*copy, reparse(*templ.source_block));
         return copy;
@@ -5594,16 +6677,35 @@ private:
 
     Decl* reparse(const Decl& src) {
         const SourceFile& file    = sources_.file(src.span.file);
-        std::vector<Token> tokens = tokenize_range(file, src.span.file, diags_, src.span.begin, src.span.end);
+        std::vector<Token> tokens = tokens_of(file, src.span.file, src.span.begin, src.span.end);
         program_.instance_files.push_back(parse(file, src.span.file, tokens, diags_));
         ast::File& parsed = program_.instance_files.back();
         if (parsed.decls.size() != 1) return nullptr;
         return parsed.decls.front().get();
     }
 
-    /// A class template split into a header and a source block (spec 09) becomes one declaration
-    /// for the instance: the method bodies of the source go into the header's declarations, and
-    /// the private members are added. The resolver checked already that the two match.
+    // The tokens of `file` between the byte offsets `begin` and `end`, and an end-of-file token:
+    // the file is lexed once and its tokens are reused for every instance of its templates.
+    std::vector<Token> tokens_of(const SourceFile& file, FileId id, std::size_t begin, std::size_t end) {
+        auto it = program_.file_tokens.find(id);
+        if (it == program_.file_tokens.end()) {
+            DiagnosticEngine quiet;   // reported when the file was loaded
+            it = program_.file_tokens.emplace(id, tokenize(file, id, quiet)).first;
+        }
+        const std::vector<Token>& all = it->second;
+        auto first = std::lower_bound(all.begin(), all.end(), begin, [](const Token& t, std::size_t at) { return t.span.begin < at; });
+        std::vector<Token> out;
+        for (auto t = first; t != all.end() && t->kind != TokenKind::eof && t->span.end <= end; ++t) out.push_back(*t);
+        Token eof;
+        eof.kind = TokenKind::eof;
+        eof.span = Span{id, static_cast<std::uint32_t>(end), static_cast<std::uint32_t>(end)};
+        out.push_back(std::move(eof));
+        return out;
+    }
+
+    // A class template split into a header and a source block (spec 09) becomes one declaration
+    // for the instance: the method bodies of the source go into the header's declarations, and
+    // the private members are added. The resolver checked already that the two match.
     static void merge_source_block(Decl& header, Decl* source) {
         if (!source || (header.kind != DeclKind::class_ && header.kind != DeclKind::struct_) || source->kind != header.kind) return;
         auto& into = header.as<TypeDecl>().members;
@@ -5631,8 +6733,8 @@ public:
     LineCol line_col(Span span) const { return sources_.file(span.file).line_col(span.begin); }
     std::string source_path(Span span) const { return span.file < sources_.count() ? sources_.file(span.file).path() : std::string(); }
 
-    /// Which declarations are being checked or are done (functions and compile_time constants
-    /// can be checked early, on demand, when compile-time code needs them).
+    // Which declarations are being checked or are done (functions and compile_time constants
+    // can be checked early, on demand, when compile-time code needs them).
     enum class State { checking, done };
     std::map<const Decl*, State> states;
 
@@ -5692,6 +6794,10 @@ Symbol* Checker::instantiate_method(const Symbol* templ, const std::vector<const
 
 Symbol* Checker::instantiate_function(const Symbol* templ, const std::vector<const Type*>& args) {
     return instantiator_ ? instantiator_->instantiate_function(templ, args) : nullptr;
+}
+
+Symbol* Checker::instantiator_pack_variant(const Symbol* templ, std::size_t n) {
+    return instantiator_ ? instantiator_->pack_variant(templ, n) : nullptr;
 }
 
 } // namespace

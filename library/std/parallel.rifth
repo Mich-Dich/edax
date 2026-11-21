@@ -1,0 +1,31 @@
+// The Rift standard library: module std::parallel, ready-made parallel algorithms on a
+// std::thread_pool (thread pool, section 6).
+import std;
+
+namespace std::parallel {
+    // Sorts `items` with `<` on the pool's threads; not stable.
+    template<type T>
+    void sort(std::thread_pool& pool, std::span<mut T> items);
+
+    // Sorts `items` with the comparison `less` (a `std::shareable` callable).
+    template<type T, type F : std::shareable>
+    void sort_by(std::thread_pool& pool, std::span<mut T> items, F less);
+
+    // Sorts `items` stably by `key(element)`.
+    template<type T, type F : std::shareable>
+    void sort_by_key(std::thread_pool& pool, std::span<mut T> items, std::sort_order order, F key);
+
+    // The first index whose element matches `predicate` (the same as a sequential search).
+    template<type T, type F : std::shareable>
+    std::option<usize> find(std::thread_pool& pool, std::span<T> items, F predicate);
+
+    // Whether any / every element matches `predicate`.
+    template<type T, type F : std::shareable>
+    bool any(std::thread_pool& pool, std::span<T> items, F predicate);
+    template<type T, type F : std::shareable>
+    bool all(std::thread_pool& pool, std::span<T> items, F predicate);
+
+    // `output[i] = f(input[i])` for spans of equal length.
+    template<type T, type U, type F : std::shareable>
+    void transform(std::thread_pool& pool, std::span<T> input, std::span<mut U> output, F f);
+}

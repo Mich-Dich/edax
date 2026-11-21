@@ -14,6 +14,10 @@ namespace std::thread {
         i32 pthread_getname_np(u64 thread, std::raw_ptr<mut u8> name, usize size);
         i64 sysconf(i32 name);
         i32 sched_yield();
+        i32 pthread_attr_setinheritsched(std::raw_ptr<mut u8> attributes, i32 inherit);
+        i32 pthread_attr_setschedpolicy(std::raw_ptr<mut u8> attributes, i32 policy);
+        i32 pthread_attr_setschedparam(std::raw_ptr<mut u8> attributes, std::raw_ptr<i32> parameter);
+        i32 pthread_attr_setaffinity_np(std::raw_ptr<mut u8> attributes, usize size, std::raw_ptr<u8> cpus);
         i32 nanosleep(std::raw_ptr<sleep_time> wanted, std::raw_ptr<mut sleep_time> left);
     }
 
@@ -23,6 +27,46 @@ namespace std::thread {
     }
 
     private compile_time i32 online_processors = 84;   // _SC_NPROCESSORS_ONLN (Linux)
+
+    // The operating system being built for.
+    private compile_time std::build::os target_os = std::build::target_platform().os;
+
+    // Whether `p` is for the target's operating system.
+    private compile_time run_time bool fits_target(platform_options& p) {
+        match (p) {
+            platform_options::none => { return true; },
+            platform_options::linux(_) => { return target_os == std::build::os::linux; },
+            platform_options::windows(_) => { return target_os == std::build::os::windows; },
+            platform_options::macos(_) => { return target_os == std::build::os::macos; },
+        }
+    }
+
+    // Puts Linux options into the pthread attributes.
+    private unsafe void apply_linux(std::raw_ptr<mut u8> attr, linux_options& o) {
+        i32 policy = match (o.policy) {
+            linux_policy::other => 0,
+            linux_policy::fifo => 1,
+            linux_policy::round_robin => 2,
+            linux_policy::batch => 3,
+            linux_policy::idle => 5,
+        };
+        if (policy != 0 || o.priority != 0) {
+            _ = pthread_attr_setinheritsched(attr, 1);   // PTHREAD_EXPLICIT_SCHED
+            _ = pthread_attr_setschedpolicy(attr, policy);
+            i32 priority = o.priority;
+            _ = pthread_attr_setschedparam(attr, &priority);
+        }
+        if (!o.cpus.is_empty()) {
+            mut std::raw::array<u64, 16> set = default;   // a cpu_set_t: 1024 bits
+            std::raw_ptr<mut u64> words = cast::reinterpret<std::raw_ptr<mut u64>>(mut &set);
+            for (u32 cpu : o.cpus) {
+                run_time check (cpu < 1024) else f"CPU {cpu} is out of range: a thread's CPUs are numbered below 1024";
+                std::raw_ptr<mut u64> word = words.offset(cast<usize>(cpu / 64));
+                std::raw::write(word, std::raw::read(word) | (1u64 << cast<u64>(cpu % 64)));
+            }
+            _ = pthread_attr_setaffinity_np(attr, 128, cast::reinterpret<std::raw_ptr<u8>>(&set));
+        }
+    }
 
     // The thread's state, shared by the handle and the thread: whether it is running, finished or
     // detached (whoever comes second frees the block), and its result.
@@ -37,11 +81,13 @@ namespace std::thread {
     private compile_time u32 detached = 2;
 
     // The block the new thread gets: the packet first (so that its address is the block's), then
-    // the lambda, which the thread runs and destroys.
+    // the lambda, which the thread runs and destroys, and the name the thread gives itself before
+    // running it (at most 15 bytes and a NUL; empty: no name).
     private template<type F, type R>
     struct thread_start {
-        thread_packet<R> packet;
-        F                body;
+        thread_packet<R>         packet;
+        F                        body;
+        std::raw::array<u8, 16>  name = default;
     }
 
     private template<type F, type R>
@@ -50,6 +96,8 @@ namespace std::thread {
     private unsafe template<type F, type R>
     void thread_main(std::raw_ptr<u8> argument) {
         std::raw_ptr<mut thread_start<F, R>> start = cast::reinterpret<std::raw_ptr<mut thread_start<F, R>>>(argument);
+        std::raw_ptr<u8> name = cast::reinterpret<std::raw_ptr<u8>>(&(*start).name);
+        if (*name != 0) { _ = pthread_setname_np(pthread_self(), name); }
         (*start).packet.result = std::some(call_body<F, R>(mut (*start).body));
         std::raw::drop(mut &(*start).body);   // the lambda's captures are destroyed on this thread
         if (std::raw::atomic_exchange(&(*start).packet.state, finished, std::memory_order::acquire_release) == detached) {
@@ -58,7 +106,7 @@ namespace std::thread {
         }
     }
 
-    /// Waits for the thread and takes its result; frees the shared block.
+    // Waits for the thread and takes its result; frees the shared block.
     private unsafe template<type R>
     std::option<R> join_thread(u64 thread, std::raw_ptr<mut thread_packet<R>> packet) {
         _ = pthread_join(thread, nullptr);
@@ -69,11 +117,15 @@ namespace std::thread {
 
     template<type F : std::sendable>
     deduce spawn(F f) {
+        compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
         return spawn(options{}, move f);
     }
 
     template<type F : std::sendable>
     deduce spawn(options settings, F f) {
+        compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
+        compile_time run_time check (fits_target(settings.platform))
+            else "these thread options are for another operating system than the target's";
         compile_time type R = std::meta::result_of<F>();
         mut u64 thread = 0;
         mut std::raw_ptr<mut thread_packet<R>> packet = nullptr;
@@ -81,6 +133,12 @@ namespace std::thread {
             std::raw_ptr<mut thread_start<F, R>> start = std::raw::allocate<thread_start<F, R>>(1);
             std::raw::write(start, thread_start<F, R>{ .packet = thread_packet<R>{}, .body = move f });
             packet = cast::reinterpret<std::raw_ptr<mut thread_packet<R>>>(start);
+            std::raw_ptr<mut u8> name_bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &(*start).name);
+            mut usize i = 0;
+            while (i < 15 && i < settings.name.len()) {
+                std::raw::write(name_bytes.offset(i), *settings.name.as_ptr().offset(i));
+                i += 1;
+            }
             std::fn_ptr<std::raw_ptr<u8>(std::raw_ptr<u8>)> entry = [](std::raw_ptr<u8> argument) -> std::raw_ptr<u8> {
                 thread_main<F, R>(argument);
                 return argument;
@@ -89,19 +147,15 @@ namespace std::thread {
             std::raw_ptr<mut u8> attr = cast::reinterpret<std::raw_ptr<mut u8>>(mut &attributes);
             _ = pthread_attr_init(attr);
             if (settings.stack_size > 0) { _ = pthread_attr_setstacksize(attr, settings.stack_size); }
+            match (settings.platform) {
+                platform_options::linux(o) => { apply_linux(attr, o); },
+                _ => { },
+            }
             i32 failed = pthread_create(mut &thread, attr, entry, cast::reinterpret<std::raw_ptr<u8>>(start));
             _ = pthread_attr_destroy(attr);
+            run_time check (failed != 1) else "std::thread::spawn: the operating system refused the thread's scheduling options (real-time policies need privileges)";
+            run_time check (failed != 22) else "std::thread::spawn: the operating system rejected the thread's options (a priority or CPU it doesn't have)";
             run_time check (failed == 0) else "std::thread::spawn: the operating system can't start another thread";
-            if (!settings.name.is_empty()) {
-                mut std::raw::array<u8, 16> name = default;   // at most 15 bytes and a NUL
-                std::raw_ptr<mut u8> bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &name);
-                mut usize i = 0;
-                while (i < 15 && i < settings.name.len()) {
-                    std::raw::write(bytes.offset(i), *settings.name.as_ptr().offset(i));
-                    i += 1;
-                }
-                _ = pthread_setname_np(thread, bytes);
-            }
         }
         if compile_time (std::meta::is_view<F>()) {
             return scoped_handle<R>{ .thread = thread, .packet = packet };

@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+1=one 2=two 4 true
+--- stderr

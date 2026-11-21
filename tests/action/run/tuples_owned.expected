@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+name 1
+drop 1
+name 2
+c 3 true
+end
+drop 4
+drop 2
+--- stderr

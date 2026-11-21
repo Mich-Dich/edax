@@ -3,11 +3,11 @@
 // `strict` became an error, `plain` stays a warning.
 import std;
 
-/// Switched off on the command line.
+// Switched off on the command line.
 compile_time std::diagnostic noisy = default;
-/// Made an error on the command line.
+// Made an error on the command line.
 compile_time std::diagnostic strict = default;
-/// Left alone.
+// Left alone.
 compile_time std::diagnostic plain = default;
 
 void f() {

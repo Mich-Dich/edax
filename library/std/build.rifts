@@ -2,12 +2,32 @@
 // carried out by riftc's compile-time interpreter; their bodies are never run.
 
 namespace std::build {
+    template<type T>
+    struct setting {
+        compile_time T value() { std::compile_error("provided by riftc"); }
+        compile_time std::option<T> value_at(std::call_site where) { std::compile_error("provided by riftc"); }
+    }
+
     class graph {
     public:
+        template<type T>
+        compile_time T option(std::build::setting<T> s, T fallback, std::static_str help) mut { return fallback; }
+        template<type T>
+        compile_time void set(std::build::target t, std::build::setting<T> s, T value) mut { }
+        template<type T>
+        compile_time void set_for_files(std::build::target t, std::static_str pattern, std::build::setting<T> s, T value) mut { }
+        compile_time void add_include_dirs(std::build::target t, std::span<std::static_str> dirs, std::build::visibility v) mut { }
+        compile_time void add_arguments(std::build::step s, std::span<std::static_str> arguments) mut { }
+        compile_time void add_inputs(std::build::step s, std::span<std::build::path> files) mut { }
+        compile_time void add_outputs(std::build::step s, std::span<std::build::path> files) mut { }
         compile_time std::build::target add_executable(std::build::rift_target t) mut { return std::build::target{}; }
         compile_time std::build::target add_library(std::build::rift_target t) mut { return std::build::target{}; }
         compile_time std::build::target add_test(std::build::rift_target t) mut { return std::build::target{}; }
         compile_time std::build::target add_c_library(std::build::c_target t) mut { return std::build::target{}; }
+        compile_time std::build::target add_shared_library(std::build::c_target spec) mut { return std::build::target{}; }
+        compile_time std::build::target add_plugin(std::build::rift_target spec) mut { return std::build::target{}; }
+        compile_time void import_c_headers(std::build::target t, std::build::c_import spec) mut { }
+        compile_time void wrap_cpp(std::build::target t, std::build::cpp_wrap spec) mut { }
         compile_time void link(std::build::target user, std::build::target used) mut { }
         compile_time void add_sources(std::build::target t, std::static_str file) mut { }
         compile_time void add_include_dir(std::build::target t, std::static_str dir, std::build::visibility v) mut { }
@@ -40,8 +60,16 @@ namespace std::build {
         compile_time std::build::project dependency(std::build::local source) mut { return std::build::project{}; }
         compile_time std::span<std::build::path> glob_in(std::build::project p, std::static_str pattern) { std::compile_error("provided by riftc"); }
         compile_time std::build::target target_of(std::build::project p, std::static_str name) { return std::build::target{}; }
-        compile_time std::static_str host() { return ""; }
-        compile_time std::static_str target_platform() { return ""; }
+        compile_time std::build::package package(std::build::package_spec spec) mut { return std::build::package{}; }
+        compile_time void set_global_allocator(std::build::target t, type allocator) mut { }
+        compile_time void set_global_allocator(std::build::target t, std::static_str allocator) mut { }
+        compile_time std::build::platform host() { std::compile_error("provided by riftc"); }
+        compile_time std::build::platform target_platform() { std::compile_error("provided by riftc"); }
+    }
+
+    struct package {
+        compile_time std::build::target target(std::static_str name) { return std::build::target{}; }
+        compile_time std::span<std::build::path> glob(std::static_str pattern) { std::compile_error("provided by riftc"); }
     }
 
     struct path {
@@ -51,16 +79,25 @@ namespace std::build {
     }
 
     template<type T>
-    compile_time T setting(std::static_str name) {
-        std::compile_error("std::build::setting is provided by riftc");
-    }
-
-    template<type T>
     compile_time std::option<T> setting_at(std::call_site where, std::static_str name) {
         std::compile_error("std::build::setting_at is provided by riftc");
     }
 
     compile_time bool mode_is(type mode) { return false; }
+
+    view struct platform {
+        compile_time bool has(std::build::capability c) {
+            for (std::build::capability each : this.capabilities) {
+                if (each == c) { return true; }
+            }
+            return false;
+        }
+    }
+
+    compile_time std::build::platform target_platform() { std::compile_error("provided by riftc"); }
+    compile_time bool target_has(std::build::capability c) { std::compile_error("provided by riftc"); }
+    compile_time bool target_has_cpu_feature(std::build::cpu_feature f) { std::compile_error("provided by riftc"); }
+    compile_time type global_allocator_type() { std::compile_error("provided by riftc"); }
 
     compile_time std::build::mode::settings& current_mode() {
         std::compile_error("std::build::current_mode is provided by riftc");

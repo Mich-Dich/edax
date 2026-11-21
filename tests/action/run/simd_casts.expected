@@ -1,0 +1,5 @@
+exit: 134
+--- stdout
+4.0 44 127 1065353216 1.0
+--- stderr
+tests/action/run/simd_casts.rifts:12:18: panic: integer overflow in '+' (i32x4)

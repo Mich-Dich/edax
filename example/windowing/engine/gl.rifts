@@ -1,0 +1,60 @@
+// windowing/engine/gl (see gl.rifth).
+
+import std;
+
+namespace engine::gl {
+    template<type C>
+    std::result<functions, std::static_str> load(C& ctx) {
+        // Each field's own name is looked up; its own type is what the address becomes. The table
+        // is built field by field in raw memory: function pointers have no "empty" value.
+        unsafe {
+            std::raw_ptr<mut functions> block = std::raw::allocate<functions>(1);
+            std::raw_ptr<mut u8> base = cast::reinterpret<std::raw_ptr<mut u8>>(block);
+            for compile_time (std::meta::field field : std::meta::fields<functions>()) {
+                compile_time type field_type = field.type;
+                match (ctx.proc_address(field.name)) {
+                    std::some(address) => std::raw::write(cast::reinterpret<std::raw_ptr<mut field_type>>(base.offset(field.offset)),
+                                                          cast::reinterpret<field_type>(address)),
+                    std::none => {
+                        std::raw::free(block);
+                        return std::error(field.name);
+                    },
+                }
+            }
+            functions table = std::raw::read(block);
+            std::raw::free(block);
+            return std::ok(table);
+        }
+    }
+
+    void fill(functions& f, i32 framebuffer_height, i32 x, i32 y, i32 width, i32 height, color c) {
+        unsafe {
+            f.glEnable(scissor_test);
+            f.glScissor(x, framebuffer_height - y - height, width, height);    // GL counts y from the bottom
+            f.glClearColor(c.r, c.g, c.b, c.a);
+            f.glClear(color_buffer_bit);
+            f.glDisable(scissor_test);
+        }
+    }
+
+    void clear(functions& f, std::windowing::size framebuffer, color c) {
+        unsafe {
+            f.glViewport(0, 0, cast::saturate<i32>(framebuffer.width), cast::saturate<i32>(framebuffer.height));
+            f.glClearColor(c.r, c.g, c.b, c.a);
+            f.glClear(color_buffer_bit);
+        }
+    }
+
+    u32 upload_texture(functions& f, std::windowing::opengl::current& gl, std::windowing::image& img) {
+        mut u32 id = 0;
+        unsafe {
+            f.glGenTextures(1, mut &id);
+            f.glBindTexture(texture_2d, id);
+            f.glTexParameteri(texture_2d, texture_min_filter, nearest);
+            f.glTexImage2D(texture_2d, 0, rgba8, cast::saturate<i32>(img.width), cast::saturate<i32>(img.height), 0,
+                           rgba, unsigned_byte, cast::reinterpret<std::raw_ptr<u8>>(&img.pixels[0]));
+            f.glFinish();                    // finished before another context of the group uses it
+        }
+        return id;
+    }
+}

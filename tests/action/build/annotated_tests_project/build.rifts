@@ -1,5 +1,7 @@
 import std;
 
-compile_time void build(mut std::build::graph& g) {
-    g.add_test(std::build::rift_target{ .name = "parsing", .root = "tests/parsing.rifts" });
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        g.add_test(std::build::rift_target{ .name = "parsing", .root = "tests/parsing.rifts" });
+    }
 }

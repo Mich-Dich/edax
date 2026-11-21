@@ -5,11 +5,11 @@ namespace shapes {
         f64 radius = 1.0;
     }
 
-    /// Declared with its operand type: same namespace, same module.
+    // Declared with its operand type: same namespace, same module.
     circle operator*(circle& c, f64 k);
 
     f64 area(circle& c);
 
-    /// Also declared by module extra::more: a type comes from one module.
+    // Also declared by module extra::more: a type comes from one module.
     struct marker { }
 }

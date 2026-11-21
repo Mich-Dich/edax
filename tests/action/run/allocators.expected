@@ -1,0 +1,10 @@
+exit: 134
+--- stdout
+darray<u32>: 24 bytes
+10 points, last (9, 81), arena used 224 of 4096
+map 16, arena used more: true
+boxed (7, 8)
+100 values, sum 99
+allocations > 0: true, every block given back: true
+--- stderr
+<std>/std.rifts:32:25: panic: out of memory

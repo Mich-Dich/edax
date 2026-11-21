@@ -67,6 +67,7 @@ RIFT_PUNCT(l_bracket,      "[")    RIFT_PUNCT(r_bracket,      "]")
 RIFT_PUNCT(comma,          ",")    RIFT_PUNCT(semicolon,      ";")
 RIFT_PUNCT(colon,          ":")    RIFT_PUNCT(colon_colon,    "::")
 RIFT_PUNCT(dot,            ".")    RIFT_PUNCT(dot_dot,        "..")   RIFT_PUNCT(dot_dot_eq, "..=")
+RIFT_PUNCT(ellipsis,       "...")
 RIFT_PUNCT(arrow,          "->")   RIFT_PUNCT(fat_arrow,      "=>")
 RIFT_PUNCT(question,       "?")    RIFT_PUNCT(at,             "@")
 

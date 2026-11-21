@@ -1,0 +1,4 @@
+// RUN: riftc run --root=%S/c_import_project --out-dir=%t app
+// g.import_c_headers: the C library's headers become the Rift module shapes_c (constants from
+// #defines, enums, structs passed by value as C does, a union, a callback). What isn't
+// translated is listed in the report next to the generated header.

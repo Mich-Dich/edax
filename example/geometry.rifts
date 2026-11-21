@@ -13,13 +13,13 @@ struct box {
     geometry::vec2 high;
 }
 
-/// A regular polygon.
+// A regular polygon.
 struct regular {
     u32 sides = 3;
     f64 side = 1.0;
 }
 
-/// An enum whose alternatives carry data (one payload each; a struct groups several values).
+// An enum whose alternatives carry data (one payload each; a struct groups several values).
 enum shape : u8 {
     circle(disk),
     rect(box),
@@ -40,7 +40,7 @@ f64 area(shape& s) {
     };
 }
 
-/// tan(pi / n), from the Taylor series of sin and cos (no libm needed).
+// tan(pi / n), from the Taylor series of sin and cos (no libm needed).
 f64 tan_pi_over(u32 n) {
     f64 x = 3.141592653589793 / cast<f64>(n);
     mut f64 sin = 0.0;

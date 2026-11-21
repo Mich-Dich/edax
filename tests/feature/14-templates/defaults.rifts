@@ -1,0 +1,10 @@
+// feature 14: default template arguments may be left out at the end.
+struct global { u32 id = 0; }
+template<type T, type A = global>
+struct holder {
+    T value;
+    A alloc;
+}
+holder<u32> one() { return holder<u32>{ .value = 1, .alloc = global{} }; }
+holder<u32, global> two() { return holder<u32, global>{ .value = 1, .alloc = global{} }; }
+u8 three(holder<u32, global, u8> h) { return 0; }  //~ error[E4180]: 'holder' takes 1 to 2 template arguments, but 3 are given

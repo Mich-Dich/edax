@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(rift
-    VERSION 0.1.0
+    VERSION 0.8.0
     DESCRIPTION "The Rift programming language compiler"
     LANGUAGES CXX
 )

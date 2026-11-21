@@ -22,7 +22,7 @@ Run riftc(std::vector<std::string_view> args) {
     return Run{code, out.str(), err.str()};
 }
 
-/// A temporary source file that is deleted again at the end of the test.
+// A temporary source file that is deleted again at the end of the test.
 struct TempFile {
     std::filesystem::path path;
     TempFile(std::string_view name, std::string_view text)

@@ -34,8 +34,8 @@ public:
     std::string describe() override {
         return this.shape::describe();
     }
-    void format(mut std::string& out) override {   // std::formattable (spec 19)
-        out.push_str("circle");
+    void format(mut std::formatter& out) override {   // std::formattable (spec 19)
+        out.write("circle");
     }
 }
 

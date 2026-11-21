@@ -1,0 +1,38 @@
+exit: 0
+--- stdout
+CPU level x86_64 (x86_64-pc-linux-gnu), widest vector register 16 bytes
+
+add_arrays (line 6)
+  vector types:
+    f32x8: 2 × xmm (split)
+  split or emulated:
+    line 8: f32x8 + is split: one instruction per register
+  masked tails:
+    line 7: the last block is one masked step (a short sequence of loads, blends and stores)
+
+divide (line 12)
+  vector types:
+    i32x16: 4 × xmm (split)
+  split or emulated:
+    line 13: i32x16 / is emulated: one lane at a time (no vector integer division)
+
+times (line 16)
+  vector types:
+    u64x4: 2 × xmm (split)
+  split or emulated:
+    line 17: u64x4 * is emulated: three multiplies per lane pair (vpmullq needs AVX-512)
+
+total (line 20)
+  vector types:
+    f32x4: 1 × xmm
+  masked tails:
+    line 24: the last block is one masked step (a short sequence of loads, blends and stores)
+  multiversion copies:
+    x86_64_v3 (vector registers of 32 bytes)
+    x86_64_v4 (vector registers of 64 bytes)
+    x86_64 (the build's own level, for CPUs below those)
+
+scale (line 30)
+  must_vectorize loops:
+    line 32: vectorized
+--- stderr

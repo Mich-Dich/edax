@@ -11,7 +11,7 @@ namespace geometry {
 
     vec2 operator*(vec2& v, f64 k) { return vec2{ .x = v.x * k, .y = v.y * k }; }
 
-    /// Newton's method: `private` keeps it out of the module's interface.
+    // Newton's method: `private` keeps it out of the module's interface.
     private f64 square_root(f64 value) {
         if (value <= 0.0) { return 0.0; }
         mut f64 guess = value;

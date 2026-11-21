@@ -1,11 +1,15 @@
-// spec 10: `f(...) else { ... }` runs the block when the call returns false.
+// control flow: `f(...) else { ... }` runs the block when the call returns false; only a
+// `@std::check_result` function may be followed by `else`.
 import std;
 
+@std::check_result
 bool ready(u32 x) { return x > 2; }
+bool plain(u32 x) { return x > 2; }
 u32 count(u32 x) { return x; }
 
 struct gate {
     bool open = false;
+    @std::check_result
     bool is_open() { return this.open; }
 }
 
@@ -14,6 +18,7 @@ bool step(u32 x) {
         return false;
     }
     gate{}.is_open() else { return false; }
+    plain(x) else { return false; }      //~ error[E4254]: 'else' after a call to 'plain', which is not '@std::check_result'
     count(x) else { return false; }      //~ error[E4252]: 'else' needs a call that returns 'bool', but this one returns 'u32'
     return true;
 }

@@ -1,0 +1,19 @@
+import std;
+import api::greeter;
+
+i32 main() {
+    std::filesystem::path dir = std::filesystem::executable_dir() / "plugins";
+    {
+        mut std::plugin<api::greeter> shout = std::plugin<api::greeter>::load(dir / "shout.so").expect("shout");
+        mut std::plugin<api::greeter> quiet = std::plugin<api::greeter>::load(dir / "quiet.so").expect("quiet");
+        std::println(shout->greet("plugins"));
+        std::println(quiet->greet("plugins"));
+        _ = shout->calls();
+        std::println(f"calls: {shout->calls()} {quiet->calls()}");
+    }
+    std::result<std::plugin<api::greeter>, std::plugin_error> wrong = std::plugin<api::greeter>::load(dir / "wrong.so");
+    std::println(f"wrong interface: {wrong.is_error()}");
+    std::result<std::plugin<api::greeter>, std::plugin_error> missing = std::plugin<api::greeter>::load(dir / "missing.so");
+    std::println(f"missing: {missing.is_error()}");
+    return 0;
+}

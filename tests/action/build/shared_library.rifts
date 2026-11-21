@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/shared_project --out-dir=%t app
+// g.add_shared_library: a C library built as a .so, linked by the program and found at run time.

@@ -4,7 +4,7 @@ extern(std::build::language::c) i32 puts(std::raw_ptr<u8> text);
 extern(std::build::language::cpp) void draw();
 extern(std::build::language::c) {
     i32 abs(i32 x);
-    /// Documented inside the block.
+    // Documented inside the block.
     void free(std::raw_ptr<mut u8> p);
 }
 extern "C" i32 old_style(i32 x);              //~ error[E2033]: 'extern' names the language

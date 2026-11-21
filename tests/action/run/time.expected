@@ -1,0 +1,7 @@
+exit: 134
+--- stdout
+250ns 1.5ms 1.5s 3m 12s 2h 0m
+3 4500 true true
+1s 2 true
+--- stderr
+tests/action/run/time.rifts:11:21: panic: instant::since: 'earlier' is later

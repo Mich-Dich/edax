@@ -1,0 +1,1581 @@
+// The Rift standard library: module std::windowing (see windowing.rifth), on X11.
+//
+// Layout of the implementation:
+// - platform_state: the connection (Display*, the loaded libraries, atoms, the registry of live
+//   windows and share groups). One heap block, owned by a count: the system, every window, every
+//   share group and every Vulkan loader hold one. The last owner closes the display.
+// - window_state: one heap block per window, registered with the platform so that poll() can sort
+//   events into its queue. A window object only holds a pointer to it, so a window can be moved
+//   (moves are bitwise) without the platform's pointers going stale.
+// - group_state: one heap block per OpenGL share group, counted like the platform.
+// Everything here runs on the thread that started the system: the public types are thread_bound,
+// so no locking is needed and none is done.
+
+namespace std::windowing {
+    private extern(std::build::language::c) {
+        i32 poll(std::raw_ptr<mut poll_fd> fds, u64 count, i32 timeout_ms);
+    }
+
+    private struct poll_fd {
+        i32 fd = 0;
+        i16 events = 0;
+        i16 returned = 0;
+    }
+
+    // Whether a system (or what it left alive) exists: one connection per program.
+    private static std::atomic<bool> platform_alive = default;
+
+    // The last X error, set by the error handler (X reports errors asynchronously).
+    private static std::atomic<u32> last_x_error = default;
+
+    // ---- internal state ----------------------------------------------------------------------------
+
+    private struct gl_library {
+        x11::library                lib = default;
+        x11::glx                    f;
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, i32, std::raw_ptr<i32>)> create_context;
+        std::option<std::fn_ptr<void(std::raw_ptr<mut u8>, u64, i32)>> swap_interval = std::none;
+    }
+
+    private struct vulkan_library {
+        x11::library       lib = default;
+        x11::vulkan_loader f;
+    }
+
+    private struct atoms {
+        u64 wm_protocols = 0;
+        u64 wm_delete_window = 0;
+        u64 net_wm_name = 0;
+        u64 utf8_string = 0;
+        u64 net_wm_icon = 0;
+        u64 net_wm_state = 0;
+        u64 net_wm_state_fullscreen = 0;
+        u64 net_wm_window_type = 0;
+        u64 net_wm_window_type_utility = 0;
+        u64 motif_wm_hints = 0;
+        u64 net_wm_fullscreen_monitors = 0;
+        u64 wm_normal_hints = 40;      // predefined atoms (Xatom.h)
+        u64 wm_size_hints = 41;
+    }
+
+    private struct group_state {
+        std::raw_ptr<mut platform_state> platform = nullptr;
+        u32                  id = 0;
+        u32                  owners = 1;
+        opengl::config       config = default;
+        // Whether `automatic` windows may join it (false for sharing::independent).
+        bool                 open_to_all = true;
+        std::raw_ptr<mut u8> fbconfig = nullptr;      // GLXFBConfig
+        std::raw_ptr<mut u8> visual_info = nullptr;   // XVisualInfo*, freed with XFree
+        std::raw_ptr<mut u8> context = nullptr;       // the group's own context
+        u64                  pbuffer = 0;             // ... and its 1x1 drawable
+    }
+
+    private struct window_state {
+        std::raw_ptr<mut platform_state> platform = nullptr;
+        u32                  id = 0;
+        u64                  handle = 0;              // the X window
+        u64                  colormap = 0;
+        graphics_api         api = graphics_api::none;
+        std::darray<event>   queue = default;
+        input_state          input = default;
+        bool                 close_requested = false;
+        bool                 needs_draw = true;
+        bool                 visible = false;
+        bool                 minimized = false;
+        bool                 focused = false;
+        bool                 fullscreen = false;
+        u32                  fullscreen_monitor = 0;
+        redraw               redraw = redraw::continuous;
+        size                 extent = default;
+        point                origin = default;
+        cursor_mode          cursor_mode = cursor_mode::normal;
+        u64                  cursor = 0;              // the font cursor of set_cursor, or 0
+        // Captured cursor: where the program believes the cursor is (the real one is held in the
+        // middle of the window).
+        position             virtual_cursor = default;
+        // OpenGL
+        std::raw_ptr<mut group_state> group = nullptr;
+        std::raw_ptr<mut u8> context = nullptr;
+        u64                  drawable = 0;            // GLXWindow
+        u32                  swap_interval = 1;
+        bool                 swap_interval_applied = false;
+        // Vulkan
+        u64                  vk_instance = 0;
+        u64                  vk_surface = 0;
+        std::option<std::fn_ptr<void(u64, u64, std::raw_ptr<u8>)>> vk_destroy_surface = std::none;
+    }
+
+    private struct platform_state {
+        u32                  owners = 1;
+        x11::library         x11_lib = default;
+        x11::xlib            x;
+        // XRandR, when libXrandr is there: the monitors.
+        std::option<x11::library> randr_lib = std::none;
+        std::option<x11::xrandr>  randr = std::none;
+        std::raw_ptr<mut u8> display = nullptr;
+        i32                  screen = 0;
+        u64                  root = 0;
+        atoms                atom = default;
+        u64                  blank_cursor = 0;
+        scale                content_scale = default;
+        std::darray<std::raw_ptr<mut window_state>> windows = default;
+        std::darray<std::raw_ptr<mut group_state>>  groups = default;
+        std::darray<system_event> system_queue = default;
+        u32                  next_window_id = 1;
+        u32                  next_group_id = 1;
+        std::option<gl_library>     gl = std::none;
+        std::option<vulkan_library> vk = std::none;
+        std::raw_ptr<mut u8> current_context = nullptr;
+        u64                  current_drawable = 0;
+        // A frame or a share group's `current` exists (one at a time per thread).
+        bool                 context_in_use = false;
+    }
+
+    // ---- small helpers ------------------------------------------------------------------------------
+
+    // `text` with a NUL at the end, for C.
+    private std::string c_text(std::str text) {
+        mut std::string out = std::string::with_capacity(text.len() + 1);
+        out.push_str(text);
+        out.push('\0');
+        return out;
+    }
+
+    private std::windowing::modifiers modifiers_of(u32 state) {
+        return std::windowing::modifiers{
+            .shift   = (state & x11::shift_mask) != 0,
+            .control = (state & x11::control_mask) != 0,
+            .alt     = (state & x11::mod1_mask) != 0,
+            .super   = (state & x11::mod4_mask) != 0,
+        };
+    }
+
+    private std::windowing::modifiers with_own_modifier(std::windowing::modifiers held, key k, bool pressed) {
+        mut std::windowing::modifiers out = held;
+        match (k) {
+            key::left_shift    => { out.shift = pressed; },
+            key::right_shift   => { out.shift = pressed; },
+            key::left_control  => { out.control = pressed; },
+            key::right_control => { out.control = pressed; },
+            key::left_alt      => { out.alt = pressed; },
+            key::right_alt     => { out.alt = pressed; },
+            key::left_super    => { out.super = pressed; },
+            key::right_super   => { out.super = pressed; },
+            _                                     => {},
+        }
+        return out;
+    }
+
+    private position position_of(i32 x, i32 y) {
+        return position{ .x = cast<f64>(x), .y = cast<f64>(y) };
+    }
+
+    // The window-system part of releasing one owner of the platform; the last one closes it.
+    private unsafe void release_platform(std::raw_ptr<mut platform_state> p) {
+        (*p).owners -= 1;
+        if ((*p).owners > 0) {
+            return;
+        }
+        if ((*p).blank_cursor != 0) {
+            _ = (*p).x.XFreeCursor((*p).display, (*p).blank_cursor);
+        }
+        _ = (*p).x.XCloseDisplay((*p).display);
+        match ((*p).gl) {
+            std::some(gl) => x11::close_library(gl.lib),
+            std::none     => {},
+        }
+        match ((*p).vk) {
+            std::some(vk) => x11::close_library(vk.lib),
+            std::none     => {},
+        }
+        match ((*p).randr_lib) {
+            std::some(lib) => x11::close_library(lib),
+            std::none      => {},
+        }
+        x11::close_library((*p).x11_lib);
+        std::raw::drop(p);
+        std::raw::free(p);
+        platform_alive.store(false, std::memory_order::release);
+    }
+
+    private unsafe std::raw_ptr<mut platform_state> retain_platform(std::raw_ptr<mut platform_state> p) {
+        (*p).owners += 1;
+        return p;
+    }
+
+    private unsafe u64 intern(std::raw_ptr<mut platform_state> p, std::raw_ptr<u8> name) {
+        return (*p).x.XInternAtom((*p).display, name, 0);
+    }
+
+    // Xft.dpi from the X resources (what desktop environments set for HiDPI), else 96.
+    private unsafe scale read_content_scale(std::raw_ptr<mut platform_state> p) {
+        std::raw_ptr<u8> resources = (*p).x.XResourceManagerString((*p).display);
+        if (!resources) {
+            return scale{};
+        }
+        mut usize length = 0;
+        while (*resources.offset(length) != 0u8) {
+            length += 1;
+        }
+        std::str text = std::raw::str_from(resources, length);
+        for (std::str line : text.split('\n')) {
+            if (line.starts_with("Xft.dpi:")) {
+                match (line.slice(8, line.len()).trim().parse<f32>()) {
+                    std::some(dpi) => {
+                        if (dpi > 0.0) {
+                            return scale{ .x = dpi / 96.0, .y = dpi / 96.0 };
+                        }
+                    },
+                    std::none => {},
+                }
+            }
+        }
+        return scale{};
+    }
+
+    // ---- the X error handler --------------------------------------------------------------------------
+
+    private std::fn_ptr<i32(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)> error_handler() {
+        return [](std::raw_ptr<mut u8> display, std::raw_ptr<mut u8> error_event) -> i32 {
+            // XErrorEvent: type, display, resourceid, serial, then error_code at byte 32.
+            u8 code = unsafe { *error_event.offset(32) };
+            last_x_error.store(cast<u32>(code), std::memory_order::relaxed);
+            return 0;
+        };
+    }
+
+    // Runs after a call that may fail with an X error: waits until the server answered, then
+    // returns whether it reported an error since `clear_x_error()`.
+    private unsafe bool x_failed(std::raw_ptr<mut platform_state> p) {
+        _ = (*p).x.XSync((*p).display, 0);
+        return last_x_error.load(std::memory_order::relaxed) != 0;
+    }
+
+    private void clear_x_error() {
+        last_x_error.store(0, std::memory_order::relaxed);
+    }
+
+    // ---- loading GLX and Vulkan on first use -----------------------------------------------------------
+
+    private unsafe std::result<void, error> load_gl(std::raw_ptr<mut platform_state> p) {
+        if ((*p).gl.is_some()) {
+            return std::ok();
+        }
+        x11::library lib = x11::open_library(c"libGL.so.1").or_error(error::library_missing)?;
+        x11::glx f = match (x11::load_table<x11::glx>(lib)) {
+            std::ok(table) => table,
+            std::error(_)  => {
+                x11::close_library(lib);
+                return std::error(error::opengl_unavailable);
+            },
+        };
+        mut i32 major = 0;
+        mut i32 minor = 0;
+        if (f.glXQueryVersion((*p).display, mut &major, mut &minor) == 0 || (major == 1 && minor < 3)) {
+            x11::close_library(lib);
+            return std::error(error::opengl_unavailable);       // GLX 1.3 is needed for FB configs
+        }
+        std::raw_ptr<u8> create = f.glXGetProcAddressARB(c"glXCreateContextAttribsARB");
+        if (!create) {
+            x11::close_library(lib);
+            return std::error(error::opengl_unavailable);
+        }
+        std::raw_ptr<u8> swap = f.glXGetProcAddressARB(c"glXSwapIntervalEXT");
+        (*p).gl = std::some(gl_library{
+            .lib            = lib,
+            .f              = f,
+            .create_context = cast::reinterpret<std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, i32, std::raw_ptr<i32>)>>(create),
+            .swap_interval  = if (swap) { std::some(cast::reinterpret<std::fn_ptr<void(std::raw_ptr<mut u8>, u64, i32)>>(swap)) } else { std::none },
+        });
+        return std::ok();
+    }
+
+    private unsafe gl_library gl_of(std::raw_ptr<mut platform_state> p) {
+        return (*p).gl.expect("std::windowing: OpenGL used before it was loaded");
+    }
+
+    private unsafe std::result<void, error> load_vulkan(std::raw_ptr<mut platform_state> p) {
+        if ((*p).vk.is_some()) {
+            return std::ok();
+        }
+        x11::library lib = x11::open_library(c"libvulkan.so.1").or_error(error::vulkan_unavailable)?;
+        match (x11::load_table<x11::vulkan_loader>(lib)) {
+            std::ok(table) => {
+                (*p).vk = std::some(vulkan_library{ .lib = lib, .f = table });
+                return std::ok();
+            },
+            std::error(_) => {
+                x11::close_library(lib);
+                return std::error(error::vulkan_unavailable);
+            },
+        }
+    }
+
+    // ---- share groups -------------------------------------------------------------------------------
+
+    // A framebuffer config for `c` and a share group around it, with its own 1x1 context.
+    private unsafe std::result<std::raw_ptr<mut group_state>, error> make_group(std::raw_ptr<mut platform_state> p,
+                                                                                   opengl::config c, bool open_to_all) {
+        load_gl(p)?;
+        x11::glx f = gl_of(p).f;
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, i32, std::raw_ptr<i32>)> create = gl_of(p).create_context;
+        std::raw_ptr<mut u8> display = (*p).display;
+
+        std::array<i32, 27> attributes = [
+            x11::glx_x_renderable, 1,
+            x11::glx_drawable_type, x11::glx_window_bit | x11::glx_pbuffer_bit,
+            x11::glx_render_type, x11::glx_rgba_bit,
+            x11::glx_x_visual_type, x11::glx_true_color,
+            x11::glx_red_size, 8,
+            x11::glx_green_size, 8,
+            x11::glx_blue_size, 8,
+            x11::glx_alpha_size, 8,
+            x11::glx_depth_size, cast<i32>(c.depth_bits),
+            x11::glx_stencil_size, cast<i32>(c.stencil_bits),
+            x11::glx_doublebuffer, 1,
+            x11::glx_sample_buffers, if (c.samples > 0) { 1 } else { 0 },
+            x11::glx_samples, cast<i32>(c.samples),
+            0,
+        ];
+        mut i32 count = 0;
+        std::raw_ptr<mut std::raw_ptr<mut u8>> configs =
+            f.glXChooseFBConfig(display, (*p).screen, cast::reinterpret<std::raw_ptr<i32>>(&attributes), mut &count);
+        if (!configs || count < 1) {
+            if (configs) { _ = (*p).x.XFree(cast::reinterpret<std::raw_ptr<mut u8>>(configs)); }
+            return std::error(error::opengl_unavailable);
+        }
+        std::raw_ptr<mut u8> fbconfig = *configs;
+        _ = (*p).x.XFree(cast::reinterpret<std::raw_ptr<mut u8>>(configs));
+        std::raw_ptr<mut u8> visual_info = f.glXGetVisualFromFBConfig(display, fbconfig);
+        if (!visual_info) {
+            return std::error(error::opengl_unavailable);
+        }
+
+        std::array<i32, 5> pbuffer_attributes = [x11::glx_pbuffer_width, 1, x11::glx_pbuffer_height, 1, 0];
+        u64 pbuffer = f.glXCreatePbuffer(display, fbconfig, cast::reinterpret<std::raw_ptr<i32>>(&pbuffer_attributes));
+
+        std::array<i32, 9> context_attributes = context_attributes_of(c);
+        clear_x_error();
+        std::raw_ptr<mut u8> context = create(display, fbconfig, nullptr, 1,
+                                              cast::reinterpret<std::raw_ptr<i32>>(&context_attributes));
+        if (x_failed(p) || !context) {
+            if (context) { f.glXDestroyContext(display, context); }
+            f.glXDestroyPbuffer(display, pbuffer);
+            _ = (*p).x.XFree(visual_info);
+            return std::error(error::version_unavailable);
+        }
+
+        std::raw_ptr<mut group_state> g = std::raw::allocate<group_state>(1);
+        std::raw::write(g, group_state{
+            .platform    = retain_platform(p),
+            .id          = (*p).next_group_id,
+            .config      = c,
+            .open_to_all = open_to_all,
+            .fbconfig    = fbconfig,
+            .visual_info = visual_info,
+            .context     = context,
+            .pbuffer     = pbuffer,
+        });
+        (*p).next_group_id += 1;
+        (*p).groups.push(g);
+        return std::ok(g);
+    }
+
+    private std::array<i32, 9> context_attributes_of(opengl::config c) {
+        i32 profile = match (c.profile) {
+            opengl::profile::core          => x11::glx_context_core_profile_bit,
+            opengl::profile::compatibility => x11::glx_context_compatibility_profile_bit,
+        };
+        i32 flags = if (c.debug) { x11::glx_context_debug_bit } else { 0 };
+        return [
+            x11::glx_context_major_version, cast<i32>(c.major),
+            x11::glx_context_minor_version, cast<i32>(c.minor),
+            x11::glx_context_profile_mask, profile,
+            x11::glx_context_flags, flags,
+            0,
+        ];
+    }
+
+    private unsafe void retain_group(std::raw_ptr<mut group_state> g) {
+        (*g).owners += 1;
+    }
+
+    private unsafe void release_group(std::raw_ptr<mut group_state> g) {
+        (*g).owners -= 1;
+        if ((*g).owners > 0) {
+            return;
+        }
+        std::raw_ptr<mut platform_state> p = (*g).platform;
+        x11::glx f = gl_of(p).f;
+        if ((*p).current_context == (*g).context) {
+            _ = f.glXMakeContextCurrent((*p).display, 0, 0, nullptr);
+            (*p).current_context = nullptr;
+            (*p).current_drawable = 0;
+        }
+        f.glXDestroyContext((*p).display, (*g).context);
+        f.glXDestroyPbuffer((*p).display, (*g).pbuffer);
+        _ = (*p).x.XFree((*g).visual_info);
+        (*p).groups.retain([g](std::raw_ptr<mut group_state>& other) { return other != g; });
+        std::raw::drop(g);
+        std::raw::free(g);
+        release_platform(p);
+    }
+
+    // Makes `context` current on `drawable`, unless it already is (switching costs a flush).
+    // Whether a frame or a `current` of this connection is alive (one per thread at a time).
+    private bool context_free(std::raw_ptr<mut platform_state> p) {
+        return unsafe { !(*p).context_in_use };
+    }
+
+    private unsafe void make_current(std::raw_ptr<mut platform_state> p, std::raw_ptr<mut u8> context, u64 drawable) {
+        (*p).context_in_use = true;
+        if ((*p).current_context != context || (*p).current_drawable != drawable) {
+            _ = gl_of(p).f.glXMakeContextCurrent((*p).display, drawable, drawable, context);
+            (*p).current_context = context;
+            (*p).current_drawable = drawable;
+        }
+    }
+
+    private unsafe std::option<std::raw_ptr<u8>> gl_proc_address(std::raw_ptr<mut platform_state> p, std::str name) {
+        std::string c_name = c_text(name);
+        std::raw_ptr<u8> address = gl_of(p).f.glXGetProcAddressARB(c_name.as_str().as_ptr());
+        if (!address) {
+            return std::none;
+        }
+        return std::some(address);
+    }
+
+    namespace opengl {
+        class share_group {
+        public:
+            u32 id() { unsafe { return (*this.group).id; } }
+            opengl::config config() { unsafe { return (*this.group).config; } }
+            share_group clone() {
+                unsafe { retain_group(this.group); }
+                return share_group{ .group = this.group };
+            }
+            current make_current() mut {
+                run_time(std::build::mode::debug) check (context_free(unsafe { (*this.group).platform }))
+                    else "std::windowing: a frame (or a share group's current context) is still alive; finish it before making another context current";
+                unsafe {
+                    std::raw_ptr<mut platform_state> p = (*this.group).platform;
+                    make_current(p, (*this.group).context, (*this.group).pbuffer);
+                    return current{ .platform = p, .owner = this };
+                }
+            }
+            ~share_group() {
+                unsafe { release_group(this.group); }
+            }
+        private:
+            std::raw_ptr<mut group_state> group;
+            std::thread_bound thread = default;
+        }
+
+        view class frame {
+        public:
+            std::windowing::window& window() { return this.owner; }
+            std::windowing::size framebuffer_size() { return this.owner.framebuffer_size(); }
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) {
+                unsafe { return gl_proc_address((*this.state).platform, name); }
+            }
+            void present() move {
+                unsafe {
+                    std::raw_ptr<mut window_state> s = this.state;
+                    std::raw_ptr<mut platform_state> p = (*s).platform;
+                    gl_of(p).f.glXSwapBuffers((*p).display, (*s).drawable);
+                }
+            }
+            ~frame() {
+                unsafe {
+                    std::raw_ptr<mut window_state> s = this.state;
+                    (*(*s).platform).context_in_use = false;
+                    (*s).needs_draw = false;
+                }
+            }
+        private:
+            mut gl_window&                 owner;
+            std::raw_ptr<mut window_state> state;
+        }
+
+        view class current {
+        public:
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) {
+                unsafe { return gl_proc_address(this.platform, name); }
+            }
+            ~current() {
+                unsafe { (*this.platform).context_in_use = false; }
+            }
+        private:
+            std::raw_ptr<mut platform_state> platform;
+            mut share_group&                 owner;
+        }
+    }
+
+    // ---- Vulkan --------------------------------------------------------------------------------------
+
+    namespace vulkan {
+        class loader {
+        public:
+            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> instance_proc_address() {
+                unsafe {
+                    return match ((*this.platform).vk) {
+                        std::some(vk) => vk.f.vkGetInstanceProcAddr,
+                        std::none     => std::panic("std::windowing: the Vulkan loader is gone"),
+                    };
+                }
+            }
+            std::array<std::raw_ptr<u8>, 2> required_extensions() {
+                return [c"VK_KHR_surface", c"VK_KHR_xlib_surface"];
+            }
+            ~loader() {
+                unsafe { release_platform(this.platform); }
+            }
+        private:
+            std::raw_ptr<mut platform_state> platform;
+            std::thread_bound thread = default;
+        }
+    }
+
+    // ---- windows -------------------------------------------------------------------------------------
+
+    private unsafe void push_event(std::raw_ptr<mut window_state> s, event e) {
+        (*s).queue.push(e);
+    }
+
+    open class window {
+    public:
+        u32 id() { unsafe { return (*this.state).id; } }
+        graphics_api graphics() { unsafe { return (*this.state).api; } }
+
+        void drain_events(mut std::darray<event>& out) mut {
+            unsafe {
+                out.clear();
+                std::swap(mut out, mut (*this.state).queue);   // the old buffer comes back for reuse
+                (*this.state).input.next_frame();
+            }
+        }
+
+        input_state& input() { unsafe { return (*this.state).input; } }
+
+        bool should_close() { unsafe { return (*this.state).close_requested; } }
+        void request_close() mut { unsafe { (*this.state).close_requested = true; } }
+        void cancel_close() mut { unsafe { (*this.state).close_requested = false; } }
+
+        bool should_draw() {
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                if ((*s).minimized || !(*s).visible) {
+                    return false;
+                }
+                return match ((*s).redraw) {
+                    redraw::continuous => true,
+                    redraw::on_demand  => (*s).needs_draw,
+                };
+            }
+        }
+
+        void request_redraw() mut {
+            unsafe {
+                if (!(*this.state).needs_draw) {
+                    (*this.state).needs_draw = true;
+                    push_event(this.state, event::redraw_requested);
+                }
+            }
+        }
+
+        void set_title(std::str title) mut {
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                std::raw_ptr<mut platform_state> p = (*s).platform;
+                std::string name = c_text(title);
+                _ = (*p).x.XStoreName((*p).display, (*s).handle, name.as_str().as_ptr());
+                _ = (*p).x.XChangeProperty((*p).display, (*s).handle, (*p).atom.net_wm_name, (*p).atom.utf8_string, 8, 0,
+                                           title.as_ptr(), cast::truncate<i32>(title.len()));
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        void set_icon(image& icon) mut {
+            run_time check (icon.pixels.len() == cast<usize>(icon.width) * cast<usize>(icon.height) * 4)
+                else f"std::windowing: an icon of {icon.width}x{icon.height} needs {icon.width * icon.height * 4} bytes, not {icon.pixels.len()}";
+            // _NET_WM_ICON: width, height, then one ARGB pixel per C `long` (64 bits here).
+            mut std::darray<u64> data = std::darray<u64>::with_capacity(2 + icon.pixels.len() / 4);
+            data.push(cast<u64>(icon.width));
+            data.push(cast<u64>(icon.height));
+            for (usize i : 0..icon.pixels.len() / 4) {
+                u64 r = cast<u64>(icon.pixels[i * 4]);
+                u64 g = cast<u64>(icon.pixels[i * 4 + 1]);
+                u64 b = cast<u64>(icon.pixels[i * 4 + 2]);
+                u64 a = cast<u64>(icon.pixels[i * 4 + 3]);
+                data.push((a << 24) | (r << 16) | (g << 8) | b);
+            }
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                std::raw_ptr<mut platform_state> p = (*s).platform;
+                _ = (*p).x.XChangeProperty((*p).display, (*s).handle, (*p).atom.net_wm_icon, x11::xa_cardinal, 32, 0,
+                                           cast::reinterpret<std::raw_ptr<u8>>(&data[0]),
+                                           cast::truncate<i32>(data.len()));
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        void set_cursor_mode(cursor_mode mode) mut {
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                std::raw_ptr<mut platform_state> p = (*s).platform;
+                cursor_mode before = (*s).cursor_mode;
+                (*s).cursor_mode = mode;
+                if (before == cursor_mode::captured) {
+                    _ = (*p).x.XUngrabPointer((*p).display, 0);
+                }
+                match (mode) {
+                    cursor_mode::normal => {
+                        if ((*s).cursor != 0) {
+                            _ = (*p).x.XDefineCursor((*p).display, (*s).handle, (*s).cursor);
+                        } else {
+                            _ = (*p).x.XUndefineCursor((*p).display, (*s).handle);
+                        }
+                    },
+                    cursor_mode::hidden => {
+                        _ = (*p).x.XDefineCursor((*p).display, (*s).handle, (*p).blank_cursor);
+                    },
+                    cursor_mode::captured => {
+                        _ = (*p).x.XDefineCursor((*p).display, (*s).handle, (*p).blank_cursor);
+                        i64 masks = x11::button_press_mask | x11::button_release_mask | x11::pointer_motion_mask;
+                        _ = (*p).x.XGrabPointer((*p).display, (*s).handle, 1, cast::truncate<u32>(masks), 1, 1,
+                                                (*s).handle, (*p).blank_cursor, 0);
+                        (*s).virtual_cursor = (*s).input.cursor();
+                        center_cursor(s);
+                    },
+                }
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        void set_cursor(cursor_shape shape) mut {
+            u32 font_shape = match (shape) {
+                cursor_shape::arrow             => 68,    // XC_left_ptr
+                cursor_shape::text              => 152,   // XC_xterm
+                cursor_shape::crosshair         => 34,    // XC_crosshair
+                cursor_shape::hand              => 60,    // XC_hand2
+                cursor_shape::resize_horizontal => 108,   // XC_sb_h_double_arrow
+                cursor_shape::resize_vertical   => 116,   // XC_sb_v_double_arrow
+                cursor_shape::resize_all        => 52,    // XC_fleur
+                cursor_shape::not_allowed       => 0,     // XC_X_cursor
+            };
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                std::raw_ptr<mut platform_state> p = (*s).platform;
+                if ((*s).cursor != 0) {
+                    _ = (*p).x.XFreeCursor((*p).display, (*s).cursor);
+                }
+                (*s).cursor = (*p).x.XCreateFontCursor((*p).display, font_shape);
+                if ((*s).cursor_mode == cursor_mode::normal) {
+                    _ = (*p).x.XDefineCursor((*p).display, (*s).handle, (*s).cursor);
+                    _ = (*p).x.XFlush((*p).display);
+                }
+            }
+        }
+
+        window_mode mode() {
+            unsafe {
+                if ((*this.state).fullscreen) {
+                    return window_mode::fullscreen((*this.state).fullscreen_monitor);
+                }
+            }
+            return window_mode::windowed;
+        }
+
+        void enter_fullscreen(u32 monitor) mut {
+            unsafe {
+                (*this.state).fullscreen = true;
+                (*this.state).fullscreen_monitor = monitor;
+                send_fullscreen_monitor(this.state, monitor);
+                send_wm_state(this.state, true, (*(*this.state).platform).atom.net_wm_state_fullscreen);
+            }
+        }
+
+        void leave_fullscreen() mut {
+            unsafe {
+                (*this.state).fullscreen = false;
+                send_wm_state(this.state, false, (*(*this.state).platform).atom.net_wm_state_fullscreen);
+            }
+        }
+
+        void show() mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XMapWindow((*p).display, (*this.state).handle);
+                _ = (*p).x.XFlush((*p).display);
+                (*this.state).visible = true;
+            }
+        }
+
+        void hide() mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XUnmapWindow((*p).display, (*this.state).handle);
+                _ = (*p).x.XFlush((*p).display);
+                (*this.state).visible = false;
+            }
+        }
+
+        void minimize() mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XIconifyWindow((*p).display, (*this.state).handle, (*p).screen);
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        void focus() mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XRaiseWindow((*p).display, (*this.state).handle);
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        std::windowing::size size() { unsafe { return (*this.state).extent; } }
+        // X11 has no separate pixel size: HiDPI is a scale the program applies (content_scale).
+        std::windowing::size framebuffer_size() { unsafe { return (*this.state).extent; } }
+        std::windowing::point position() { unsafe { return (*this.state).origin; } }
+        scale content_scale() { unsafe { return (*(*this.state).platform).content_scale; } }
+
+        void set_size(std::windowing::size size) mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XResizeWindow((*p).display, (*this.state).handle, size.width, size.height);
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        void set_position(std::windowing::point position) mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = (*this.state).platform;
+                _ = (*p).x.XMoveWindow((*p).display, (*this.state).handle, position.x, position.y);
+                _ = (*p).x.XFlush((*p).display);
+            }
+        }
+
+        bool is_focused() { unsafe { return (*this.state).focused; } }
+        bool is_minimized() { unsafe { return (*this.state).minimized; } }
+        bool is_visible() { unsafe { return (*this.state).visible; } }
+
+        ~window() {
+            unsafe { destroy_window(this.state); }
+        }
+    private:
+        std::raw_ptr<mut window_state> state;
+        std::thread_bound thread = default;
+    }
+
+    class gl_window : window {
+    public:
+        opengl::frame begin_frame() mut {
+            run_time(std::build::mode::debug) check (context_free(unsafe { (*this.state).platform }))
+                else "std::windowing: a frame (or a share group's current context) is still alive; finish it before starting another";
+            unsafe {
+                std::raw_ptr<mut window_state> s = this.state;
+                std::raw_ptr<mut platform_state> p = (*s).platform;
+                make_current(p, (*s).context, (*s).drawable);
+                if (!(*s).swap_interval_applied) {
+                    match (gl_of(p).swap_interval) {
+                        std::some(set) => set((*p).display, (*s).drawable, cast::truncate<i32>((*s).swap_interval)),
+                        std::none      => {},
+                    }
+                    (*s).swap_interval_applied = true;
+                }
+                return opengl::frame{ .owner = this, .state = s };
+            }
+        }
+
+        void set_swap_interval(u32 interval) mut {
+            unsafe {
+                (*this.state).swap_interval = interval;
+                (*this.state).swap_interval_applied = false;     // applied at the next begin_frame
+            }
+        }
+
+        opengl::share_group share_group() {
+            unsafe {
+                retain_group((*this.state).group);
+                return opengl::share_group{ .group = (*this.state).group };
+            }
+        }
+    }
+
+    class vulkan_window : window {
+    public:
+        unsafe std::result<u64, i32> create_surface(u64 instance) mut {
+            std::raw_ptr<mut window_state> s = this.state;
+            std::raw_ptr<mut platform_state> p = (*s).platform;
+            run_time check ((*s).vk_surface == 0) else "std::windowing: this window already has a Vulkan surface";
+            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> get = (*p).vk.expect("loaded with the window").f.vkGetInstanceProcAddr;
+            std::raw_ptr<u8> create = get(instance, c"vkCreateXlibSurfaceKHR");
+            std::raw_ptr<u8> destroy = get(instance, c"vkDestroySurfaceKHR");
+            if (!create || !destroy) {
+                return std::error(-7);                       // VK_ERROR_EXTENSION_NOT_PRESENT
+            }
+            x11::xlib_surface_create_info info = x11::xlib_surface_create_info{
+                .display = (*p).display,
+                .window  = (*s).handle,
+            };
+            mut u64 surface = 0;
+            i32 result = cast::reinterpret<std::fn_ptr<i32(u64, std::raw_ptr<x11::xlib_surface_create_info>, std::raw_ptr<u8>, std::raw_ptr<mut u64>)>>(create)(instance, &info, nullptr, mut &surface);
+            if (result != 0) {
+                return std::error(result);
+            }
+            (*s).vk_instance = instance;
+            (*s).vk_surface = surface;
+            (*s).vk_destroy_surface = std::some(cast::reinterpret<std::fn_ptr<void(u64, u64, std::raw_ptr<u8>)>>(destroy));
+            return std::ok(surface);
+        }
+
+        u64 surface() { unsafe { return (*this.state).vk_surface; } }
+
+        unsafe bool presentation_support(u64 instance, u64 physical_device, u32 family) {
+            std::raw_ptr<mut platform_state> p = (*this.state).platform;
+            std::raw_ptr<u8> query = (*p).vk.expect("loaded with the window").f.vkGetInstanceProcAddr(
+                instance, c"vkGetPhysicalDeviceXlibPresentationSupportKHR");
+            if (!query) {
+                return false;
+            }
+            u64 visual_id = default_visual_id(p);
+            return cast::reinterpret<std::fn_ptr<u32(u64, u32, std::raw_ptr<mut u8>, u64)>>(query)(physical_device, family, (*p).display, visual_id) != 0;
+        }
+    }
+
+    // The id of the screen's default visual (what non-GL windows use): Visual.visualid at byte 8.
+    private unsafe u64 default_visual_id(std::raw_ptr<mut platform_state> p) {
+        std::raw_ptr<mut u8> visual = (*p).x.XDefaultVisual((*p).display, (*p).screen);
+        return *cast::reinterpret<std::raw_ptr<u64>>(visual.offset(8));
+    }
+
+    private unsafe void send_wm_state(std::raw_ptr<mut window_state> s, bool add, u64 property) {
+        std::raw_ptr<mut platform_state> p = (*s).platform;
+        mut x11::x_event e = default;
+        x11::set_event_i32(mut e, 0, x11::client_message);
+        x11::set_event_i32(mut e, 16, 1);                        // send_event
+        x11::set_event_u64(mut e, 32, (*s).handle);              // window
+        x11::set_event_u64(mut e, 40, (*p).atom.net_wm_state);   // message_type
+        x11::set_event_i32(mut e, 48, 32);                       // format
+        x11::set_event_i64(mut e, 56, if (add) { 1 } else { 0 });    // _NET_WM_STATE_ADD / REMOVE
+        x11::set_event_u64(mut e, 64, property);
+        x11::set_event_i64(mut e, 80, 1);                        // source: an application
+        _ = (*p).x.XSendEvent((*p).display, (*p).root, 0, x11::substructure_notify_mask | x11::substructure_redirect_mask, mut &e);
+        _ = (*p).x.XFlush((*p).display);
+    }
+
+    // Which monitor a fullscreen window covers: moved onto it (window managers fullscreen a window
+    // on the monitor it is on) and _NET_WM_FULLSCREEN_MONITORS, with XRandR's monitor index (the
+    // monitor's id), which window managers number the same way.
+    private unsafe void send_fullscreen_monitor(std::raw_ptr<mut window_state> s, u32 monitor) {
+        std::raw_ptr<mut platform_state> p = (*s).platform;
+        for (std::windowing::monitor& m : randr_monitors(p)) {
+            if (m.id == monitor) {
+                _ = (*p).x.XMoveWindow((*p).display, (*s).handle, m.area.origin.x, m.area.origin.y);
+            }
+        }
+        mut x11::x_event e = default;
+        x11::set_event_i32(mut e, 0, x11::client_message);
+        x11::set_event_i32(mut e, 16, 1);
+        x11::set_event_u64(mut e, 32, (*s).handle);
+        x11::set_event_u64(mut e, 40, (*p).atom.net_wm_fullscreen_monitors);
+        x11::set_event_i32(mut e, 48, 32);
+        i64 index = cast<i64>(monitor);
+        x11::set_event_i64(mut e, 56, index);   // top, bottom, left, right: all this monitor
+        x11::set_event_i64(mut e, 64, index);
+        x11::set_event_i64(mut e, 72, index);
+        x11::set_event_i64(mut e, 80, index);
+        x11::set_event_i64(mut e, 88, 1);       // source: an application
+        _ = (*p).x.XSendEvent((*p).display, (*p).root, 0, x11::substructure_notify_mask | x11::substructure_redirect_mask, mut &e);
+    }
+
+    // The monitors XRandR reports, the primary first; empty without XRandR. A monitor's id is its
+    // index in XRandR's list. Names are the outputs' ("DP-1", "HDMI-A-0"); the refresh rate is
+    // the current mode's.
+    private unsafe std::darray<std::windowing::monitor> randr_monitors(std::raw_ptr<mut platform_state> p) {
+        mut std::darray<std::windowing::monitor> out = default;
+        x11::xrandr r = match ((*p).randr) {
+            std::some(table) => table,
+            std::none        => { return out; },
+        };
+        mut i32 count = 0;
+        std::raw_ptr<mut x11::monitor_info> list = r.XRRGetMonitors((*p).display, (*p).root, 1, mut &count);
+        if (!list) {
+            return out;
+        }
+        std::raw_ptr<mut x11::screen_resources> res = r.XRRGetScreenResourcesCurrent((*p).display, (*p).root);
+        mut i32 i = 0;
+        while (i < count) {
+            std::raw_ptr<mut x11::monitor_info> m = list.offset(cast::saturate<usize>(i));
+            mut std::string name = std::format(f"monitor {i}");
+            if ((*m).name != 0) {   // the monitor's own name: its output's ("DP-1"), or one a tool gave it
+                std::raw_ptr<mut u8> text = (*p).x.XGetAtomName((*p).display, (*m).name);
+                if (text) {
+                    mut usize n = 0;
+                    while (*text.offset(n) != 0) { n += 1; }
+                    name = std::string::from(std::raw::str_from(text, n));
+                    _ = (*p).x.XFree(text);
+                }
+            }
+            mut u32 refresh = 0;
+            if (res && (*m).output_count > 0) {
+                std::raw_ptr<mut x11::output_info> o = r.XRRGetOutputInfo((*p).display, res, *(*m).outputs);
+                if (o) {
+                    if ((*o).crtc != 0) {
+                        std::raw_ptr<mut x11::crtc_info> c = r.XRRGetCrtcInfo((*p).display, res, (*o).crtc);
+                        if (c) {
+                            mut i32 k = 0;
+                            while (k < (*res).mode_count) {
+                                std::raw_ptr<mut x11::mode_info> mode = (*res).modes.offset(cast::saturate<usize>(k));
+                                if ((*mode).id == (*c).mode && (*mode).h_total != 0 && (*mode).v_total != 0) {
+                                    u64 dots = cast<u64>((*mode).h_total) * cast<u64>((*mode).v_total);
+                                    refresh = cast::truncate<u32>(((*mode).dot_clock + dots / 2) / dots);
+                                }
+                                k += 1;
+                            }
+                            r.XRRFreeCrtcInfo(c);
+                        }
+                    }
+                    r.XRRFreeOutputInfo(o);
+                }
+            }
+            std::windowing::monitor found = std::windowing::monitor{
+                .id   = cast::saturate<u32>(i),
+                .name = move name,
+                .area = rect{
+                    .origin   = point{ .x = (*m).x, .y = (*m).y },
+                    .extent   = size{ .width = cast::saturate<u32>((*m).width), .height = cast::saturate<u32>((*m).height) },
+                },
+                .refresh_rate  = refresh,
+                .content_scale = (*p).content_scale,
+                .primary       = (*m).primary != 0,
+            };
+            if (found.primary) {
+                out.insert(0, move found);
+            } else {
+                out.push(move found);
+            }
+            i += 1;
+        }
+        if (res) {
+            r.XRRFreeScreenResources(res);
+        }
+        r.XRRFreeMonitors(list);
+        return out;
+    }
+
+    private unsafe void center_cursor(std::raw_ptr<mut window_state> s) {
+        std::raw_ptr<mut platform_state> p = (*s).platform;
+        i32 cx = cast::truncate<i32>((*s).extent.width / 2);
+        i32 cy = cast::truncate<i32>((*s).extent.height / 2);
+        _ = (*p).x.XWarpPointer((*p).display, 0, (*s).handle, 0, 0, 0, 0, cx, cy);
+    }
+
+    private unsafe void destroy_window(std::raw_ptr<mut window_state> s) {
+        std::raw_ptr<mut platform_state> p = (*s).platform;
+        std::raw_ptr<mut u8> display = (*p).display;
+        // The graphics first: they belong to the X window.
+        if ((*s).context) {
+            x11::glx f = gl_of(p).f;
+            if ((*p).current_context == (*s).context) {
+                _ = f.glXMakeContextCurrent(display, 0, 0, nullptr);
+                (*p).current_context = nullptr;
+                (*p).current_drawable = 0;
+            }
+            f.glXDestroyContext(display, (*s).context);
+            f.glXDestroyWindow(display, (*s).drawable);
+        }
+        match ((*s).vk_destroy_surface) {
+            std::some(destroy) => destroy((*s).vk_instance, (*s).vk_surface, nullptr),
+            std::none          => {},
+        }
+        if ((*s).cursor_mode == cursor_mode::captured) {
+            _ = (*p).x.XUngrabPointer(display, 0);
+        }
+        if ((*s).cursor != 0) {
+            _ = (*p).x.XFreeCursor(display, (*s).cursor);
+        }
+        _ = (*p).x.XDestroyWindow(display, (*s).handle);
+        if ((*s).colormap != 0) {
+            _ = (*p).x.XFreeColormap(display, (*s).colormap);
+        }
+        _ = (*p).x.XFlush(display);
+        (*p).windows.retain([s](std::raw_ptr<mut window_state>& other) { return other != s; });
+        std::raw_ptr<mut group_state> group = (*s).group;
+        std::raw::drop(s);
+        std::raw::free(s);
+        if (group) {
+            release_group(group);
+        }
+        release_platform(p);
+    }
+
+    // ---- making windows -------------------------------------------------------------------------------
+
+    // The X window of a new window: decorations, hints, protocols and owner as `config` says.
+    // `visual` / `depth` are the GL framebuffer config's for an OpenGL window, else the defaults.
+    private unsafe std::result<std::raw_ptr<mut window_state>, error> make_window(
+            std::raw_ptr<mut platform_state> p, window::config config, graphics_api api,
+            std::raw_ptr<mut u8> visual, i32 depth) {
+        std::raw_ptr<mut u8> display = (*p).display;
+        bool popup = match (config.kind) {
+            window_kind::popup(_) => true,
+            _                     => false,
+        };
+        mut u64 colormap = 0;
+        mut u64 value_mask = x11::cw_border_pixel | x11::cw_event_mask;
+        if (api == graphics_api::opengl) {
+            colormap = (*p).x.XCreateColormap(display, (*p).root, visual, 0);
+            value_mask |= x11::cw_colormap;
+        }
+        if (popup) {
+            value_mask |= x11::cw_override_redirect;
+        }
+        mut x11::set_window_attributes attributes = x11::set_window_attributes{
+            .event_mask = x11::key_press_mask | x11::key_release_mask | x11::button_press_mask
+                        | x11::button_release_mask | x11::pointer_motion_mask | x11::enter_window_mask
+                        | x11::leave_window_mask | x11::exposure_mask | x11::structure_notify_mask
+                        | x11::focus_change_mask | x11::property_change_mask,
+            .override_redirect = if (popup) { 1 } else { 0 },
+            .colormap = colormap,
+        };
+        point at = config.position.value_or(point{});
+        clear_x_error();
+        u64 handle = (*p).x.XCreateWindow(display, (*p).root, at.x, at.y, config.size.width, config.size.height, 0,
+                                         depth, 1, visual, value_mask, mut &attributes);
+        if (handle == 0 || x_failed(p)) {
+            if (colormap != 0) { _ = (*p).x.XFreeColormap(display, colormap); }
+            return std::error(error::window_creation_failed);
+        }
+
+        // The window manager's side: the close button, the title, the size rules, the owner.
+        mut u64 delete_atom = (*p).atom.wm_delete_window;
+        _ = (*p).x.XSetWMProtocols(display, handle, mut &delete_atom, 1);
+        std::string title = c_text(config.title);
+        _ = (*p).x.XStoreName(display, handle, title.as_str().as_ptr());
+        _ = (*p).x.XChangeProperty(display, handle, (*p).atom.net_wm_name, (*p).atom.utf8_string, 8, 0,
+                                   config.title.as_ptr(), cast::truncate<i32>(config.title.len()));
+        // WM_NORMAL_HINTS: 18 values; flags: USPosition 1, PMinSize 16, PMaxSize 32.
+        mut std::array<i64, 18> hints = default;
+        if (config.position.is_some()) {
+            hints[0] = hints[0] | 1;
+        }
+        if (!config.resizable) {
+            hints[0] = hints[0] | 16 | 32;
+            hints[5] = cast<i64>(config.size.width);
+            hints[6] = cast<i64>(config.size.height);
+            hints[7] = cast<i64>(config.size.width);
+            hints[8] = cast<i64>(config.size.height);
+        }
+        _ = (*p).x.XChangeProperty(display, handle, (*p).atom.wm_normal_hints, (*p).atom.wm_size_hints, 32, 0,
+                                   cast::reinterpret<std::raw_ptr<u8>>(&hints), 18);
+        if (!config.decorated) {
+            // _MOTIF_WM_HINTS: flags = decorations, decorations = none.
+            std::array<i64, 5> motif = [2, 0, 0, 0, 0];
+            _ = (*p).x.XChangeProperty(display, handle, (*p).atom.motif_wm_hints, (*p).atom.motif_wm_hints, 32, 0,
+                                       cast::reinterpret<std::raw_ptr<u8>>(&motif), 5);
+        }
+        match (config.kind) {
+            window_kind::normal => {},
+            window_kind::tool(owner) => {
+                set_owner(p, handle, owner);
+                mut u64 utility = (*p).atom.net_wm_window_type_utility;
+                _ = (*p).x.XChangeProperty(display, handle, (*p).atom.net_wm_window_type, x11::xa_atom, 32, 0,
+                                           cast::reinterpret<std::raw_ptr<u8>>(mut &utility), 1);
+            },
+            window_kind::popup(owner) => set_owner(p, handle, owner),
+        }
+
+        std::raw_ptr<mut window_state> s = std::raw::allocate<window_state>(1);
+        std::raw::write(s, window_state{
+            .platform = retain_platform(p),
+            .id       = (*p).next_window_id,
+            .handle   = handle,
+            .colormap = colormap,
+            .api      = api,
+            .redraw   = config.redraw,
+            .extent   = config.size,
+            .origin   = at,
+        });
+        (*p).next_window_id += 1;
+        (*p).windows.push(s);
+        if (config.visible) {
+            _ = (*p).x.XMapWindow(display, handle);
+            (*s).visible = true;
+        }
+        _ = (*p).x.XFlush(display);
+        return std::ok(s);
+    }
+
+    private unsafe void set_owner(std::raw_ptr<mut platform_state> p, u64 handle, u32 owner) {
+        for (std::raw_ptr<mut window_state> other : (*p).windows) {
+            if ((*other).id == owner) {
+                _ = (*p).x.XSetTransientForHint((*p).display, handle, (*other).handle);
+            }
+        }
+    }
+
+    private unsafe std::raw_ptr<mut u8> default_visual(std::raw_ptr<mut platform_state> p) {
+        return (*p).x.XDefaultVisual((*p).display, (*p).screen);
+    }
+
+    // ---- reading events -----------------------------------------------------------------------------
+
+    private unsafe std::option<std::raw_ptr<mut window_state>> window_of(std::raw_ptr<mut platform_state> p, u64 handle) {
+        for (std::raw_ptr<mut window_state> s : (*p).windows) {
+            if ((*s).handle == handle) {
+                return std::some(s);
+            }
+        }
+        return std::none;
+    }
+
+    private std::option<mouse_button> button_of(u32 x_button) {
+        return match (x_button) {
+            1 => std::some(mouse_button::left),
+            2 => std::some(mouse_button::middle),
+            3 => std::some(mouse_button::right),
+            8 => std::some(mouse_button::back),
+            9 => std::some(mouse_button::forward),
+            _ => std::none,
+        };
+    }
+
+    // Sorts one X event into its window's queue and input state.
+    private unsafe void handle_event(std::raw_ptr<mut platform_state> p, mut x11::x_event& e) {
+        i32 kind = x11::event_i32(e, 0);
+        u64 handle = x11::event_u64(e, 32);
+        std::raw_ptr<mut window_state> s = match (window_of(p, handle)) {
+            std::some(found) => found,
+            std::none        => return,                  // a window that was destroyed meanwhile
+        };
+
+        if (kind == x11::key_press || kind == x11::key_release) {
+            u32 state = x11::event_u32(e, 80);
+            u32 keycode = x11::event_u32(e, 84);
+            u64 keysym = (*p).x.XkbKeycodeToKeysym((*p).display, cast::truncate<u8>(keycode), 0, 0);
+            mut std::windowing::key k = x11::key_of_keysym(keysym);
+            if (k == key::unknown) {
+                // Keypad keys with Num Lock off have their digit on level 1.
+                k = x11::key_of_keysym((*p).x.XkbKeycodeToKeysym((*p).display, cast::truncate<u8>(keycode), 0, 1));
+            }
+            // X reports the modifiers held *before* this event; a modifier key's own event
+            // reports them as they are after it (like GLFW).
+            std::windowing::modifiers mods = with_own_modifier(modifiers_of(state), k, kind == x11::key_press);
+            (*s).input.record_modifiers(mods, (state & x11::lock_mask) != 0, (state & x11::mod2_mask) != 0);
+            if (kind == x11::key_press) {
+                key_action action = if (k != key::unknown && (*s).input.key_down(k)) { key_action::repeated } else { key_action::pressed };
+                (*s).input.record_key(k, action);
+                push_event(s, event::key(key_event{ .key = k, .scancode = keycode, .action = action, .modifiers = mods }));
+                // The text the key types, after the layout (shift, dead keys are not composed yet).
+                mut std::raw::array<u8, 16> buffer = default;
+                mut u64 typed_keysym = 0;
+                _ = (*p).x.XLookupString(mut &e, cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer), 16,
+                                         mut &typed_keysym, nullptr);
+                if (!mods.control && !mods.alt) {
+                    match (x11::char_of_keysym(typed_keysym)) {
+                        std::some(c) => {
+                            (*s).input.record_text(c);
+                            push_event(s, event::text(c));
+                        },
+                        std::none => {},
+                    }
+                }
+            } else {
+                (*s).input.record_key(k, key_action::released);
+                push_event(s, event::key(key_event{ .key = k, .scancode = keycode, .action = key_action::released, .modifiers = mods }));
+            }
+            return;
+        }
+
+        if (kind == x11::button_press || kind == x11::button_release) {
+            u32 state = x11::event_u32(e, 80);
+            u32 button = x11::event_u32(e, 84);
+            position at = position_of(x11::event_i32(e, 64), x11::event_i32(e, 68));
+            std::windowing::modifiers mods = modifiers_of(state);
+            if (kind == x11::button_press && button >= 4 && button <= 7) {
+                // Wheel steps are buttons 4-7, pressed only.
+                position delta = match (button) {
+                    4 => position{ .y = 1.0 },
+                    5 => position{ .y = -1.0 },
+                    6 => position{ .x = 1.0 },
+                    _ => position{ .x = -1.0 },
+                };
+                (*s).input.record_scroll(delta);
+                push_event(s, event::scrolled(delta));
+                return;
+            }
+            match (button_of(button)) {
+                std::some(b) => {
+                    button_action action = if (kind == x11::button_press) { button_action::pressed } else { button_action::released };
+                    (*s).input.record_button(b, action);
+                    push_event(s, event::mouse_button(mouse_button_event{
+                        .button = b, .action = action, .modifiers = mods,
+                        .position = if ((*s).cursor_mode == cursor_mode::captured) { (*s).virtual_cursor } else { at },
+                    }));
+                },
+                std::none => {},
+            }
+            return;
+        }
+
+        if (kind == x11::motion_notify) {
+            position at = position_of(x11::event_i32(e, 64), x11::event_i32(e, 68));
+            if ((*s).cursor_mode == cursor_mode::captured) {
+                f64 cx = cast<f64>((*s).extent.width / 2);
+                f64 cy = cast<f64>((*s).extent.height / 2);
+                if (at.x == cx && at.y == cy) {
+                    return;                                  // our own warp back to the middle
+                }
+                (*s).virtual_cursor = position{ .x = (*s).virtual_cursor.x + at.x - cx, .y = (*s).virtual_cursor.y + at.y - cy };
+                (*s).input.record_cursor((*s).virtual_cursor);
+                push_event(s, event::cursor_moved((*s).virtual_cursor));
+                center_cursor(s);
+                return;
+            }
+            (*s).input.record_cursor(at);
+            push_event(s, event::cursor_moved(at));
+            return;
+        }
+
+        if (kind == x11::enter_notify || kind == x11::leave_notify) {
+            bool inside = kind == x11::enter_notify;
+            if (inside) {
+                (*s).input.record_cursor(position_of(x11::event_i32(e, 64), x11::event_i32(e, 68)));
+            }
+            (*s).input.record_hover(inside);
+            push_event(s, event::cursor_entered(inside));
+            return;
+        }
+
+        if (kind == x11::focus_in || kind == x11::focus_out) {
+            i32 mode = x11::event_i32(e, 40);
+            if (mode == 1 || mode == 2) {
+                return;                                      // NotifyGrab / NotifyUngrab: not a focus change
+            }
+            bool focused = kind == x11::focus_in;
+            (*s).focused = focused;
+            if (!focused) {
+                (*s).input.release_all();
+            }
+            push_event(s, event::focus_changed(focused));
+            return;
+        }
+
+        if (kind == x11::expose) {
+            if (x11::event_i32(e, 56) == 0) {                // the last of a series
+                (*s).needs_draw = true;
+                push_event(s, event::redraw_requested);
+            }
+            return;
+        }
+
+        if (kind == x11::configure_notify) {
+            size extent = size{
+                .width  = cast::truncate<u32>(x11::event_i32(e, 56)),
+                .height = cast::truncate<u32>(x11::event_i32(e, 60)),
+            };
+            if (extent != (*s).extent) {
+                (*s).extent = extent;
+                (*s).needs_draw = true;
+                push_event(s, event::resized(extent));
+                push_event(s, event::framebuffer_resized(extent));
+            }
+            // The position relative to the root (the event's is relative to the frame's parent).
+            mut i32 x = 0;
+            mut i32 y = 0;
+            mut u64 child = 0;
+            _ = (*p).x.XTranslateCoordinates((*p).display, (*s).handle, (*p).root, 0, 0, mut &x, mut &y, mut &child);
+            point origin = point{ .x = x, .y = y };
+            if (origin != (*s).origin) {
+                (*s).origin = origin;
+                push_event(s, event::moved(origin));
+            }
+            return;
+        }
+
+        if (kind == x11::map_notify) {
+            if ((*s).minimized) {
+                (*s).minimized = false;
+                (*s).needs_draw = true;
+                push_event(s, event::minimized(false));
+            }
+            return;
+        }
+
+        if (kind == x11::unmap_notify) {
+            if ((*s).visible && !(*s).minimized) {
+                (*s).minimized = true;                       // unmapped by the window manager: iconified
+                push_event(s, event::minimized(true));
+            }
+            return;
+        }
+
+        if (kind == x11::client_message) {
+            u64 protocol = x11::event_u64(e, 56);
+            if (x11::event_u64(e, 40) == (*p).atom.wm_protocols && protocol == (*p).atom.wm_delete_window) {
+                (*s).close_requested = true;
+                push_event(s, event::close_requested);
+            }
+            return;
+        }
+    }
+
+    private unsafe void read_events(std::raw_ptr<mut platform_state> p) {
+        mut x11::x_event e = default;
+        while ((*p).x.XPending((*p).display) > 0) {
+            _ = (*p).x.XNextEvent((*p).display, mut &e);
+            handle_event(p, mut e);
+        }
+    }
+
+    // Waits until the X connection has something to read, or `timeout_ms` passed (-1: forever).
+    private unsafe void wait_for_events(std::raw_ptr<mut platform_state> p, i32 timeout_ms) {
+        _ = (*p).x.XFlush((*p).display);
+        if ((*p).x.XPending((*p).display) > 0) {
+            return;
+        }
+        mut poll_fd fd = poll_fd{ .fd = (*p).x.XConnectionNumber((*p).display), .events = 1 };   // POLLIN
+        _ = poll(mut &fd, 1, timeout_ms);
+    }
+
+    // ---- the system -----------------------------------------------------------------------------------
+
+    class system {
+    public:
+        static std::result<system, error> start() {
+            if (platform_alive.exchange(true, std::memory_order::acquire_release)) {
+                return std::error(error::already_started);
+            }
+            unsafe {
+                x11::library lib = match (x11::open_library(c"libX11.so.6")) {
+                    std::some(l) => l,
+                    std::none    => {
+                        platform_alive.store(false, std::memory_order::release);
+                        return std::error(error::library_missing);
+                    },
+                };
+                x11::xlib x = match (x11::load_table<x11::xlib>(lib)) {
+                    std::ok(table) => table,
+                    std::error(_)  => {
+                        x11::close_library(lib);
+                        platform_alive.store(false, std::memory_order::release);
+                        return std::error(error::library_missing);
+                    },
+                };
+                std::raw_ptr<mut u8> display = x.XOpenDisplay(nullptr);
+                if (!display) {
+                    x11::close_library(lib);
+                    platform_alive.store(false, std::memory_order::release);
+                    return std::error(error::no_display);
+                }
+                _ = x.XSetErrorHandler(error_handler());
+                _ = x.XkbSetDetectableAutoRepeat(display, 1, nullptr);   // repeats without fake releases
+                i32 screen = x.XDefaultScreen(display);
+
+                std::raw_ptr<mut platform_state> p = std::raw::allocate<platform_state>(1);
+                std::raw::write(p, platform_state{
+                    .x11_lib = lib,
+                    .x       = x,
+                    .display = display,
+                    .screen  = screen,
+                    .root    = x.XRootWindow(display, screen),
+                });
+                (*p).atom = atoms{
+                    .wm_protocols               = intern(p, c"WM_PROTOCOLS"),
+                    .wm_delete_window           = intern(p, c"WM_DELETE_WINDOW"),
+                    .net_wm_name                = intern(p, c"_NET_WM_NAME"),
+                    .utf8_string                = intern(p, c"UTF8_STRING"),
+                    .net_wm_icon                = intern(p, c"_NET_WM_ICON"),
+                    .net_wm_state               = intern(p, c"_NET_WM_STATE"),
+                    .net_wm_state_fullscreen    = intern(p, c"_NET_WM_STATE_FULLSCREEN"),
+                    .net_wm_window_type         = intern(p, c"_NET_WM_WINDOW_TYPE"),
+                    .net_wm_window_type_utility = intern(p, c"_NET_WM_WINDOW_TYPE_UTILITY"),
+                    .motif_wm_hints             = intern(p, c"_MOTIF_WM_HINTS"),
+                    .net_wm_fullscreen_monitors = intern(p, c"_NET_WM_FULLSCREEN_MONITORS"),
+                };
+                // XRandR for the monitors: optional, without it the X screen is one monitor.
+                match (x11::open_library(c"libXrandr.so.2")) {
+                    std::some(randr_lib) => match (x11::load_table<x11::xrandr>(randr_lib)) {
+                        std::ok(table) => {
+                            (*p).randr_lib = std::some(randr_lib);
+                            (*p).randr     = std::some(table);
+                        },
+                        std::error(_) => x11::close_library(randr_lib),
+                    },
+                    std::none => {},
+                }
+                (*p).content_scale = read_content_scale(p);
+                // An invisible cursor for cursor_mode::hidden and ::captured: a 1x1 empty bitmap.
+                mut std::raw::array<u8, 1> empty = default;
+                u64 pixmap = x.XCreateBitmapFromData(display, (*p).root, cast::reinterpret<std::raw_ptr<u8>>(&empty), 1, 1);
+                mut x11::color black = default;
+                (*p).blank_cursor = x.XCreatePixmapCursor(display, pixmap, pixmap, mut &black, mut &black, 0, 0);
+                _ = x.XFreePixmap(display, pixmap);
+                return std::ok(system{ .connection = p });
+            }
+        }
+
+        std::windowing::platform platform() { return std::windowing::platform::x11; }
+
+        std::darray<monitor> monitors() {
+            unsafe {
+                std::darray<monitor> found = randr_monitors(this.connection);
+                if (!found.is_empty()) {
+                    return found;
+                }
+            }
+            // Without XRandR: the X screen as one monitor.
+            mut std::darray<monitor> out = default;
+            unsafe {
+                std::raw_ptr<mut platform_state> p = this.connection;
+                out.push(monitor{
+                    .id   = 0,
+                    .name = std::format(f"screen {(*p).screen}"),
+                    .area = rect{ .extent = size{
+                        .width  = cast::truncate<u32>((*p).x.XDisplayWidth((*p).display, (*p).screen)),
+                        .height = cast::truncate<u32>((*p).x.XDisplayHeight((*p).display, (*p).screen)),
+                    } },
+                    .content_scale = (*p).content_scale,
+                    .primary = true,
+                });
+            }
+            return out;
+        }
+
+        std::option<u32> primary_monitor() {
+            std::darray<monitor> all = this.monitors();
+            if (all.is_empty()) {
+                return std::none;
+            }
+            return std::some(all[0].id);   // monitors() lists the primary first
+        }
+
+        std::result<window, error> create_window(window::config config) mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = this.connection;
+                std::raw_ptr<mut window_state> s = make_window(p, config, graphics_api::none, default_visual(p),
+                                                               (*p).x.XDefaultDepth((*p).display, (*p).screen))?;
+                return std::ok(window{ .state = s });
+            }
+        }
+
+        std::result<gl_window, error> create_gl_window(window::config config, opengl::config gl,
+                                                       opengl::sharing sharing) mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = this.connection;
+                load_gl(p)?;
+                // The group first: the window's visual comes from the group's framebuffer config.
+                std::raw_ptr<mut group_state> group = match (sharing) {
+                    opengl::sharing::automatic => {
+                        mut std::raw_ptr<mut group_state> found = nullptr;
+                        for (std::raw_ptr<mut group_state> g : (*p).groups) {
+                            if (!found && (*g).open_to_all && (*g).config == gl) {
+                                found = g;
+                            }
+                        }
+                        if (found) {
+                            retain_group(found);
+                            found
+                        } else {
+                            make_group(p, gl, true)?
+                        }
+                    },
+                    opengl::sharing::join(g) => {
+                        std::raw_ptr<mut group_state> joined = g.group;
+                        if ((*joined).config != gl) {
+                            return std::error(error::share_incompatible);
+                        }
+                        retain_group(joined);
+                        joined
+                    },
+                    opengl::sharing::independent => make_group(p, gl, false)?,
+                };
+                // XVisualInfo: Visual* at byte 0, depth at byte 20.
+                std::raw_ptr<mut u8> info = (*group).visual_info;
+                std::raw_ptr<mut u8> visual = *cast::reinterpret<std::raw_ptr<std::raw_ptr<mut u8>>>(info);
+                i32 depth = *cast::reinterpret<std::raw_ptr<i32>>(info.offset(20));
+                std::raw_ptr<mut window_state> s = match (make_window(p, config, graphics_api::opengl, visual, depth)) {
+                    std::ok(made) => made,
+                    std::error(e) => {
+                        release_group(group);
+                        return std::error(e);
+                    },
+                };
+                x11::glx f = gl_of(p).f;
+                (*s).group = group;
+                (*s).drawable = f.glXCreateWindow((*p).display, (*group).fbconfig, (*s).handle, nullptr);
+                std::array<i32, 9> attributes = context_attributes_of(gl);
+                clear_x_error();
+                std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, i32, std::raw_ptr<i32>)> create = gl_of(p).create_context;
+                (*s).context = create((*p).display, (*group).fbconfig, (*group).context, 1,
+                                                       cast::reinterpret<std::raw_ptr<i32>>(&attributes));
+                if (x_failed(p) || !(*s).context) {
+                    destroy_window(s);                       // releases the group too
+                    return std::error(error::version_unavailable);
+                }
+                return std::ok(gl_window{ .state = s });
+            }
+        }
+
+        std::result<vulkan_window, error> create_vulkan_window(window::config config) mut {
+            unsafe {
+                std::raw_ptr<mut platform_state> p = this.connection;
+                load_vulkan(p)?;
+                std::raw_ptr<mut window_state> s = make_window(p, config, graphics_api::vulkan, default_visual(p),
+                                                               (*p).x.XDefaultDepth((*p).display, (*p).screen))?;
+                return std::ok(vulkan_window{ .state = s });
+            }
+        }
+
+        std::result<opengl::share_group, error> create_share_group(opengl::config gl) mut {
+            unsafe {
+                std::raw_ptr<mut group_state> g = make_group(this.connection, gl, true)?;
+                return std::ok(opengl::share_group{ .group = g });
+            }
+        }
+
+        std::result<vulkan::loader, error> vulkan() mut {
+            unsafe {
+                load_vulkan(this.connection)?;
+                return std::ok(vulkan::loader{ .platform = retain_platform(this.connection) });
+            }
+        }
+
+        void poll() mut {
+            unsafe { read_events(this.connection); }
+        }
+
+        void wait() mut {
+            unsafe {
+                wait_for_events(this.connection, -1);
+                read_events(this.connection);
+            }
+        }
+
+        void wait_for(std::time::duration limit) mut {
+            u64 ms = limit.as_milliseconds();
+            i32 timeout = if (ms > 2147483647) { 2147483647 } else { cast::truncate<i32>(ms) };
+            unsafe {
+                wait_for_events(this.connection, timeout);
+                read_events(this.connection);
+            }
+        }
+
+        void drain_events(mut std::darray<system_event>& out) mut {
+            out.clear();
+            unsafe { std::swap(mut out, mut (*this.connection).system_queue); }
+        }
+
+        ~system() {
+            unsafe { release_platform(this.connection); }
+        }
+    private:
+        std::raw_ptr<mut platform_state> connection;
+        std::thread_bound thread = default;
+    }
+}

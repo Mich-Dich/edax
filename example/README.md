@@ -1,6 +1,6 @@
 # Rift examples
 
-Programs that show what Rift 0.1.0 can do. Each one is a single `.rifts` file (plus a module or
+Programs that show what Rift 0.8.0 can do. Each one is a single `.rifts` file (plus a module or
 two); `build.rifts` builds them all.
 
 ```bash
@@ -32,6 +32,7 @@ riftc build --root=example --list                 # targets, modes and options
 | `concurrency` | threads that borrow or own, channels, a mutex and an atomic, the thread pool's parallel loop and deterministic reduction, a pool task | 27, 28 |
 | `annotations` | namespaces and an alias, `@std::derive::formattable/hashable/ordered`, annotations with checks, a table printer driven by `@column`, a command table from annotated methods (`std::meta::methods`, `m.call`), `std::meta::name_of`/`from_name` | 26, 29, 30 |
 | `build_info` | reading the build mode and settings from `build.rifts`, mode-gated checks, a user mode | 24, 25 |
+| `windowing` | several windows with `std::windowing`, organized like a game engine (its own folder: `engine/` with an application, a layer stack, a renderer, settings saved in `config/`; `game/` with game, tools and debug-overlay layers): OpenGL windows in one share group and an independent one, a Vulkan window, key bindings changed at run time and saved, a texture made on a worker thread (needs an X server) | windowing, 26, 27, 29 |
 
 `compile_time_demo` prints a compiler warning on purpose: it shows a declared warning id
 (`riftc explain legacy`, run in this directory). Several files contain lines that are commented out

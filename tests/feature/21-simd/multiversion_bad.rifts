@@ -1,0 +1,12 @@
+// feature 21: @std::simd::multiversion takes CPU levels of the target, on functions that are not templates.
+import std;
+
+@std::simd::multiversion{ .levels = [std::build::cpu::armv8] }   //~ error[E4210]: 'armv8' is not a CPU level of the target (its levels: x86_64, x86_64_v2, x86_64_v3, x86_64_v4)
+void wrong_arch() { }
+
+@std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v3] }   //~ error[E4210]: @std::simd::multiversion works on functions that are not templates
+template<type T>
+void generic(T x) { }
+
+@std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v3] }
+void fine() { }

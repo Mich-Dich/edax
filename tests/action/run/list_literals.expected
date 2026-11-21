@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+112 6 15 0 3 high
+dyn -o out.txt 
+2 x
+--- stderr

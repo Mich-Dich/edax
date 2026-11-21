@@ -13,7 +13,7 @@ struct grade {
     u32 points = 0;
 }
 
-/// `?` returns the error early; `or_error` turns a `std::option` into a `std::result`.
+// `?` returns the error early; `or_error` turns a `std::option` into a `std::result`.
 std::result<grade, load_error> parse_line(std::str line, usize number) {
     std::darray<std::str> parts = line.split(',');
     if (parts.len() != 3) { return std::error(load_error::bad_line(number)); }

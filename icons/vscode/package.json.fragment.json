@@ -1,0 +1,38 @@
+{
+  "contributes": {
+    "languages": [
+      {
+        "id": "edax",
+        "aliases": [
+          "Edax",
+          "edax"
+        ],
+        "extensions": [
+          ".eds"
+        ],
+        "icon": {
+          "light": "./icons/eds.svg",
+          "dark": "./icons/eds.svg"
+        }
+      },
+      {
+        "id": "edax-header",
+        "aliases": [
+          "Edax Header"
+        ],
+        "extensions": [
+          ".edh"
+        ],
+        "icon": {
+          "light": "./icons/edh.svg",
+          "dark": "./icons/edh.svg"
+        }
+      }
+    ]
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1C1F24",
+    "theme": "dark"
+  }
+}

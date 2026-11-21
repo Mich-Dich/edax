@@ -9,8 +9,8 @@
 
 namespace rift::ast {
 
-/// Calls `visit` for `e` and every expression nested in it. `visit` returns false to skip the
-/// children of that expression.
+// Calls `visit` for `e` and every expression nested in it. `visit` returns false to skip the
+// children of that expression.
 inline void walk_exprs(Expr& e, const std::function<bool(Expr&)>& visit) {
     if (!visit(e)) return;
     auto go = [&](Expr* x) {
@@ -26,6 +26,7 @@ inline void walk_exprs(Expr& e, const std::function<bool(Expr&)>& visit) {
                 go(s->as<AssignStmt>().value.get());
                 break;
             case StmtKind::discard: go(s->as<DiscardStmt>().value.get()); break;
+            case StmtKind::destructure: go(s->as<DestructureStmt>().init.get()); break;
             case StmtKind::expression: go(s->as<ExprStmt>().expr.get()); break;
             case StmtKind::check: {
                 Check& c = s->as<CheckStmt>().check;
@@ -54,6 +55,7 @@ inline void walk_exprs(Expr& e, const std::function<bool(Expr&)>& visit) {
     case ExprKind::call:
         go(e.as<CallExpr>().callee.get());
         for (ExprPtr& a : e.as<CallExpr>().args) go(a.get());
+        block(e.as<CallExpr>().wrapped.get());
         break;
     case ExprKind::index:
         go(e.as<IndexExpr>().object.get());
@@ -101,6 +103,12 @@ inline void walk_exprs(Expr& e, const std::function<bool(Expr&)>& visit) {
         break;
     }
     case ExprKind::return_: go(e.as<ReturnExpr>().value.get()); break;
+    case ExprKind::tuple:
+        for (ExprPtr& x : e.as<TupleExpr>().elements) go(x.get());
+        break;
+    case ExprKind::list:
+        for (ExprPtr& x : e.as<ListExpr>().elements) go(x.get());
+        break;
     default: break;
     }
 }

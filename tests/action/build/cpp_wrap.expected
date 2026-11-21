@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+value 5, live 1
+value 27
+caught: the counter would pass 100
+name apples, ratio 6.75, default ratio 13.5
+doubled 54 'apples x2', equal false, live 2
+absorbed: e 27, c 0
+live after the block 1
+box 42
+--- stderr

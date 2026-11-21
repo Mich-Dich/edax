@@ -3,13 +3,13 @@
 import std;
 import native::stats;
 
-/// From the C library (libm). Calling a C function is `unsafe`: Rift can't check it.
+// From the C library (libm). Calling a C function is `unsafe`: Rift can't check it.
 extern(std::build::language::c) {
     f64 hypot(f64 x, f64 y);
     i32 puts(std::raw_ptr<u8> text);
 }
 
-/// Exported to C: stats.c calls it by this name. Rift code may call it without `unsafe`.
+// Exported to C: stats.c calls it by this name. Rift code may call it without `unsafe`.
 extern(std::build::language::c) void rift_log(std::raw_ptr<u8> message, i32 value) {
     mut usize length = 0;
     unsafe {
@@ -18,7 +18,7 @@ extern(std::build::language::c) void rift_log(std::raw_ptr<u8> message, i32 valu
     }
 }
 
-/// A tiny growable buffer on raw memory: what std::darray does, without the safety net.
+// A tiny growable buffer on raw memory: what std::darray does, without the safety net.
 struct raw_buffer {
     std::raw_ptr<mut i32> data = nullptr;
     usize count = 0;

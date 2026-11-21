@@ -1,0 +1,138 @@
+// The Rift standard library: module std::windowing::bindings, actions bound to keys and buttons.
+//
+// A program names what the player or user can *do* as an enum of actions. Which keys do it is
+// data: a std::windowing::bindings<A> that starts from defaults written on the enum and can be
+// changed while the program runs (an options menu, a mode that remaps keys, a saved profile).
+//
+//     enum action : u8 {
+//         @wnd::default_key{ .key = wnd::key::escape }  quit,
+//         @wnd::default_key{ .key = wnd::key::space }   jump,
+//         @wnd::default_button{ .button = wnd::mouse_button::left } fire,
+//         crouch,                                       // no default: unbound until the user binds it
+//     }
+//     mut wnd::bindings<action> keys = wnd::bindings<action>::defaults();
+//     keys.bind(action::crouch, wnd::chord::of(wnd::key::c));
+//     match (keys.action_for(e)) { std::some(a) => ..., std::none => {}, }
+//
+// The set of actions is fixed when the program is compiled (an exhaustive `match` covers it); the
+// keys are not. Two default bindings on the same chord are a compile error; at run time a chord
+// belongs to at most one action of a map, and bind() says which action lost it.
+
+namespace std::windowing {
+    // What triggers an action: a key or a mouse button.
+    @std::derive::formattable
+    enum trigger : u8 {
+        key(std::windowing::key),
+        button(std::windowing::mouse_button),
+    }
+
+    // A trigger with the modifier keys that must be held with it: Ctrl+S is
+    // `chord{ .trigger = trigger::key(key::s), .modifiers = modifiers{ .control = true } }`.
+    @std::derive::formattable
+    struct chord {
+        std::windowing::trigger   trigger;
+        std::windowing::modifiers modifiers = default;
+
+        bool operator==(chord& other) = default;
+
+        // A key without modifiers.
+        static chord of(std::windowing::key k);
+        // A key with modifiers.
+        static chord with(std::windowing::key k, std::windowing::modifiers m);
+        // A mouse button without modifiers.
+        static chord of_button(std::windowing::mouse_button b);
+    }
+
+    // The default key of an action, written on the action enum's alternative.
+    annotation(std::meta::target::alternative) struct default_key {
+        std::windowing::key       key;
+        std::windowing::modifiers modifiers = default;
+        bool operator==(default_key& other) = default;
+    }
+
+    // The default mouse button of an action.
+    annotation(std::meta::target::alternative) struct default_button {
+        std::windowing::mouse_button button;
+        std::windowing::modifiers    modifiers = default;
+        bool operator==(default_button& other) = default;
+    }
+
+    // Why bindings<A>::from_text failed.
+    enum binding_error : u8 {
+        // A name before '=' isn't an alternative of the action enum.
+        unknown_action,
+        // A key or button name isn't one of std::windowing's.
+        unknown_trigger,
+        // A part isn't `action = chord, chord, ...`.
+        bad_syntax,
+    }
+
+    // One binding: a chord and the action it triggers.
+    template<type A>
+    struct binding_entry {
+        chord chord;
+        A     action;
+    }
+
+    // The keys and buttons of the actions `A` (a simple enum). Changeable at run time; starts
+    // from the defaults written on `A` with @default_key / @default_button.
+    //
+    // Cost: a darray of (chord, action) pairs, a few bytes each. Lookups scan it, which for the
+    // tens of bindings a program has is faster than a hash map and allocates nothing.
+    template<type A>
+    class bindings {
+    public:
+        // The bindings written on A's alternatives. Two alternatives with the same default chord
+        // are a compile error.
+        static bindings<A> defaults();
+
+        // Binds `c` to `action` (an action may have several chords). If `c` triggered another
+        // action, it doesn't any more: that action is returned, so a menu can say what changed.
+        std::option<A> bind(A action, chord c) mut;
+
+        // Removes every chord of `action`.
+        void unbind(A action) mut;
+
+        // Removes `c`; returns the action it triggered.
+        std::option<A> unbind_chord(chord c) mut;
+
+        // `action`'s chords become its defaults again (taking them from other actions).
+        void reset(A action) mut;
+
+        // Every action gets its defaults back, and nothing else.
+        void reset_all() mut;
+
+        // The action `c` triggers.
+        std::option<A> lookup(chord c);
+
+        // The action a key or button press triggers: pressed keys and buttons only (key repeats
+        // and releases trigger nothing), with exactly the chord's modifiers.
+        std::option<A> action_for(event e);
+
+        // Whether a chord of `action` is held now: its key or button is down and its modifiers
+        // are held (others may be held too, so Shift+W still walks). For movement and the like.
+        bool is_down(A action, input_state& input);
+
+        // Whether a chord of `action` went down this frame.
+        bool was_pressed(A action, input_state& input);
+
+        // The chords of `action`, in the order they were bound (allocates).
+        std::darray<chord> chords(A action);
+
+        // The number of chords bound.
+        usize len();
+
+        // The bindings as text, e.g. for a settings file:
+        // `jump = space; quit = escape, control+q; fire = mouse_left` (allocates).
+        std::string to_text();
+
+        // Bindings read back from to_text()'s format. Actions it doesn't mention are unbound.
+        static std::result<bindings<A>, binding_error> from_text(std::str text);
+    }
+
+    // The text of a chord: `control+shift+s`, `mouse_left` (allocates).
+    std::string chord_text(chord c);
+
+    // A chord read from chord_text's format.
+    std::option<chord> parse_chord(std::str text);
+}

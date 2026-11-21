@@ -13,8 +13,8 @@ namespace {
 
 using namespace ast;
 
-/// Thrown after a syntax error has been reported (or silently while speculating). Caught at
-/// the nearest recovery point, which skips ahead to a synchronization token.
+// Thrown after a syntax error has been reported (or silently while speculating). Caught at
+// the nearest recovery point, which skips ahead to a synchronization token.
 struct ParseError {};
 
 enum class MemberContext { top_level, struct_, class_, interface };
@@ -281,8 +281,8 @@ private:
         }
     }
 
-    /// Reports without unwinding (for errors the parser can step over). While speculating
-    /// nothing is reported; the returned scratch diagnostic just absorbs notes.
+    // Reports without unwinding (for errors the parser can step over). While speculating
+    // nothing is reported; the returned scratch diagnostic just absorbs notes.
     Diagnostic& report(DiagCode code, Span span, std::string message, std::string label = {}) {
         if (speculating_ > 0) {
             scratch_ = Diagnostic{code, Severity::error, {}, span, {}, {}};
@@ -304,8 +304,8 @@ private:
 
     std::uint32_t line_of(std::uint32_t offset) const { return file_.line_col(offset).line; }
 
-    /// Where to point when a separator is missing: right after the previous token if the
-    /// current token is on a later line, otherwise at the current token.
+    // Where to point when a separator is missing: right after the previous token if the
+    // current token is on a later line, otherwise at the current token.
     Span missing_token_span() const {
         if (pos_ > 0 && line_of(prev_span_.end) < line_of(cur().span.begin)) {
             return Span{id_, prev_span_.end, prev_span_.end};
@@ -337,6 +337,20 @@ private:
         fail(DiagCode::E2001, cur().span, msg, "unexpected here");
     }
 
+    // A field or method name: an identifier or a keyword (names reached through `.` or `::`).
+    std::string expect_member_name(std::string_view what) {
+        if (!at(TokenKind::identifier) && !is_keyword(cur().kind)) {
+            fail_unexpected(what);
+        }
+        return std::string(advance().text);
+    }
+
+    // After a keyword used as a member name: what may follow a field or method name.
+    bool peek_is_name_follower() const {
+        TokenKind k = peek(1).kind;
+        return k == TokenKind::eq || k == TokenKind::semicolon || k == TokenKind::l_paren;
+    }
+
     std::string expect_identifier(std::string_view what) {
         if (!at(TokenKind::identifier)) {
             fail_unexpected(what);
@@ -344,7 +358,7 @@ private:
         return std::string(advance().text);
     }
 
-    /// Consumes a closing delimiter, pointing back at the opener when it is missing.
+    // Consumes a closing delimiter, pointing back at the opener when it is missing.
     void expect_close(TokenKind close, Span open) {
         if (accept(close)) {
             return;
@@ -359,7 +373,7 @@ private:
              "unexpected here", {Note{std::format("to match this '{}'", open_text), open}});
     }
 
-    /// Closes template arguments. Splits `>>` into two `>` tokens when needed.
+    // Closes template arguments. Splits `>>` into two `>` tokens when needed.
     void expect_template_close() {
         if (accept(TokenKind::greater)) {
             return;
@@ -390,7 +404,7 @@ private:
         pos_ = s.pos, split_ = s.split, split_token_ = s.split_token, prev_span_ = s.prev;
     }
 
-    /// Runs `f` without reporting. On failure restores the position and returns false.
+    // Runs `f` without reporting. On failure restores the position and returns false.
     template <typename F>
     bool speculate(F&& f) {
         SavedState saved = save();
@@ -406,7 +420,7 @@ private:
         }
     }
 
-    /// Like speculate, but always rewinds: pure lookahead.
+    // Like speculate, but always rewinds: pure lookahead.
     template <typename F>
     bool lookahead(F&& f) {
         SavedState saved = save();
@@ -415,9 +429,9 @@ private:
         return ok;
     }
 
-    /// Skips to a statement / declaration boundary after an error: past the next `;` or the
-    /// next `}` that closes a group opened while skipping, or up to a `}` that closes the
-    /// enclosing block. Only braces are balanced; parentheses may be broken by the error.
+    // Skips to a statement / declaration boundary after an error: past the next `;` or the
+    // next `}` that closes a group opened while skipping, or up to a `}` that closes the
+    // enclosing block. Only braces are balanced; parentheses may be broken by the error.
     void synchronize(bool top_level) {
         int depth = 0;
         while (!at(TokenKind::eof)) {
@@ -448,8 +462,8 @@ private:
         }
     }
 
-    /// After an error inside `( ... )`: skip to the matching `)` and consume it.
-    /// Stops early at `{`, `}` or `;` (unless `through_semicolons`), where the `)` is missing.
+    // After an error inside `( ... )`: skip to the matching `)` and consume it.
+    // Stops early at `{`, `}` or `;` (unless `through_semicolons`), where the `)` is missing.
     void skip_past_close_paren(bool through_semicolons = false) {
         int depth = 0;
         while (!at(TokenKind::eof)) {
@@ -470,7 +484,7 @@ private:
         }
     }
 
-    /// Skips a balanced `{...}` or `(...)` group starting at the current token.
+    // Skips a balanced `{...}` or `(...)` group starting at the current token.
     void skip_group() {
         TokenKind open  = cur().kind;
         TokenKind close = open == TokenKind::l_brace ? TokenKind::r_brace : TokenKind::r_paren;
@@ -486,8 +500,8 @@ private:
         }
     }
 
-    /// `const` and `fn` are gone (spec 01). Reports them and returns true for `const` (which
-    /// the caller skips and treats as `compile_time` at file scope).
+    // `const` and `fn` are gone (spec 01). Reports them and returns true for `const` (which
+    // the caller skips and treats as `compile_time` at file scope).
     bool check_removed_keyword() {
         if (!at(TokenKind::identifier)) {
             return false;
@@ -554,8 +568,8 @@ private:
         }
     }
 
-    /// `extern(std::build::language::c)` (spec 13): the language is an alternative of
-    /// `std::build::language`, written out in full like every std name.
+    // `extern(std::build::language::c)` (spec 13): the language is an alternative of
+    // `std::build::language`, written out in full like every std name.
     void parse_extern_language(Modifiers& m) {
         Span kw     = advance().span;   // extern
         m.is_extern = true;
@@ -594,7 +608,7 @@ private:
         expect_close(TokenKind::r_paren, open);
     }
 
-    /// A path copied by its names (annotation paths have no template arguments).
+    // A path copied by its names (annotation paths have no template arguments).
     static Path copy_path(const Path& p) {
         Path out;
         out.span   = p.span;
@@ -608,8 +622,8 @@ private:
         return out;
     }
 
-    /// `@path` or `@path{ .field = value, ... }` (spec 29). The value is kept as the struct literal
-    /// `path{ ... }`.
+    // `@path` or `@path{ .field = value, ... }` (spec 29). The value is kept as the struct literal
+    // `path{ ... }`.
     AnnotationUse parse_annotation_use() {
         AnnotationUse u;
         Span          start = advance().span;   // @
@@ -626,7 +640,7 @@ private:
         return u;
     }
 
-    /// `annotation(std::meta::target::field, ...)` before `struct` (spec 29).
+    // `annotation(std::meta::target::field, ...)` before `struct` (spec 29).
     void parse_annotation_targets(Modifiers& m) {
         m.annotation_span = advance().span;   // annotation
         m.is_annotation   = true;
@@ -645,7 +659,7 @@ private:
         }
     }
 
-    /// `generate : interfaces { members }` inside an annotation (spec 29).
+    // `generate : interfaces { members }` inside an annotation (spec 29).
     void parse_generate(TypeDecl& decl) {
         auto g  = std::make_unique<GenerateBlock>();
         g->span = advance().span;   // generate
@@ -662,6 +676,7 @@ private:
             try {
                 if (!parse_access_label(MemberContext::class_, access)) {
                     DeclPtr d = parse_member(MemberContext::class_, access);
+                    if (!d) continue;
                     if (d->kind != DeclKind::function) {
                         report(DiagCode::E2035, d->name_span, "a generate block adds methods only, not fields or checks",
                                "not a method")
@@ -703,6 +718,7 @@ private:
             Span          start = cur().span;
             if (accept(TokenKind::kw_type)) {
                 p.is_type = true;
+                p.is_pack = accept(TokenKind::ellipsis);
                 p.name    = expect_identifier("a template parameter name");
                 if (accept(TokenKind::colon)) {
                     TypeOptions no_ref;
@@ -711,12 +727,23 @@ private:
                         p.constraints.push_back(parse_type(no_ref));
                     } while (accept(TokenKind::amp));
                 }
+                if (accept(TokenKind::eq)) p.default_type = parse_type({});
             } else {
                 p.is_type    = false;
                 p.value_type = parse_type({});
                 p.name       = expect_identifier("a template parameter name");
+                if (accept(TokenKind::eq)) p.default_value = parse_binary(prec_add);
+            }
+            if (!p.default_type && !p.default_value && !m.template_params.empty() &&
+                (m.template_params.back().default_type || m.template_params.back().default_value)) {
+                report(DiagCode::E2001, from(start), "a parameter without a default after one with a default",
+                       "give it a default or move it before the defaults");
             }
             p.span = from(start);
+            if (!m.template_params.empty() && m.template_params.back().is_pack) {
+                report(DiagCode::E2001, m.template_params.back().span, "a parameter pack is the last template parameter",
+                       "move it to the end");
+            }
             m.template_params.push_back(std::move(p));
         } while (accept(TokenKind::comma));
         expect_template_close();
@@ -724,7 +751,7 @@ private:
 
     // --- checks (spec 23) -----------------------------------------------------------------
 
-    /// `compile_time`, `run_time`, their mode lists, then `check`.
+    // `compile_time`, `run_time`, their mode lists, then `check`.
     bool at_check_start() {
         if (at(TokenKind::kw_check)) return true;
         if (!at(TokenKind::kw_compile_time) && !at(TokenKind::kw_run_time)) return false;
@@ -805,6 +832,8 @@ private:
     void parse_top_level(std::vector<DeclPtr>& out) {
         std::size_t first = out.size();
         parse_top_level_decl(out);
+        for (DeclPtr& d : hoisted_) out.push_back(std::move(d));
+        hoisted_.clear();
         std::string ns = current_namespace();
         for (std::size_t i = first; i < out.size(); ++i) {
             if (out[i]->ns.empty()) out[i]->ns = ns;
@@ -817,7 +846,7 @@ private:
         return out;
     }
 
-    /// `namespace a::b { ... }` or the alias `namespace vk = gfx::vulkan;` (spec 30).
+    // `namespace a::b { ... }` or the alias `namespace vk = gfx::vulkan;` (spec 30).
     void parse_namespace(std::vector<DeclPtr>& out) {
         Span start = advance().span;   // namespace
         Path path;
@@ -915,8 +944,8 @@ private:
         out.push_back(parse_top_level_item(m));
     }
 
-    /// `extern(std::build::language::c) { i32 puts(std::raw_ptr<u8> text); ... }`: every function inside gets the
-    /// block's modifiers (spec 13).
+    // `extern(std::build::language::c) { i32 puts(std::raw_ptr<u8> text); ... }`: every function inside gets the
+    // block's modifiers (spec 13).
     void parse_extern_block(Modifiers& outer, std::vector<DeclPtr>& out) {
         Span open = advance().span;   // {
         while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
@@ -1019,6 +1048,11 @@ private:
         advance();
         decl->name_span = cur().span;
         decl->name      = expect_identifier(std::format("a {} name", what));
+        type_stack_.push_back(decl->name);
+        struct PopType {
+            std::vector<std::string>& s;
+            ~PopType() { s.pop_back(); }
+        } pop_type{type_stack_};
         if (accept(TokenKind::colon)) {
             do {
                 if (at(TokenKind::kw_unsafe)) {   // `unsafe std::sendable(cond)`: a promise (spec 27)
@@ -1058,7 +1092,13 @@ private:
                     parse_generate(*decl);
                     continue;
                 }
-                decl->members.push_back(parse_member(ctx, access));
+                if (decl->is_annotation && at(TokenKind::identifier) && cur().text == "wrap" && peek(1).kind == TokenKind::l_brace) {
+                    Span word = advance().span;   // wrap
+                    if (decl->wrap) report(DiagCode::E2035, word, "an annotation has at most one wrap block", "second block");
+                    decl->wrap = parse_block();
+                    continue;
+                }
+                if (DeclPtr member = parse_member(ctx, access)) decl->members.push_back(std::move(member));
             } catch (const ParseError&) {
                 synchronize(false);
             }
@@ -1114,10 +1154,31 @@ private:
         if (at(TokenKind::tilde)) {
             return parse_destructor(m, ctx, access);
         }
-        if (!starts_declaration()) {
+        if (at(TokenKind::kw_struct) || at(TokenKind::kw_class) || at(TokenKind::kw_interface) || at(TokenKind::kw_enum)) {
+            return parse_nested_type(m, ctx, access);
+        }
+        if (!starts_declaration(/*member=*/true)) {
             fail_unexpected("a field or method declaration");
         }
         return parse_function_or_variable(m, ctx, access);
+    }
+
+    // A struct, class, enum or interface inside a struct or class: parsed like a file-scope type,
+    // then moved to file scope in the namespace `<outer namespace>::<outer type>`.
+    DeclPtr parse_nested_type(Modifiers& m, MemberContext ctx, Access access) {
+        if (ctx == MemberContext::interface) {
+            fail(DiagCode::E2001, cur().span, "an interface has no nested types", "declare it outside the interface");
+        }
+        std::string outer = type_stack_.empty() ? std::string() : type_stack_.back();
+        std::string ns    = current_namespace();
+        for (const std::string& t : type_stack_) ns += (ns.empty() ? "" : "::") + t;
+        DeclPtr d = parse_top_level_item(m);
+        d->ns        = ns;
+        d->nested_in = outer;
+        d->access    = access;
+        if (access == Access::private_ || access == Access::protected_) d->is_private = true;
+        hoisted_.push_back(std::move(d));
+        return nullptr;
     }
 
     DeclPtr parse_destructor(Modifiers& m, MemberContext ctx, Access access) {
@@ -1173,7 +1234,7 @@ private:
         }
 
         Span name_span = cur().span;
-        std::string name = expect_identifier("a name");
+        std::string name = ctx == MemberContext::top_level ? expect_identifier("a name") : expect_member_name("a name");
         if (at(TokenKind::colon_colon)) {
             Span start = name_span;
             while (accept(TokenKind::colon_colon)) {
@@ -1241,7 +1302,7 @@ private:
         return var;
     }
 
-    /// `= expr ;` with the spec's errors for `T x;` and `T x{...};`.
+    // `= expr ;` with the spec's errors for `T x;` and `T x{...};`.
     void parse_initializer(ExprPtr& init, const std::string& name, Span name_span, bool optional) {
         if (at(TokenKind::semicolon)) {
             if (!optional) {
@@ -1283,8 +1344,8 @@ private:
         return fn;
     }
 
-    /// `[mut] [override] [abstract] ( ; | = default ; | { body } )`
-    void parse_function_tail(FunctionDecl& fn, MemberContext ctx) {
+    // `[mut] [override] [abstract] ( ; | = default ; | { body } )`
+    void parse_function_tail(FunctionDecl& fn, [[maybe_unused]] MemberContext ctx) {
         fn.is_mut = accept(TokenKind::kw_mut);
         if (!fn.is_mut) fn.is_move = accept(TokenKind::kw_move);
         while (true) {
@@ -1328,16 +1389,13 @@ private:
         }
         Span body_start = cur().span;
         fn.body         = parse_block();
-        if (ctx == MemberContext::interface) {
-            report(DiagCode::E2028, from(body_start), "interface methods cannot have a body",
-                   "remove the body");
-        }
+        (void)body_start;   // interface methods may have a body: the default (spec 07)
         reject_semicolon_after_brace("function");
     }
 
-    /// `implicit` parameters come last; each `compile_time` parameter gets a hidden template value
-    /// parameter `$name`, so the function is instantiated per distinct compile-time argument
-    /// (spec 31).
+    // `implicit` parameters come last; each `compile_time` parameter gets a hidden template value
+    // parameter `$name`, so the function is instantiated per distinct compile-time argument
+    // (spec 31).
     void check_special_params(FunctionDecl& fn) {
         bool implicit_seen = false;
         for (Param& p : fn.params) {
@@ -1358,7 +1416,7 @@ private:
         }
     }
 
-    /// Lambdas and function types have no `implicit` or `compile_time` parameters.
+    // Lambdas and function types have no `implicit` or `compile_time` parameters.
     void reject_special_params(const std::vector<Param>& params) {
         for (const Param& p : params) {
             if (p.is_implicit || p.is_compile_time) {
@@ -1407,8 +1465,9 @@ private:
                    "write the type")
                 .notes.push_back(Note{"for a generic parameter, use 'template<type T>'", std::nullopt});
         }
-        p.is_mut = apply_mut(*p.type, mut);
-        p.name   = expect_identifier("a parameter name");
+        p.is_mut  = apply_mut(*p.type, mut);
+        p.is_pack = accept(TokenKind::ellipsis);
+        p.name    = expect_identifier("a parameter name");
         if (at(TokenKind::eq)) {
             Span def = cur().span;
             advance();
@@ -1420,8 +1479,8 @@ private:
         return p;
     }
 
-    /// `mut` before a reference type makes the reference mutable; otherwise it makes the binding
-    /// mutable. Returns whether the binding itself is mutable.
+    // `mut` before a reference type makes the reference mutable; otherwise it makes the binding
+    // mutable. Returns whether the binding itself is mutable.
     static bool apply_mut(TypeExpr& type, bool mut) {
         if (mut && type.kind == TypeKind::reference) {
             type.as<ReferenceType>().is_mut = true;
@@ -1488,6 +1547,26 @@ private:
         if (at(TokenKind::kw_deduce) && opts.allow_deduce) {
             advance();
             return std::make_unique<PlaceholderType>(TypeKind::deduce, start);
+        }
+        if (at(TokenKind::l_paren)) {   // `(A, B)`: a tuple type
+            Span open  = advance().span;
+            auto tuple = std::make_unique<TupleType>(open);
+            do {
+                if (at(TokenKind::r_paren)) break;
+                tuple->elements.push_back(parse_type({}));
+            } while (accept(TokenKind::comma));
+            expect_close(TokenKind::r_paren, open);
+            tuple->span = from(start);
+            if (tuple->elements.size() < 2) {
+                report(DiagCode::E2003, tuple->span, "a tuple type has two or more elements",
+                       tuple->elements.empty() ? "use 'void' for no value" : "a one-element tuple is just its element");
+            }
+            TypePtr type = std::move(tuple);
+            if (opts.allow_reference && at(TokenKind::amp)) {
+                advance();
+                type = std::make_unique<ReferenceType>(from(start), std::move(type));
+            }
+            return type;
         }
         if (!starts_type(cur().kind)) {
             fail(DiagCode::E2003, cur().span, std::format("expected a type, found {}", describe(cur())),
@@ -1562,7 +1641,7 @@ private:
         if (accept(TokenKind::kw_mut)) {
             arg.is_mut = true;
             arg.type   = parse_type(opts);
-        } else if (starts_type(cur().kind)) {
+        } else if (starts_type(cur().kind) || at(TokenKind::l_paren)) {
             // A type, unless it continues like an expression (`N + 1`).
             TypePtr type;
             bool    is_type = speculate([&] {
@@ -1592,7 +1671,7 @@ private:
         return parse_block_contents(start, open, is_unsafe);
     }
 
-    /// Statements up to the closing `}`; the opening `{` (at `open`) is already consumed.
+    // Statements up to the closing `}`; the opening `{` (at `open`) is already consumed.
     BlockPtr parse_block_contents(Span start, Span open, bool is_unsafe = false) {
         auto block = std::make_unique<BlockExpr>(start);
         block->is_unsafe = is_unsafe;
@@ -1612,7 +1691,7 @@ private:
         return block;
     }
 
-    /// The body of if/else/while/for: braces are mandatory (spec 01, 10).
+    // The body of if/else/while/for: braces are mandatory (spec 01, 10).
     BlockPtr parse_body(std::string_view construct) {
         if (!at(TokenKind::l_brace)) {
             fail(DiagCode::E2005, cur().span,
@@ -1622,24 +1701,25 @@ private:
         return parse_block();
     }
 
-    /// A declaration is a type followed by a name or `operator`.
-    bool starts_declaration() {
+    // A declaration is a type followed by a name or `operator`.
+    bool starts_declaration(bool member = false) {
         if (at(TokenKind::kw_auto) || at(TokenKind::kw_deduce)) {
             return true;
         }
-        if (!starts_type(cur().kind)) {
+        if (!starts_type(cur().kind) && !at(TokenKind::l_paren)) {
             return false;
         }
         return lookahead([&] {
             parse_type({});
-            if (!at(TokenKind::identifier) && !at(TokenKind::kw_operator)) {
+            if (!at(TokenKind::identifier) && !at(TokenKind::kw_operator) &&
+                !(member && is_keyword(cur().kind) && peek_is_name_follower())) {
                 throw ParseError{};
             }
         });
     }
 
     bool looks_like_declaration() {
-        if (!at(TokenKind::identifier) && !at(TokenKind::colon_colon)) {
+        if (!at(TokenKind::identifier) && !at(TokenKind::colon_colon) && !at(TokenKind::l_paren)) {
             return false;
         }
         return lookahead([&] {
@@ -1668,6 +1748,30 @@ private:
             block.statements.push_back(std::move(stmt));
             return;
         }
+        if (at(TokenKind::at)) {   // `@std::allow{ .id = x } stmt;`: only @std::allow on a statement
+            std::vector<ExprPtr> allowed;
+            while (at(TokenKind::at)) {
+                AnnotationUse u = parse_annotation_use();
+                if (to_string(u.path) != "std::allow") {
+                    report(DiagCode::E2035, u.span, "only '@std::allow' may be written on a statement", "not allowed here")
+                        .notes.push_back(Note{"annotations describe declarations; on a statement, '@std::allow' silences one warning", std::nullopt});
+                    continue;
+                }
+                for (FieldInit& f : u.value->as<StructLiteralExpr>().fields) {
+                    if (f.name == "id") allowed.push_back(std::move(f.value));
+                }
+            }
+            std::size_t before = block.statements.size();
+            parse_statement(block);
+            if (block.statements.size() > before) {
+                for (ExprPtr& a : allowed) block.statements.back()->allowed.push_back(std::move(a));
+            } else if (block.tail) {
+                auto wrapped = std::make_unique<ExprStmt>(block.tail->span, std::move(block.tail));
+                for (ExprPtr& a : allowed) wrapped->allowed.push_back(std::move(a));
+                block.statements.push_back(std::move(wrapped));
+            }
+            return;
+        }
         switch (cur().kind) {
         case TokenKind::kw_compile_time:
             if (peek(1).kind != TokenKind::l_paren) {
@@ -1676,10 +1780,26 @@ private:
                 return;
             }
             break;
-        case TokenKind::kw_mut:
         case TokenKind::kw_auto:
+            if (peek(1).kind == TokenKind::l_paren) {
+                block.statements.push_back(parse_destructure(start, /*is_auto=*/true));
+                return;
+            }
             block.statements.push_back(parse_variable_stmt(start, Storage::local));
             return;
+        case TokenKind::kw_mut:
+            block.statements.push_back(parse_variable_stmt(start, Storage::local));
+            return;
+        case TokenKind::l_paren:
+            if (looks_like_destructure()) {
+                block.statements.push_back(parse_destructure(start, /*is_auto=*/false));
+                return;
+            }
+            if (looks_like_declaration()) {
+                block.statements.push_back(parse_variable_stmt(start, Storage::local));
+                return;
+            }
+            break;
         case TokenKind::underscore:
             if (peek(1).kind == TokenKind::eq) {
                 advance();
@@ -1769,6 +1889,84 @@ private:
         }
         expect(TokenKind::semicolon, "after expression");
         block.statements.push_back(std::make_unique<ExprStmt>(from(start), std::move(expr)));
+    }
+
+    // `[...]` directly followed by `(` is a lambda's capture list; anything else is a list literal.
+    bool bracket_starts_lambda() const {
+        std::size_t i     = pos_;
+        int         depth = 0;
+        for (; i < tokens_.size(); ++i) {
+            TokenKind k = tokens_[i].kind;
+            if (k == TokenKind::l_bracket || k == TokenKind::l_paren || k == TokenKind::l_brace) ++depth;
+            if (k == TokenKind::r_bracket || k == TokenKind::r_paren || k == TokenKind::r_brace) {
+                if (--depth == 0) break;
+            }
+            if (k == TokenKind::eof) return false;
+        }
+        return i + 1 < tokens_.size() && tokens_[i].kind == TokenKind::r_bracket && tokens_[i + 1].kind == TokenKind::l_paren;
+    }
+
+    // `[a, b, c]` (or `[]`): a list literal.
+    ExprPtr parse_list() {
+        Span open = advance().span;   // [
+        auto list = std::make_unique<ListExpr>(open);
+        while (!at(TokenKind::r_bracket) && !at(TokenKind::eof)) {
+            list->elements.push_back(parse_expr());
+            if (!accept(TokenKind::comma)) break;
+        }
+        expect_close(TokenKind::r_bracket, open);
+        list->span = from(open);
+        return list;
+    }
+
+    // `(T1 a, T2 b) = ...` / `(mut u32 lo, _) = ...` ahead: a destructuring declaration.
+    bool looks_like_destructure() {
+        if (!at(TokenKind::l_paren)) return false;
+        return lookahead([&] {
+            advance();
+            do {
+                if (accept(TokenKind::underscore)) continue;
+                accept(TokenKind::kw_mut);
+                parse_type({});
+                if (!at(TokenKind::identifier)) throw ParseError{};
+                advance();
+            } while (accept(TokenKind::comma));
+            if (!accept(TokenKind::r_paren) || !at(TokenKind::eq)) throw ParseError{};
+        });
+    }
+
+    // `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`.
+    StmtPtr parse_destructure(Span start, bool is_auto) {
+        auto d     = std::make_unique<DestructureStmt>(start);
+        d->is_auto = is_auto;
+        if (is_auto) advance();   // auto
+        Span open = expect(TokenKind::l_paren, "to start the names").span;
+        do {
+            DestructureBinding b;
+            b.span = cur().span;
+            if (accept(TokenKind::underscore)) {
+                b.wildcard = true;
+                d->bindings.push_back(std::move(b));
+                continue;
+            }
+            b.is_mut = accept(TokenKind::kw_mut);
+            if (!is_auto) {
+                b.type = parse_type({});
+                b.is_mut = apply_mut(*b.type, b.is_mut);
+            }
+            b.span = cur().span;
+            b.name = expect_identifier("a variable name");
+            d->bindings.push_back(std::move(b));
+        } while (accept(TokenKind::comma));
+        expect_close(TokenKind::r_paren, open);
+        if (d->bindings.size() < 2) {
+            report(DiagCode::E2001, from(open), "a destructuring declaration names two or more elements", "one name");
+        }
+        expect(TokenKind::eq, "after the names (destructuring takes a value)");
+        d->init = parse_expr();
+        expect(TokenKind::semicolon, "after the destructuring declaration");
+        d->span = from(start);
+        return d;
     }
 
     StmtPtr parse_variable_stmt(Span start, Storage storage) {
@@ -1875,7 +2073,7 @@ private:
         return lhs;
     }
 
-    /// `x++`, `x--`, `++x`: two adjacent `+`/`-` tokens.
+    // `x++`, `x--`, `++x`: two adjacent `+`/`-` tokens.
     void check_increment(TokenKind op) {
         if ((op == TokenKind::plus || op == TokenKind::minus) && peek(1).kind == op &&
             adjacent(cur(), peek(1)) && !starts_expression(peek(2).kind)) {
@@ -1936,6 +2134,12 @@ private:
                             break;
                         }
                         call->args.push_back(parse_expr());
+                        if (at(TokenKind::ellipsis)) {   // `values...`: a pack passed on whole
+                            Span    dots = advance().span;
+                            ExprPtr arg  = std::move(call->args.back());
+                            Span    all{arg->span.file, arg->span.begin, dots.end};
+                            call->args.back() = std::make_unique<UnaryExpr>(all, UnaryOp::spread, std::move(arg));
+                        }
                     } while (accept(TokenKind::comma));
                 }
                 expect_close(TokenKind::r_paren, open);
@@ -1953,6 +2157,34 @@ private:
             case TokenKind::dot:
             case TokenKind::arrow: {
                 bool arrow = advance().is(TokenKind::arrow);
+                // `t.0`: a tuple element. `t.0.1` lexes as `t` `.` `0.1`: two element accesses.
+                if (!arrow && (at(TokenKind::int_literal) || at(TokenKind::float_literal))) {
+                    Token       tok  = advance();
+                    std::string text(tok.text);
+                    std::size_t dot  = text.find('.');
+                    auto element = [&](std::string n, Span sp) {
+                        Path p;
+                        PathSegment seg;
+                        seg.name = std::move(n);
+                        seg.span = sp;
+                        p.segments.push_back(std::move(seg));
+                        p.span = sp;
+                        return p;
+                    };
+                    if (text.find_first_not_of("0123456789.") != std::string::npos ||
+                        (dot != std::string::npos && text.find('.', dot + 1) != std::string::npos)) {
+                        fail(DiagCode::E2001, tok.span, "a tuple element is written by its position: 't.0'", "not a position");
+                    }
+                    Span first = tok.span;
+                    if (dot != std::string::npos) first.end = first.begin + static_cast<std::uint32_t>(dot);
+                    expr = std::make_unique<MemberExpr>(from(start), std::move(expr), element(text.substr(0, dot), first), false);
+                    if (dot != std::string::npos) {
+                        Span second  = tok.span;
+                        second.begin = tok.span.begin + static_cast<std::uint32_t>(dot) + 1;
+                        expr = std::make_unique<MemberExpr>(from(start), std::move(expr), element(text.substr(dot + 1), second), false);
+                    }
+                    break;
+                }
                 Path name  = parse_expr_path(/*member=*/true);
                 expr = std::make_unique<MemberExpr>(from(start), std::move(expr), std::move(name), arrow);
                 break;
@@ -1966,8 +2198,8 @@ private:
         }
     }
 
-    /// A path in expression position. `<` starts template arguments only if they parse and are
-    /// followed by `(`, `::` or `{` - otherwise it is the less-than operator.
+    // A path in expression position. `<` starts template arguments only if they parse and are
+    // followed by `(`, `::` or `{` - otherwise it is the less-than operator.
     Path parse_expr_path(bool member) {
         Path path;
         Span start = cur().span;
@@ -2026,8 +2258,8 @@ private:
 
     // --- f-strings (spec 19) --------------------------------------------------------------
 
-    /// Splits `f"a {x:>4} b"` into text and holes. Hole expressions are lexed and parsed from
-    /// the original source range, so their spans and diagnostics point into the f-string.
+    // Splits `f"a {x:>4} b"` into text and holes. Hole expressions are lexed and parsed from
+    // the original source range, so their spans and diagnostics point into the f-string.
     void split_format_string(LiteralExpr& lit) {
         std::string_view src   = file_.text();
         std::size_t      begin = lit.span.begin + 2;   // after `f"`
@@ -2117,8 +2349,8 @@ private:
         flush_text(end);
     }
 
-    /// Decodes the escape at `src[i]` (a backslash) into `out`; returns the index after it.
-    /// The lexer already validated every escape in the literal.
+    // Decodes the escape at `src[i]` (a backslash) into `out`; returns the index after it.
+    // The lexer already validated every escape in the literal.
     static std::size_t decode_escape(std::string_view src, std::size_t i, std::size_t end, std::string& out) {
         if (i + 1 >= end) return end;
         char e = src[i + 1];
@@ -2162,8 +2394,8 @@ private:
         }
     }
 
-    /// Parses the expression in a hole. Its diagnostics go through report(), so speculative
-    /// parsing of the enclosing code does not duplicate them.
+    // Parses the expression in a hole. Its diagnostics go through report(), so speculative
+    // parsing of the enclosing code does not duplicate them.
     ExprPtr parse_hole(std::size_t begin, std::size_t end) {
         DiagnosticEngine   local;
         std::vector<Token> tokens = tokenize_range(file_, id_, local, begin, end);
@@ -2177,7 +2409,7 @@ private:
         return e;
     }
 
-    /// `[<>^][+][width][.precision][x|X|b|o]`
+    // `[<>^][+][width][.precision][x|X|b|o]`
     FormatSpec parse_format_spec(std::string_view src, std::size_t begin, std::size_t end) {
         FormatSpec  spec;
         spec.present = true;
@@ -2243,10 +2475,23 @@ private:
                 fail(DiagCode::E2006, cur().span, "assignment is a statement, not an expression",
                      "this assigns");
             }
+            if (at(TokenKind::comma)) {   // `(a, b)`: a tuple
+                auto tuple = std::make_unique<TupleExpr>(open);
+                tuple->elements.push_back(std::move(inner));
+                while (accept(TokenKind::comma)) {
+                    if (at(TokenKind::r_paren)) break;
+                    tuple->elements.push_back(parse_expr());
+                }
+                expect_close(TokenKind::r_paren, open);
+                tuple->span = from(open);
+                return tuple;
+            }
             expect_close(TokenKind::r_paren, open);
             return inner;
         }
-        case TokenKind::l_bracket: return parse_lambda();
+        case TokenKind::l_bracket:
+            if (bracket_starts_lambda()) return parse_lambda();
+            return parse_list();
         case TokenKind::l_brace: return parse_block();
         case TokenKind::kw_unsafe: {
             advance();
@@ -2304,7 +2549,7 @@ private:
             advance();
             FieldInit field;
             field.span = cur().span;
-            field.name = expect_identifier("a field name after '.'");
+            field.name = expect_member_name("a field name after '.'");
             expect(TokenKind::eq, std::format("after '.{}'", field.name));
             field.value = parse_expr();
             field.span  = from(field.span);
@@ -2513,6 +2758,20 @@ private:
         if (accept(TokenKind::underscore)) {
             return std::make_unique<SimplePattern>(PatternKind::wildcard, start);
         }
+        if (at(TokenKind::l_paren)) {   // `(p1, p2)`: a tuple pattern
+            Span open  = advance().span;
+            auto tuple = std::make_unique<TuplePattern>(open);
+            do {
+                if (at(TokenKind::r_paren)) break;
+                tuple->elements.push_back(parse_pattern());
+            } while (accept(TokenKind::comma));
+            expect_close(TokenKind::r_paren, open);
+            tuple->span = from(start);
+            if (tuple->elements.size() < 2) {
+                report(DiagCode::E2001, tuple->span, "a tuple pattern has two or more elements", "one element");
+            }
+            return tuple;
+        }
         if (at(TokenKind::identifier)) {
             Path path;
             do {
@@ -2562,7 +2821,7 @@ private:
             expect(TokenKind::dot, "before the field name in a struct pattern");
             FieldPattern field;
             field.span = cur().span;
-            field.name = expect_identifier("a field name");
+            field.name = expect_member_name("a field name");
             expect(TokenKind::eq, std::format("after '.{}'", field.name));
             field.pattern = parse_pattern();
             field.span    = from(field.span);
@@ -2588,6 +2847,8 @@ private:
     int                      speculating_ = 0;
     bool                     stray_code_reported_ = false;
     std::vector<std::string>    ns_stack_;    // the open `namespace` blocks (spec 30)
+    std::vector<std::string>    type_stack_;  // the struct/class bodies being parsed (nested types)
+    std::vector<DeclPtr>        hoisted_;     // nested types, moved to file scope after their outer type
     std::vector<NamespaceAlias> aliases_;
     std::vector<AnnotationUse>  file_annotations_;   // `@a{ ... };` at the top of the file (spec 31)
     std::vector<NamespaceBlock> ns_blocks_;

@@ -8,7 +8,7 @@
 namespace std::log {
     // --- state shared by every thread ------------------------------------------------------------
 
-    /// One message on its way to the sinks.
+    // One message on its way to the sinks.
     private struct entry {
         std::log::level      lvl;
         std::call_site       where;
@@ -19,7 +19,7 @@ namespace std::log {
         bool                 from_panic;
     }
 
-    /// A sink of the log thread with its options. (A class: it has no `clone()`.)
+    // A sink of the log thread with its options. (A class: it has no `clone()`.)
     private class slot {
     public:
         std::log::sink_id               id;
@@ -42,7 +42,7 @@ namespace std::log {
         std::log::palette palette;
     }
 
-    /// What the log thread is asked to do, in order.
+    // What the log thread is asked to do, in order.
     private enum command : u8 {
         write(std::log::entry),
         add(std::log::slot),
@@ -53,7 +53,7 @@ namespace std::log {
         flush(std::channel_sender<u32>),
     }
 
-    /// The running session, as log calls on any thread see it.
+    // The running session, as log calls on any thread see it.
     private struct shared {
         std::channel_sender<std::log::command> sender;
         std::atomic<u32>                       users;     // threads sending right now
@@ -61,19 +61,18 @@ namespace std::log {
         std::atomic<u64>                       dropped;   // records a full queue dropped
     }
 
-    /// The lowest level any sink takes: calls below it don't even format their message.
+    // The lowest level any sink takes: calls below it don't even format their message.
     private static std::atomic<u8> minimum = default;
-    /// The running session, or null.
+    // The running session, or null.
     private static std::atomic<std::raw_ptr<mut std::log::shared>> active = default;
-    /// The entries logged before `start` (at most 256), behind a spin lock.
+    // The entries logged before `start` (at most 256), behind a spin lock.
     private static std::atomic<u32> early_lock = default;
     private static mut std::raw_ptr<mut std::darray<std::log::entry>> early = nullptr;
     private static std::atomic<u64> early_dropped = default;
-    /// The log thread's id while it runs (0 otherwise): it can't wait for itself.
+    // The log thread's id while it runs (0 otherwise): it can't wait for itself.
     private static std::atomic<u64> log_thread_id = default;
 
     private extern(std::build::language::c) {
-        void rift_set_panic_hook(std::fn_ptr<void(std::raw_ptr<u8>, u64)> hook);
         i32 isatty(i32 fd);
         i32 raise(i32 signal);
         i32 fflush(std::raw_ptr<mut u8> stream);
@@ -212,7 +211,7 @@ namespace std::log {
         return false;
     }
 
-    /// A failed assert: logged like `fatal`, then the debugger (if any) stops here.
+    // A failed assert: logged like `fatal`, then the debugger (if any) stops here.
     @std::cold
     private void assert_failed(std::format_args failure, std::call_site where) {
         std::log::submit(std::log::level::fatal, move failure, where);
@@ -222,7 +221,7 @@ namespace std::log {
         }
     }
 
-    /// Whether a debugger traces this process (`TracerPid` in /proc/self/status is not 0).
+    // Whether a debugger traces this process (`TracerPid` in /proc/self/status is not 0).
     private bool debugger_attached() {
         std::result<std::file, std::io_error> opened = std::file::open(std::filesystem::path::from("/proc/self/status"));
         if (opened.is_error()) {
@@ -246,7 +245,7 @@ namespace std::log {
         }
     }
 
-    /// Formats the message (its holes run now, on this thread) and queues the entry.
+    // Formats the message (its holes run now, on this thread) and queues the entry.
     private void submit(std::log::level lvl, std::format_args message, std::call_site where) {
         std::log::deliver(std::log::entry{
             .lvl = lvl,
@@ -259,7 +258,7 @@ namespace std::log {
         });
     }
 
-    /// To the running session, else into the early buffer.
+    // To the running session, else into the early buffer.
     private void deliver(std::log::entry e) {
         std::raw_ptr<mut std::log::shared> s = active.load(std::memory_order::sequentially_consistent);
         if (s) {
@@ -292,7 +291,7 @@ namespace std::log {
         }
     }
 
-    /// An entry the logger itself writes.
+    // An entry the logger itself writes.
     private std::log::entry note(std::log::level lvl, std::string text) {
         return std::log::entry{
             .lvl = lvl,
@@ -408,8 +407,8 @@ namespace std::log {
         };
     }
 
-    /// "trace" ... "off": how build.rifts passes a level.
-    private compile_time std::static_str level_word(std::log::level l) {
+    // "trace" ... "off": how build.rifts passes a level.
+    private compile_time run_time std::static_str level_word(std::log::level l) {
         return match (l) {
             std::log::level::trace => "trace",
             std::log::level::debug => "debug",
@@ -443,7 +442,7 @@ namespace std::log {
 
     // --- patterns -------------------------------------------------------------------------------
 
-    /// Whether `name` is a field a pattern can name.
+    // Whether `name` is a field a pattern can name.
     private compile_time run_time bool known_field(std::str name) {
         return name == "message" || name == "level" || name == "time" || name == "date" || name == "millis" || name == "micros" ||
                name == "thread" || name == "thread_id" || name == "target" || name == "module" || name == "namespace" ||
@@ -451,7 +450,7 @@ namespace std::log {
                name == "column" || name == "color" || name == "/color";
     }
 
-    /// Whether `spec` (after ':') is an alignment and a width: `<5`, `>8`, `^10`, `12`.
+    // Whether `spec` (after ':') is an alignment and a width: `<5`, `>8`, `^10`, `12`.
     private compile_time run_time bool known_spec(std::str spec) {
         mut usize at = 0;
         if (spec.starts_with("<") || spec.starts_with(">") || spec.starts_with("^")) {
@@ -470,7 +469,7 @@ namespace std::log {
         return true;
     }
 
-    /// The first `{...}` of `text` that is not a field with a valid spec, or "" (with `what` saying why).
+    // The first `{...}` of `text` that is not a field with a valid spec, or "" (with `what` saying why).
     private compile_time run_time std::str first_problem(std::str text, bool want_reason) {
         mut usize at = 0;
         while (at < text.len()) {
@@ -590,11 +589,11 @@ namespace std::log {
             cached_second = t.seconds;
         }
         mut std::time::civil_time out = cached_time;
-        out.microsecond = t.nanos / 1000;
+        out.nanosecond = t.nanos;
         return out;
     }
 
-    /// The text of one field of `r`.
+    // The text of one field of `r`.
     private void field_value(std::log::record& r, std::str name, std::raw_ptr<std::log::palette> colors, std::time::civil_time when, mut std::string& out) {
         if (name == "message") { out.push_str(r.message); }
         else if (name == "level") { out.push_str(std::log::level_text(r.level)); }
@@ -612,8 +611,8 @@ namespace std::log {
             out.push_str("-");
             std::log::digits(mut out, cast<u64>(when.day), 2);
         }
-        else if (name == "millis") { std::log::digits(mut out, cast<u64>(when.microsecond / 1000), 3); }
-        else if (name == "micros") { std::log::digits(mut out, cast<u64>(when.microsecond), 6); }
+        else if (name == "millis") { std::log::digits(mut out, cast<u64>(when.nanosecond / 1000000), 3); }
+        else if (name == "micros") { std::log::digits(mut out, cast<u64>(when.nanosecond / 1000), 6); }
         else if (name == "thread") {
             if (r.thread_name.is_empty()) { std::log::digits(mut out, r.thread_id, 1); } else { out.push_str(r.thread_name); }
         }
@@ -658,13 +657,13 @@ namespace std::log {
         }
     }
 
-    /// One SGR parameter: `ESC[` before the first, `;` between them.
+    // One SGR parameter: `ESC[` before the first, `;` between them.
     private void sgr(mut std::string& out, mut bool& first, u32 code) {
         if (first) { out.push_str("\u{1b}["); first = false; } else { out.push_str(";"); }
         std::log::digits(mut out, cast<u64>(code), 1);
     }
 
-    /// The SGR parameters of `c` as a foreground (`base` 30) or background (`base` 40) color.
+    // The SGR parameters of `c` as a foreground (`base` 30) or background (`base` 40) color.
     private void color_codes(mut std::string& out, mut bool& first, std::log::color c, u32 base) {
         match (c) {
             std::log::color::none => {},
@@ -699,7 +698,7 @@ namespace std::log {
         }
     }
 
-    /// `n` in decimal with at least `width` digits.
+    // `n` in decimal with at least `width` digits.
     private void digits(mut std::string& out, u64 n, usize width) {
         mut u64   divisor = 1;
         mut usize count = 1;
@@ -720,7 +719,7 @@ namespace std::log {
         }
     }
 
-    /// `value` aligned in the width `spec` asks for (`<5`, `>8`, `^10`; text aligns left by default).
+    // `value` aligned in the width `spec` asks for (`<5`, `>8`, `^10`; text aligns left by default).
     private void pad(std::str value, std::str spec, mut std::string& out) {
         if (spec.is_empty()) {
             out.push_str(value);
@@ -808,6 +807,119 @@ namespace std::log {
         bool use_colors = false;
     }
 
+    private extern(std::build::language::c) {
+        i32 rename(std::raw_ptr<u8> from, std::raw_ptr<u8> to);
+        i32 remove(std::raw_ptr<u8> path);
+        i32 open(std::raw_ptr<u8> path, i32 flags);
+        i64 lseek(i32 fd, i64 offset, i32 whence);
+        i32 close(i32 fd);
+    }
+
+    // `path` with a NUL after it, for C.
+    private std::string c_path(std::str path) {
+        mut std::string text = std::string::from(path);
+        text.push('\0');
+        return text;
+    }
+
+    // The size of the file at `path`, or 0.
+    private u64 file_size(std::str path) {
+        std::string name = c_path(path);
+        std::str c_name = name;
+        unsafe {
+            i32 fd = open(c_name.as_ptr(), 0);
+            if (fd < 0) { return 0; }
+            i64 end = lseek(fd, 0, 2);   // SEEK_END
+            _ = close(fd);
+            return cast::saturate<u64>(end);
+        }
+    }
+
+    // The rotated file number `n` of `path`: `logs/app.log` → `logs/app.3.log`; `n` = 0 is
+    // the path itself.
+    private std::string numbered(std::filesystem::path& path, u32 n) {
+        std::str whole = path.as_str();
+        if (n == 0) { return std::string::from(whole); }
+        std::str ext = path.extension();
+        if (ext.is_empty()) { return std::format(f"{whole}.{n}"); }
+        std::str stem = whole.slice(0, whole.len() - ext.len() - 1);
+        return std::format(f"{stem}.{n}.{ext}");
+    }
+
+    // The local date of `t` as a number: 20261120.
+    private i64 day_key(std::time::wall_time t) {
+        std::time::civil_time c = t.local();
+        return cast<i64>(c.year) * 10000 + cast<i64>(c.month) * 100 + cast<i64>(c.day);
+    }
+
+    // Appends `text` as a JSON string literal.
+    private void json_string(mut std::string& out, std::str text) {
+        out.push('"');
+        std::str hex = "0123456789abcdef";
+        mut usize run = 0;   // the start of the bytes not copied yet
+        mut usize i = 0;
+        while (i < text.len()) {
+            mut u8 b = 0;
+            unsafe { b = *text.as_ptr().offset(i); }
+            if (b == 34 || b == 92 || b < 32) {
+                out.push_str(text.slice(run, i));
+                if (b == 34) {
+                    out.push_str("\\\"");
+                } else if (b == 92) {
+                    out.push_str("\\\\");
+                } else if (b == 10) {
+                    out.push_str("\\n");
+                } else if (b == 13) {
+                    out.push_str("\\r");
+                } else if (b == 9) {
+                    out.push_str("\\t");
+                } else {
+                    out.push_str("\\u00");
+                    out.push_str(hex.slice(cast<usize>(b / 16), cast<usize>(b / 16) + 1));
+                    out.push_str(hex.slice(cast<usize>(b % 16), cast<usize>(b % 16) + 1));
+                }
+                run = i + 1;
+            }
+            i += 1;
+        }
+        out.push_str(text.slice(run, text.len()));
+        out.push('"');
+    }
+
+    // One record as a JSON object (without the line break).
+    private void json_record(mut std::string& out, std::log::record& r) {
+        std::time::civil_time c = r.time.utc();
+        out.push_str("{\"time\":\"");
+        std::log::digits(mut out, cast::saturate<u64>(c.year), 4);
+        out.push('-');
+        std::log::digits(mut out, cast<u64>(c.month), 2);
+        out.push('-');
+        std::log::digits(mut out, cast<u64>(c.day), 2);
+        out.push('T');
+        std::log::digits(mut out, cast<u64>(c.hour), 2);
+        out.push(':');
+        std::log::digits(mut out, cast<u64>(c.minute), 2);
+        out.push(':');
+        std::log::digits(mut out, cast<u64>(c.second), 2);
+        out.push('.');
+        std::log::digits(mut out, cast<u64>(c.nanosecond / 1000000), 3);
+        out.push_str("Z\",\"level\":");
+        json_string(mut out, std::log::level_word(r.level));
+        out.push_str(",\"target\":");
+        json_string(mut out, r.where.target);
+        out.push_str(",\"file\":");
+        json_string(mut out, r.where.file);
+        out.push_str(",\"line\":");
+        std::log::digits(mut out, cast<u64>(r.where.line), 1);
+        out.push_str(",\"function\":");
+        json_string(mut out, r.where.function);
+        out.push_str(",\"thread\":");
+        json_string(mut out, r.thread_name);
+        out.push_str(",\"message\":");
+        json_string(mut out, r.message);
+        out.push('}');
+    }
+
     class file {
     public:
         static std::result<std::unique_ptr<std::log::file>, std::io_error> create(std::log::file_options& options) {
@@ -815,30 +927,40 @@ namespace std::log {
             if (!dir.as_str().is_empty()) {
                 std::filesystem::create_directories(dir)?;
             }
+            u64 existing = match (options.mode) {
+                std::log::file_mode::truncate => 0,
+                std::log::file_mode::append => file_size(options.path.as_str()),
+            };
             mut std::file out = match (options.mode) {
                 std::log::file_mode::truncate => std::file::create(options.path)?,
                 std::log::file_mode::append => std::file::append(options.path)?,
             };
-            mut std::string banner = default;
-            banner.push_str("==================================================================\nlog started at ");
-            std::log::stamp(mut banner);
-            banner.push_str("\n------------------------------------------------------------------\n");
-            _ = out.write(banner);
-            _ = out.flush();
-            return std::ok(std::unique_ptr<std::log::file>::make(std::log::file{
+            mut std::log::file sink = std::log::file{
                 .out = move out,
+                .path = options.path.clone(),
                 .flush_at = options.flush_at,
                 .buffer_size = options.buffer_size,
                 .pending = 0,
-            }));
+                .rotation = options.rotation,
+                .format = options.format,
+                .size = existing,
+                .day = day_key(std::time::wall_time::now()),
+            };
+            sink.banner("log started at ");
+            return std::ok(std::unique_ptr<std::log::file>::make(move sink));
         }
 
         bool colored() override { return false; }
 
         void write(std::log::record& r, std::str line) mut override {
-            _ = this.out.write(line);
+            mut std::string json = default;
+            if (this.format == std::log::file_format::json_lines) { json_record(mut json, r); }
+            std::str text = if (this.format == std::log::file_format::json_lines) { json.as_str() } else { line };
+            this.rotate_before(r, cast<u64>(text.len() + 1));
+            _ = this.out.write(text);
             _ = this.out.write("\n");
-            this.pending += line.len() + 1;
+            this.pending += text.len() + 1;
+            this.size += cast<u64>(text.len() + 1);
             if (cast<u8>(r.level) >= cast<u8>(this.flush_at) || this.pending >= this.buffer_size) {
                 this.flush();
             }
@@ -850,22 +972,83 @@ namespace std::log {
         }
 
         ~file() {
-            mut std::string banner = default;
-            banner.push_str("------------------------------------------------------------------\nlog stopped at ");
-            std::log::stamp(mut banner);
-            banner.push_str("\n==================================================================\n");
-            _ = this.out.write(banner);
-            _ = this.out.flush();
+            this.banner("log stopped at ");
         }
 
     private:
-        std::file       out;
-        std::log::level flush_at = std::log::level::warn;
-        usize           buffer_size = 65536;
-        usize           pending = 0;
+        std::file             out;
+        std::filesystem::path path;
+        std::log::level       flush_at = std::log::level::warn;
+        usize                 buffer_size = 65536;
+        usize                 pending = 0;
+        std::log::rotation    rotation = std::log::rotation::none;
+        std::log::file_format format = std::log::file_format::text;
+        u64                   size = 0;   // bytes in the current file
+        i64                   day = 0;    // the local date the current file was started on
+
+        // The "log started" / "log stopped" lines (text files only: a JSON file holds records only).
+        void banner(std::static_str what) mut {
+            if (this.format == std::log::file_format::json_lines) { return; }
+            mut std::string text = default;
+            bool start = what.starts_with("log started");
+            text.push_str(if (start) { "==================================================================\n" } else { "------------------------------------------------------------------\n" });
+            text.push_str(what);
+            std::log::stamp(mut text);
+            text.push_str(if (start) { "\n------------------------------------------------------------------\n" } else { "\n==================================================================\n" });
+            _ = this.out.write(text);
+            _ = this.out.flush();
+            this.size += cast<u64>(text.len());
+        }
+
+        // Starts a new file when the rotation says so before a record of `bytes` is written.
+        void rotate_before(std::log::record& r, u64 bytes) mut {
+            match (this.rotation) {
+                std::log::rotation::none => { },
+                std::log::rotation::by_size(limit) => {
+                    if (this.size > 0 && this.size + bytes > limit.max_bytes) { this.rotate(limit.keep); }
+                },
+                std::log::rotation::daily(keep) => {
+                    i64 today = day_key(r.time);
+                    if (today != this.day) {
+                        this.rotate(keep);
+                        this.day = today;
+                    }
+                },
+            }
+        }
+
+        // app.log becomes app.1.log, app.1.log becomes app.2.log, ...; the oldest beyond `keep`
+        // is deleted, and a new app.log is started.
+        void rotate(u32 keep) mut {
+            this.banner("log continued in a new file at ");
+            this.flush();
+            if (keep == 0) {
+                std::string name = c_path(this.path.as_str());
+                std::str c_name = name;
+                unsafe { _ = remove(c_name.as_ptr()); }
+            } else {
+                mut u32 k = keep;
+                while (k > 0) {
+                    std::string from = c_path(numbered(this.path, k - 1).as_str());
+                    std::string to = c_path(numbered(this.path, k).as_str());
+                    std::str c_from = from;
+                    std::str c_to = to;
+                    unsafe { _ = rename(c_from.as_ptr(), c_to.as_ptr()); }
+                    k -= 1;
+                }
+            }
+            match (std::file::create(this.path)) {
+                std::ok(f) => {
+                    this.out = move f;
+                    this.size = 0;
+                    this.banner("log started at ");
+                },
+                std::error(_) => { },   // keep writing to the renamed file
+            }
+        }
     }
 
-    /// `yyyy-mm-dd hh:mm:ss` now, in local time.
+    // `yyyy-mm-dd hh:mm:ss` now, in local time.
     private void stamp(mut std::string& out) {
         std::time::civil_time c = std::time::wall_time::now().local();
         std::log::digits(mut out, cast::saturate<u64>(c.year), 4);
@@ -881,7 +1064,7 @@ namespace std::log {
         std::log::digits(mut out, cast<u64>(c.second), 2);
     }
 
-    /// The lines of a history: a ring of `capacity` lines.
+    // The lines of a history: a ring of `capacity` lines.
     private struct history_lines {
         std::darray<std::string> lines;
         usize                    capacity;
@@ -911,7 +1094,7 @@ namespace std::log {
 
         std::log::history clone() { return std::log::history{ .shared = this.shared.clone() }; }
 
-        /// Adds a line, replacing the oldest once the ring is full.
+        // Adds a line, replacing the oldest once the ring is full.
         void push(std::str line) {
             mut std::mutex_guard<std::log::history_lines> g = this.shared->lock();
             if (g->capacity == 0) {
@@ -948,7 +1131,7 @@ namespace std::log {
 
     // --- the log thread -------------------------------------------------------------------------
 
-    /// A record for the sinks, borrowing from `e`.
+    // A record for the sinks, borrowing from `e`.
     private std::log::record record_of(std::log::entry& e) {
         return std::log::record{
             .level = e.lvl,
@@ -978,7 +1161,7 @@ namespace std::log {
         s.sink->write(r, line);
     }
 
-    private void run(std::channel_receiver<std::log::command> input) {
+    private void run(std::channel_receiver<std::log::command>& input) {
         log_thread_id.store(std::thread::current_id(), std::memory_order::sequentially_consistent);
         mut std::darray<std::log::slot>  sinks = default;
         mut std::darray<std::log::entry> backlog = default;   // what arrived while there was no sink
@@ -1043,20 +1226,19 @@ namespace std::log {
 
     // --- panics ---------------------------------------------------------------------------------
 
-    /// A panic anywhere: log its message, then write everything queued and flush the sinks.
-    private void on_panic(std::raw_ptr<u8> text, u64 length) {
-        mut std::string message = default;
-        unsafe { message.push_str(std::raw::str_from(text, cast::truncate<usize>(length))); }
+    // A panic anywhere: log its message, then write everything queued and flush the sinks.
+    private void on_panic(std::panic_info& info) {
+        std::string message = std::format(f"{info.where.file}:{info.where.line}:{info.where.column}: panic: {info.message}");
         mut std::log::entry e = std::log::note(std::log::level::fatal, move message);
         e.from_panic = true;
         std::log::deliver(move e);
         std::log::flush_all();
     }
 
-    /// Writes everything queued and flushes every sink, waiting for the log thread; without a
-    /// session, prints the early entries on stderr.
-    /// Writes every queued message and flushes every sink, then returns (on the log thread itself:
-    /// at once; without a session: the early messages go to stderr).
+    // Writes everything queued and flushes every sink, waiting for the log thread; without a
+    // session, prints the early entries on stderr.
+    // Writes every queued message and flushes every sink, then returns (on the log thread itself:
+    // at once; without a session: the early messages go to stderr).
     private void flush_all() {
         if (log_thread_id.load(std::memory_order::sequentially_consistent) == std::thread::current_id()) {
             return;   // on the log thread itself: it can't wait for itself
@@ -1098,10 +1280,7 @@ namespace std::log {
     }
 
     private void set_panic_hook() {
-        std::fn_ptr<void(std::raw_ptr<u8>, u64)> hook = [](std::raw_ptr<u8> text, u64 length) {
-            std::log::on_panic(text, length);
-        };
-        unsafe { rift_set_panic_hook(hook); }
+        _ = std::set_panic_hook([](std::panic_info& info) { std::log::on_panic(info); });
     }
 
     // --- the session ----------------------------------------------------------------------------
@@ -1112,7 +1291,7 @@ namespace std::log {
         std::channel<std::log::command> queue = std::channel<std::log::command>::bounded(o.queue_capacity);
         std::channel_receiver<std::log::command> input = queue.receiver();
         std::thread::handle<void> worker = std::thread::spawn(std::thread::options{ .name = "log" }, [move input]() {
-            std::log::run(move input);
+            std::log::run(input);           // borrowed: the lambda owns the receiver and drops it once
         });
         mut std::raw_ptr<mut std::log::shared> state = nullptr;
         unsafe {
@@ -1214,12 +1393,12 @@ namespace std::log {
         }
 
     private:
-        /// Sends a command, unless the log thread is gone.
+        // Sends a command, unless the log thread is gone.
         void send(std::log::command c) {
             unsafe { _ = (*this.state).sender.send(move c); }
         }
 
-        /// The run-time minimum: the lowest level of any sink (`off` without sinks).
+        // The run-time minimum: the lowest level of any sink (`off` without sinks).
         void update_minimum() {
             mut u8 lowest = cast<u8>(std::log::level::off);
             for (std::log::sink_level& l : this.levels) {

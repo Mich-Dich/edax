@@ -1,0 +1,22 @@
+// windowing/game/debug_overlay: where a debug UI (an ImGui, say) plugs in, as an overlay layer.
+//
+// Overlays sit on top of the layer stack: they see events first and draw last. While it is open
+// (F1) this one takes the keyboard and the mouse, so the game behind it doesn't move, and draws a
+// panel over the game: a row of boxes (one per click, the stand-in for real widgets) and the fps.
+
+import std;
+import windowing::engine::layer;
+import windowing::engine::renderer;
+import windowing::engine::timing;
+
+namespace game {
+    namespace wnd = std::windowing;
+
+    class debug_overlay : engine::layer {
+    public:
+        std::static_str name() override;
+        engine::event_result on_event(wnd::event& e, mut engine::context& ctx) mut override;
+        void on_render(engine::render_context& rc, mut wnd::opengl::frame& frame) mut override;
+        bool is_open();
+    }
+}

@@ -3,7 +3,7 @@
 import std;
 
 namespace shop {
-    /// Where a field goes in the printed report; checked where it is written.
+    // Where a field goes in the printed report; checked where it is written.
     annotation(std::meta::target::field) struct column {
         std::static_str title;
         u32 width = 10;
@@ -11,10 +11,10 @@ namespace shop {
             else f"@column: width {annotation.width} is not between 4 and 40";
     }
 
-    /// A shell command, found by `run_command` through the methods' annotations.
+    // A shell command, found by `run_command` through the methods' annotations.
     annotation(std::meta::target::function) struct command { std::static_str word; }
 
-    /// Things a shop sells: printable, hashable, ordered by their fields.
+    // Things a shop sells: printable, hashable, ordered by their fields.
     @std::derive::formattable
     @std::derive::hashable
     @std::derive::ordered
@@ -34,7 +34,7 @@ namespace shop {
 
     enum category : u8 { food, tools, books }
 
-    /// `text` followed by spaces up to `width` characters.
+    // `text` followed by spaces up to `width` characters.
     void put_padded(mut std::string& out, std::str text, u32 width) {
         out.push_str(text);
         for (usize i : text.len()..cast<usize>(width)) {
@@ -42,7 +42,7 @@ namespace shop {
         }
     }
 
-    /// A table row for any struct: the fields with `@column`, in their widths.
+    // A table row for any struct: the fields with `@column`, in their widths.
     template<type T>
     std::string row(T& value) {
         mut std::string out = default;
@@ -74,7 +74,7 @@ namespace shop {
         @command{ .word = "report" } void report() { std::println(f"{this.sales} sales"); }
     }
 
-    /// The command table is the annotated methods themselves.
+    // The command table is the annotated methods themselves.
     bool run_command(mut register_shell& sh, std::str word) {
         for compile_time (std::meta::function m : std::meta::methods<register_shell>()) {
             if compile_time (m.has<command>()) {

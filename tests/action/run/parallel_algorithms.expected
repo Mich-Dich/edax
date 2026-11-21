@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+sorted true
+desc true
+find true any false all true
+transform true true
+key true
+--- stderr

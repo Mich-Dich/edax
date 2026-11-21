@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+[$12.34] [     $12.34!] point { x: 1.0, y: 2.5 }
+--- stderr

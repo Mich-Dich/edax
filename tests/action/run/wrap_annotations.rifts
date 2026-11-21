@@ -1,0 +1,52 @@
+// RUN: riftc run %s
+// Annotations that wrap a function body: wrap blocks, std::meta::wrapped_body(), nesting, ? and return.
+import std;
+
+annotation(std::meta::target::function)
+struct traced {
+    std::static_str label = "";
+    wrap {
+        std::println(f"enter {annotation.label} ({annotated.name})");
+        if compile_time (annotated.result == void) {
+            std::meta::wrapped_body();
+            std::println(f"leave {annotation.label}");
+        } else {
+            auto result = std::meta::wrapped_body();
+            std::println(f"leave {annotation.label}");
+            return move result;
+        }
+    }
+}
+
+annotation(std::meta::target::function)
+struct counted {
+    wrap {
+        std::println("count");
+        return std::meta::wrapped_body();
+    }
+}
+
+@traced{ .label = "square" }
+u32 square(u32 x) {
+    if (x > 10) { return 0; }
+    return x * x;
+}
+
+@traced{ .label = "hello" }
+void hello(std::str who) {
+    std::println(f"hello {who}");
+}
+
+@counted
+@traced{ .label = "parse" }
+std::result<u32, std::static_str> parse(std::str text) {
+    u32 v = text.parse<u32>().or_error("not a number")?;
+    return std::ok(v + 1);
+}
+
+std::exit_code main() {
+    std::println(f"{square(4)} {square(20)}");
+    hello("rift");
+    std::println(f"{parse("41").value_or(0)} {parse("x").value_or(0)}");
+    return std::exit_code::success;
+}

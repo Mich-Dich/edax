@@ -2,8 +2,8 @@
 // (spec 14). Each instance is compiled for its own types: no boxing, no virtual calls.
 import std;
 
-/// Deduced from the arguments: `largest(darray<u32>)` makes `largest<u32>`.
-/// `std::comparable` lets the body use `<`, and the call site is checked against it.
+// Deduced from the arguments: `largest(darray<u32>)` makes `largest<u32>`.
+// `std::comparable` lets the body use `<`, and the call site is checked against it.
 template<type T : std::comparable & std::cloneable>
 std::option<T> largest(std::darray<T>& items) {
     if (items.is_empty()) { return std::none; }
@@ -14,14 +14,14 @@ std::option<T> largest(std::darray<T>& items) {
     return std::some(items[best].clone());
 }
 
-/// A generic container: a stack that keeps at most `N` items (a value parameter).
+// A generic container: a stack that keeps at most `N` items (a value parameter).
 template<type T, usize N>
 class bounded_stack {
 public:
     usize len() { return this.items.len(); }
     usize capacity() { return N; }
 
-    /// `false` when full: the item is dropped.
+    // `false` when full: the item is dropped.
     bool push(T item) mut {
         if (this.items.len() == N) { return false; }
         this.items.push(move item);
@@ -30,7 +30,7 @@ public:
 
     std::option<T> pop() mut { return this.items.pop(); }
 
-    /// A method template: `F` is deduced from the lambda the caller passes.
+    // A method template: `F` is deduced from the lambda the caller passes.
     template<type F>
     usize count_if(F test) {
         mut usize n = 0;
@@ -46,7 +46,7 @@ private:
     std::darray<T> items = default;
 }
 
-/// A generic enum.
+// A generic enum.
 template<type L, type R>
 enum either : u8 {
     left(L),
@@ -61,7 +61,7 @@ std::string show_either(either<L, R>& e) {
     };
 }
 
-/// Compile-time selection inside a template body.
+// Compile-time selection inside a template body.
 template<type T>
 std::static_str category() {
     if compile_time (std::is_integer<T>()) {

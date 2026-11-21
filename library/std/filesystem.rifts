@@ -24,6 +24,26 @@ namespace std::filesystem {
             return path::from("");
         }
 
+        std::str file_name() {
+            std::str text = this.text;
+            mut usize at = text.len();
+            while (at > 0) {
+                if (text.slice(at - 1, at) == "/") { return text.slice(at, text.len()); }
+                at -= 1;
+            }
+            return text;
+        }
+
+        std::str extension() {
+            std::str name = this.file_name();
+            mut usize at = name.len();
+            while (at > 1) {
+                at -= 1;
+                if (name.slice(at, at + 1) == ".") { return name.slice(at + 1, name.len()); }
+            }
+            return "";
+        }
+
     private:
         std::string text = default;
     }
@@ -41,6 +61,7 @@ namespace std::filesystem {
     }
 
     std::result<void, std::io_error> create_directories(path& dir) {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
         std::str text = dir.as_str();
         mut std::string name = default;
         mut usize i = 0;
@@ -74,6 +95,7 @@ namespace std::filesystem {
     private extern(std::build::language::c) isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
 
     path executable_dir() {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
         mut std::raw_ptr<mut u8> buffer = nullptr;
         mut isize n = 0;
         unsafe {

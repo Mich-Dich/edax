@@ -1,5 +1,5 @@
 exit: 1
 --- stdout
 --- stderr
-tests/action/build/unsafe_mode_project/build.rifts:4:7: error[E4215]: the mode 'reckless' turns off bounds checks but does not allow undefined behaviour
-tests/action/build/unsafe_mode_project/build.rifts:4:7: note: override 'bool allow_undefined_behavior() override { return true; }' to say so (spec 24)
+tests/action/build/unsafe_mode_project/build.rifts:5:11: error[E4215]: the mode 'reckless' turns off bounds checks but does not allow undefined behaviour
+tests/action/build/unsafe_mode_project/build.rifts:5:11: note: override 'compile_time bool allow_undefined_behavior() override { return true; }' to say so

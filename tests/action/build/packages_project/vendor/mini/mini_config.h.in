@@ -1,0 +1,3 @@
+#define MINI_SCALE @MINI_SCALE@
+#cmakedefine MINI_HAVE_STDINT 1
+#cmakedefine01 MINI_WITH_EXTRA

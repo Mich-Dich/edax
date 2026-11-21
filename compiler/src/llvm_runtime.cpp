@@ -15,7 +15,7 @@
 namespace rift {
 namespace {
 
-/// A NUL-terminated private constant `@name` holding `text`.
+// A NUL-terminated private constant `@name` holding `text`.
 std::string cstring_global(const std::string& name, const std::string& text) {
     std::string out = "@" + name + " = private constant [" + std::to_string(text.size() + 1) + " x i8] c\"";
     for (char c : text) {
@@ -32,7 +32,7 @@ std::string cstring_global(const std::string& name, const std::string& text) {
     return out + "\\00\"\n";
 }
 
-/// A constant of exactly `text.size()` bytes (no terminator), for lengths passed explicitly.
+// A constant of exactly `text.size()` bytes (no terminator), for lengths passed explicitly.
 std::string bytes_global(const std::string& name, const std::string& text) {
     std::string out = "@" + name + " = private constant [" + std::to_string(text.size()) + " x i8] c\"";
     for (char c : text) {
@@ -531,6 +531,20 @@ entry:
   ret void
 }
 
+; The same with a longest wait of %ns nanoseconds (a relative timeout).
+define internal void @rift_futex_wait_for(ptr %p, i32 %expected, i64 %ns) {
+entry:
+  %ts = alloca { i64, i64 }, align 8
+  %sec = udiv i64 %ns, 1000000000
+  %rest = urem i64 %ns, 1000000000
+  %sp = getelementptr inbounds { i64, i64 }, ptr %ts, i32 0, i32 0
+  store i64 %sec, ptr %sp
+  %np = getelementptr inbounds { i64, i64 }, ptr %ts, i32 0, i32 1
+  store i64 %rest, ptr %np
+  %r = call i64 (i64, ...) @syscall(i64 @@SYS_FUTEX@@, ptr %p, i32 128, i32 %expected, ptr %ts, ptr null, i32 0)
+  ret void
+}
+
 define internal void @rift_futex_wake(ptr %p, i32 %count) {
 entry:
   %r = call i64 (i64, ...) @syscall(i64 @@SYS_FUTEX@@, ptr %p, i32 129, i32 %count, ptr null, ptr null, i32 0)
@@ -600,8 +614,7 @@ entry:
   %has_hook = icmp ne ptr %hook, null
   br i1 %has_hook, label %run_hook, label %print
 run_hook:
-  %line_len = sub i64 %blen, 1
-  call void %hook(ptr %data, i64 %line_len)
+  call void %hook(ptr %safe, i64 %slen, ptr %loc)
   %out2 = load ptr, ptr @stdout
   call i32 @fflush(ptr %out2)
   br label %print
@@ -615,7 +628,8 @@ print:
 
 @rift_panic_hook = internal global ptr null
 
-; Sets the function a panic calls before printing its message (std::log, spec 31).
+; Sets the function a panic calls before printing its message: (message, length, location), see
+; std::set_panic_hook.
 define void @rift_set_panic_hook(ptr %hook) {
 entry:
   store atomic ptr %hook, ptr @rift_panic_hook seq_cst, align 8

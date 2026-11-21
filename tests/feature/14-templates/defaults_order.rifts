@@ -1,0 +1,3 @@
+// feature 14: parameters with defaults come last.
+template<type T = u32, type U>     //~ error[E2001]: a parameter without a default after one with a default
+struct bad { T a; U b; }

@@ -1,7 +1,7 @@
 import std;
 import core::util;
 extern(std::build::language::c) u32 triple(u32 x);
-compile_time bool verbose = std::build::setting<bool>("verbose");
+compile_time bool verbose = build::verbose.value();
 i32 main() {
     u32 big = 4000000000;
     if compile_time (verbose) { std::println("verbose"); }

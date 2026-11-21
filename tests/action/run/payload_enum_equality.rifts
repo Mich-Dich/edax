@@ -1,0 +1,29 @@
+// RUN: riftc run %s
+// A defaulted operator== compares enum fields with payloads: same alternative, equal payload.
+import std;
+enum trigger : u8 { key(u8), button(u8), none }
+struct chord {
+    trigger t;
+    bool shift = false;
+    bool operator==(chord& other) = default;
+}
+template<type A>
+struct entry { chord c; A action; }
+
+template<type A>
+bool contains(std::darray<entry<A>>& list, chord c) {
+    for (entry<A>& e : list) {
+        if (e.c == c) { return true; }       // in a template body: checked per instance
+    }
+    return false;
+}
+
+std::exit_code main() {
+    chord a = chord{ .t = trigger::key(1) };
+    std::println(f"{a == chord{ .t = trigger::key(1) }} {a == chord{ .t = trigger::key(2) }} {a == chord{ .t = trigger::button(1) }}");
+    std::println(f"{chord{ .t = trigger::none } == chord{ .t = trigger::none }} {a == chord{ .t = trigger::key(1), .shift = true }}");
+    mut std::darray<entry<u32>> list = default;
+    list.push(entry<u32>{ .c = a, .action = 5 });
+    std::println(f"{contains(list, a)} {contains(list, chord{ .t = trigger::none })}");
+    return std::exit_code::success;
+}

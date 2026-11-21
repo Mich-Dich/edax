@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/x-edax-source">
+    <comment>Edax source file</comment>
+    <sub-class-of type="text/plain"/>
+    <icon name="text-x-edax-source"/>
+    <glob pattern="*.eds" weight="60"/>
+  </mime-type>
+  <mime-type type="text/x-edax-header">
+    <comment>Edax header file</comment>
+    <sub-class-of type="text/plain"/>
+    <icon name="text-x-edax-header"/>
+    <glob pattern="*.edh" weight="60"/>
+  </mime-type>
+</mime-info>

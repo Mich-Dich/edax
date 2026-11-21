@@ -1,0 +1,14 @@
+// The interface the program and its plugins share.
+import std;
+
+namespace api {
+    interface greeter {
+        std::string greet(std::str who);
+        u32 calls() mut;
+    }
+
+    // Another interface: a plugin built against it is incompatible with api::greeter.
+    interface counter {
+        u32 count() mut;
+    }
+}

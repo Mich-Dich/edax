@@ -14,11 +14,11 @@
 
 namespace rift {
 
-/// Parses a whole file. `tokens` must end with eof (as produced by tokenize()).
+// Parses a whole file. `tokens` must end with eof (as produced by tokenize()).
 ast::File parse(const SourceFile& file, FileId id, const std::vector<Token>& tokens,
                 DiagnosticEngine& diags);
 
-/// Parses a single expression (unit tests). Reports an error if tokens remain.
+// Parses a single expression (unit tests). Reports an error if tokens remain.
 ast::ExprPtr parse_expression(const SourceFile& file, FileId id, const std::vector<Token>& tokens,
                               DiagnosticEngine& diags);
 

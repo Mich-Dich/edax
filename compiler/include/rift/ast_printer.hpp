@@ -13,14 +13,14 @@
 
 namespace rift::ast {
 
-/// `with_types` appends each expression's type (after type checking): `(int 1 : u32)`.
+// `with_types` appends each expression's type (after type checking): `(int 1 : u32)`.
 void print(std::ostream& out, const File& file, bool with_types = false);
 
-/// Source-like spelling of a type: `std::darray<employee>`, `mut u32&`.
+// Source-like spelling of a type: `std::darray<employee>`, `mut u32&`.
 std::string to_string(const TypeExpr& type);
 std::string to_string(const Path& path);
 
-/// One expression as a single-line S-expression (used in tests).
+// One expression as a single-line S-expression (used in tests).
 std::string to_sexpr(const Expr& expr);
 
 } // namespace rift::ast

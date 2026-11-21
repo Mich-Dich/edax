@@ -14,7 +14,7 @@ namespace rift {
 
 using FileId = std::uint32_t;
 
-/// Half-open byte range [begin, end) inside one file.
+// Half-open byte range [begin, end) inside one file.
 struct Span {
     FileId        file  = 0;
     std::uint32_t begin = 0;
@@ -23,8 +23,8 @@ struct Span {
     [[nodiscard]] std::uint32_t size() const { return end - begin; }
 };
 
-/// 1-based line and column. Columns count Unicode code points, not bytes, so a caret under
-/// `"é"` lines up in a terminal.
+// 1-based line and column. Columns count Unicode code points, not bytes, so a caret under
+// `"é"` lines up in a terminal.
 struct LineCol {
     std::uint32_t line   = 1;
     std::uint32_t column = 1;
@@ -39,9 +39,9 @@ public:
 
     [[nodiscard]] LineCol         line_col(std::uint32_t offset) const;
     [[nodiscard]] std::uint32_t   line_count() const;
-    /// Text of a 1-based line, without the trailing newline.
+    // Text of a 1-based line, without the trailing newline.
     [[nodiscard]] std::string_view line_text(std::uint32_t line) const;
-    /// Byte offset where a 1-based line starts.
+    // Byte offset where a 1-based line starts.
     [[nodiscard]] std::uint32_t   line_start(std::uint32_t line) const;
 
 private:
@@ -52,10 +52,10 @@ private:
 
 class SourceManager {
 public:
-    /// Registers in-memory text (used by unit tests and by `load`).
+    // Registers in-memory text (used by unit tests and by `load`).
     FileId add(std::string path, std::string text);
 
-    /// Reads a file from disk. On failure returns nullopt and puts a reason into `error`.
+    // Reads a file from disk. On failure returns nullopt and puts a reason into `error`.
     std::optional<FileId> load(const std::string& path, std::string& error);
 
     [[nodiscard]] const SourceFile& file(FileId id) const { return files_.at(id); }
@@ -65,14 +65,14 @@ private:
     std::vector<SourceFile> files_;
 };
 
-/// Number of code points in `text` (invalid bytes count as one each).
+// Number of code points in `text` (invalid bytes count as one each).
 std::uint32_t count_code_points(std::string_view text);
 
-/// Decodes one UTF-8 sequence starting at `pos`. Returns its length in bytes (1-4), or 0 if the
-/// bytes are not valid UTF-8 (overlong forms, surrogates and values above U+10FFFF are invalid).
+// Decodes one UTF-8 sequence starting at `pos`. Returns its length in bytes (1-4), or 0 if the
+// bytes are not valid UTF-8 (overlong forms, surrogates and values above U+10FFFF are invalid).
 std::size_t decode_utf8(std::string_view text, std::size_t pos, char32_t& out);
 
-/// Appends the UTF-8 encoding of `cp` to `out`.
+// Appends the UTF-8 encoding of `cp` to `out`.
 void encode_utf8(char32_t cp, std::string& out);
 
 } // namespace rift

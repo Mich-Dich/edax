@@ -1,0 +1,127 @@
+// windowing/engine/vk (see vk.rifth).
+
+import std;
+
+namespace engine::vk {
+    namespace wnd = std::windowing;
+
+    // VkInstanceCreateInfo.
+    private struct instance_create_info {
+        u32                            structure_type = 1;     // VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+        std::raw_ptr<u8>               next = nullptr;
+        u32                            flags = 0;
+        std::raw_ptr<u8>               application_info = nullptr;
+        u32                            layer_count = 0;
+        std::raw_ptr<u8>               layer_names = nullptr;
+        u32                            extension_count = 0;
+        std::raw_ptr<std::raw_ptr<u8>> extension_names = nullptr;
+    }
+
+    private std::result<instance_functions, std::static_str> load(std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> get, u64 instance) {
+        unsafe {
+            std::raw_ptr<mut instance_functions> block = std::raw::allocate<instance_functions>(1);
+            std::raw_ptr<mut u8> base = cast::reinterpret<std::raw_ptr<mut u8>>(block);
+            for compile_time (std::meta::field field : std::meta::fields<instance_functions>()) {
+                compile_time type field_type = field.type;
+                std::string name = std::format(f"{field.name}\0");
+                std::raw_ptr<u8> address = get(instance, name.as_str().as_ptr());
+                if (!address) {
+                    std::raw::free(block);
+                    return std::error(field.name);
+                }
+                std::raw::write(cast::reinterpret<std::raw_ptr<mut field_type>>(base.offset(field.offset)),
+                                cast::reinterpret<field_type>(address));
+            }
+            instance_functions table = std::raw::read(block);
+            std::raw::free(block);
+            return std::ok(table);
+        }
+    }
+
+    class instance {
+    public:
+        u64 handle() { return this.raw; }
+        instance_functions& functions() { return this.f; }
+        ~instance() {
+            unsafe { this.f.vkDestroyInstance(this.raw, nullptr); }
+        }
+    private:
+        u64                raw;
+        instance_functions f;
+    }
+
+    class surface_view {
+    public:
+        static std::result<surface_view, std::string> open(mut wnd::system& sys) {
+            wnd::vulkan::loader loader = sys.vulkan().map_error([](wnd::error e) { return std::format(f"no Vulkan: {e}"); })?;
+            mut wnd::vulkan_window win = sys.create_vulkan_window(wnd::window::config{
+                .title = "Vulkan surface",
+                .size  = wnd::size{ .width = 480, .height = 320 },
+            }).map_error([](wnd::error e) { return std::format(f"no Vulkan window: {e}"); })?;
+
+            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> get = loader.instance_proc_address();
+            std::array<std::raw_ptr<u8>, 2> extensions = loader.required_extensions();
+            mut u64 handle = 0;
+            unsafe {
+                std::raw_ptr<u8> create = get(0, c"vkCreateInstance");
+                instance_create_info info = instance_create_info{
+                    .extension_count = 2,
+                    .extension_names = cast::reinterpret<std::raw_ptr<std::raw_ptr<u8>>>(&extensions),
+                };
+                i32 created = cast::reinterpret<std::fn_ptr<i32(std::raw_ptr<instance_create_info>, std::raw_ptr<u8>, std::raw_ptr<mut u64>)>>(create)(
+                    &info, nullptr, mut &handle);
+                if (created != 0) {
+                    return std::error(std::format(f"vkCreateInstance failed: {created}"));
+                }
+            }
+            instance_functions f = match (load(get, handle)) {
+                std::ok(table)   => table,
+                std::error(name) => return std::error(std::format(f"the Vulkan driver has no {name}")),
+            };
+            instance vk = instance{ .raw = handle, .f = f };     // from here on, destroyed with `vk`
+
+            mut u64 device = 0;
+            unsafe {
+                _ = win.create_surface(handle).map_error([](i32 r) { return std::format(f"vkCreateXlibSurfaceKHR failed: {r}"); })?;
+                mut u32 count = 0;
+                _ = f.vkEnumeratePhysicalDevices(handle, mut &count, nullptr);
+                mut std::raw::array<u64, 8> devices = default;
+                if (count > 8) {
+                    count = 8;
+                }
+                _ = f.vkEnumeratePhysicalDevices(handle, mut &count, cast::reinterpret<std::raw_ptr<mut u64>>(mut &devices));
+                std::raw_ptr<u64> list = cast::reinterpret<std::raw_ptr<u64>>(&devices);
+                for (usize i : 0..cast<usize>(count)) {
+                    u64 candidate = *list.offset(i);
+                    if (win.presentation_support(handle, candidate, 0)) {
+                        device = candidate;
+                        break;
+                    }
+                }
+            }
+            if (device == 0) {
+                return std::error(std::string::from("no Vulkan device can present to the window"));
+            }
+            mut surface_view made = surface_view{ .loader = move loader, .vk = move vk, .win = move win, .device = device };
+            extent size = made.current_extent();
+            made.win.set_title(std::format(f"Vulkan surface {size.width}x{size.height}").as_str());
+            std::log::info(f"Vulkan: instance, surface and a device that presents to it ({size.width}x{size.height})");
+            return std::ok(move made);
+        }
+
+        wnd::vulkan_window& window() { return this.win; }
+        mut wnd::vulkan_window& window_mut() mut { return this.win; }
+
+        extent current_extent() {
+            mut surface_capabilities caps = default;
+            unsafe { _ = this.vk.functions().vkGetPhysicalDeviceSurfaceCapabilitiesKHR(this.device, this.win.surface(), mut &caps); }
+            return caps.current_extent;
+        }
+    private:
+        wnd::vulkan::loader loader;     // destroyed last
+        instance            vk;         // destroyed second
+        wnd::vulkan_window  win;        // destroyed first: the surface before the instance
+        u64                 device = 0;
+    }
+
+}

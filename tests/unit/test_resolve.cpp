@@ -16,7 +16,7 @@ using rift_test::Stop;
 
 std::string codes_of(const std::string& main) { return Project({{"main.rifts", main}}, Stop::resolve).codes(); }
 
-/// The body statements of the first function in the entry module's source.
+// The body statements of the first function in the entry module's source.
 ast::BlockExpr& first_body(Project& p) {
     for (ast::DeclPtr& d : p.program.entry->source->ast.decls) {
         if (d->kind == ast::DeclKind::function) return *d->as<ast::FunctionDecl>().body;

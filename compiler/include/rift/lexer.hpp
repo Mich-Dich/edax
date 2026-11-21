@@ -16,13 +16,13 @@ namespace rift {
 class Lexer {
 public:
     Lexer(const SourceFile& file, FileId id, DiagnosticEngine& diags);
-    /// Lexes only the bytes [begin, end) of the file; spans stay absolute (f-string holes).
+    // Lexes only the bytes [begin, end) of the file; spans stay absolute (f-string holes).
     Lexer(const SourceFile& file, FileId id, DiagnosticEngine& diags, std::size_t begin, std::size_t end);
 
-    /// Next token. After the end of input it keeps returning `eof`.
+    // Next token. After the end of input it keeps returning `eof`.
     Token next();
 
-    /// All tokens up to and including `eof`.
+    // All tokens up to and including `eof`.
     std::vector<Token> tokenize();
 
 private:
@@ -31,7 +31,7 @@ private:
     [[nodiscard]] Span span(std::size_t begin, std::size_t end) const;
     [[nodiscard]] Token make(TokenKind kind, std::size_t begin) const;
 
-    /// Skips whitespace and non-doc comments. Returns a doc_comment token if it meets one.
+    // Skips whitespace and non-doc comments. Returns a doc_comment token if it meets one.
     bool  skip_trivia(Token& doc_comment);
     void  skip_block_comment();
     void  check_utf8_at_cursor();
@@ -43,7 +43,7 @@ private:
     Token lex_punctuation(std::size_t begin);
     Token lex_invalid(std::size_t begin);
 
-    /// Reads one escape sequence (cursor on the backslash), appending the decoded value to `out`.
+    // Reads one escape sequence (cursor on the backslash), appending the decoded value to `out`.
     void lex_escape(std::string& out);
 
     const SourceFile& file_;
@@ -53,7 +53,7 @@ private:
     std::size_t       pos_ = 0;
 };
 
-/// Convenience: lex a whole file.
+// Convenience: lex a whole file.
 std::vector<Token> tokenize(const SourceFile& file, FileId id, DiagnosticEngine& diags);
 std::vector<Token> tokenize_range(const SourceFile& file, FileId id, DiagnosticEngine& diags, std::size_t begin,
                                   std::size_t end);

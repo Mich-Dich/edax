@@ -10,7 +10,7 @@ namespace {
 
 std::string codes(const std::string& main) { return Project({{"main.rifts", main}}).codes(); }
 
-/// Type of the initializer of the first local variable named `name` in the entry's first function.
+// Type of the initializer of the first local variable named `name` in the entry's first function.
 std::string type_of_local(const std::string& main, const std::string& name) {
     Project p({{"main.rifts", main}});
     if (p.diags.has_errors()) return "error " + p.codes();

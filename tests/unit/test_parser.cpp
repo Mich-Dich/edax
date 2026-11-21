@@ -35,7 +35,7 @@ struct Parsed {
     }
 };
 
-/// Parses one expression and returns it as a single-line S-expression.
+// Parses one expression and returns it as a single-line S-expression.
 std::string expr(std::string text) {
     SourceManager    sources;
     DiagnosticEngine diags;
@@ -48,7 +48,7 @@ std::string expr(std::string text) {
     return ast::to_sexpr(*e);
 }
 
-/// Codes reported for the body of a function.
+// Codes reported for the body of a function.
 std::string body_codes(const std::string& body) {
     return Parsed("void f() {\n" + body + "\n}\n").codes();
 }
@@ -220,7 +220,6 @@ TEST_CASE("parser: declaration errors") {
     CHECK_EQ(Parsed("struct s { public: u32 x; }").codes(), std::string("E2021"));
     CHECK_EQ(Parsed("struct s { ~s(); }").codes(), std::string("E2022"));
     CHECK_EQ(Parsed("class c { virtual void f() override; }").codes(), std::string("E2023"));
-    CHECK_EQ(Parsed("interface i { void f() { } }").codes(), std::string("E2028"));
     CHECK_EQ(Parsed("x = 1;").codes(), std::string("E2004"));
 }
 
@@ -230,7 +229,7 @@ TEST_CASE("parser: class members get their access section") {
 }
 
 TEST_CASE("parser: doc comments attach to the next declaration") {
-    Parsed p("/// first\n/// second\nvoid f();");
+    Parsed p("// first\n// second\nvoid f();");
     CHECK_EQ(p.file.decls.size(), 1u);
     CHECK_EQ(p.file.decls[0]->doc, std::string(" first\n second"));
 }

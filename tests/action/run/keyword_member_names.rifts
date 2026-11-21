@@ -1,0 +1,14 @@
+// RUN: riftc run %s
+// Keywords as field and method names (lexical).
+import std;
+struct item {
+    u32 type = 1;
+    u32 match = 2;
+    u32 default = 3;
+    u32 move() { return this.type + this.match; }
+}
+std::exit_code main() {
+    item i = item{ .type = 5, .match = 6 };
+    std::println(f"{i.type} {i.match} {i.default} {i.move()}");
+    return std::exit_code::success;
+}

@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+index: 9
+loop: 7
+loop: 9
+reference return: 7
+retain kept 1, the other one: true
+--- stderr

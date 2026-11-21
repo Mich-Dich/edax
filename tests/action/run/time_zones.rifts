@@ -1,0 +1,36 @@
+// RUN: riftc run %s
+// Time zones from the system database (time, "Time zones"): transitions, the TZ rule after the
+// last one (year 2100), the southern hemisphere, and names that are not zones.
+import std;
+std::string two(u8 n) {
+    if (n < 10) { return std::format(f"0{n}"); }
+    return std::format(f"{n}");
+}
+
+void show(std::time::civil_time c) {
+    std::println(f"{c.year}-{two(c.month)}-{two(c.day)} {two(c.hour)}:{two(c.minute)}:{two(c.second)} ({c.utc_offset_seconds})");
+}
+
+i32 main() {
+    std::time::zone oslo = std::time::zone::load("Europe/Oslo").expect("Oslo");
+    std::time::wall_time summer = std::time::wall_time{ .seconds = 1782979200 };   // 2026-07-02 08:00 UTC
+    std::time::wall_time winter = std::time::wall_time{ .seconds = 1767600000 };   // 2026-01-05 08:00 UTC
+    std::time::wall_time later = std::time::wall_time{ .seconds = 4102473600 };    // 2100-01-01 08:00 UTC (footer rule)
+    std::time::wall_time later_summer = std::time::wall_time{ .seconds = 4118112000 };
+    show(summer.in_zone(oslo));
+    show(winter.in_zone(oslo));
+    show(later.in_zone(oslo));
+    show(later_summer.in_zone(oslo));
+    std::println(f"{oslo.name()} dst summer {oslo.is_dst_at(summer)} winter {oslo.is_dst_at(winter)}");
+    std::time::zone sydney = std::time::zone::load("Australia/Sydney").expect("Sydney");
+    show(summer.in_zone(sydney));
+    show(winter.in_zone(sydney));
+    show(later_summer.in_zone(sydney));
+    std::time::zone ny = std::time::zone::load("America/New_York").expect("NY");
+    show(summer.in_zone(ny));
+    show(later.in_zone(ny));
+    show(winter.in_zone(std::time::zone::utc()));
+    std::println(f"{std::time::zone::load("Mars/Base").is_error()}");
+    std::println(f"{std::time::zone::load("../etc/passwd").is_error()}");
+    return 0;
+}

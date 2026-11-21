@@ -1,0 +1,12 @@
+// feature 07: interface methods may be compile_time; implementations must be too.
+interface settings {
+    compile_time u32 level();
+}
+class good : settings {
+public:
+    compile_time u32 level() override { return 1; }
+}
+class bad : settings {
+public:
+    u32 level() override { return 2; }     //~ error[E3051]: 'bad::level()' must be 'compile_time', like the method it implements
+}

@@ -4,17 +4,259 @@
 // source). It is written in Rift; the `std::raw` intrinsics are its only access to memory.
 
 namespace std {
-    /// Whether `a[i]` and the other index checks are compiled in: the mode's `bounds()` (spec 24).
+    // Whether `a[i]` and the other index checks are compiled in: the mode's `bounds()` (spec 24).
     private compile_time bool checks_bounds() {
         return std::build::current_mode().bounds() == std::build::bounds::panic;
     }
 
-    template<type T>
+    // --- allocators ------------------------------------------------------------------------------
+
+    // `n` values of T from `a`; panics when it is out of memory.
+    private unsafe template<type T, type A>
+    std::raw_ptr<mut T> allocate_in(mut A& a, usize n) {
+        mut usize bytes = n * std::size_of<T>();
+        if (bytes == 0) { bytes = 1; }
+        std::raw_ptr<mut u8> p = a.allocate(bytes, std::align_of<T>());
+        run_time check (p != nullptr) else "out of memory";
+        return cast::reinterpret<std::raw_ptr<mut T>>(p);
+    }
+
+    // The `old` values at `p` moved to room for `n`.
+    private unsafe template<type T, type A>
+    std::raw_ptr<mut T> reallocate_in(mut A& a, std::raw_ptr<mut T> p, usize old, usize n) {
+        mut usize old_bytes = old * std::size_of<T>();
+        if (old_bytes == 0) { old_bytes = 1; }
+        mut usize bytes = n * std::size_of<T>();
+        if (bytes == 0) { bytes = 1; }
+        std::raw_ptr<mut u8> q = a.reallocate(cast::reinterpret<std::raw_ptr<mut u8>>(p), old_bytes, bytes, std::align_of<T>());
+        run_time check (q != nullptr) else "out of memory";
+        return cast::reinterpret<std::raw_ptr<mut T>>(q);
+    }
+
+    private unsafe template<type T, type A>
+    void free_in(mut A& a, std::raw_ptr<mut T> p, usize n) {
+        mut usize bytes = n * std::size_of<T>();
+        if (bytes == 0) { bytes = 1; }
+        a.free(cast::reinterpret<std::raw_ptr<mut u8>>(p), bytes, std::align_of<T>());
+    }
+
+    interface allocator {
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut {
+            std::raw_ptr<mut u8> fresh = this.allocate(new_size, alignment);
+            if (!fresh) { return nullptr; }
+            std::raw::copy(fresh, block, if (old_size < new_size) { old_size } else { new_size });
+            this.free(block, old_size, alignment);
+            return fresh;
+        }
+    }
+
+    // The global allocator build.rifts chose (`g.set_global_allocator`), or `void` for the C
+    // library's heap.
+    private compile_time type chosen_heap = std::build::global_allocator_type();
+
+    private compile_time bool custom_heap() { return !std::is_same<chosen_heap, void>(); }
+
+    struct global_allocator {
+        std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override {
+            if compile_time (custom_heap()) {
+                mut chosen_heap h = default;
+                return h.allocate(size, alignment);
+            } else {
+                unsafe { return std::raw::allocate<u8>(size); }
+            }
+        }
+
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override {
+            if compile_time (custom_heap()) {
+                mut chosen_heap h = default;
+                h.free(block, size, alignment);
+            } else {
+                std::raw::free(block);
+            }
+        }
+
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
+            if compile_time (custom_heap()) {
+                mut chosen_heap h = default;
+                return h.reallocate(block, old_size, new_size, alignment);
+            } else {
+                return std::raw::reallocate(block, new_size);
+            }
+        }
+    }
+
+    // The blocks of std::raw::allocate when build.rifts chose a global allocator: they carry their
+    // size in a 16-byte header, so the allocator gets the sizes its interface promises. riftc
+    // calls these three instead of the C library then.
+
+    private std::raw_ptr<mut u8> raw_heap_allocate(usize bytes) {
+        if compile_time (custom_heap()) {
+            mut chosen_heap h = default;
+            std::raw_ptr<mut u8> p = h.allocate(bytes + 16, 16);
+            run_time check (p != nullptr) else "out of memory";
+            unsafe {
+                std::raw::write(cast::reinterpret<std::raw_ptr<mut usize>>(p), bytes);
+                return p.offset(16);
+            }
+        } else {
+            unsafe { return std::raw::allocate<u8>(bytes); }
+        }
+    }
+
+    private std::raw_ptr<mut u8> raw_heap_reallocate(std::raw_ptr<mut u8> block, usize bytes) {
+        if (!block) { return raw_heap_allocate(bytes); }
+        if compile_time (custom_heap()) {
+            mut chosen_heap h = default;
+            unsafe {
+                std::raw_ptr<mut u8> p = cast::reinterpret<std::raw_ptr<mut u8>>(cast::reinterpret<usize>(block) - 16);
+                usize old = std::raw::read(cast::reinterpret<std::raw_ptr<mut usize>>(p));
+                std::raw_ptr<mut u8> q = h.reallocate(p, old + 16, bytes + 16, 16);
+                run_time check (q != nullptr) else "out of memory";
+                std::raw::write(cast::reinterpret<std::raw_ptr<mut usize>>(q), bytes);
+                return q.offset(16);
+            }
+        } else {
+            unsafe { return std::raw::reallocate(block, bytes); }
+        }
+    }
+
+    private void raw_heap_free(std::raw_ptr<mut u8> block) {
+        if (!block) { return; }
+        if compile_time (custom_heap()) {
+            mut chosen_heap h = default;
+            unsafe {
+                std::raw_ptr<mut u8> p = cast::reinterpret<std::raw_ptr<mut u8>>(cast::reinterpret<usize>(block) - 16);
+                usize old = std::raw::read(cast::reinterpret<std::raw_ptr<mut usize>>(p));
+                h.free(p, old + 16, 16);
+            }
+        } else {
+            unsafe { std::raw::free(block); }
+        }
+    }
+
+    private struct arena_block {
+        std::raw_ptr<mut u8> base = nullptr;
+        usize size = 0;
+        usize used = 0;
+    }
+
+    class arena {
+    public:
+        static arena make(usize size) {
+            unsafe {
+                std::raw_ptr<mut arena_block> block = std::raw::allocate<arena_block>(1);
+                std::raw::write(block, arena_block{ .base = std::raw::allocate<u8>(size), .size = size });
+                return arena{ .block = block };
+            }
+        }
+
+        arena_allocator allocator() { return arena_allocator{ .source = this }; }
+
+        usize used() {
+            unsafe { return (*this.block).used; }
+        }
+
+        usize capacity() {
+            unsafe { return (*this.block).size; }
+        }
+
+        void reset() mut {
+            unsafe { (*this.block).used = 0; }
+        }
+
+        ~arena() {
+            unsafe {
+                std::raw::free((*this.block).base);
+                std::raw::free(this.block);
+            }
+        }
+
+    private:
+        std::raw_ptr<mut arena_block> block;
+
+        // The next `size` bytes aligned to `alignment`, or nullptr when the arena is full.
+        std::raw_ptr<mut u8> take(usize size, usize alignment) {
+            unsafe {
+                std::raw_ptr<mut arena_block> b = this.block;
+                usize address = cast::reinterpret<usize>((*b).base) + (*b).used;
+                usize padding = (alignment - address % alignment) % alignment;
+                if ((*b).used + padding + size > (*b).size) { return nullptr; }
+                std::raw_ptr<mut u8> p = (*b).base.offset((*b).used + padding);
+                (*b).used += padding + size;
+                return p;
+            }
+        }
+    }
+
+    struct arena_allocator {
+        std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override { return this.source.take(size, alignment); }
+
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override { }
+
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
+            if (new_size <= old_size) { return block; }
+            std::raw_ptr<mut u8> fresh = this.source.take(new_size, alignment);
+            if (!fresh) { return nullptr; }
+            std::raw::copy(fresh, block, old_size);
+            return fresh;
+        }
+    }
+
+    private static std::atomic<bool> heap_sealed = default;
+
+    void seal_heap() { heap_sealed.store(true, std::memory_order::release); }
+
+    bool is_heap_sealed() { return heap_sealed.load(std::memory_order::acquire); }
+
+    struct sealable_allocator {
+        std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override {
+            run_time check (!is_heap_sealed()) else "allocation after std::seal_heap()";
+            unsafe { return malloc(size); }
+        }
+
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override { free(block); }
+
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
+            run_time check (!is_heap_sealed()) else "allocation after std::seal_heap()";
+            return realloc(block, new_size);
+        }
+    }
+
+    struct no_allocator {
+        std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override {
+            std::panic(f"std::no_allocator: an allocation of {size} bytes in a program that must not use the heap");
+        }
+
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override { }
+
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
+            std::panic(f"std::no_allocator: an allocation of {new_size} bytes in a program that must not use the heap");
+        }
+    }
+
+    template<type T, type A>
     class darray {
     public:
-        static darray<T> with_capacity(usize n) {
-            mut darray<T> out = default;
+        static darray<T, A> with_capacity(usize n) {
+            mut darray<T, A> out = default;
             out.reserve(n);
+            return out;
+        }
+
+        static darray<T, A> with_allocator(A alloc) { return darray<T, A>{ .alloc = alloc }; }
+
+        static darray<T, A> with_capacity_in(usize n, A alloc) {
+            mut darray<T, A> out = darray<T, A>{ .alloc = alloc };
+            out.reserve(n);
+            return out;
+        }
+
+        static darray<T, A> from(span<T> items) {
+            mut darray<T, A> out = default;
+            out.reserve(items.len());
+            for (T& item : items) {
+                out.push(item.clone());
+            }
             return out;
         }
 
@@ -41,10 +283,10 @@ namespace std {
             }
         }
 
-        darray<T> clone() {
-            mut darray<T> out = default;
+        darray<T, A> clone() {
+            mut darray<T, A> out = darray<T, A>{ .alloc = this.alloc };
             if (this.count > 0) {
-                unsafe { out.data = std::raw::allocate<T>(this.count); }
+                unsafe { out.data = allocate_in<T, A>(mut out.alloc, this.count); }
                 out.room = this.count;
                 while (out.count < this.count) {
                     unsafe { std::raw::write(out.data.offset(out.count), (*this.data.offset(out.count)).clone()); }
@@ -95,9 +337,11 @@ namespace std {
             if (n <= this.room) { return; }
             unsafe {
                 if (this.room == 0) {
-                    this.data = std::raw::allocate<T>(n);
+                    this.data = allocate_in<T, A>(mut this.alloc, n);
                 } else {
-                    this.data = std::raw::reallocate(this.data, n);
+                    std::raw_ptr<mut T> old = this.data;
+                    usize room = this.room;
+                    this.data = reallocate_in<T, A>(mut this.alloc, old, room, n);
                 }
             }
             this.room = n;
@@ -116,10 +360,15 @@ namespace std {
             if (this.room == this.count) { return; }
             unsafe {
                 if (this.count == 0) {
-                    std::raw::free(this.data);
+                    std::raw_ptr<mut T> old = this.data;
+                    usize room = this.room;
+                    free_in<T, A>(mut this.alloc, old, room);
                     this.data = nullptr;
                 } else {
-                    this.data = std::raw::reallocate(this.data, this.count);
+                    std::raw_ptr<mut T> old = this.data;
+                    usize room = this.room;
+                    usize count = this.count;
+                    this.data = reallocate_in<T, A>(mut this.alloc, old, room, count);
                 }
             }
             this.room = this.count;
@@ -206,7 +455,9 @@ namespace std {
         ~darray() {
             this.clear();
             unsafe {
-                if (this.data) { std::raw::free(this.data); }
+                std::raw_ptr<mut T> old = this.data;
+                usize room = this.room;
+                if (old) { free_in<T, A>(mut this.alloc, old, room); }
             }
         }
 
@@ -214,8 +465,9 @@ namespace std {
         std::raw_ptr<mut T> data = nullptr;
         usize count = 0;
         usize room = 0;
+        A alloc = default;
 
-        /// Doubles the room (the slow path of push, kept out of line).
+        // Doubles the room (the slow path of push, kept out of line).
         void grow() mut {
             mut usize next = 4;
             if (this.room > 0) { next = this.room * 2; }
@@ -227,7 +479,7 @@ namespace std {
     // The algorithms work on raw memory: elements are moved bit by bit (std::raw::read/write), which is
     // what a move is in Rift. `less` is any callable taking two references.
 
-    /// Sorts `p[from..to)` by insertion: fast for short runs.
+    // Sorts `p[from..to)` by insertion: fast for short runs.
     private unsafe template<type T, type F>
     void insertion_sort(std::raw_ptr<mut T> p, usize from, usize to, F& less) {
         mut usize i = from + 1;
@@ -252,7 +504,7 @@ namespace std {
         std::raw::write(p.offset(j), move a);
     }
 
-    /// Restores the heap property below `root` in the max-heap `p[0..n)`.
+    // Restores the heap property below `root` in the max-heap `p[0..n)`.
     private unsafe template<type T, type F>
     void sift_down(std::raw_ptr<mut T> p, usize root, usize n, F& less) {
         mut usize parent = root;
@@ -281,8 +533,8 @@ namespace std {
         }
     }
 
-    /// Quicksort on `p[0..n)` with a median-of-three pivot; small runs are left for one final
-    /// insertion sort, and a run that recurses too deep is heap sorted (O(n log n) worst case).
+    // Quicksort on `p[0..n)` with a median-of-three pivot; small runs are left for one final
+    // insertion sort, and a run that recurses too deep is heap sorted (O(n log n) worst case).
     private unsafe template<type T, type F>
     void quick_sort(std::raw_ptr<mut T> p, usize n, u32 depth, F& less) {
         mut std::raw_ptr<mut T> base = p;
@@ -339,8 +591,8 @@ namespace std {
         insertion_sort(p, 0, n, less);
     }
 
-    /// Merges the sorted runs `from[lo..mid)` and `from[mid..hi)` into `to[lo..hi)`; on equal
-    /// elements the left run goes first (stable).
+    // Merges the sorted runs `from[lo..mid)` and `from[mid..hi)` into `to[lo..hi)`; on equal
+    // elements the left run goes first (stable).
     private unsafe template<type T, type F>
     void merge_runs(std::raw_ptr<mut T> from, std::raw_ptr<mut T> to, usize lo, usize mid, usize hi, F& less) {
         mut usize i = lo;
@@ -360,8 +612,8 @@ namespace std {
         if (j < hi) { std::raw::copy(to.offset(k + (mid - i)), from.offset(j), hi - j); }
     }
 
-    /// A stable bottom-up merge sort: insertion-sorted runs of 16, then merges between `p` and a
-    /// buffer of n elements.
+    // A stable bottom-up merge sort: insertion-sorted runs of 16, then merges between `p` and a
+    // buffer of n elements.
     private unsafe template<type T, type F>
     void merge_sort(std::raw_ptr<mut T> p, usize n, F less) {
         if (n < 2) { return; }
@@ -416,6 +668,14 @@ namespace std {
             unsafe { return span<T>{ .data = this.data.offset(from), .count = to - from }; }
         }
 
+        (span<T>, span<T>) split_at(usize i) move {
+            run_time check (i <= this.count) else "span split_at out of bounds";
+            unsafe {
+                return (span<T>{ .data = this.data, .count = i },
+                        span<T>{ .data = this.data.offset(i), .count = this.count - i });
+            }
+        }
+
         span_chunks<T> chunks(usize n) {
             run_time check (n > 0) else "chunks of 0 elements";
             return span_chunks<T>{ .data = this.data, .left = this.count, .size = n };
@@ -447,6 +707,32 @@ namespace std {
         span_mut<T> slice(usize from, usize to) move {
             run_time check (from <= to && to <= this.count) else "span slice out of bounds";
             unsafe { return span_mut<T>{ .data = this.data.offset(from), .count = to - from }; }
+        }
+
+        void sort() {
+            unsafe { intro_sort(this.data, this.count, [](T& a, T& b) { return a < b; }); }
+        }
+
+        template<type F>
+        void sort_by(F less) {
+            unsafe { intro_sort(this.data, this.count, less); }
+        }
+
+        template<type F>
+        void sort_by_key(std::sort_order order, F key) {
+            if (order == std::sort_order::ascending) {
+                unsafe { merge_sort(this.data, this.count, [&key](T& a, T& b) { return key(a) < key(b); }); }
+            } else {
+                unsafe { merge_sort(this.data, this.count, [&key](T& a, T& b) { return key(b) < key(a); }); }
+            }
+        }
+
+        (span_mut<T>, span_mut<T>) split_at(usize i) move {
+            run_time check (i <= this.count) else "span split_at out of bounds";
+            unsafe {
+                return (span_mut<T>{ .data = this.data, .count = i },
+                        span_mut<T>{ .data = this.data.offset(i), .count = this.count - i });
+            }
         }
 
         span_mut_chunks<T> chunks(usize n) move {
@@ -608,7 +894,7 @@ namespace std {
         }
 
     private:
-        /// Moves the text to a heap buffer of exactly `next` bytes (more than the capacity now).
+        // Moves the text to a heap buffer of exactly `next` bytes (more than the capacity now).
         void grow_to(usize next) mut {
             usize len = this.len();
             unsafe {
@@ -660,6 +946,59 @@ namespace std {
                 this.set_word(2, low | (cast<u64>(n) << 56));
             }
         }
+    }
+
+    // --- the panic hook (error handling) -------------------------------------------------------
+
+    private extern(std::build::language::c) {
+        void rift_set_panic_hook(std::fn_ptr<void(std::raw_ptr<u8>, u64, std::raw_ptr<u8>)> hook);
+        usize strlen(std::raw_ptr<u8> text);
+        u64 pthread_self();
+        i32 pthread_getname_np(u64 thread, std::raw_ptr<mut u8> name, usize length);
+    }
+
+    // The runtime's source location of a panic: the file (a C string in static data), line, column.
+    private struct panic_location {
+        std::raw_ptr<u8> file;
+        u32              line;
+        u32              column;
+    }
+
+    private static mut std::option<std::fn_ptr<void(std::panic_info&)>> panic_hook = std::none;
+
+    std::option<std::fn_ptr<void(std::panic_info&)>> set_panic_hook(std::fn_ptr<void(std::panic_info&)> hook) {
+        mut std::option<std::fn_ptr<void(std::panic_info&)>> previous = std::none;
+        unsafe {
+            previous   = panic_hook;
+            panic_hook = std::some(hook);
+            rift_set_panic_hook([](std::raw_ptr<u8> text, u64 length, std::raw_ptr<u8> at) {
+                std::raw_ptr<std::panic_location> where = cast::reinterpret<std::raw_ptr<std::panic_location>>(at);
+                std::static_str file = std::raw::static_str_from((*where).file, strlen((*where).file));
+                mut usize name_start = 0;
+                for (usize i : 0..file.len()) {
+                    if (file.slice(i, i + 1) == "/") { name_start = i + 1; }
+                }
+                std::array<u8, 32> name = default;
+                std::raw_ptr<mut u8> name_bytes = cast::reinterpret<std::raw_ptr<mut u8>>(&name);
+                mut usize name_length = 0;
+                if (pthread_getname_np(pthread_self(), name_bytes, 32) == 0) { name_length = strlen(cast::reinterpret<std::raw_ptr<u8>>(name_bytes)); }
+                std::panic_info info = std::panic_info{
+                    .message     = std::raw::str_from(text, cast::truncate<usize>(length)),
+                    .where       = std::call_site{
+                        .file      = file,
+                        .file_name = std::raw::static_str_from(file.as_ptr().offset(name_start), file.len() - name_start),
+                        .line      = (*where).line,
+                        .column    = (*where).column,
+                    },
+                    .thread_name = std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(name_bytes), name_length),
+                };
+                match (panic_hook) {
+                    std::some(h) => h(info),
+                    std::none    => { },
+                }
+            });
+        }
+        return previous;
     }
 
     private extern(std::build::language::c) i32 memcmp(std::raw_ptr<u8> a, std::raw_ptr<u8> b, usize n);
@@ -734,12 +1073,17 @@ namespace std {
 
     private extern(std::build::language::c) f64 strtod(std::raw_ptr<u8> text, std::raw_ptr<mut std::raw_ptr<u8>> end);
 
-    /// `text.parse<T>()`: the number the whole text spells, or `none`. Integers are decimal with an
-    /// optional sign; floats are what C's strtod reads, without leading spaces.
+    // `text.parse<T>()`: the number the whole text spells, or `none`. Integers are decimal with an
+    // optional sign; floats are what C's strtod reads, without leading spaces; a bool is exactly
+    // `true` or `false`.
     template<type T>
     private std::option<T> str_parse(std::str text) {
         if (text.is_empty()) { return std::none; }
-        if compile_time (std::is_integer<T>()) {
+        if compile_time (std::is_same<T, bool>()) {
+            if (text == "true") { return std::some(true); }
+            if (text == "false") { return std::some(false); }
+            return std::none;
+        } else if compile_time (std::is_integer<T>()) {
             mut usize i = 0;
             mut bool negative = false;
             u8 first = byte_at(text, 0);
@@ -802,18 +1146,64 @@ namespace std {
 
     // --- files ------------------------------------------------------------------------------------
 
-    /// The C library functions behind std::file.
+    // The C library functions behind std::file.
     private extern(std::build::language::c) {
         std::raw_ptr<mut u8> fopen(std::raw_ptr<u8> path, std::raw_ptr<u8> mode);
         i32 fclose(std::raw_ptr<mut u8> stream);
         i32 fflush(std::raw_ptr<mut u8> stream);
         usize fwrite(std::raw_ptr<u8> data, usize size, usize count, std::raw_ptr<mut u8> stream);
         isize getline(std::raw_ptr<mut std::raw_ptr<mut u8>> line, std::raw_ptr<mut usize> capacity, std::raw_ptr<mut u8> stream);
+        usize fread(std::raw_ptr<mut u8> data, usize size, usize count, std::raw_ptr<mut u8> stream);
+        i32 ferror(std::raw_ptr<mut u8> stream);
         std::raw_ptr<mut i32> __errno_location();
         void free(std::raw_ptr<mut u8> p);
+        std::raw_ptr<mut u8> malloc(usize size);
+        std::raw_ptr<mut u8> realloc(std::raw_ptr<mut u8> p, usize size);
     }
 
-    /// The io_error for C's `errno`.
+    // Whether `b` is well-formed UTF-8 (no overlong forms, surrogates or values above 0x10FFFF).
+    private bool valid_utf8(std::darray<u8>& b) {
+        mut usize i = 0;
+        usize n = b.len();
+        while (i < n) {
+            u8 c = b[i];
+            if (c < 0x80) {
+                i += 1;
+                continue;
+            }
+            mut usize extra = 0;
+            mut u32 value = 0;
+            mut u32 least = 0;
+            if (c >= 0xC2 && c <= 0xDF) {
+                extra = 1;
+                value = cast<u32>(c & 0x1F);
+                least = 0x80;
+            } else if (c >= 0xE0 && c <= 0xEF) {
+                extra = 2;
+                value = cast<u32>(c & 0x0F);
+                least = 0x800;
+            } else if (c >= 0xF0 && c <= 0xF4) {
+                extra = 3;
+                value = cast<u32>(c & 0x07);
+                least = 0x10000;
+            } else {
+                return false;
+            }
+            if (i + extra >= n) { return false; }
+            mut usize k = 1;
+            while (k <= extra) {
+                u8 next = b[i + k];
+                if ((next & 0xC0) != 0x80) { return false; }
+                value = (value << 6) | cast<u32>(next & 0x3F);
+                k += 1;
+            }
+            if (value < least || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) { return false; }
+            i += extra + 1;
+        }
+        return true;
+    }
+
+    // The io_error for C's `errno`.
     private io_error last_error() {
         mut i32 code = 0;
         unsafe { code = *__errno_location(); }
@@ -826,7 +1216,7 @@ namespace std {
         };
     }
 
-    /// Opens `path` with the C mode `mode` (c"r", c"w").
+    // Opens `path` with the C mode `mode` (c"r", c"w").
     private std::result<file, io_error> open_with(std::filesystem::path& path, std::raw_ptr<u8> mode) {
         mut std::string name = std::string::from(path.as_str());
         name.push('\0');
@@ -837,20 +1227,30 @@ namespace std {
         return std::ok(file{ .handle = handle });
     }
 
-    /// A path that is relative without saying so: not `/...`, `./...` or `../...` (spec 19).
+    // A path that is relative without saying so: not `/...`, `./...` or `../...` (spec 19).
     private compile_time run_time bool is_plain_relative(std::str path) {
         return !path.starts_with("/") && !path.starts_with("./") && !path.starts_with("../");
     }
 
     class file {
     public:
-        static std::result<file, io_error> open(std::filesystem::path& path) { return open_with(path, c"r"); }
+        static std::result<file, io_error> open(std::filesystem::path& path) {
+            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+            return open_with(path, c"r");
+        }
 
-        static std::result<file, io_error> create(std::filesystem::path& path) { return open_with(path, c"w"); }
+        static std::result<file, io_error> create(std::filesystem::path& path) {
+            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+            return open_with(path, c"w");
+        }
 
-        static std::result<file, io_error> append(std::filesystem::path& path) { return open_with(path, c"a"); }
+        static std::result<file, io_error> append(std::filesystem::path& path) {
+            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+            return open_with(path, c"a");
+        }
 
         static std::result<file, io_error> open(std::str path) {
+            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
             compile_time check {
                 if (std::is_compile_time(path)) {
                     if (is_plain_relative(path)) {
@@ -864,6 +1264,7 @@ namespace std {
         }
 
         static std::result<file, io_error> create(std::str path) {
+            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
             compile_time check {
                 if (std::is_compile_time(path)) {
                     if (is_plain_relative(path)) {
@@ -877,6 +1278,29 @@ namespace std {
         }
 
         file_lines lines() mut { return file_lines{ .handle = this.handle }; }
+
+        std::result<std::string, io_error> read_all() mut {
+            mut std::darray<u8> bytes = default;
+            mut std::raw::array<u8, 8192> chunk = default;
+            unsafe {
+                std::raw_ptr<mut u8> buffer = cast::reinterpret<std::raw_ptr<mut u8>>(mut &chunk);
+                while (true) {
+                    usize n = fread(buffer, 1, 8192, this.handle);
+                    mut usize i = 0;
+                    while (i < n) {
+                        bytes.push(*buffer.offset(i));
+                        i += 1;
+                    }
+                    if (n < 8192) { break; }
+                }
+                if (ferror(this.handle) != 0) { return std::error(last_error()); }
+            }
+            if (!valid_utf8(bytes)) { return std::error(io_error::invalid_data); }
+            unsafe {
+                if (bytes.is_empty()) { return std::ok(std::string{}); }
+                return std::ok(std::string::from(std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&bytes[0]), bytes.len())));
+            }
+        }
 
         std::result<usize, io_error> write(std::str text) mut {
             mut usize written = 0;
@@ -928,16 +1352,141 @@ namespace std {
 
     // --- smart pointers ---------------------------------------------------------------------------
 
-    template<type T>
+    // --- C libraries loaded at run time -------------------------------------------------------
+
+    private extern(std::build::language::c) {
+        std::raw_ptr<mut u8> dlopen(std::raw_ptr<u8> name, i32 flags);
+        std::raw_ptr<u8> dlsym(std::raw_ptr<mut u8> handle, std::raw_ptr<u8> symbol);
+        i32 dlclose(std::raw_ptr<mut u8> handle);
+    }
+
+    // --- Rift plugins ----------------------------------------------------------------------------
+    // A plugin exports `rift_plugin_entry`, which riftc generates for its @std::plugin_entry class:
+    // it returns the plugin's descriptor. `create` makes the object with T::make() and writes it,
+    // as a `std::raw_ptr<mut I>` (the object and its interface table), to `out`.
+
+    private compile_time u64 plugin_magic = 0x5249465450474C31;   // "RIFTPGL1"
+
+    private struct plugin_descriptor {
+        u64                                     magic;
+        u64                                     interface_hash;
+        std::raw_ptr<u8>                        compiler;   // the riftc version, NUL-terminated
+        std::fn_ptr<void(std::raw_ptr<mut u8>)> create;
+    }
+
+    template<type I>
+    class plugin {
+    public:
+        static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path) {
+            compile_time check (std::build::target_has(std::build::capability::dynamic_libraries))
+                else "std::plugin needs a target with dynamic libraries";
+            mut std::string c_name = std::string::from(path.as_str());
+            c_name.push('\0');
+            std::str text = c_name;
+            unsafe {
+                std::raw_ptr<mut u8> handle = dlopen(text.as_ptr(), 2);   // RTLD_NOW
+                if (!handle) { return std::error(plugin_error::not_found); }
+                std::raw_ptr<u8> entry = dlsym(handle, c"rift_plugin_entry");
+                if (!entry) {
+                    _ = dlclose(handle);
+                    return std::error(plugin_error::not_a_plugin);
+                }
+                std::fn_ptr<std::raw_ptr<plugin_descriptor>()> describe = cast::reinterpret<std::fn_ptr<std::raw_ptr<plugin_descriptor>()>>(entry);
+                std::raw_ptr<plugin_descriptor> d = describe();
+                if (!d || (*d).magic != plugin_magic) {
+                    _ = dlclose(handle);
+                    return std::error(plugin_error::not_a_plugin);
+                }
+                compile_time std::static_str ours = std::meta::compiler_version();
+                std::str theirs = std::raw::str_from((*d).compiler, strlen((*d).compiler));
+                if ((*d).interface_hash != std::meta::interface_hash<I>() || theirs != ours) {
+                    _ = dlclose(handle);
+                    return std::error(plugin_error::incompatible);
+                }
+                mut std::raw::array<u64, 2> slot = default;
+                (*d).create(cast::reinterpret<std::raw_ptr<mut u8>>(mut &slot));
+                std::raw_ptr<mut I> object = std::raw::read(cast::reinterpret<std::raw_ptr<mut std::raw_ptr<mut I>>>(mut &slot));
+                return std::ok(plugin<I>{ .handle = handle, .object = object });
+            }
+        }
+
+        I& operator*() {
+            unsafe { return *this.object; }
+        }
+
+        mut I& operator*() mut {
+            unsafe { return *this.object; }
+        }
+
+        ~plugin() {
+            unsafe {
+                std::raw::drop(this.object);
+                std::raw::free(this.object);
+                _ = dlclose(this.handle);
+            }
+        }
+
+    private:
+        std::raw_ptr<mut u8> handle;
+        std::raw_ptr<mut I>  object;
+    }
+
+    struct cpp_exception {
+        std::str what() { return this.message; }
+    }
+
+    class c_library {
+    public:
+        static std::result<c_library, c_library_error> load(std::str name) {
+            compile_time check (std::build::target_has(std::build::capability::dynamic_libraries))
+                else "std::c_library needs a target with dynamic libraries";
+            mut std::string c_name = std::string::from(name);
+            c_name.push('\0');
+            std::str text = c_name;
+            mut std::raw_ptr<mut u8> handle = nullptr;
+            unsafe { handle = dlopen(text.as_ptr(), 2); }   // RTLD_NOW
+            if (!handle) { return std::error(c_library_error::not_found); }
+            return std::ok(c_library{ .handle = handle });
+        }
+
+        template<type F>
+        std::result<F, c_library_error> function(std::raw_ptr<u8> symbol) {
+            unsafe {
+                std::raw_ptr<u8> address = dlsym(this.handle, symbol);
+                if (!address) { return std::error(c_library_error::symbol_not_found); }
+                return std::ok(cast::reinterpret<F>(address));
+            }
+        }
+
+        ~c_library() {
+            unsafe { _ = dlclose(this.handle); }
+        }
+
+    private:
+        std::raw_ptr<mut u8> handle;
+    }
+
+    template<type T, type A>
     class unique_ptr {
     public:
-        static unique_ptr<T> make(T value) {
+        static unique_ptr<T, A> make(T value) {
+            mut A alloc = default;
             mut std::raw_ptr<mut T> p = nullptr;
             unsafe {
-                p = std::raw::allocate<T>(1);
+                p = allocate_in<T, A>(mut alloc, 1);
                 std::raw::write(p, move value);
             }
-            return unique_ptr<T>{ .target = p };
+            return unique_ptr<T, A>{ .target = p, .alloc = alloc };
+        }
+
+        static unique_ptr<T, A> make_in(T value, A alloc) {
+            mut A from = alloc;
+            mut std::raw_ptr<mut T> p = nullptr;
+            unsafe {
+                p = allocate_in<T, A>(mut from, 1);
+                std::raw::write(p, move value);
+            }
+            return unique_ptr<T, A>{ .target = p, .alloc = from };
         }
 
         T& operator*() {
@@ -950,13 +1499,15 @@ namespace std {
 
         ~unique_ptr() {
             unsafe {
-                std::raw::drop(this.target);
-                std::raw::free(this.target);
+                std::raw_ptr<mut T> target = this.target;
+                std::raw::drop(target);
+                free_in<T, A>(mut this.alloc, target, 1);
             }
         }
 
     private:
         std::raw_ptr<mut T> target;
+        A alloc = default;
     }
 
     template<type T>
@@ -1012,7 +1563,7 @@ namespace std {
         std::raw_ptr<mut shared_counts> counts;
     }
 
-    /// Gives up one share of the weak count; the last one frees the counts.
+    // Gives up one share of the weak count; the last one frees the counts.
     private unsafe void release_counts(std::raw_ptr<mut shared_counts> counts) {
         if (counts->weak.fetch_wrapping_sub(1, std::memory_order::release) == 1) {
             std::atomic_fence(std::memory_order::acquire);
@@ -1136,18 +1687,18 @@ namespace std {
 
     // --- hashing and maps --------------------------------------------------------------------------
 
-    /// Folds a 128-bit product into 64 bits: the core of fast hashes like wyhash.
+    // Folds a 128-bit product into 64 bits: the core of fast hashes like wyhash.
     private u64 fold_multiply(u64 a, u64 b) {
         u128 product = cast<u128>(a) * cast<u128>(b);
         return cast::truncate<u64>(product) ^ cast::truncate<u64>(product >> 64);
     }
 
-    /// Hash constants (from wyhash).
+    // Hash constants (from wyhash).
     private compile_time u64 hash_k0 = 0xa0761d6478bd642fu64;
     private compile_time u64 hash_k1 = 0xe7037ed1a0b428dbu64;
     private compile_time u64 hash_k2 = 0x8ebc6af09c88c6e3u64;
 
-    /// 8 bytes at `p` as a little-endian u64, without alignment requirements.
+    // 8 bytes at `p` as a little-endian u64, without alignment requirements.
     private unsafe u64 load_u64(std::raw_ptr<u8> p) {
         mut u64 word = 0;
         std::raw::copy(cast::reinterpret<std::raw_ptr<mut u8>>(mut &word), p, 8);
@@ -1160,8 +1711,8 @@ namespace std {
         return cast<u64>(word);
     }
 
-    /// 1 to 7 bytes at `p`, without a variable-length copy: two overlapping 4-byte loads, or three
-    /// single bytes.
+    // 1 to 7 bytes at `p`, without a variable-length copy: two overlapping 4-byte loads, or three
+    // single bytes.
     private unsafe u64 load_tail(std::raw_ptr<u8> p, usize n) {
         if (n >= 4) { return (load_u32(p) << 32) | load_u32(p.offset(n - 4)); }
         u64 first = cast<u64>(std::raw::read(p));
@@ -1187,9 +1738,9 @@ namespace std {
         return fold_multiply(h ^ hash_k0, hash_k1);
     }
 
-    /// Per-process salt for hashing: the address of this variable, which the operating system
-    /// randomizes (ASLR). Inputs chosen to collide (hash flooding) can't be precomputed, and nobody
-    /// can rely on an iteration order that changes from run to run.
+    // Per-process salt for hashing: the address of this variable, which the operating system
+    // randomizes (ASLR). Inputs chosen to collide (hash flooding) can't be precomputed, and nobody
+    // can rely on an iteration order that changes from run to run.
     private static u8 hash_anchor = 0;
 
     u64 hash_seed() {
@@ -1232,8 +1783,8 @@ namespace std {
     private compile_time u64 group_lsbs = 0x0101010101010101u64;
     private compile_time u64 group_msbs = 0x8080808080808080u64;
 
-    /// The bytes of `group` equal to `h2` (one high bit per byte; may include a rare false positive,
-    /// which the key comparison rejects).
+    // The bytes of `group` equal to `h2` (one high bit per byte; may include a rare false positive,
+    // which the key comparison rejects).
     private u64 group_match(u64 group, u8 h2) {
         u64 x = group ^ (group_lsbs *% cast<u64>(h2));
         return (x -% group_lsbs) & ~x & group_msbs;
@@ -1243,17 +1794,17 @@ namespace std {
 
     private u64 group_free(u64 group) { return group & (~group << 7) & group_msbs; }
 
-    /// The slot of a match bit: the byte it is in.
+    // The slot of a match bit: the byte it is in.
     private usize group_slot(u64 bits) { return cast<usize>(std::trailing_zeros(bits) >> 3); }
 
-    /// A key and its value, next to each other in the table.
+    // A key and its value, next to each other in the table.
     private template<type K, type V>
     struct hash_slot {
         K key;
         V value;
     }
 
-    template<type K, type V>
+    template<type K, type V, type A>
     class hash_map {
     public:
         usize len() { return this.count; }
@@ -1327,8 +1878,16 @@ namespace std {
             return hash_map_entries<K, V>{ .ctrl = this.ctrl, .slots = this.slots, .at = 0, .end = this.capacity() };
         }
 
-        static hash_map<K, V> with_capacity(usize n) {
-            mut hash_map<K, V> out = default;
+        static hash_map<K, V, A> with_capacity(usize n) {
+            mut hash_map<K, V, A> out = default;
+            out.reserve(n);
+            return out;
+        }
+
+        static hash_map<K, V, A> with_allocator(A alloc) { return hash_map<K, V, A>{ .alloc = alloc }; }
+
+        static hash_map<K, V, A> with_capacity_in(usize n, A alloc) {
+            mut hash_map<K, V, A> out = hash_map<K, V, A>{ .alloc = alloc };
             out.reserve(n);
             return out;
         }
@@ -1358,9 +1917,12 @@ namespace std {
         ~hash_map() {
             this.clear();
             unsafe {
-                if (this.ctrl) {
-                    std::raw::free(this.ctrl);
-                    std::raw::free(this.slots);
+                std::raw_ptr<mut u8> ctrl = this.ctrl;
+                std::raw_ptr<mut hash_slot<K, V>> slots = this.slots;
+                usize cap = this.capacity();
+                if (ctrl) {
+                    free_in<u64, A>(mut this.alloc, cast::reinterpret<std::raw_ptr<mut u64>>(ctrl), cap >> 3);
+                    free_in<hash_slot<K, V>, A>(mut this.alloc, slots, cap);
                 }
             }
         }
@@ -1371,6 +1933,7 @@ namespace std {
         usize mask = 0;                                // capacity - 1; capacity 0 before the first insert
         usize count = 0;
         usize growth_left = 0;                         // inserts into empty slots before the next rehash
+        A alloc = default;
 
         usize capacity() {
             if (!this.ctrl) { return 0; }
@@ -1381,7 +1944,7 @@ namespace std {
             unsafe { return std::raw::read(cast::reinterpret<std::raw_ptr<u64>>(this.ctrl.offset(g << 3))); }
         }
 
-        /// The slot holding `key` (whose hash is `h`), or no_slot.
+        // The slot holding `key` (whose hash is `h`), or no_slot.
         usize find(K& key, u64 h) {
             if (this.count == 0) { return no_slot; }
             usize groups = this.mask >> 3;
@@ -1405,7 +1968,7 @@ namespace std {
             return no_slot;
         }
 
-        /// The first empty or deleted slot on the probe sequence of `h`.
+        // The first empty or deleted slot on the probe sequence of `h`.
         usize free_slot(u64 h) {
             usize groups = this.mask >> 3;
             mut usize g = cast::truncate<usize>(h >> 7) & groups;
@@ -1419,7 +1982,7 @@ namespace std {
             return 0;
         }
 
-        /// Inserts a key that is not in the table; returns its slot.
+        // Inserts a key that is not in the table; returns its slot.
         usize put(K key, V value, u64 h) mut {
             if (this.growth_left == 0) { this.grow(); }
             usize at = this.free_slot(h);
@@ -1432,7 +1995,7 @@ namespace std {
             return at;
         }
 
-        /// Twice the room, or the same room without tombstones when they are what filled it.
+        // Twice the room, or the same room without tombstones when they are what filled it.
         void grow() mut {
             usize cap = this.capacity();
             if (cap == 0) {
@@ -1454,14 +2017,14 @@ namespace std {
             this.growth_left = cap - cap / 8;
         }
 
-        /// Moves every entry into a new table of `cap` slots (a power of two, at least 8).
+        // Moves every entry into a new table of `cap` slots (a power of two, at least 8).
         void rehash(usize cap) mut {
             std::raw_ptr<mut u8> old_ctrl = this.ctrl;
             std::raw_ptr<mut hash_slot<K, V>> old_slots = this.slots;
             usize old_cap = this.capacity();
             unsafe {
-                this.ctrl = cast::reinterpret<std::raw_ptr<mut u8>>(std::raw::allocate<u64>(cap >> 3));
-                this.slots = std::raw::allocate<hash_slot<K, V>>(cap);
+                this.ctrl = cast::reinterpret<std::raw_ptr<mut u8>>(allocate_in<u64, A>(mut this.alloc, cap >> 3));
+                this.slots = allocate_in<hash_slot<K, V>, A>(mut this.alloc, cap);
             }
             this.mask = cap - 1;
             this.fill_empty();
@@ -1481,8 +2044,8 @@ namespace std {
             }
             unsafe {
                 if (old_ctrl) {
-                    std::raw::free(old_ctrl);
-                    std::raw::free(old_slots);
+                    free_in<u64, A>(mut this.alloc, cast::reinterpret<std::raw_ptr<mut u64>>(old_ctrl), old_cap >> 3);
+                    free_in<hash_slot<K, V>, A>(mut this.alloc, old_slots, old_cap);
                 }
             }
         }
@@ -1557,7 +2120,7 @@ namespace std {
         return n;
     }
 
-    /// The first index whose key is not less than `key`.
+    // The first index whose key is not less than `key`.
     private unsafe template<type K, type V>
     u32 bt_lower_bound(std::raw_ptr<mut btree_node<K, V>> n, K& key) {
         // A linear scan: nodes are short, and it reads keys in memory order.
@@ -1567,7 +2130,7 @@ namespace std {
         return i;
     }
 
-    /// Moves keys and values `from..len` of node `n` one place right (or left with `left`).
+    // Moves keys and values `from..len` of node `n` one place right (or left with `left`).
     private unsafe template<type K, type V>
     void bt_shift(std::raw_ptr<mut btree_node<K, V>> n, u32 from, bool left) {
         u32 len = (*n).len;
@@ -1580,7 +2143,7 @@ namespace std {
         }
     }
 
-    /// Splits the full child `i` of `x` around its middle key, which moves up into `x`.
+    // Splits the full child `i` of `x` around its middle key, which moves up into `x`.
     private unsafe template<type K, type V>
     void bt_split_child(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> y = *bt_child(x, i);
@@ -1600,7 +2163,7 @@ namespace std {
         std::raw::write(mut &(*x).len, len + 1);
     }
 
-    /// Merges child `i + 1` of `x` and the key between into child `i`; frees child `i + 1`.
+    // Merges child `i + 1` of `x` and the key between into child `i`; frees child `i + 1`.
     private unsafe template<type K, type V>
     void bt_merge(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> y = *bt_child(x, i);
@@ -1620,8 +2183,8 @@ namespace std {
         std::raw::free(z);
     }
 
-    /// Makes child `i` of `x` hold at least t keys before the removal descends into it (borrowing
-    /// from a sibling or merging with one); returns the index of the child to descend into.
+    // Makes child `i` of `x` hold at least t keys before the removal descends into it (borrowing
+    // from a sibling or merging with one); returns the index of the child to descend into.
     private unsafe template<type K, type V>
     u32 bt_fill(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> c = *bt_child(x, i);
@@ -1663,8 +2226,8 @@ namespace std {
         return i - 1;
     }
 
-    /// Moves the smallest (`max` false) or largest entry of the subtree at `start` (which has at
-    /// least t keys) to `key_to` / `value_to`, and removes it from the subtree.
+    // Moves the smallest (`max` false) or largest entry of the subtree at `start` (which has at
+    // least t keys) to `key_to` / `value_to`, and removes it from the subtree.
     private unsafe template<type K, type V>
     void bt_take_end(std::raw_ptr<mut btree_node<K, V>> start, bool max, std::raw_ptr<mut K> key_to, std::raw_ptr<mut V> value_to) {
         mut std::raw_ptr<mut btree_node<K, V>> n = start;
@@ -1682,7 +2245,7 @@ namespace std {
         std::raw::write(mut &(*n).len, len - 1);
     }
 
-    /// Destroys every key and value below `n` and frees the nodes.
+    // Destroys every key and value below `n` and frees the nodes.
     private unsafe template<type K, type V>
     void bt_destroy(std::raw_ptr<mut btree_node<K, V>> n) {
         u32 len = (*n).len;
@@ -1831,7 +2394,7 @@ namespace std {
     private:
         std::raw_ptr<mut btree_node<K, V>> root = nullptr;
         usize count = 0;
-        /// The value of `key`, or null.
+        // The value of `key`, or null.
         std::raw_ptr<mut V> find(K& key) {
             if (!this.root) { return nullptr; }
             unsafe {
@@ -1846,8 +2409,8 @@ namespace std {
             return nullptr;
         }
 
-        /// The value of `key`: the existing one (then `key` and `value` are dropped), or `value`
-        /// inserted with `key`.
+        // The value of `key`: the existing one (then `key` and `value` are dropped), or `value`
+        // inserted with `key`.
         std::raw_ptr<mut V> place(K key, V value) mut {
             unsafe {
                 if (!this.root) { this.root = bt_new<K, V>(true); }
@@ -1881,7 +2444,7 @@ namespace std {
         }
     }
 
-    /// What `tree_map::entries()` returns: an in-order walk with an explicit stack.
+    // What `tree_map::entries()` returns: an in-order walk with an explicit stack.
     template<type K, type V>
     view class tree_map_entries {
     public:
@@ -1920,7 +2483,7 @@ namespace std {
             return cast::reinterpret<std::raw_ptr<mut u32>>(&this.indexes).offset(d);
         }
 
-        /// Pushes `n` and its leftmost descendants.
+        // Pushes `n` and its leftmost descendants.
         unsafe void descend(std::raw_ptr<mut btree_node<K, V>> start) mut {
             mut std::raw_ptr<mut btree_node<K, V>> n = start;
             while (true) {
@@ -2083,6 +2646,31 @@ namespace std {
         }
     }
 
+    // Like lock_word, but gives up at `deadline` (an instant's nanoseconds): whether it locked.
+    private unsafe bool lock_word_until(std::raw_ptr<u32> word, u64 deadline) {
+        if (try_lock_word(word)) { return true; }
+        mut u32 spins = 0;
+        while (spins < 100) {
+            if (std::raw::atomic_load(word, std::memory_order::relaxed) == 0 && try_lock_word(word)) { return true; }
+            std::raw::spin_hint();
+            spins += 1;
+        }
+        while (std::raw::atomic_exchange(word, 2, std::memory_order::acquire) != 0) {
+            u64 now = std::time::instant::now().nanos;
+            if (now >= deadline) { return false; }
+            std::raw::futex_wait_for(word, 2, deadline - now);
+        }
+        return true;
+    }
+
+    // The instant `d` from now, in nanoseconds, saturating instead of overflowing.
+    private u64 deadline_after(std::time::duration d) {
+        u64 now = std::time::instant::now().nanos;
+        u64 wait = d.as_nanoseconds();
+        if (wait > u64::max - now) { return u64::max; }
+        return now + wait;
+    }
+
     private unsafe void unlock_word(std::raw_ptr<u32> word) {
         if (std::raw::atomic_exchange(word, 0, std::memory_order::release) == 2) { std::raw::futex_wake(word, 1); }
     }
@@ -2102,6 +2690,16 @@ namespace std {
         std::option<mutex_guard<T>> try_lock() {
             mut bool locked = false;
             unsafe { locked = try_lock_word(&this.state); }
+            if (!locked) { return std::none; }
+            return std::some(this.guard());
+        }
+
+        std::option<mutex_guard<T>> try_lock_for(std::time::duration d) {
+            run_time(std::build::mode::debug) check (!this.held_here())
+                else "this thread already holds this mutex: waiting for it can only time out";
+            u64 deadline = deadline_after(d);
+            mut bool locked = false;
+            unsafe { locked = lock_word_until(&this.state, deadline); }
             if (!locked) { return std::none; }
             return std::some(this.guard());
         }
@@ -2159,8 +2757,186 @@ namespace std {
         }
     }
 
+    // The lock word of a rw_mutex: the number of readers in the low 29 bits, plus a writer bit, a
+    // "writer waiting" bit (new readers wait behind it) and a "sleepers" bit (someone sleeps on the
+    // word, so an unlock has to wake them).
+    private compile_time u32 rw_writer   = 0x80000000;
+    private compile_time u32 rw_waiting  = 0x40000000;
+    private compile_time u32 rw_sleepers = 0x20000000;
+    private compile_time u32 rw_readers  = 0x1FFFFFFF;
+
+    private unsafe bool try_read_word(std::raw_ptr<u32> word) {
+        mut u32 s = std::raw::atomic_load(word, std::memory_order::relaxed);
+        while ((s & (rw_writer | rw_waiting)) == 0) {
+            run_time check ((s & rw_readers) != rw_readers) else "too many readers of one std::rw_mutex";
+            if (std::raw::atomic_compare_exchange(word, mut &s, s + 1, std::memory_order::acquire, std::memory_order::relaxed, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private unsafe bool try_write_word(std::raw_ptr<u32> word) {
+        mut u32 s = std::raw::atomic_load(word, std::memory_order::relaxed);
+        while ((s & (rw_writer | rw_readers)) == 0) {
+            if (std::raw::atomic_compare_exchange(word, mut &s, rw_writer | (s & rw_sleepers), std::memory_order::acquire, std::memory_order::relaxed, false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Sleeps on the word while it holds `seen`, after marking that a sleeper is there (and, for a
+    // writer, that a writer waits).
+    private unsafe void rw_sleep(std::raw_ptr<u32> word, u32 seen, u32 bits) {
+        mut u32 expected = seen;
+        u32 marked = seen | rw_sleepers | bits;
+        if (marked == seen || std::raw::atomic_compare_exchange(word, mut &expected, marked, std::memory_order::relaxed, std::memory_order::relaxed, false)) {
+            std::raw::futex_wait(word, marked);
+        }
+    }
+
+    private unsafe void read_lock_word(std::raw_ptr<u32> word) {
+        mut u32 spins = 0;
+        while (!try_read_word(word)) {
+            if (spins < 100) {
+                std::raw::spin_hint();
+                spins += 1;
+            } else {
+                rw_sleep(word, std::raw::atomic_load(word, std::memory_order::relaxed), 0);
+            }
+        }
+    }
+
+    private unsafe void write_lock_word(std::raw_ptr<u32> word) {
+        mut u32 spins = 0;
+        while (!try_write_word(word)) {
+            if (spins < 100) {
+                std::raw::spin_hint();
+                spins += 1;
+            } else {
+                rw_sleep(word, std::raw::atomic_load(word, std::memory_order::relaxed), rw_waiting);
+            }
+        }
+    }
+
+    private unsafe void read_unlock_word(std::raw_ptr<u32> word) {
+        u32 old = std::raw::atomic_fetch_sub(word, 1, std::memory_order::release);
+        if ((old & rw_readers) == 1 && (old & rw_sleepers) != 0) {   // the last reader, and someone sleeps
+            _ = std::raw::atomic_fetch_and(word, ~rw_sleepers, std::memory_order::relaxed);
+            std::raw::futex_wake(word, 0x7FFFFFFF);
+        }
+    }
+
+    private unsafe void write_unlock_word(std::raw_ptr<u32> word) {
+        if ((std::raw::atomic_exchange(word, 0, std::memory_order::release) & rw_sleepers) != 0) {
+            std::raw::futex_wake(word, 0x7FFFFFFF);
+        }
+    }
+
+    template<type T>
+    class rw_mutex {
+    public:
+        static rw_mutex<T> make(T value) { return rw_mutex<T>{ .data = move value }; }
+
+        read_guard<T> read() {
+            unsafe {
+                read_lock_word(&this.state);
+                return read_guard<T>{ .lock = cast::reinterpret<std::raw_ptr<mut rw_mutex<T>>>(&this), .held = true };
+            }
+        }
+
+        write_guard<T> write() {
+            unsafe {
+                write_lock_word(&this.state);
+                return write_guard<T>{ .lock = cast::reinterpret<std::raw_ptr<mut rw_mutex<T>>>(&this), .held = true };
+            }
+        }
+
+        std::option<read_guard<T>> try_read() {
+            unsafe {
+                if (!try_read_word(&this.state)) { return std::none; }
+                return std::some(read_guard<T>{ .lock = cast::reinterpret<std::raw_ptr<mut rw_mutex<T>>>(&this), .held = true });
+            }
+        }
+
+        std::option<write_guard<T>> try_write() {
+            unsafe {
+                if (!try_write_word(&this.state)) { return std::none; }
+                return std::some(write_guard<T>{ .lock = cast::reinterpret<std::raw_ptr<mut rw_mutex<T>>>(&this), .held = true });
+            }
+        }
+
+    private:
+        u32 state = 0;
+        T   data;
+    }
+
+    template<type T>
+    view class read_guard {
+    public:
+        T& operator*() {
+            unsafe { return (*this.lock).data; }
+        }
+
+        void unlock() move { this.release(); }
+
+        ~read_guard() { this.release(); }
+
+    private:
+        std::raw_ptr<mut rw_mutex<T>> lock;
+        bool held = false;
+
+        void release() mut {
+            if (!this.held) { return; }
+            this.held = false;
+            unsafe { read_unlock_word(&(*this.lock).state); }
+        }
+    }
+
+    template<type T>
+    view class write_guard {
+    public:
+        T& operator*() {
+            unsafe { return (*this.lock).data; }
+        }
+
+        mut T& operator*() mut {
+            unsafe { return (*this.lock).data; }
+        }
+
+        void unlock() move { this.release(); }
+
+        ~write_guard() { this.release(); }
+
+    private:
+        std::raw_ptr<mut rw_mutex<T>> lock;
+        bool held = false;
+
+        void release() mut {
+            if (!this.held) { return; }
+            this.held = false;
+            unsafe { write_unlock_word(&(*this.lock).state); }
+        }
+    }
+
     class condition {
     public:
+        template<type T, type F>
+        bool wait_for(mut mutex_guard<T>& guard, F ready, std::time::duration d) {
+            u64 deadline = deadline_after(d);
+            while (!ready(*guard)) {
+                u64 now = std::time::instant::now().nanos;
+                if (now >= deadline) { return false; }
+                mut u32 seen = 0;
+                unsafe { seen = std::raw::atomic_load(&this.sequence, std::memory_order::acquire); }
+                guard.release();
+                unsafe { std::raw::futex_wait_for(&this.sequence, seen, deadline - now); }
+                guard.reacquire();
+            }
+            return true;
+        }
+
         template<type T, type F>
         void wait(mut mutex_guard<T>& guard, F ready) {
             while (!ready(*guard)) {
@@ -2218,8 +2994,8 @@ namespace std {
         u32                                     waiting_room = 0;
     }
 
-    /// Bumps the futex word and wakes its sleepers, if there may be any. The bump and the sleepers'
-    /// count are sequentially consistent with `sleep_until`'s, so a wake-up is never missed.
+    // Bumps the futex word and wakes its sleepers, if there may be any. The bump and the sleepers'
+    // count are sequentially consistent with `sleep_until`'s, so a wake-up is never missed.
     private unsafe void signal(std::raw_ptr<u32> word, std::raw_ptr<u32> waiting, u32 count) {
         _ = std::raw::atomic_fetch_add(word, 1, std::memory_order::sequentially_consistent);
         if (std::raw::atomic_load(waiting, std::memory_order::sequentially_consistent) != 0) { std::raw::futex_wake(word, count); }
@@ -2253,13 +3029,13 @@ namespace std {
         }
     }
 
-    /// One sender (or the channel object) is gone; the last one closes the channel.
+    // One sender (or the channel object) is gone; the last one closes the channel.
     private unsafe template<type T>
     void leave_as_sender(std::raw_ptr<mut channel_state<T>> s) {
         if ((*s).senders.fetch_wrapping_sub(1, std::memory_order::acquire_release) == 1) { close_channel(s); }
     }
 
-    /// One handle is gone; the last one destroys the values still queued and frees the channel.
+    // One handle is gone; the last one destroys the values still queued and frees the channel.
     private unsafe template<type T>
     void release_channel(std::raw_ptr<mut channel_state<T>> s) {
         if ((*s).handles.fetch_wrapping_sub(1, std::memory_order::release) != 1) { return; }
@@ -2274,7 +3050,7 @@ namespace std {
         std::raw::free(s);
     }
 
-    /// Puts `value` in if there is room: `none` when it did, otherwise the value comes back.
+    // Puts `value` in if there is room: `none` when it did, otherwise the value comes back.
     private unsafe template<type T>
     std::option<T> put_value(std::raw_ptr<mut channel_state<T>> s, T value) {
         if (!(*s).bounded) {
@@ -2309,7 +3085,7 @@ namespace std {
         return std::none;
     }
 
-    /// Takes the next value out, or `none` when the queue is empty.
+    // Takes the next value out, or `none` when the queue is empty.
     private unsafe template<type T>
     std::option<T> take_value(std::raw_ptr<mut channel_state<T>> s) {
         if (!(*s).bounded) {
@@ -2347,7 +3123,7 @@ namespace std {
         return std::none;
     }
 
-    /// The unbounded ring is full: twice the room, values kept in order (called under the lock).
+    // The unbounded ring is full: twice the room, values kept in order (called under the lock).
     private unsafe template<type T>
     void grow_ring(std::raw_ptr<mut channel_state<T>> s) {
         usize old = (*s).capacity;
@@ -2365,10 +3141,17 @@ namespace std {
         (*s).first    = 0;
     }
 
-    /// Sleeps until the futex word moves on from `seen` (a send, a receive or a close happened).
+    // Sleeps until the futex word moves on from `seen` (a send, a receive or a close happened).
     private unsafe void sleep_on(std::raw_ptr<u32> word, std::raw_ptr<u32> waiting, u32 seen) {
         _ = std::raw::atomic_fetch_add(waiting, 1, std::memory_order::sequentially_consistent);
         std::raw::futex_wait(word, seen);
+        _ = std::raw::atomic_fetch_sub(waiting, 1, std::memory_order::sequentially_consistent);
+    }
+
+    // The same, waking up at most `ns` nanoseconds later.
+    private unsafe void sleep_on_for(std::raw_ptr<u32> word, std::raw_ptr<u32> waiting, u32 seen, u64 ns) {
+        _ = std::raw::atomic_fetch_add(waiting, 1, std::memory_order::sequentially_consistent);
+        std::raw::futex_wait_for(word, seen, ns);
         _ = std::raw::atomic_fetch_sub(waiting, 1, std::memory_order::sequentially_consistent);
     }
 
@@ -2516,6 +3299,33 @@ namespace std {
             return std::error(std::receive_error::empty);
         }
 
+        std::result<T, std::receive_error> receive_for(std::time::duration d) {
+            u64 deadline = deadline_after(d);
+            unsafe {
+                std::raw_ptr<mut channel_state<T>> s = this.state;
+                while (true) {
+                    u32 seen = std::raw::atomic_load(&(*s).items, std::memory_order::sequentially_consistent);
+                    match (take_value(s)) {
+                        std::some(v) => {
+                            signal(&(*s).room, &(*s).waiting_room, 1);
+                            return std::ok(move v);
+                        },
+                        std::none => { },
+                    }
+                    if ((*s).closed.load(std::memory_order::acquire) != 0) {
+                        match (take_value(s)) {
+                            std::some(v) => { return std::ok(move v); },
+                            std::none => { return std::error(std::receive_error::closed); },
+                        }
+                    }
+                    u64 now = std::time::instant::now().nanos;
+                    if (now >= deadline) { return std::error(std::receive_error::timed_out); }
+                    sleep_on_for(&(*s).items, &(*s).waiting_items, seen, deadline - now);
+                }
+            }
+            return std::error(std::receive_error::closed);
+        }
+
         std::option<T> next() { return this.receive(); }
 
         channel_receiver<T> clone() {
@@ -2587,13 +3397,13 @@ namespace std {
     private unsafe usize address_of_job(std::raw_ptr<mut pool_job> job) { return cast::reinterpret<usize>(job); }
     private unsafe std::raw_ptr<mut pool_job> job_at(usize address) { return cast::reinterpret<std::raw_ptr<mut pool_job>>(address); }
 
-    /// The calling thread's worker in `pool`, or `none` outside it.
+    // The calling thread's worker in `pool`, or `none` outside it.
     private unsafe std::option<usize> worker_of(std::raw_ptr<mut pool_state> pool) {
         if (pool_index == 0 || pool_current != cast::reinterpret<usize>(pool)) { return std::none; }
         return std::some(pool_index - 1);
     }
 
-    /// Wakes a sleeping worker, if there is one.
+    // Wakes a sleeping worker, if there is one.
     private unsafe void pool_wake(std::raw_ptr<mut pool_state> pool) {
         _ = std::raw::atomic_fetch_add(&(*pool).signal, 1, std::memory_order::sequentially_consistent);
         if (std::raw::atomic_load(&(*pool).sleepers, std::memory_order::sequentially_consistent) != 0) {
@@ -2601,8 +3411,8 @@ namespace std {
         }
     }
 
-    /// Queues `job`: on the calling worker's deque, or on the injector from outside the pool. False
-    /// when the deque is full (the caller runs the job itself).
+    // Queues `job`: on the calling worker's deque, or on the injector from outside the pool. False
+    // when the deque is full (the caller runs the job itself).
     private unsafe bool pool_push(std::raw_ptr<mut pool_state> pool, std::raw_ptr<mut pool_job> job) {
         match (worker_of(pool)) {
             std::some(i) => {
@@ -2644,7 +3454,7 @@ namespace std {
         (*pool).injector_first = 0;
     }
 
-    /// The newest job of worker `i`'s own deque (the owner only).
+    // The newest job of worker `i`'s own deque (the owner only).
     private unsafe std::raw_ptr<mut pool_job> pool_pop(std::raw_ptr<mut pool_state> pool, usize i) {
         std::raw_ptr<mut pool_worker> w = (*pool).workers.offset(i);
         isize b = (*(*w).bottom).load(std::memory_order::relaxed) - 1;
@@ -2664,7 +3474,7 @@ namespace std {
         return job_at(found);
     }
 
-    /// The oldest job of worker `i`'s deque, taken by another thread.
+    // The oldest job of worker `i`'s deque, taken by another thread.
     private unsafe std::raw_ptr<mut pool_job> pool_steal(std::raw_ptr<mut pool_state> pool, usize i) {
         std::raw_ptr<mut pool_worker> w = (*pool).workers.offset(i);
         isize t = (*(*w).top).load(std::memory_order::acquire);
@@ -2693,7 +3503,7 @@ namespace std {
         return job_at(found);
     }
 
-    /// A job for the calling thread: its own newest, a stolen one, or one from the injector.
+    // A job for the calling thread: its own newest, a stolen one, or one from the injector.
     private unsafe std::raw_ptr<mut pool_job> pool_find(std::raw_ptr<mut pool_state> pool) {
         mut usize start = 0;
         match (worker_of(pool)) {
@@ -2729,8 +3539,8 @@ namespace std {
         run(cast::reinterpret<std::raw_ptr<u8>>(job));
     }
 
-    /// Runs jobs of the pool until the futex word `done` is no longer 0: a joining thread never sits
-    /// idle (spec 28). It spins briefly when there is nothing to do, then sleeps on `done`.
+    // Runs jobs of the pool until the futex word `done` is no longer 0: a joining thread never sits
+    // idle (spec 28). It spins briefly when there is nothing to do, then sleeps on `done`.
     private unsafe void pool_help_until(std::raw_ptr<mut pool_state> pool, std::raw_ptr<u32> done) {
         mut u32 idle = 0;
         while (std::raw::atomic_load(done, std::memory_order::acquire) == 0) {
@@ -2747,7 +3557,7 @@ namespace std {
         }
     }
 
-    /// Marks a job's futex word done and wakes its joiner.
+    // Marks a job's futex word done and wakes its joiner.
     private unsafe void pool_finish(std::raw_ptr<u32> done) {
         std::raw::atomic_store(done, 1, std::memory_order::release);
         std::raw::futex_wake(done, 0x7FFFFFFF);
@@ -2823,7 +3633,7 @@ namespace std {
     private template<type F, type R>
     R call_task_body(mut F& body) { return body(); }
 
-    /// Waits for a task (helping the pool) and takes its result; frees the block.
+    // Waits for a task (helping the pool) and takes its result; frees the block.
     private unsafe template<type R>
     std::option<R> join_task(std::raw_ptr<mut pool_task_head<R>> head) {
         if (std::raw::atomic_load(&(*head).state, std::memory_order::acquire) == 0) { pool_help_until((*head).pool, &(*head).state); }
@@ -2832,72 +3642,18 @@ namespace std {
         return result;
     }
 
-    template<type R>
-    class thread_pool_task {
-    public:
-        compile_time check (std::implements<R, std::sendable>())
-            else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
-
-        R join() move {
-            std::raw_ptr<mut pool_task_head<R>> head = this.head;
-            this.head = nullptr;
-            unsafe { return join_task(head).expect("the task produced no result"); }
-        }
-
-        void detach() move {
-            std::raw_ptr<mut pool_task_head<R>> head = this.head;
-            this.head = nullptr;
-            unsafe {
-                if (std::raw::atomic_exchange(&(*head).state, task_detached, std::memory_order::acquire_release) == task_finished) {
-                    std::raw::drop(head);
-                    std::raw::free(head);
-                }
-            }
-        }
-
-        ~thread_pool_task() {
-            if (this.head) {
-                unsafe { _ = join_task(this.head); }
-            }
-        }
-
-    private:
-        std::raw_ptr<mut pool_task_head<R>> head = nullptr;
-    }
-
-    template<type R>
-    view class thread_pool_scoped_task {
-    public:
-        compile_time check (std::implements<R, std::sendable>())
-            else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
-
-        R join() move {
-            std::raw_ptr<mut pool_task_head<R>> head = this.head;
-            this.head = nullptr;
-            unsafe { return join_task(head).expect("the task produced no result"); }
-        }
-
-        ~thread_pool_scoped_task() {
-            if (this.head) {
-                unsafe { _ = join_task(this.head); }
-            }
-        }
-
-    private:
-        std::raw_ptr<mut pool_task_head<R>> head = nullptr;
-    }
 
     // --- loops ---
 
-    /// A parallel loop over `count` chunks; `call(context, chunk)` does one. Lives on the stack of
-    /// the thread that runs the loop.
+    // A parallel loop over `count` chunks; `call(context, chunk)` does one. Lives on the stack of
+    // the thread that runs the loop.
     private struct chunk_loop {
         std::raw_ptr<mut pool_state>                   pool;
         std::raw_ptr<u8>                               context;
         std::fn_ptr<void(std::raw_ptr<u8>, usize)>     call;
     }
 
-    /// The right half of a split, queued for other threads; on the stack of the thread that split.
+    // The right half of a split, queued for other threads; on the stack of the thread that split.
     private struct chunk_part {
         pool_job                job;
         u32                     done = 0;
@@ -2912,8 +3668,8 @@ namespace std {
         pool_finish(&(*part).done);
     }
 
-    /// Runs chunks `first..end`: halves until one chunk is left, queueing the right halves so that
-    /// idle threads steal large pieces first.
+    // Runs chunks `first..end`: halves until one chunk is left, queueing the right halves so that
+    // idle threads steal large pieces first.
     private unsafe void run_chunk_range(std::raw_ptr<chunk_loop> lp, usize first, usize end) {
         if (end - first == 1) {
             std::fn_ptr<void(std::raw_ptr<u8>, usize)> call = (*lp).call;
@@ -2933,7 +3689,7 @@ namespace std {
         take_back_or_help((*lp).pool, job, &right.done);
     }
 
-    /// After the left half: run the right half here if nobody stole it, otherwise help until it is done.
+    // After the left half: run the right half here if nobody stole it, otherwise help until it is done.
     private unsafe void take_back_or_help(std::raw_ptr<mut pool_state> pool, std::raw_ptr<mut pool_job> job, std::raw_ptr<u32> done) {
         match (worker_of(pool)) {
             std::some(i) => {
@@ -2963,7 +3719,7 @@ namespace std {
     private template<type F>
     void call_range(F& body, usize from, usize to) { body(from, to); }
 
-    /// How many chunks of `size` cover `len` elements.
+    // How many chunks of `size` cover `len` elements.
     private usize chunk_count(usize len, usize size) {
         run_time check (size > 0) else "a chunk size of 0";
         return (len + size - 1) / size;
@@ -3011,8 +3767,8 @@ namespace std {
         pool_finish(&(*part).done);
     }
 
-    /// The reduction of chunks `first..end`, combined as a fixed binary tree: the split points depend
-    /// only on the chunk indices, so the result doesn't depend on which thread ran what.
+    // The reduction of chunks `first..end`, combined as a fixed binary tree: the split points depend
+    // only on the chunk indices, so the result doesn't depend on which thread ran what.
     private unsafe template<type T, type R, type M, type C>
     R reduce_range(std::raw_ptr<reduce_context<T, R, M, C>> ctx, usize first, usize end) {
         if (end - first == 1) {
@@ -3039,7 +3795,63 @@ namespace std {
 
     class thread_pool {
     public:
-        static thread_pool make(thread_pool_options settings) {
+        template<type R>
+        class task {
+        public:
+            compile_time check (std::implements<R, std::sendable>())
+                else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
+
+            R join() move {
+                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                this.head = nullptr;
+                unsafe { return join_task(head).expect("the task produced no result"); }
+            }
+
+            void detach() move {
+                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                this.head = nullptr;
+                unsafe {
+                    if (std::raw::atomic_exchange(&(*head).state, task_detached, std::memory_order::acquire_release) == task_finished) {
+                        std::raw::drop(head);
+                        std::raw::free(head);
+                    }
+                }
+            }
+
+            ~task() {
+                if (this.head) {
+                    unsafe { _ = join_task(this.head); }
+                }
+            }
+
+        private:
+            std::raw_ptr<mut pool_task_head<R>> head = nullptr;
+        }
+
+        template<type R>
+        view class scoped_task {
+        public:
+            compile_time check (std::implements<R, std::sendable>())
+                else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
+
+            R join() move {
+                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                this.head = nullptr;
+                unsafe { return join_task(head).expect("the task produced no result"); }
+            }
+
+            ~scoped_task() {
+                if (this.head) {
+                    unsafe { _ = join_task(this.head); }
+                }
+            }
+
+        private:
+            std::raw_ptr<mut pool_task_head<R>> head = nullptr;
+        }
+
+        static thread_pool make(options settings) {
+            compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread_pool needs a target with threads";
             run_time check (settings.threads > 0) else "a thread pool needs at least one thread";
             unsafe {
                 std::raw_ptr<mut pool_state> pool = std::raw::allocate<pool_state>(1);
@@ -3101,9 +3913,9 @@ namespace std {
                 if (!pool_push(this.state, job)) { pool_run(job); }   // a full deque: run it now
             }
             if compile_time (std::meta::is_view<F>()) {
-                return thread_pool_scoped_task<R>{ .head = head };
+                return scoped_task<R>{ .head = head };
             } else {
-                return thread_pool_task<R>{ .head = head };
+                return task<R>{ .head = head };
             }
         }
 
@@ -3221,3 +4033,46 @@ namespace std {
         }
     }
 }
+
+namespace std::simd {
+    template<usize N>
+    struct block {
+        usize len() { return this.count; }
+        bool is_full() { return this.count == N; }
+    }
+
+    template<usize N>
+    struct block_stream {
+        std::option<std::simd::block<N>> next() mut {
+            if (this.next_start >= this.total) {
+                return std::none;
+            }
+            usize start = this.next_start;
+            usize left  = this.total - start;
+            usize count = if (left < N) { left } else { N };
+            this.next_start = start + count;
+            return std::some(std::simd::block<N>{ .start = start, .count = count, .active = std::simd::mask<N>::prefix(count) });
+        }
+    }
+
+    template<usize N>
+    std::simd::block_stream<N> blocks(usize n) {
+        return std::simd::block_stream<N>{ .total = n };
+    }
+}
+
+namespace std {
+    view class formatter {
+    public:
+        void write(std::str text) mut {
+            unsafe { (*this.out).push_str(text); }
+        }
+
+        std::format_spec spec() { return this.hole; }
+
+    private:
+        std::raw_ptr<mut std::string> out;
+        std::format_spec              hole;
+    }
+}
+

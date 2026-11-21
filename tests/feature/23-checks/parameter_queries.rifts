@@ -1,7 +1,7 @@
 // feature 23: std::is_compile_time and std::location_of ask about the argument of a parameter.
 import std;
 
-/// Calls with a known size.
+// Calls with a known size.
 compile_time std::diagnostic known_size = default;
 
 void reserve(usize n) {

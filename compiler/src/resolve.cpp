@@ -1,4 +1,5 @@
 #include "rift/resolve.hpp"
+#include "rift/ast_walk.hpp"
 
 #include "rift/ast_clone.hpp"
 #include "rift/ast_printer.hpp"
@@ -44,7 +45,7 @@ namespace {
 
 // --- signatures ---------------------------------------------------------------------------
 
-/// Parameter types and trailing `mut`: what overloads and header/source pairs are matched on.
+// Parameter types and trailing `mut`: what overloads and header/source pairs are matched on.
 std::string params_sig(const FunctionDecl& f) {
     std::string s = "(";
     for (std::size_t i = 0; i < f.params.size(); ++i) {
@@ -91,7 +92,7 @@ std::string describe_fn(const Symbol& s) {
     return f ? prefix + s.name + params_sig(*f) : prefix + s.name;
 }
 
-/// Edit distance where swapping two adjacent characters counts as one edit ("inptu" -> "input").
+// Edit distance where swapping two adjacent characters counts as one edit ("inptu" -> "input").
 std::size_t edit_distance(std::string_view a, std::string_view b) {
     std::vector<std::vector<std::size_t>> d(a.size() + 1, std::vector<std::size_t>(b.size() + 1));
     for (std::size_t i = 0; i <= a.size(); ++i) d[i][0] = i;
@@ -128,7 +129,7 @@ std::string join_ns(const std::string& ns, const std::string& name) { return ns.
 
 std::string item_key(const Decl& d) { return join_ns(d.ns, d.name); }
 
-/// "a::b" → {"a::b", "a", ""}: the namespaces searched for an unqualified name (spec 30).
+// "a::b" → {"a::b", "a", ""}: the namespaces searched for an unqualified name (spec 30).
 std::vector<std::string> enclosing_levels(const std::string& ns) {
     std::vector<std::string> out;
     std::string              cur = ns;
@@ -141,19 +142,33 @@ std::vector<std::string> enclosing_levels(const std::string& ns) {
     return out;
 }
 
-/// A key as written in messages: a global name gets its `::` ("::version") so it reads as one.
+// A key as written in messages: a global name gets its `::` ("::version") so it reads as one.
 std::string global_display(const std::string& key) {
     return key.find("::") == std::string::npos ? "::" + key : key;
 }
 
 std::string ns_display(const std::string& ns) { return ns.empty() ? "the global namespace" : "namespace '" + ns + "'"; }
 
-bool is_builtin_type_name(std::string_view name) {
-    std::optional<TokenKind> k = keyword_kind(name);
-    return k && (is_type_keyword(*k) || *k == TokenKind::kw_type);
+// `f32x8`, `u8x32`, ...: the SIMD short names (a number type, `x`, a power of two from 2 to 64).
+bool is_vector_type_name(std::string_view name) {
+    std::size_t x = name.rfind('x');
+    if (x == std::string_view::npos || x == 0 || x + 1 >= name.size()) return false;
+    std::optional<TokenKind> k = keyword_kind(name.substr(0, x));
+    if (!k || !is_type_keyword(*k)) return false;
+    std::string_view lane = name.substr(0, x);
+    if (lane == "bool" || lane == "char" || lane == "void" || lane == "never" || lane.ends_with("size") || lane.ends_with("128")) return false;
+    std::string_view digits = name.substr(x + 1);
+    if (digits.find_first_not_of("0123456789") != std::string_view::npos || digits.size() > 2 || digits[0] == '0') return false;
+    int n = std::stoi(std::string(digits));
+    return n >= 2 && n <= 64 && (n & (n - 1)) == 0;
 }
 
-/// `type`: the type of type values (spec 26).
+bool is_builtin_type_name(std::string_view name) {
+    std::optional<TokenKind> k = keyword_kind(name);
+    return (k && (is_type_keyword(*k) || *k == TokenKind::kw_type)) || is_vector_type_name(name);
+}
+
+// `type`: the type of type values (spec 26).
 bool is_type_type(const TypeExpr& t) {
     if (t.kind != TypeKind::named) return false;
     const Path& p = t.as<NamedType>().path;
@@ -172,7 +187,7 @@ struct Scope {
     bool                           lambda_boundary = false;
 };
 
-/// What we know while resolving inside one function body.
+// What we know while resolving inside one function body.
 struct FunctionContext {
     Symbol* self_type   = nullptr;   // enclosing struct/class/interface
     bool    has_this    = false;
@@ -188,7 +203,7 @@ public:
         }
     }
 
-    /// The namespace that the code being resolved is written in (instances: their template's).
+    // The namespace that the code being resolved is written in (instances: their template's).
     void set_namespace(std::string ns) { ns_ = std::move(ns); }
 
     void run() {
@@ -200,11 +215,12 @@ public:
         for (auto& [name, m] : program_.modules) resolve_bodies(*m);
     }
 
-    /// An instance of a template type (spec 14): a symbol for a copy `d` of the template's
-    /// declaration, with its members collected and resolved in the template's module. The copy
-    /// is not registered in the module's items. `params` receives its template parameters.
+    // An instance of a template type (spec 14): a symbol for a copy `d` of the template's
+    // declaration, with its members collected and resolved in the template's module. The copy
+    // is not registered in the module's items. `params` receives its template parameters.
     Symbol* build_instance(Module& m, bool from_header, Decl& d, std::vector<Symbol*>& params) {
         FileScope fs(*this, &m, from_header);
+        instance_ = true;
         SymbolKind kind = d.kind == DeclKind::struct_ ? SymbolKind::struct_
                         : d.kind == DeclKind::class_  ? SymbolKind::class_
                         : d.kind == DeclKind::enum_   ? SymbolKind::enum_
@@ -254,8 +270,8 @@ public:
         return sym;
     }
 
-    /// Makes the symbol of a function template instance: the copy's signature and body are resolved
-    /// in the template's module, with its parameters declared (see build_instance).
+    // Makes the symbol of a function template instance: the copy's signature and body are resolved
+    // in the template's module, with its parameters declared (see build_instance).
     Symbol* build_function_instance(Module& m, bool from_header, FunctionDecl& d, std::vector<Symbol*>& params) {
         FileScope fs(*this, &m, from_header);
         Symbol*   sym  = m.make(SymbolKind::function, d.name, d.name_span);
@@ -265,6 +281,12 @@ public:
         TemplateScope ts(*this, d);
         params = template_params_.back();
         resolve_function(d, nullptr);
+        if (!d.annotations.empty()) {   // the wraps of a function template apply to its instances
+            instance_      = true;
+            symbol_of_[&d] = sym;
+            annotate_function(d, sym, nullptr);
+            apply_wraps(d, nullptr);
+        }
         return sym;
     }
 
@@ -469,7 +491,7 @@ private:
         note(e, "mark it 'private' if it is local to this module, or declare it in the .rifth");
     }
 
-    /// Header and source versions of one function must agree on everything but the body.
+    // Header and source versions of one function must agree on everything but the body.
     void check_signature(const FunctionDecl& header, const FunctionDecl& source) {
         std::vector<std::string> diffs;
         if (result_sig(header) != result_sig(source)) {
@@ -550,6 +572,12 @@ private:
         }
         case DeclKind::interface:
         case DeclKind::enum_: {
+            if (d.kind == DeclKind::interface) {   // the bodies of default methods (spec 07)
+                if (Symbol* same = header_item(m, item_key(d), SymbolKind::interface)) {
+                    merge_type(m, same, d.as<TypeDecl>());
+                    return;
+                }
+            }
             std::vector<Symbol*> other = header_items(m, item_key(d));
             if (!other.empty()) {
                 note(error(DiagCode::E3018, d.name_span,
@@ -591,7 +619,7 @@ private:
                        "differs"),
                  "declared in the header here", header.name_span);
         }
-        bool is_struct = type->kind == SymbolKind::struct_;
+        bool is_struct = type->kind == SymbolKind::struct_ || type->kind == SymbolKind::interface;
         for (const DeclPtr& mem : src.members) {
             if (mem->kind == DeclKind::check) continue;
             Access access = member_access(type, *mem);
@@ -738,7 +766,7 @@ private:
         FileScope& operator=(const FileScope&) = delete;
     };
 
-    /// Pushes a declaration's template parameters for the duration of a scope.
+    // Pushes a declaration's template parameters for the duration of a scope.
     struct TemplateScope {
         Resolver& r;
         bool      pushed = false;
@@ -759,6 +787,8 @@ private:
             for (const TemplateParam& p : d.template_params) {
                 for (const TypePtr& c : p.constraints) r.resolve_type(*c);
                 if (p.value_type) r.resolve_type(*p.value_type);
+                if (p.default_type) r.resolve_type(*p.default_type);
+                if (p.default_value) r.resolve_expr(*p.default_value);
             }
         }
         ~TemplateScope() {
@@ -779,9 +809,9 @@ private:
 
     // --- namespaces (spec 30) ------------------------------------------------------------
 
-    /// The modules whose declarations this file can name: itself, its imports, and the standard
-    /// library's modules after `import std;`. A module is not a namespace: their names are found
-    /// under the namespaces they declare.
+    // The modules whose declarations this file can name: itself, its imports, and the standard
+    // library's modules after `import std;`. A module is not a namespace: their names are found
+    // under the namespaces they declare.
     std::vector<Module*> visible_modules() const {
         std::vector<Module*> out{module_};
         auto add = [&](Module* m) {
@@ -793,6 +823,10 @@ private:
         }
         if (std_visible()) {
             for (Module* m : std_modules_) add(m);
+        }
+        // build.rifts is imported by every target of the project (its names are in namespace build).
+        if (auto b = program_.modules.find("build"); b != program_.modules.end() && !module_->name.starts_with("std")) {
+            add(b->second.get());
         }
         return out;
     }
@@ -815,7 +849,7 @@ private:
         return f;
     }
 
-    /// A loaded module that declares `key` but is not imported by this file (for E3023), or null.
+    // A loaded module that declares `key` but is not imported by this file (for E3023), or null.
     const Module* unimported_owner(const std::string& key) const {
         std::vector<Module*> visible = visible_modules();
         for (auto& [name, m] : program_.modules) {
@@ -842,7 +876,7 @@ private:
         return false;
     }
 
-    /// The names declared directly in `ns` that this file can see.
+    // The names declared directly in `ns` that this file can see.
     std::vector<std::string> names_in(const std::string& ns) const {
         std::vector<std::string> out;
         std::string prefix = ns.empty() ? "" : ns + "::";
@@ -861,7 +895,7 @@ private:
         return out;
     }
 
-    /// `namespace vk = gfx::vulkan;` of the current file, visible in the block it is written in.
+    // `namespace vk = gfx::vulkan;` of the current file, visible in the block it is written in.
     const ast::NamespaceAlias* find_alias(const std::string& name) const {
         const auto& f = in_header_ ? module_->header : module_->source;
         if (!f) return nullptr;
@@ -871,7 +905,7 @@ private:
         return nullptr;
     }
 
-    /// Reports one name declared in one namespace by two different modules (once per name).
+    // Reports one name declared in one namespace by two different modules (once per name).
     void check_one_module(const std::vector<Symbol*>& syms, const std::string& key, Span use) {
         bool all_functions = std::all_of(syms.begin(), syms.end(), [](const Symbol* s) { return s->kind == SymbolKind::function; });
         if (all_functions) return;   // overloads may come from several modules of the namespace
@@ -896,8 +930,8 @@ private:
         bool    hidden       = false;
     };
 
-    /// An unqualified name: the enclosing namespaces from the innermost out to the global one.
-    /// A name found at more than one level is ambiguous (spec 30, rule 3).
+    // An unqualified name: the enclosing namespaces from the innermost out to the global one.
+    // A name found at more than one level is ambiguous (spec 30, rule 3).
     Unqualified lookup_unqualified(const std::string& name, Span span, bool global, bool report) {
         Unqualified out;
         std::vector<std::string> levels = global ? std::vector<std::string>{""} : enclosing_levels(ns_);
@@ -936,7 +970,7 @@ private:
         return out;
     }
 
-    /// Checks the file's namespace aliases: they name a visible namespace and shadow nothing.
+    // Checks the file's namespace aliases: they name a visible namespace and shadow nothing.
     void check_aliases() {
         const auto& f = in_header_ ? module_->header : module_->source;
         if (!f) return;
@@ -977,7 +1011,7 @@ private:
         }
     }
 
-    /// Program-wide namespace rules (spec 30, rules 1 and 6).
+    // Program-wide namespace rules (spec 30, rules 1 and 6).
     void check_namespaces() {
         std::map<std::string, const Module*> declared;   // every namespace, by one module declaring it
         for (auto& [name, m] : program_.modules) {
@@ -1100,7 +1134,9 @@ private:
                                "a file annotation describes the code of a .rifts file, not a header", "in a header"),
                          "write it at the top of the .rifts file");
                 } else {
-                    for (AnnotationUse& u : f->ast.annotations) use_annotation(u, AnnotationTarget::file);
+                    for (AnnotationUse& u : f->ast.annotations) {
+                        if (Symbol* a = use_annotation(u, AnnotationTarget::file)) add_checks(u, a, AnnotationTarget::file, nullptr, nullptr, 0);
+                    }
                 }
             }
             for (DeclPtr& d : f->ast.decls) {
@@ -1158,7 +1194,7 @@ private:
         }
     }
 
-    /// A type's annotations, its generated members, and the annotations of its members.
+    // A type's annotations, its generated members, and the annotations of its members.
     void annotate_type(Module& m, Decl& d, Symbol* type, bool header) {
         std::set<const Symbol*> seen;
         for (AnnotationUse& u : d.annotations) {
@@ -1244,8 +1280,8 @@ private:
              "an annotation stands at most once on a declaration");
     }
 
-    /// Resolves the annotation a use names, checks where it is written, and makes the constant
-    /// that holds its value (resolved here, where the values are written).
+    // Resolves the annotation a use names, checks where it is written, and makes the constant
+    // that holds its value (resolved here, where the values are written).
     Symbol* use_annotation(AnnotationUse& u, AnnotationTarget target) {
         if (u.symbol) return u.symbol;   // done already (a type and its header/source)
         Symbol* a = lookup_path(u.path, Want::type, u.path.span);
@@ -1303,10 +1339,10 @@ private:
         return a;
     }
 
-    /// The file an annotation is declared in: its code (checks, generated members) is resolved there.
+    // The file an annotation is declared in: its code (checks, generated members) is resolved there.
     static bool declared_in_header(const Symbol* a) { return a->in_header; }
 
-    /// Copies the checks of annotation `a` for one use, resolved with `annotation` and `annotated`.
+    // Copies the checks of annotation `a` for one use, resolved with `annotation` and `annotated`.
     void add_checks(AnnotationUse& u, Symbol* a, AnnotationTarget target, const Symbol* owner, const Symbol* member,
                     std::size_t param_index) {
         const auto& ad = a->decl->as<TypeDecl>();
@@ -1349,7 +1385,7 @@ private:
             if (target == AnnotationTarget::type) {
                 ctx.type = const_cast<Symbol*>(owner);
             } else {
-                static const char* spelling[] = {"", "field", "function", "parameter", "alternative", ""};
+                static const char* spelling[] = {"", "field", "function", "parameter", "alternative", "", "file"};
                 auto hd       = std::make_unique<VariableDecl>(DeclKind::variable, u.span);
                 hd->name      = "annotated";
                 hd->name_span = u.span;
@@ -1391,8 +1427,8 @@ private:
         }
     }
 
-    /// Adds the members of `a`'s generate block to the annotated type, as if its author had
-    /// written them (spec 29). Interfaces go into the base list.
+    // Adds the members of `a`'s generate block to the annotated type, as if its author had
+    // written them (spec 29). Interfaces go into the base list.
     void generate_members(Module& m, Decl& d, Symbol* type, AnnotationUse& u, Symbol* a, bool header) {
         if (d.kind == DeclKind::enum_ || d.kind == DeclKind::interface) {
             if (d.kind == DeclKind::interface) {
@@ -1498,8 +1534,70 @@ private:
         return method->parent->kind == SymbolKind::interface || f->is_virtual || f->is_abstract || f->is_override;
     }
 
-    static bool same_signature(const Symbol* a, const Symbol* b) {
-        return a->name == b->name && params_sig(*a->function()) == params_sig(*b->function());
+    // Whether two written types are the same type: by the symbols they resolved to, so that
+    // `wnd::event` (through a namespace alias) and `event` (inside the namespace) match.
+    static bool same_type_expr(const TypeExpr& a, const TypeExpr& b) {
+        if (a.kind == TypeKind::reference && b.kind == TypeKind::reference) {
+            const auto& ra = a.as<ReferenceType>();
+            const auto& rb = b.as<ReferenceType>();
+            return ra.is_mut == rb.is_mut && ra.inner && rb.inner && same_type_expr(*ra.inner, *rb.inner);
+        }
+        if (a.kind == TypeKind::named && b.kind == TypeKind::named) {
+            const auto& na = a.as<NamedType>();
+            const auto& nb = b.as<NamedType>();
+            if (na.symbol && nb.symbol && !na.path.segments.empty() && !nb.path.segments.empty()) {
+                const PathSegment& la = na.path.segments.back();
+                const PathSegment& lb = nb.path.segments.back();
+                if (na.symbol != nb.symbol || la.template_args.size() != lb.template_args.size()) return false;
+                for (std::size_t i = 0; i < la.template_args.size(); ++i) {
+                    const TemplateArg& x = la.template_args[i];
+                    const TemplateArg& y = lb.template_args[i];
+                    if (x.is_mut != y.is_mut) return false;
+                    if (x.type && y.type) {
+                        if (!same_type_expr(*x.type, *y.type)) return false;
+                    } else {
+                        return false;      // value arguments: only an identical spelling matched (above)
+                    }
+                }
+                return true;
+            }
+        }
+        return to_string(a) == to_string(b);
+    }
+
+    // Resolves the parameter types of `method` where it is declared, ahead of the bodies phase,
+    // so that signatures spelled differently (an alias, a qualified name) can be compared.
+    // Errors are left to the bodies phase, which resolves them again and reports them once.
+    void resolve_signature_early(const Symbol* method) {
+        auto* f = const_cast<FunctionDecl*>(method->function());
+        if (!f || !method->module) return;
+        FileScope   fs(*this, method->module, method->in_header);
+        ns_ = method->ns.empty() && method->parent ? method->parent->ns : method->ns;
+        std::size_t mark = diags_.size();
+        for (Param& p : f->params) {
+            const TypeExpr* inner = p.type.get();
+            while (inner && inner->kind == TypeKind::reference) inner = inner->as<ReferenceType>().inner.get();
+            if (inner && inner->kind == TypeKind::named && !inner->as<NamedType>().symbol) resolve_type(*p.type);
+        }
+        (void)diags_.take_since(mark);
+    }
+
+    bool same_signature(const Symbol* a, const Symbol* b) {
+        if (a->name != b->name) return false;
+        if (params_sig(*a->function()) == params_sig(*b->function())) return true;
+        if (a->function()->params.size() != b->function()->params.size()) return false;
+        resolve_signature_early(a);
+        resolve_signature_early(b);
+        const FunctionDecl& fa = *a->function();
+        const FunctionDecl& fb = *b->function();
+        if (fa.params.size() != fb.params.size() || fa.is_mut != fb.is_mut || fa.is_move != fb.is_move) return false;
+        for (std::size_t i = 0; i < fa.params.size(); ++i) {
+            const Param& pa = fa.params[i];
+            const Param& pb = fb.params[i];
+            if (pa.is_implicit != pb.is_implicit || pa.is_compile_time != pb.is_compile_time) return false;
+            if (!pa.type || !pb.type || !same_type_expr(*pa.type, *pb.type)) return false;
+        }
+        return true;
     }
 
     static bool is_ancestor(const Symbol* t, const Symbol* maybe_base) {
@@ -1515,6 +1613,7 @@ private:
                 continue;
             }
             check_bases(t);
+            add_default_methods(m, t);
             check_methods(t);
         }
     }
@@ -1559,6 +1658,71 @@ private:
         }
     }
 
+    // The body of an interface method with a default (spec 07), or null.
+    static const FunctionDecl* default_body(const Symbol* req) {
+        if (req->parent->kind != SymbolKind::interface) return nullptr;
+        if (req->definition && req->definition->as<FunctionDecl>().body) return &req->definition->as<FunctionDecl>();
+        if (req->function() && req->function()->body) return req->function();
+        return nullptr;
+    }
+
+    // Interface default methods (spec 07): a struct or class that doesn't implement such a
+    // method gets a copy of the default as its own `override`, resolved where the interface is.
+    void add_default_methods(Module& m, Symbol* t) {
+        if (t->kind == SymbolKind::interface) return;
+        Inherited               inh;
+        std::set<const Symbol*> seen;
+        collect_inherited(t, inh, seen);
+        std::vector<Symbol*> chain{t};
+        for (Symbol* b : inh.methods) {
+            if (b->parent->kind == SymbolKind::class_ && std::find(chain.begin(), chain.end(), b->parent) == chain.end()) {
+                chain.push_back(b->parent);
+            }
+        }
+        std::map<std::string, Symbol*> chosen;   // signature → the interface method whose default is used
+        for (Symbol* req : inh.methods) {
+            const FunctionDecl* def = default_body(req);
+            if (!def) continue;
+            bool implemented = false;
+            for (Symbol* c : chain) {
+                for (Symbol* mem : c->member_order) {
+                    if (mem->kind == SymbolKind::method && same_signature(mem, req) && !mem->function()->is_abstract) implemented = true;
+                }
+            }
+            if (implemented) continue;
+            std::string key = req->name + params_sig(*req->function());
+            if (auto it = chosen.find(key); it != chosen.end()) {
+                if (it->second->parent == req->parent) continue;
+                Diagnostic& e = error(DiagCode::E3045, t->span,
+                                      std::format("'{}' gets two defaults for '{}{}', from '{}' and '{}'", t->name,
+                                                  req->name, params_sig(*req->function()), it->second->parent->name, req->parent->name),
+                                      "override it");
+                note(e, "one default here", it->second->span);
+                note(e, "the other here", req->span);
+                continue;
+            }
+            chosen[key] = req;
+        }
+        for (auto& [key, req] : chosen) {
+            const FunctionDecl* def    = default_body(req);
+            Module*             origin = req->parent->module;
+            ast::Cloner         cl([&](const Symbol& o) { return origin->make(o.kind, o.name, o.span); });
+            std::unique_ptr<FunctionDecl> fn = cl.function(*def);
+            fn->access      = t->kind == SymbolKind::struct_ ? Access::none : Access::public_;
+            fn->is_override = true;
+            fn->is_virtual  = false;
+            fn->is_abstract = false;
+            fn->ns          = t->ns;
+            Symbol* sym     = add_member(m, t, *fn, t->in_header);
+            sym->definition = fn.get();
+            bool header     = def == req->function() ? req->in_header : false;
+            generated_[fn.get()] = GeneratedOrigin{origin, header, req->parent->ns, nullptr};
+            Decl* owner_decl = const_cast<Decl*>(t->source_block ? t->source_block : static_cast<const Decl*>(t->decl));
+            auto* owner      = &owner_decl->as<TypeDecl>();
+            owner->members.push_back(std::move(fn));
+        }
+    }
+
     void check_methods(Symbol* t) {
         Inherited               inh;
         std::set<const Symbol*> seen;
@@ -1599,6 +1763,17 @@ private:
             if (f.is_override) {
                 bool ok = std::any_of(same_name.begin(), same_name.end(),
                                       [&](Symbol* b) { return is_dynamic(b) && same_signature(b, mem); });
+                for (Symbol* b : same_name) {
+                    if (!is_dynamic(b) || !same_signature(b, mem)) continue;
+                    if (b->function()->is_compile_time != f.is_compile_time) {
+                        Diagnostic& e = error(DiagCode::E3051, mem->span,
+                                              std::format("'{}' must {}be 'compile_time', like the method it implements",
+                                                          describe_fn(*mem), b->function()->is_compile_time ? "" : "not "),
+                                              b->function()->is_compile_time ? "add 'compile_time'" : "remove 'compile_time'");
+                        note(e, "implemented method here", b->span);
+                    }
+                    break;
+                }
                 if (!ok && !inh.opaque) {
                     Diagnostic& e = error(DiagCode::E3043, mem->span,
                                           std::format("'{}' is marked 'override' but overrides nothing", describe_fn(*mem)),
@@ -1701,6 +1876,7 @@ private:
         case DeclKind::function:
             resolve_function(d.as<FunctionDecl>(), self);
             if (!self && d.as<FunctionDecl>().is_operator) check_operator_home(d.as<FunctionDecl>());
+            apply_wraps(d.as<FunctionDecl>(), self);
             return;
         case DeclKind::variable:
         case DeclKind::field: {
@@ -1721,7 +1897,11 @@ private:
                     scopes_.pop_back();
                 }
             }
+            // Inside a type's body its nested types are found by their short names.
+            std::string saved_ns = ns_;
+            ns_                  = join_ns(d.ns, d.name);
             for (const DeclPtr& mem : d.as<TypeDecl>().members) resolve_decl(*mem, t);
+            ns_ = saved_ns;
             return;
         }
         case DeclKind::enum_: {
@@ -1734,6 +1914,172 @@ private:
             return;
         }
         }
+    }
+
+    // --- wrapping a function body (annotations, section 8) ------------------------------------
+
+    static bool is_wrapped_body_call(const Expr& e) {
+        if (e.kind != ExprKind::call) return false;
+        const auto& c = e.as<CallExpr>();
+        return c.args.empty() && c.callee->kind == ExprKind::path && to_string(c.callee->as<PathExpr>().path) == "std::meta::wrapped_body";
+    }
+
+    // How often `std::meta::wrapped_body()` runs on the paths through `e`: (fewest, most).
+    // A call inside a loop counts as "many".
+    static std::pair<int, int> wrapped_calls(Expr& e) {
+        static constexpr int many = 1000;
+        auto add = [](std::pair<int, int> a, std::pair<int, int> b) {
+            return std::pair<int, int>{std::min(a.first + b.first, many), std::min(a.second + b.second, many)};
+        };
+        if (is_wrapped_body_call(e)) return {1, 1};
+        switch (e.kind) {
+        case ExprKind::block: {
+            std::pair<int, int> sum{0, 0};
+            for (StmtPtr& st : e.as<BlockExpr>().statements) {
+                switch (st->kind) {
+                case StmtKind::variable:
+                    if (st->as<VariableStmt>().init) sum = add(sum, wrapped_calls(*st->as<VariableStmt>().init));
+                    break;
+                case StmtKind::assign: sum = add(sum, wrapped_calls(*st->as<AssignStmt>().value)); break;
+                case StmtKind::discard: sum = add(sum, wrapped_calls(*st->as<DiscardStmt>().value)); break;
+                case StmtKind::expression: sum = add(sum, wrapped_calls(*st->as<ExprStmt>().expr)); break;
+                case StmtKind::destructure: sum = add(sum, wrapped_calls(*st->as<DestructureStmt>().init)); break;
+                case StmtKind::check: break;
+                }
+            }
+            if (e.as<BlockExpr>().tail) sum = add(sum, wrapped_calls(*e.as<BlockExpr>().tail));
+            return sum;
+        }
+        case ExprKind::if_: {
+            auto&               i = e.as<IfExpr>();
+            std::pair<int, int> t = wrapped_calls(*i.then_block);
+            std::pair<int, int> f = i.else_branch ? wrapped_calls(*i.else_branch) : std::pair<int, int>{0, 0};
+            return add(wrapped_calls(*i.condition), {std::min(t.first, f.first), std::max(t.second, f.second)});
+        }
+        case ExprKind::match: {
+            auto&               m = e.as<MatchExpr>();
+            std::pair<int, int> arms{many, 0};
+            for (MatchArm& a : m.arms) {
+                std::pair<int, int> c = wrapped_calls(*a.body);
+                arms                  = {std::min(arms.first, c.first), std::max(arms.second, c.second)};
+            }
+            if (m.arms.empty()) arms = {0, 0};
+            return add(wrapped_calls(*m.scrutinee), arms);
+        }
+        case ExprKind::while_:
+        case ExprKind::for_: {
+            BlockExpr& body = e.kind == ExprKind::while_ ? *e.as<WhileExpr>().body : *e.as<ForExpr>().body;
+            return wrapped_calls(body).second > 0 ? std::pair<int, int>{0, many} : std::pair<int, int>{0, 0};
+        }
+        case ExprKind::lambda: return {0, 0};
+        default: {
+            std::pair<int, int> sum{0, 0};
+            ast::walk_exprs(e, [&](Expr& x) {
+                if (&x == &e) return true;
+                sum = add(sum, wrapped_calls(x));
+                return false;
+            });
+            return sum;
+        }
+        }
+    }
+
+    // Gives each `std::meta::wrapped_body()` call in `e` its own copy of `body`.
+    void attach_wrapped(Expr& e, const BlockExpr& body, Module& origin, bool& first, BlockPtr& original) {
+        ast::walk_exprs(e, [&](Expr& x) {
+            if (!is_wrapped_body_call(x)) return true;
+            auto& c = x.as<CallExpr>();
+            if (first) {
+                c.wrapped = std::move(original);
+                first     = false;
+            } else {
+                ast::Cloner cl([&](const Symbol& o) { return origin.make(o.kind, o.name, o.span); });
+                c.wrapped = cl.block(body);
+            }
+            return false;
+        });
+    }
+
+    std::set<const Symbol*> wrap_checked_;
+    bool                    instance_ = false;   // resolving the copy of a template for an instance
+
+    // The `wrap` blocks of the annotations on `fn` replace its body; the first annotation is the
+    // outermost. Each block is resolved where its annotation is declared, without the parameters.
+    void apply_wraps(FunctionDecl& fn, Symbol* self) {
+        if (!fn.body) return;
+        auto it = symbol_of_.find(&fn);
+        if (it == symbol_of_.end() || !it->second->decl) return;
+        Symbol* fs = it->second;
+        std::vector<AnnotationUse*> uses;
+        for (AnnotationUse& u : const_cast<Decl*>(static_cast<const Decl*>(fs->decl))->annotations) {
+            if (u.symbol && u.symbol->decl && u.symbol->decl->kind == DeclKind::struct_ && wrap_block_of(u.symbol)) uses.push_back(&u);
+        }
+        if (uses.empty()) return;
+        // A template's wraps are applied to each instance (its own copy of the body).
+        if (!instance_ && (fn.is_template || (self && self->decl && self->decl->is_template))) return;
+        for (auto u = uses.rbegin(); u != uses.rend(); ++u) {
+            Symbol*          a    = (*u)->symbol;
+            const BlockExpr& wrap = *wrap_block_of(a);
+            if (wrap_checked_.insert(a).second) {
+                BlockExpr& w = const_cast<BlockExpr&>(wrap);
+                std::pair<int, int> n = wrapped_calls(w);
+                if (n.first != 1 || n.second != 1) {
+                    note(error(DiagCode::E3076, w.span,
+                               "the wrap block must call 'std::meta::wrapped_body()' exactly once on every path", "wrap block"),
+                         n.second == 0 ? "it never calls it" : n.first == 0 ? "some paths don't call it" : "some paths call it more than once");
+                }
+            }
+            ast::Cloner cl([&](const Symbol& o) { return a->module->make(o.kind, o.name, o.span); });
+            BlockPtr    copy = cl.block(wrap);
+            // `annotated`: the function, as a std::meta::function (the checker gives it its value).
+            auto hd       = std::make_unique<VariableDecl>(DeclKind::variable, (*u)->span);
+            hd->name      = "annotated";
+            hd->name_span = (*u)->span;
+            hd->storage   = Storage::compile_time;
+            Path hp;
+            hp.span = (*u)->span;
+            for (std::string_view part : {std::string_view("std"), std::string_view("meta"), std::string_view("function")}) {
+                PathSegment ps;
+                ps.name = std::string(part);
+                ps.span = (*u)->span;
+                hp.segments.push_back(std::move(ps));
+            }
+            hd->type      = std::make_unique<NamedType>((*u)->span, std::move(hp));
+            Symbol* h     = a->module->make(SymbolKind::global, "annotated", (*u)->span);
+            h->decl       = hd.get();
+            h->is_private = true;
+            program_.cloned_decls.push_back(std::move(hd));
+            program_.wrap_handles.emplace_back(h, fs);
+            {
+                FileScope fs_scope(*this, a->module, declared_in_header(a) && a->module->header.has_value());
+                std::string saved_ns = ns_;
+                ns_                  = a->ns;
+                std::optional<AnnotationContext> saved = actx_;
+                actx_                                  = AnnotationContext{(*u)->value_symbol, nullptr, h};
+                FunctionContext saved_fn               = fn_;
+                fn_                                    = FunctionContext{};
+                declared_later_.clear();
+                collect_declarations(*copy);
+                scopes_.emplace_back();
+                resolve_block(*copy);
+                scopes_.pop_back();
+                fn_    = saved_fn;
+                actx_  = saved;
+                ns_    = saved_ns;
+            }
+            BlockPtr original = std::move(fn.body);
+            bool     first    = true;
+            const BlockExpr& body = *original;
+            attach_wrapped(*copy, body, *fs->module, first, original);
+            fn.body = std::move(copy);
+        }
+    }
+
+    // The `wrap` block of annotation `a`: in its declaration or its .rifts block.
+    static const BlockExpr* wrap_block_of(const Symbol* a) {
+        if (a->decl && a->decl->as<TypeDecl>().wrap) return a->decl->as<TypeDecl>().wrap.get();
+        if (a->source_block && a->source_block->as<TypeDecl>().wrap) return a->source_block->as<TypeDecl>().wrap.get();
+        return nullptr;
     }
 
     void resolve_function(FunctionDecl& fn, Symbol* self) {
@@ -1759,8 +2105,8 @@ private:
         fn_ = saved;
     }
 
-    /// A free `operator` function lives with one of its operand types: same namespace, same
-    /// module (spec 16, 30). So only the module that declares a type defines its operators.
+    // A free `operator` function lives with one of its operand types: same namespace, same
+    // module (spec 16, 30). So only the module that declares a type defines its operators.
     void check_operator_home(const FunctionDecl& fn) {
         std::vector<const Symbol*> types;
         for (const Param& p : fn.params) {
@@ -1865,12 +2211,16 @@ private:
 
     // --- paths ----------------------------------------------------------------------------
 
-    /// A template type needs exactly its parameters as arguments (spec 14).
+    // A template type needs exactly its parameters as arguments (spec 14).
     void check_template_arity(const Path& path, const Symbol* s, Span span) {
         if (!s || !s->is_type() || !s->decl || !s->decl->is_template) return;
         std::size_t given = path.segments.empty() ? 0 : path.segments.back().template_args.size();
         std::size_t wanted = s->decl->template_params.size();
-        if (given == wanted) {
+        std::size_t required = 0;
+        for (const TemplateParam& p : s->decl->template_params) {
+            if (!p.default_type && !p.default_value) ++required;
+        }
+        if (given >= required && given <= wanted) {
             // Types for `type` parameters, values for value parameters (`template<usize N>`).
             const auto& args = path.segments.back().template_args;
             for (std::size_t i = 0; i < given; ++i) {
@@ -1884,13 +2234,14 @@ private:
             return;
         }
         error(DiagCode::E4180, span,
-              std::format("'{}' takes {} template argument{}, but {} {} given", s->name, wanted, wanted == 1 ? "" : "s",
+              std::format("'{}' takes {}{} template argument{}, but {} {} given", s->name,
+                          required == wanted ? "" : std::format("{} to ", required), wanted, wanted == 1 ? "" : "s",
                           given, given == 1 ? "is" : "are"),
               "wrong number of template arguments");
     }
 
-    /// A bare name as a template argument is parsed as a type; it is a value argument when it
-    /// names a value: a template value parameter or a compile_time constant (spec 14, 15).
+    // A bare name as a template argument is parsed as a type; it is a value argument when it
+    // names a value: a template value parameter or a compile_time constant (spec 14, 15).
     bool names_value(const TypeExpr& t) {
         if (t.kind != TypeKind::named) return false;
         const Path& p = t.as<NamedType>().path;
@@ -1921,7 +2272,7 @@ private:
         }
     }
 
-    /// Finds a member (field, method, alternative) in a type or its ancestors.
+    // Finds a member (field, method, alternative) in a type or its ancestors.
     static Symbol* find_member(const Symbol* t, const std::string& name, bool& opaque) {
         opaque = opaque || t->has_opaque_base;
         if (auto it = t->members.find(name); it != t->members.end() && !it->second.empty()) {
@@ -2037,7 +2388,7 @@ private:
         return nullptr;
     }
 
-    /// Records every local variable declared in a function body, for "declared later" notes.
+    // Records every local variable declared in a function body, for "declared later" notes.
     void collect_declarations(const BlockExpr& block) {
         std::function<void(const Expr&)> walk_expr;
         std::function<void(const BlockExpr&)> walk_block = [&](const BlockExpr& b) {
@@ -2045,6 +2396,10 @@ private:
                 if (st->kind == StmtKind::variable) {
                     const auto& v = st->as<VariableStmt>();
                     declared_later_.emplace(v.name, v.name_span);
+                } else if (st->kind == StmtKind::destructure) {
+                    for (const DestructureBinding& binding : st->as<DestructureStmt>().bindings) {
+                        if (!binding.wildcard) declared_later_.emplace(binding.name, binding.span);
+                    }
                 } else if (st->kind == StmtKind::expression) {
                     walk_expr(*st->as<ExprStmt>().expr);
                 }
@@ -2068,7 +2423,7 @@ private:
         walk_block(block);
     }
 
-    /// The four alternatives exported directly in `std::` (spec 08), or null.
+    // The four alternatives exported directly in `std::` (spec 08), or null.
     Symbol* std_export(const std::string& name) const {
         Module* stdm = program_.std_module;
         std::string_view owner = name == "some" || name == "none" ? "option" : name == "ok" || name == "error" ? "result" : "";
@@ -2079,7 +2434,7 @@ private:
         return alt == type->members.end() ? nullptr : alt->second.front();
     }
 
-    /// Walks `T::member::...` from a type symbol.
+    // Walks `T::member::...` from a type symbol.
     Symbol* lookup_members(Symbol* base, Path& path, std::size_t i, Want want, Span span) {
         std::string display;
         for (std::size_t k = 0; k < i; ++k) display += (k ? "::" : "") + path.segments[k].name;
@@ -2098,19 +2453,6 @@ private:
             }
             bool    opaque = false;
             Symbol* mem    = find_member(base, name, opaque);
-            if (!mem && base->module && base->module->name == "std") {
-                // A few std types have types of their own (`std::thread_pool::options`, spec 28):
-                // the library declares them as `thread_pool_options` and so on.
-                std::string inner = base->name + "_" + name;
-                if (sema::is_std_nested_type(inner)) {
-                    if (Symbol* nested = base->module->item(join_ns(base->ns, inner)); nested && nested->is_type()) {
-                        display += "::" + name;
-                        base = nested;
-                        ++i;
-                        continue;
-                    }
-                }
-            }
             if (!mem) {
                 if (opaque) return nullptr;
                 Diagnostic& e = error(DiagCode::E3025, seg,
@@ -2291,6 +2633,16 @@ private:
         switch (t.kind) {
         case TypeKind::named: {
             auto& nt  = t.as<NamedType>();
+            {   // `std::c_library::function<R(A...)>`: a C function type (dynamic libraries)
+                auto& segs = nt.path.segments;
+                if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "c_library" && segs[2].name == "function" &&
+                    segs[2].template_args.size() == 1 && segs[2].template_args[0].type &&
+                    segs[2].template_args[0].type->kind == TypeKind::function) {
+                    resolve_type(*segs[2].template_args[0].type);
+                    nt.symbol = nullptr;
+                    return;
+                }
+            }
             nt.symbol = lookup_path(nt.path, Want::type, nt.span);
             // `annotated` in a generated member of a template type is the instance: the template
             // with its own parameters as arguments (spec 29).
@@ -2335,6 +2687,9 @@ private:
         }
         case TypeKind::auto_:
         case TypeKind::deduce: return;
+        case TypeKind::tuple:
+            for (TypePtr& e : t.as<TupleType>().elements) resolve_type(*e);
+            return;
         }
     }
 
@@ -2357,6 +2712,7 @@ private:
     }
 
     void resolve_stmt(Stmt& s) {
+        for (ExprPtr& id : s.allowed) resolve_expr(*id);   // `@std::allow{ .id = ... }` on the statement
         switch (s.kind) {
         case StmtKind::check: resolve_check(s.as<CheckStmt>().check); return;
         case StmtKind::variable: {
@@ -2376,6 +2732,17 @@ private:
         }
         case StmtKind::discard: resolve_expr(*s.as<DiscardStmt>().value); return;
         case StmtKind::expression: resolve_expr(*s.as<ExprStmt>().expr); return;
+        case StmtKind::destructure: {
+            auto& d = s.as<DestructureStmt>();
+            resolve_expr(*d.init);
+            for (DestructureBinding& b : d.bindings) {
+                if (b.wildcard) continue;
+                if (b.type) resolve_type(*b.type);
+                b.symbol = declare_local(b.name, b.span, LocalKind::variable, b.is_mut,
+                                         b.type && b.type->kind == TypeKind::reference);
+            }
+            return;
+        }
         }
     }
 
@@ -2460,6 +2827,12 @@ private:
             return;
         }
         case ExprKind::struct_literal: resolve_struct_literal(e.as<StructLiteralExpr>()); return;
+        case ExprKind::tuple:
+            for (ExprPtr& x : e.as<TupleExpr>().elements) resolve_expr(*x);
+            return;
+        case ExprKind::list:
+            for (ExprPtr& x : e.as<ListExpr>().elements) resolve_expr(*x);
+            return;
         case ExprKind::lambda: resolve_lambda(e.as<LambdaExpr>()); return;
         case ExprKind::if_: {
             auto& i = e.as<IfExpr>();
@@ -2595,7 +2968,7 @@ private:
         me.symbol = mem;
     }
 
-    /// Fields of a type and its base classes, base fields first.
+    // Fields of a type and its base classes, base fields first.
     static void collect_fields(const Symbol* t, std::vector<Symbol*>& out, bool& opaque) {
         opaque = opaque || t->has_opaque_base;
         for (const Symbol* b : t->bases) {
@@ -2722,6 +3095,9 @@ private:
             b.symbol = declare_local(b.name, b.span, LocalKind::binding, false, false);
             return;
         }
+        case PatternKind::tuple:
+            for (PatternPtr& el : p.as<TuplePattern>().elements) resolve_pattern(*el);
+            return;
         case PatternKind::enum_alternative: {
             auto&   ep  = p.as<EnumPattern>();
             Symbol* sym = lookup_path(ep.path, Want::value, ep.path.span);
@@ -2848,7 +3224,7 @@ std::string source_text(const SourceManager& sources, Span span) {
     return std::string(text.substr(begin, span.end - begin));
 }
 
-/// Removes the common indentation of the lines of `text` and indents them by `indent`.
+// Removes the common indentation of the lines of `text` and indents them by `indent`.
 std::string reindent(const std::string& text, std::string_view indent) {
     std::vector<std::string> lines;
     std::size_t              at = 0;
@@ -2875,7 +3251,7 @@ std::string reindent(const std::string& text, std::string_view indent) {
     return out;
 }
 
-/// `text` with the word `annotated` replaced by `name` (the generated code names its type).
+// `text` with the word `annotated` replaced by `name` (the generated code names its type).
 std::string replace_annotated(std::string text, const std::string& name) {
     const std::string word = "annotated";
     for (std::size_t at = text.find(word); at != std::string::npos; at = text.find(word, at)) {

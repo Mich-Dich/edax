@@ -12,7 +12,7 @@ enum token : u8 {
     close,
 }
 
-/// Errors are an enum, not exceptions: every failure is in the signature.
+// Errors are an enum, not exceptions: every failure is in the signature.
 enum calc_error : u8 {
     unexpected_char(char),
     unexpected_end,
@@ -72,7 +72,7 @@ char first_char(std::str one) {
     return cast::checked<char>(cast<u32>(byte)).value_or('?');
 }
 
-/// The parser borrows the tokens, so it is a `view` struct (spec 12); `mut` methods advance it.
+// The parser borrows the tokens, so it is a `view` struct (spec 12); `mut` methods advance it.
 view struct parser {
     std::darray<token>& tokens;
     usize at = 0;
@@ -82,7 +82,7 @@ view struct parser {
         return std::some(this.tokens[this.at]);
     }
 
-    /// expression := term (('+' | '-') term)*
+    // expression := term (('+' | '-') term)*
     std::result<f64, calc_error> expression() mut {
         mut f64 value = this.term()?;
         while (true) {
@@ -95,7 +95,7 @@ view struct parser {
         return std::ok(value);
     }
 
-    /// term := factor (('*' | '/') factor)*
+    // term := factor (('*' | '/') factor)*
     std::result<f64, calc_error> term() mut {
         mut f64 value = this.factor()?;
         while (true) {
@@ -113,7 +113,7 @@ view struct parser {
         return std::ok(value);
     }
 
-    /// factor := number | '-' factor | '(' expression ')'
+    // factor := number | '-' factor | '(' expression ')'
     std::result<f64, calc_error> factor() mut {
         std::option<token> next = this.peek();
         this.at += 1;

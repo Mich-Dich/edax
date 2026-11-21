@@ -1,0 +1,39 @@
+// A global allocator of the program's own: every allocation of the program goes through it,
+// also those of std::string and the other library types.
+import std;
+
+namespace app {
+    struct counting_heap : std::allocator {
+        std::raw_ptr<mut u8> allocate(usize size, usize alignment) mut override {
+            _ = blocks.fetch_wrapping_add(1, std::memory_order::relaxed);
+            _ = bytes.fetch_wrapping_add(cast<u64>(size), std::memory_order::relaxed);
+            mut std::sealable_allocator heap = default;
+            return heap.allocate(size, alignment);
+        }
+
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override {
+            _ = blocks.fetch_wrapping_sub(1, std::memory_order::relaxed);
+            mut std::sealable_allocator heap = default;
+            heap.free(block, size, alignment);
+        }
+
+        unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
+            mut std::sealable_allocator heap = default;
+            return heap.reallocate(block, old_size, new_size, alignment);
+        }
+    }
+
+    static std::atomic<u64> blocks = default;
+    static std::atomic<u64> bytes = default;
+}
+
+i32 main() {
+    {
+        std::string text = std::string::from("a string that is too long for the inline buffer");
+        mut std::darray<u64> values = default;
+        values.push(1);
+        std::println(f"{text.len()} {values.len()}: {app::blocks.load(std::memory_order::relaxed)} blocks in use");
+    }
+    std::println(f"after: {app::blocks.load(std::memory_order::relaxed)} blocks in use, {app::bytes.load(std::memory_order::relaxed) > 0}");
+    return 0;
+}

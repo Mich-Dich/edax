@@ -1,0 +1,6 @@
+// feature 02: limits of number types are T::min, T::max, T::bits (and infinity, nan, epsilon for floats).
+u32 a() { return u32::maximum; }       //~ error[E3025]: 'u32' has no constant 'maximum'
+f64 b() { return f64::infinity; }
+u64 c() { return u64::max; }
+u32 d() { return i64::bits; }
+i8 e() { return i8::min; }

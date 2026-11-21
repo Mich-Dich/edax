@@ -1,0 +1,175 @@
+// windowing/engine/application (see application.rifth).
+
+import std;
+import windowing::engine::layer;
+import windowing::engine::renderer;
+import windowing::engine::settings;
+import windowing::engine::timing;
+
+namespace engine {
+    namespace wnd = std::windowing;
+
+    class application {
+    public:
+        static std::result<application, wnd::error> make(std::filesystem::path project, window_attributes default_attributes) {
+            mut window_attributes attributes = move default_attributes;
+            serialize_window_attributes(project, mut attributes, serialize_option::load);
+
+            mut wnd::system sys = wnd::system::start()?;
+            std::log::info(f"windowing platform: {sys.platform()}");
+            for (wnd::monitor& m : sys.monitors()) {
+                std::log::info(f"monitor {m.id} '{m.name}': {m.area.extent.width}x{m.area.extent.height} at ({m.area.origin.x}, {m.area.origin.y}), {m.refresh_rate} Hz, scale {m.content_scale.x:.2}{if (m.primary) { " (primary)" } else { "" }}");
+            }
+            mut renderer r = renderer::make(mut sys)?;
+            mut wnd::gl_window main_window = sys.create_gl_window(wnd::window::config{
+                .title    = attributes.title.as_str(),
+                .size     = wnd::size{ .width = attributes.width, .height = attributes.height },
+                .position = std::some(wnd::point{ .x = attributes.pos_x, .y = attributes.pos_y }),
+            }, gl_33, wnd::opengl::sharing::join(r.share_group()))?;
+            main_window.set_swap_interval(if (attributes.vsync) { 1 } else { 0 });
+            if (attributes.size_state == window_size_state::fullscreen) {
+                main_window.enter_fullscreen(sys.primary_monitor().value_or(0));
+            }
+            std::log::info(f"main window {main_window.id()} in share group {main_window.share_group().id()}");
+            r.load_assets();
+            return std::ok(application{
+                .project     = project.clone(),
+                .config_dir  = config_dir(project),
+                .attributes  = move attributes,
+                .system      = move sys,
+                .renderer    = move r,
+                .main_window = move main_window,
+                .fps         = interval_controller::with_fps(144),
+                .clock       = frame_clock::start(),
+            });
+        }
+
+        void push_layer(std::unique_ptr<layer> l) mut {
+            this.layers.push_layer(move l);
+            this.attach_last();
+        }
+
+        void push_overlay(std::unique_ptr<layer> l) mut {
+            this.layers.push_overlay(move l);
+            this.attach_last();
+        }
+
+        void set_target_fps(u32 fps) mut { this.fps.set_target_fps(fps); }
+
+        void run() mut {
+            mut std::darray<wnd::event> events = std::darray<wnd::event>::with_capacity(256);
+            while (!this.main_window.should_close() && !this.todo.quit) {
+                this.fps.begin();
+                // 1. The window system, once for every window.
+                if (this.todo.idle) {
+                    this.system.wait_for(std::time::duration::milliseconds(250));
+                } else {
+                    this.system.poll();
+                }
+                this.todo.idle = false;
+                bool new_second = this.clock.tick();
+
+                // 2. + 3. The main window's events, then the updates.
+                this.main_window.drain_events(mut events);
+                {
+                    mut context ctx = context{
+                        .system      = this.system,
+                        .main_window = this.main_window,
+                        .renderer    = this.renderer,
+                        .commands    = this.todo,
+                        .stats       = this.clock.stats(),
+                        .config_dir  = this.config_dir,
+                    };
+                    for (wnd::event& e : events) {
+                        _ = this.layers.dispatch(e, mut ctx);
+                    }
+                    this.layers.update(mut ctx);
+                }
+
+                // 4. What the layers asked for.
+                if (std::take(mut this.todo.toggle_fullscreen)) {
+                    match (this.main_window.mode()) {
+                        wnd::window_mode::fullscreen(_) => this.main_window.leave_fullscreen(),
+                        wnd::window_mode::windowed      => this.main_window.enter_fullscreen(this.system.primary_monitor().value_or(0)),
+                    }
+                }
+
+                // 5. Assets the loader finished: uploaded into the share group, no window involved.
+                match (this.renderer.upload_arrivals()) {
+                    std::some(img) => this.main_window.set_icon(img),
+                    std::none      => {},
+                }
+
+                // 6. Render.
+                if (this.main_window.should_draw()) {
+                    render_context rc = render_context{ .renderer = this.renderer, .stats = this.clock.stats() };
+                    mut wnd::opengl::frame frame = this.main_window.begin_frame();
+                    this.layers.render(rc, mut frame);
+                    frame.present();
+                }
+
+                // 7. The clock.
+                this.clock.work_done();
+                if (new_second) {
+                    this.main_window.set_title(std::format(f"{this.attributes.title} - {this.clock.stats().fps} fps").as_str());
+                }
+                if (!this.todo.idle) {
+                    this.fps.wait();
+                }
+            }
+            std::log::info(f"application stopped after {this.clock.stats().frame_count} frames ({this.clock.stats().total_time:.1} s)");
+        }
+
+        ~application() {
+            {
+                mut context ctx = context{
+                    .system      = this.system,
+                    .main_window = this.main_window,
+                    .renderer    = this.renderer,
+                    .commands    = this.todo,
+                    .stats       = this.clock.stats(),
+                    .config_dir  = this.config_dir,
+                };
+                this.layers.detach_all(mut ctx);
+            }
+            // What the main window is now: the next run starts there.
+            mut window_attributes saved = this.attributes.clone();
+            match (this.main_window.mode()) {
+                wnd::window_mode::fullscreen(_) => { saved.size_state = window_size_state::fullscreen; },
+                wnd::window_mode::windowed      => {
+                    saved.size_state = window_size_state::windowed;
+                    wnd::size s = this.main_window.size();
+                    wnd::point p = this.main_window.position();
+                    saved.width = s.width;
+                    saved.height = s.height;
+                    saved.pos_x = p.x;
+                    saved.pos_y = p.y;
+                },
+            }
+            serialize_window_attributes(this.project, mut saved, serialize_option::save);
+        }
+    private:
+        void attach_last() mut {
+            mut context ctx = context{
+                .system      = this.system,
+                .main_window = this.main_window,
+                .renderer    = this.renderer,
+                .commands    = this.todo,
+                .stats       = this.clock.stats(),
+                .config_dir  = this.config_dir,
+            };
+            this.layers.attach_last(mut ctx);
+        }
+
+        std::filesystem::path project;
+        std::filesystem::path config_dir;
+        window_attributes     attributes;
+        wnd::system           system;
+        renderer              renderer;
+        wnd::gl_window        main_window;
+        interval_controller   fps;
+        frame_clock           clock;
+        commands              todo = default;
+        layer_stack           layers = default;
+    }
+}

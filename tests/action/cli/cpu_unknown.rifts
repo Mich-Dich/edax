@@ -1,0 +1,5 @@
+// RUN: riftc check --cpu=armv9 %s
+// A CPU level of another architecture is a usage error that lists the target's levels.
+i32 main() {
+    return 0;
+}

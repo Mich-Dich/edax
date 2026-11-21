@@ -1,0 +1,23 @@
+// RUN: riftc run %s
+// Nested types in a class: named through the outer type, short names inside it (classes).
+import std;
+class pool {
+public:
+    struct options {
+        usize threads;
+        std::static_str name = "pool";
+    }
+    enum mode : u8 { fast, slow, }
+    static pool make(options config) { return pool{ .n = config.threads, .m = mode::fast }; }
+    usize count() { return this.n; }
+private:
+    usize n;
+    mode m;
+}
+std::exit_code main() {
+    pool::options cfg = pool::options{ .threads = 8 };
+    pool p = pool::make(cfg);
+    pool::mode md = pool::mode::slow;
+    std::println(f"{p.count()} {cfg.name} {md}");
+    return std::exit_code::success;
+}

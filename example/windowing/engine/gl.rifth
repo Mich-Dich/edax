@@ -1,0 +1,60 @@
+// windowing/engine/gl: the few OpenGL functions the demo draws with, loaded by reflection.
+//
+// std::windowing makes contexts current; it doesn't wrap OpenGL itself. A program brings its own
+// function table, and this is the smallest useful one: a struct whose fields are named like the GL
+// functions. load() walks the fields at compile time (for compile_time over std::meta::fields) and
+// asks the current context for each one by its name, so adding a function is adding a field.
+
+import std;
+
+namespace engine::gl {
+    // The GL functions of the demo. Every field's name is the GL function it holds.
+    struct functions {
+        std::fn_ptr<void(i32, i32, i32, i32)>     glViewport;
+        std::fn_ptr<void(f32, f32, f32, f32)>     glClearColor;
+        std::fn_ptr<void(u32)>                    glClear;
+        std::fn_ptr<void(u32)>                    glEnable;
+        std::fn_ptr<void(u32)>                    glDisable;
+        std::fn_ptr<void(i32, i32, i32, i32)>     glScissor;
+        std::fn_ptr<void(i32, std::raw_ptr<mut u32>)> glGenTextures;
+        std::fn_ptr<void(u32, u32)>               glBindTexture;
+        std::fn_ptr<void(u32, u32, i32)>          glTexParameteri;
+        std::fn_ptr<void(u32, i32, i32, i32, i32, i32, u32, u32, std::raw_ptr<u8>)> glTexImage2D;
+        std::fn_ptr<u8(u32)>                      glIsTexture;
+        std::fn_ptr<void()>                       glFinish;
+    }
+
+    compile_time u32 color_buffer_bit  = 0x4000;
+    compile_time u32 scissor_test      = 0x0C11;
+    compile_time u32 texture_2d        = 0x0DE1;
+    compile_time u32 texture_min_filter = 0x2801;
+    compile_time i32 nearest           = 0x2600;
+    compile_time i32 rgba8             = 0x8058;
+    compile_time u32 rgba              = 0x1908;
+    compile_time u32 unsigned_byte     = 0x1401;
+
+    // Every function of `functions`, from the context `ctx` makes current: a
+    // std::windowing::opengl::frame or ::current (anything with `proc_address(std::str)`).
+    // error(name): the driver doesn't have `name`.
+    template<type C>
+    std::result<functions, std::static_str> load(C& ctx);
+
+    // An RGBA color.
+    struct color {
+        f32 r = 0.0;
+        f32 g = 0.0;
+        f32 b = 0.0;
+        f32 a = 1.0;
+    }
+
+    // Fills the rectangle (x, y, width, height), in pixels from the top left, with `c`. A clear
+    // limited by the scissor box: enough to draw boxes without shaders.
+    void fill(functions& f, i32 framebuffer_height, i32 x, i32 y, i32 width, i32 height, color c);
+
+    // Clears the whole framebuffer of the current frame.
+    void clear(functions& f, std::windowing::size framebuffer, color c);
+
+    // A texture made from `img` in the context `gl` proves is current: it belongs to that
+    // context's share group, and exists in every window of the group.
+    u32 upload_texture(functions& f, std::windowing::opengl::current& gl, std::windowing::image& img);
+}

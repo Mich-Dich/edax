@@ -1,0 +1,349 @@
+// The Rift standard library: module std::windowing::x11, the X11 platform layer of std::windowing.
+//
+// Programs use std::windowing; this module is how std::windowing talks to an X server. It is plain
+// Rift on top of the system's C libraries, which it loads when a std::windowing::system starts
+// (dlopen), not when the program is linked:
+//
+//   libX11.so.6    windows, input          always
+//   libXrandr.so.2 the monitors            when the system starts, if it's there (else one monitor)
+//   libGL.so.1     GLX: OpenGL contexts     the first time an OpenGL window or share group is made
+//   libvulkan.so.1 the Vulkan loader        the first time Vulkan is asked for
+//
+// So a program that uses std::windowing builds and links like any other, runs on machines without
+// OpenGL or Vulkan as long as it doesn't ask for them, and gets an error value (not a crash or a
+// link failure) when a library is missing.
+//
+// Every function table below is filled by reflection: each field's name is the C symbol it holds,
+// and load_table<T>() looks up every field of T (see library.rifts). Adding a function is adding a
+// field. Everything here is `unsafe` to call; std::windowing is the safe layer on top.
+
+namespace std::windowing::x11 {
+    // ---- shared libraries -----------------------------------------------------------------------
+
+    // A shared library opened with dlopen; closed with its owner (see close_library).
+    struct library {
+        std::raw_ptr<mut u8> handle = nullptr;
+    }
+
+    // Opens `name` (a NUL-terminated file name such as c"libX11.so.6"), or none.
+    unsafe std::option<library> open_library(std::raw_ptr<u8> name);
+
+    // Closes a library opened with open_library. Nothing from it may be called afterwards.
+    unsafe void close_library(library lib);
+
+    // The address of the C symbol `name` (not NUL-terminated) in `lib`, or a null pointer.
+    unsafe std::raw_ptr<mut u8> symbol(library lib, std::str name);
+
+    // A table of C functions, every field looked up in `lib` under the field's own name.
+    // `error(name)` names the first symbol `lib` doesn't have.
+    unsafe template<type T>
+    std::result<T, std::static_str> load_table(library lib);
+
+    // ---- Xlib -------------------------------------------------------------------------------------
+
+    // The Xlib functions std::windowing uses. Display* is `std::raw_ptr<mut u8>`; Window, Atom,
+    // Cursor, Pixmap, Colormap and KeySym are `u64` (XIDs); Bool and int are `i32`.
+    struct xlib {
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<u8>)>                     XOpenDisplay;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XCloseDisplay;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XDefaultScreen;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, i32)>                             XRootWindow;
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, i32)>            XDefaultVisual;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, i32)>                             XDefaultDepth;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, i32)>                             XDisplayWidth;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, i32)>                             XDisplayHeight;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u64, std::raw_ptr<mut u8>, i32)>  XCreateColormap;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XFreeColormap;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u64, i32, i32, u32, u32, u32, i32, u32,
+                        std::raw_ptr<mut u8>, u64, std::raw_ptr<mut set_window_attributes>)> XCreateWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XDestroyWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XMapWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XUnmapWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XRaiseWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, i32)>                        XIconifyWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, i32, i32)>                   XMoveWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u32, u32)>                   XResizeWindow;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, std::raw_ptr<u8>)>           XStoreName;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64, u64, i32, i32, std::raw_ptr<u8>, i32)> XChangeProperty;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64)>                        XDeleteProperty;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, std::raw_ptr<u8>, i32)>           XInternAtom;
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, u64)>            XGetAtomName;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, std::raw_ptr<mut u64>, i32)> XSetWMProtocols;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64)>                        XSetTransientForHint;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XPending;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, std::raw_ptr<mut x_event>)>         XNextEvent;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XFlush;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, i32)>                             XSync;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XConnectionNumber;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, i32, i64, std::raw_ptr<mut x_event>)> XSendEvent;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64, i32, i32,
+                        std::raw_ptr<mut i32>, std::raw_ptr<mut i32>, std::raw_ptr<mut u64>)> XTranslateCoordinates;
+        std::fn_ptr<i32(std::raw_ptr<mut x_event>, std::raw_ptr<mut u8>, i32,
+                        std::raw_ptr<mut u64>, std::raw_ptr<mut u8>)>           XLookupString;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u8, i32, i32)>                    XkbKeycodeToKeysym;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, i32, std::raw_ptr<mut i32>)>      XkbSetDetectableAutoRepeat;
+        std::fn_ptr<std::raw_ptr<u8>(std::fn_ptr<i32(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)>)> XSetErrorHandler;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u32)>                             XCreateFontCursor;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64)>                        XDefineCursor;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XUndefineCursor;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XFreeCursor;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u64, std::raw_ptr<u8>, u32, u32)> XCreateBitmapFromData;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, u64, u64, std::raw_ptr<mut color>, std::raw_ptr<mut color>, u32, u32)> XCreatePixmapCursor;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XFreePixmap;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, i32, u32, i32, i32, u64, u64, u64)> XGrabPointer;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64)>                             XUngrabPointer;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64, i32, i32, u32, u32, i32, i32)> XWarpPointer;
+        std::fn_ptr<std::raw_ptr<u8>(std::raw_ptr<mut u8>)>                     XResourceManagerString;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>)>                                  XFree;
+    }
+
+    // XSetWindowAttributes (112 bytes on 64-bit systems).
+    struct set_window_attributes {
+        u64 background_pixmap = 0;
+        u64 background_pixel = 0;
+        u64 border_pixmap = 0;
+        u64 border_pixel = 0;
+        i32 bit_gravity = 0;
+        i32 win_gravity = 0;
+        i32 backing_store = 0;
+        u64 backing_planes = 0;
+        u64 backing_pixel = 0;
+        i32 save_under = 0;
+        i64 event_mask = 0;
+        i64 do_not_propagate_mask = 0;
+        i32 override_redirect = 0;
+        u64 colormap = 0;
+        u64 cursor = 0;
+    }
+
+    // XColor.
+    struct color {
+        u64 pixel = 0;
+        u16 red = 0;
+        u16 green = 0;
+        u16 blue = 0;
+        u8  flags = 0;
+        u8  pad = 0;
+    }
+
+    // An XEvent: a C union of 24 longs. Its members are read by offset (event_i32, event_u64);
+    // the offsets are those of the 64-bit Xlib structs (XKeyEvent, XConfigureEvent, ...).
+    struct x_event {
+        std::raw::array<i64, 24> words = default;
+    }
+
+    i32 event_i32(x_event& e, usize offset);
+    u32 event_u32(x_event& e, usize offset);
+    u64 event_u64(x_event& e, usize offset);
+    i64 event_i64(x_event& e, usize offset);
+    void set_event_i32(mut x_event& e, usize offset, i32 value);
+    void set_event_u64(mut x_event& e, usize offset, u64 value);
+    void set_event_i64(mut x_event& e, usize offset, i64 value);
+
+    // Event types (X.h).
+    compile_time i32 key_press         = 2;
+    compile_time i32 key_release       = 3;
+    compile_time i32 button_press      = 4;
+    compile_time i32 button_release    = 5;
+    compile_time i32 motion_notify     = 6;
+    compile_time i32 enter_notify      = 7;
+    compile_time i32 leave_notify      = 8;
+    compile_time i32 focus_in          = 9;
+    compile_time i32 focus_out         = 10;
+    compile_time i32 expose            = 12;
+    compile_time i32 unmap_notify      = 18;
+    compile_time i32 map_notify        = 19;
+    compile_time i32 configure_notify  = 22;
+    compile_time i32 property_notify   = 28;
+    compile_time i32 client_message    = 33;
+
+    // Event masks.
+    compile_time i64 key_press_mask         = 0x1;
+    compile_time i64 key_release_mask       = 0x2;
+    compile_time i64 button_press_mask      = 0x4;
+    compile_time i64 button_release_mask    = 0x8;
+    compile_time i64 enter_window_mask      = 0x10;
+    compile_time i64 leave_window_mask      = 0x20;
+    compile_time i64 pointer_motion_mask    = 0x40;
+    compile_time i64 exposure_mask          = 0x8000;
+    compile_time i64 structure_notify_mask  = 0x20000;
+    compile_time i64 substructure_notify_mask   = 0x80000;
+    compile_time i64 substructure_redirect_mask = 0x100000;
+    compile_time i64 focus_change_mask      = 0x200000;
+    compile_time i64 property_change_mask   = 0x400000;
+
+    // XCreateWindow value-mask bits.
+    compile_time u64 cw_back_pixel        = 0x2;
+    compile_time u64 cw_border_pixel      = 0x8;
+    compile_time u64 cw_override_redirect = 0x200;
+    compile_time u64 cw_event_mask        = 0x800;
+    compile_time u64 cw_colormap          = 0x2000;
+
+    // Modifier state bits.
+    compile_time u32 shift_mask   = 0x1;
+    compile_time u32 lock_mask    = 0x2;
+    compile_time u32 control_mask = 0x4;
+    compile_time u32 mod1_mask    = 0x8;     // Alt
+    compile_time u32 mod2_mask    = 0x10;    // Num Lock
+    compile_time u32 mod4_mask    = 0x40;    // Super
+
+    // Predefined atoms (Xatom.h).
+    compile_time u64 xa_atom     = 4;
+    compile_time u64 xa_cardinal = 6;
+
+    // The std::windowing key of an X keysym (unshifted, level 0), or key::unknown.
+    std::windowing::key key_of_keysym(u64 keysym);
+
+    // The character of a keysym that types one: Latin-1 keysyms are their code point, and
+    // keysyms 0x1000000 + U are the code point U. Others (function keys, dead keys) type nothing.
+    std::option<char> char_of_keysym(u64 keysym);
+
+    // ---- XRandR -------------------------------------------------------------------------------------
+
+    // XRRMonitorInfo (XRandR 1.5): one monitor, in screen pixels.
+    struct monitor_info {
+        u64                  name;        // an Atom
+        i32                  primary;
+        i32                  automatic;
+        i32                  output_count;
+        i32                  x;
+        i32                  y;
+        i32                  width;
+        i32                  height;
+        i32                  width_mm;
+        i32                  height_mm;
+        std::raw_ptr<mut u64> outputs;    // RROutput[output_count]
+    }
+
+    // XRRScreenResources.
+    struct screen_resources {
+        u64                        timestamp;
+        u64                        config_timestamp;
+        i32                        crtc_count;
+        std::raw_ptr<mut u64>      crtcs;
+        i32                        output_count;
+        std::raw_ptr<mut u64>      outputs;
+        i32                        mode_count;
+        std::raw_ptr<mut mode_info> modes;
+    }
+
+    // XRRModeInfo.
+    struct mode_info {
+        u64                  id;
+        u32                  width;
+        u32                  height;
+        u64                  dot_clock;
+        u32                  h_sync_start;
+        u32                  h_sync_end;
+        u32                  h_total;
+        u32                  h_skew;
+        u32                  v_sync_start;
+        u32                  v_sync_end;
+        u32                  v_total;
+        std::raw_ptr<mut u8> name;
+        u32                  name_length;
+        u64                  flags;
+    }
+
+    // The start of XRROutputInfo (the fields std::windowing reads).
+    struct output_info {
+        u64                  timestamp;
+        u64                  crtc;
+        std::raw_ptr<mut u8> name;
+        i32                  name_length;
+    }
+
+    // The start of XRRCrtcInfo.
+    struct crtc_info {
+        u64 timestamp;
+        i32 x;
+        i32 y;
+        u32 width;
+        u32 height;
+        u64 mode;
+    }
+
+    // The XRandR functions of libXrandr.
+    struct xrandr {
+        std::fn_ptr<std::raw_ptr<mut monitor_info>(std::raw_ptr<mut u8>, u64, i32, std::raw_ptr<mut i32>)>      XRRGetMonitors;
+        std::fn_ptr<void(std::raw_ptr<mut monitor_info>)>                                                         XRRFreeMonitors;
+        std::fn_ptr<std::raw_ptr<mut screen_resources>(std::raw_ptr<mut u8>, u64)>                                XRRGetScreenResourcesCurrent;
+        std::fn_ptr<void(std::raw_ptr<mut screen_resources>)>                                                     XRRFreeScreenResources;
+        std::fn_ptr<std::raw_ptr<mut output_info>(std::raw_ptr<mut u8>, std::raw_ptr<mut screen_resources>, u64)> XRRGetOutputInfo;
+        std::fn_ptr<void(std::raw_ptr<mut output_info>)>                                                          XRRFreeOutputInfo;
+        std::fn_ptr<std::raw_ptr<mut crtc_info>(std::raw_ptr<mut u8>, std::raw_ptr<mut screen_resources>, u64)>   XRRGetCrtcInfo;
+        std::fn_ptr<void(std::raw_ptr<mut crtc_info>)>                                                            XRRFreeCrtcInfo;
+    }
+
+    // ---- GLX ---------------------------------------------------------------------------------------
+
+    // The GLX functions of libGL. GLXContext and GLXFBConfig are pointers; GLXDrawable is an XID.
+    struct glx {
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, std::raw_ptr<mut i32>, std::raw_ptr<mut i32>)>    glXQueryVersion;
+        std::fn_ptr<std::raw_ptr<mut std::raw_ptr<mut u8>>(std::raw_ptr<mut u8>, i32, std::raw_ptr<i32>, std::raw_ptr<mut i32>)> glXChooseFBConfig;
+        std::fn_ptr<std::raw_ptr<mut u8>(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)>           glXGetVisualFromFBConfig;
+        std::fn_ptr<std::raw_ptr<u8>(std::raw_ptr<u8>)>                                         glXGetProcAddressARB;
+        std::fn_ptr<i32(std::raw_ptr<mut u8>, u64, u64, std::raw_ptr<mut u8>)>                  glXMakeContextCurrent;
+        std::fn_ptr<void(std::raw_ptr<mut u8>, u64)>                                            glXSwapBuffers;
+        std::fn_ptr<void(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)>                           glXDestroyContext;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, std::raw_ptr<i32>)>         glXCreatePbuffer;
+        std::fn_ptr<void(std::raw_ptr<mut u8>, u64)>                                            glXDestroyPbuffer;
+        std::fn_ptr<u64(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, u64, std::raw_ptr<i32>)>    glXCreateWindow;
+        std::fn_ptr<void(std::raw_ptr<mut u8>, u64)>                                            glXDestroyWindow;
+    }
+
+    // Found through glXGetProcAddressARB (std::windowing writes their types out):
+    //   glXCreateContextAttribsARB  GLXContext(Display*, GLXFBConfig, GLXContext share, Bool direct, const int* attributes)
+    //   glXSwapIntervalEXT          void(Display*, GLXDrawable, int interval)
+
+    // GLX attribute names and values (glx.h, glxext.h).
+    compile_time i32 glx_doublebuffer     = 5;
+    compile_time i32 glx_red_size         = 8;
+    compile_time i32 glx_green_size       = 9;
+    compile_time i32 glx_blue_size        = 10;
+    compile_time i32 glx_alpha_size       = 11;
+    compile_time i32 glx_depth_size       = 12;
+    compile_time i32 glx_stencil_size     = 13;
+    compile_time i32 glx_x_visual_type    = 0x22;
+    compile_time i32 glx_true_color       = 0x8002;
+    compile_time i32 glx_drawable_type    = 0x8010;
+    compile_time i32 glx_render_type      = 0x8011;
+    compile_time i32 glx_x_renderable     = 0x8012;
+    compile_time i32 glx_window_bit       = 0x1;
+    compile_time i32 glx_pbuffer_bit      = 0x4;
+    compile_time i32 glx_rgba_bit         = 0x1;
+    compile_time i32 glx_pbuffer_height   = 0x8040;
+    compile_time i32 glx_pbuffer_width    = 0x8041;
+    compile_time i32 glx_sample_buffers   = 100000;
+    compile_time i32 glx_samples          = 100001;
+    compile_time i32 glx_framebuffer_srgb_capable = 0x20B2;
+    compile_time i32 glx_context_major_version    = 0x2091;
+    compile_time i32 glx_context_minor_version    = 0x2092;
+    compile_time i32 glx_context_flags            = 0x2094;
+    compile_time i32 glx_context_profile_mask     = 0x9126;
+    compile_time i32 glx_context_core_profile_bit          = 0x1;
+    compile_time i32 glx_context_compatibility_profile_bit = 0x2;
+    compile_time i32 glx_context_debug_bit                 = 0x1;
+    compile_time i32 glx_context_forward_compatible_bit    = 0x2;
+
+    // ---- Vulkan --------------------------------------------------------------------------------------
+
+    // The one function of the Vulkan loader std::windowing needs; everything else comes from it.
+    struct vulkan_loader {
+        std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> vkGetInstanceProcAddr;
+    }
+
+    // VkXlibSurfaceCreateInfoKHR.
+    struct xlib_surface_create_info {
+        u32                  structure_type = 1000004000;   // VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR
+        std::raw_ptr<u8>     next = nullptr;
+        u32                  flags = 0;
+        std::raw_ptr<mut u8> display = nullptr;
+        u64                  window = 0;
+    }
+
+    // Found through vkGetInstanceProcAddr (std::windowing writes their types out):
+    //   vkCreateXlibSurfaceKHR                          VkResult(VkInstance, const VkXlibSurfaceCreateInfoKHR*, allocator, VkSurfaceKHR*)
+    //   vkDestroySurfaceKHR                             void(VkInstance, VkSurfaceKHR, allocator)
+    //   vkGetPhysicalDeviceXlibPresentationSupportKHR   VkBool32(VkPhysicalDevice, u32 family, Display*, VisualID)
+}

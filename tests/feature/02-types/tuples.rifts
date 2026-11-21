@@ -1,0 +1,29 @@
+// feature: tuples (tuples and list literals). Two or more elements, elements by position,
+// destructuring, patterns and comparisons.
+import std;
+
+(u32, u32) pair() { return (1, 2); }
+
+void use() {
+    (u32, u32) p = pair();
+    u32 a = p.0;
+    u32 b = p.2;                              //~ error[E4070]: '(u32, u32)' has elements .0 to .1
+    (u32 x, u32 y) = pair();
+    auto (c, d) = pair();
+    (u32 one, u32 two, u32 three) = pair();   //~ error[E4010]: this tuple has 2 elements, but 3 names are given
+    (u32 e, bool f) = pair();                 //~ error[E4010]: element 1 is 'u32', not 'bool'
+    auto (g, h) = (1u32, 2);                  //~ error[E4001]: this integer literal has no type ('auto' needs values whose types are known on their own)
+    u32 n = (1, 2);                           //~ error[E4010]: expected 'u32', found a tuple
+    bool same = p == (1, 2);
+    bool less = p < pair();
+    (bool, u32) t = (true, 1);
+    bool bad = t < t;                         //~ error[E4013]: '(bool, u32)' values cannot be ordered
+    std::str s = match (p) {
+        (0, _) => "zero",
+        (k, l) if k == l => "same",
+        _ => "other",
+    };
+    std::str q = match (p) {                  //~ error[E4060]: match on '(u32, u32)' does not cover every value
+        (0, _) => "zero",
+    };
+}

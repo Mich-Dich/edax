@@ -1,0 +1,17 @@
+// build.rifts with packages (packages): a CMake library and a header-only one, both local.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::package mini = g.package(std::build::package_spec{
+            .source  = std::build::local{ .path = "vendor/mini" },
+            .options = [("MINI_SCALE", "7"), ("MINI_WITH_EXTRA", "ON")],
+        });
+        std::build::package hdr = g.package(std::build::package_spec{
+            .source = std::build::local{ .path = "vendor/hdr" },
+        });
+        std::build::target app = g.add_executable(std::build::rift_target{ .name = "app", .root = "app/main.rifts" });
+        g.link(app, mini.target("mini::mini"));
+        g.link(app, hdr.target("hdr"));
+    }
+}

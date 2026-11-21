@@ -1,0 +1,18 @@
+// RUN: riftc run %s
+// Thread options with the platform's own scheduling settings (threads, "Options").
+import std;
+
+i32 main() {
+    std::thread::handle<u32> worker = std::thread::spawn(std::thread::options{
+        .name     = "pinned-worker",
+        .platform = std::thread::platform_options::linux(std::thread::linux_options{
+            .policy = std::thread::linux_policy::other,
+            .cpus   = [0],
+        }),
+    }, []() {
+        std::println(f"running as {std::thread::current_name()}");
+        return 42u32;
+    });
+    std::println(f"result {worker.join()}");
+    return 0;
+}

@@ -2,7 +2,7 @@
 // The module is the file; its names live in namespace geometry (spec 30): `geometry::vec2`.
 
 namespace geometry {
-    /// A 2D vector. A struct: plain data, a copy type because all its fields are.
+    // A 2D vector. A struct: plain data, a copy type because all its fields are.
     struct vec2 {
         f64 x = 0.0;
         f64 y = 0.0;
@@ -16,6 +16,6 @@ namespace geometry {
         f64 length();
     }
 
-    /// `v * k`: an operator written as a free function.
+    // `v * k`: an operator written as a free function.
     vec2 operator*(vec2& v, f64 k);
 }

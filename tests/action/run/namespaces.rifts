@@ -19,7 +19,7 @@ namespace geo {
         circle(f64),
     }
 
-    /// A template: its body finds `twice` where it is written, in geo.
+    // A template: its body finds `twice` where it is written, in geo.
     template<type T>
     T doubled(T value) { return twice(value); }
 

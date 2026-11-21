@@ -1,0 +1,206 @@
+// windowing/game/tools_layer (see tools_layer.rifth).
+
+import std;
+import windowing::engine::gl;
+import windowing::engine::layer;
+import windowing::engine::renderer;
+import windowing::engine::timing;
+import windowing::engine::vk;
+
+namespace game {
+    namespace wnd = std::windowing;
+    namespace gl = engine::gl;
+
+    // An inspector: a tool window with its own bindings.
+    private struct inspector {
+        wnd::gl_window                     win;
+        u32                                number;
+        wnd::bindings<inspector_action>    keys;
+        u32                                refreshes = 0;
+    }
+
+    class tools_layer {
+    public:
+        static tools_layer make() {
+            return tools_layer{ .keys = wnd::bindings<tool_action>::defaults() };
+        }
+
+        std::static_str name() override { return "tools"; }
+
+        engine::event_result on_event(wnd::event& e, mut engine::context& ctx) mut override {
+            tool_action a = match (this.keys.action_for(e)) {
+                std::some(found) => found,
+                std::none        => return engine::event_result::pass,
+            };
+            match (a) {
+                tool_action::open_inspector => this.open_inspector(mut ctx),
+                tool_action::toggle_sandbox => this.toggle_sandbox(mut ctx),
+                tool_action::toggle_vulkan  => this.toggle_vulkan(mut ctx),
+            }
+            return engine::event_result::handled;
+        }
+
+        void on_update(mut engine::context& ctx) mut override {
+            mut std::darray<wnd::event> events = std::take(mut this.events);
+            // Each window: its own events, its own bindings.
+            for (mut inspector& i : this.inspectors) {
+                i.win.drain_events(mut events);
+                for (wnd::event e : events) {
+                    match (i.keys.action_for(e)) {
+                        std::some(inspector_action::close)   => i.win.request_close(),
+                        std::some(inspector_action::refresh) => {
+                            i.refreshes += 1;
+                            i.win.request_redraw();
+                        },
+                        std::none => {},
+                    }
+                }
+            }
+            this.inspectors.retain([](inspector& i) { return !i.win.should_close(); });   // dropped = closed
+            bool sandbox_open = match (mut this.sandbox) {
+                std::some(w) => {
+                    w.drain_events(mut events);
+                    !w.should_close()
+                },
+                std::none => false,
+            };
+            if (!sandbox_open) {
+                this.sandbox = std::none;
+            }
+            bool vulkan_open = match (mut this.vulkan) {
+                std::some(v) => {
+                    v.window_mut().drain_events(mut events);
+                    for (wnd::event e : events) {
+                        match (e) {
+                            wnd::event::resized(_) => {
+                                engine::vk::extent size = v.current_extent();
+                                v.window_mut().set_title(std::format(f"Vulkan surface {size.width}x{size.height}").as_str());
+                            },
+                            _ => {},
+                        }
+                    }
+                    !v.window().should_close()
+                },
+                std::none => false,
+            };
+            if (!vulkan_open) {
+                this.vulkan = std::none;
+            }
+            this.events = move events;
+
+            // The inspectors show the frame stats: redrawn when they change (once a second), or
+            // when the shared texture arrives.
+            bool changed = ctx.stats.fps != this.shown_fps || ctx.renderer.shared_texture().is_some() != this.shown_texture.is_some();
+            this.shown_fps = ctx.stats.fps;
+            this.shown_texture = ctx.renderer.shared_texture();
+            gl::functions& f = ctx.renderer.gl();
+            for (mut inspector& i : this.inspectors) {
+                if (changed) {
+                    i.win.request_redraw();
+                }
+                if (i.win.should_draw()) {                        // on demand: rarely
+                    u32 refreshes = i.refreshes;                  // read before the frame borrows `i`
+                    mut wnd::opengl::frame frame = i.win.begin_frame();
+                    draw_inspector(f, mut frame, refreshes, ctx.stats, this.shown_texture);
+                    frame.present();
+                }
+            }
+            match (mut this.sandbox) {
+                std::some(w) => {
+                    if (w.should_draw()) {
+                        mut wnd::opengl::frame frame = w.begin_frame();
+                        wnd::size fb = frame.framebuffer_size();
+                        gl::clear(f, fb, gl::color{ .r = 0.2, .g = 0.08, .b = 0.08 });
+                        engine::draw_sharing_marker(f, fb, this.shown_texture);   // another group: red
+                        frame.present();
+                    }
+                },
+                std::none => {},
+            }
+        }
+
+        void on_detach(mut engine::context& ctx) mut override {
+            if (!this.inspectors.is_empty()) {
+                std::log::debug(f"closing {this.inspectors.len()} inspectors");
+            }
+        }
+    private:
+        void open_inspector(mut engine::context& ctx) mut {
+            u32 number = this.next_inspector;
+            std::string title = std::format(f"Inspector {number}");
+            wnd::point at = ctx.main_window.position();
+            i32 offset = 40 * cast::saturate<i32>(number);
+            match (ctx.system.create_gl_window(wnd::window::config{
+                .title    = title.as_str(),
+                .size     = wnd::size{ .width = 300, .height = 220 },
+                .position = std::some(wnd::point{ .x = at.x + offset, .y = at.y + offset }),
+                .kind     = wnd::window_kind::tool(ctx.main_window.id()),   // stays above the main window
+                .redraw   = wnd::redraw::on_demand,                         // drawn only when something changed
+            }, engine::gl_33, wnd::opengl::sharing::automatic)) {           // the renderer's config: its group
+                std::ok(w) => {
+                    std::log::info(f"inspector {number} in share group {w.share_group().id()}");
+                    this.inspectors.push(inspector{ .win = move w, .number = number, .keys = wnd::bindings<inspector_action>::defaults() });
+                    this.next_inspector += 1;
+                },
+                std::error(e) => std::log::error(f"can't open an inspector: {e}"),
+            }
+        }
+
+        void toggle_sandbox(mut engine::context& ctx) mut {
+            if (this.sandbox.is_some()) {
+                this.sandbox = std::none;
+                return;
+            }
+            match (ctx.system.create_gl_window(wnd::window::config{
+                .title = "Sandbox (GL 2.1, independent)",
+                .size  = wnd::size{ .width = 320, .height = 200 },
+            }, wnd::opengl::config{ .major = 2, .minor = 1, .profile = wnd::opengl::profile::compatibility },
+               wnd::opengl::sharing::independent)) {
+                std::ok(w) => {
+                    std::log::info(f"sandbox in share group {w.share_group().id()} (its own)");
+                    this.sandbox = std::some(move w);
+                },
+                std::error(e) => std::log::error(f"can't open the sandbox: {e}"),
+            }
+        }
+
+        void toggle_vulkan(mut engine::context& ctx) mut {
+            if (this.vulkan.is_some()) {
+                this.vulkan = std::none;
+                return;
+            }
+            match (engine::vk::surface_view::open(mut ctx.system)) {
+                std::ok(v)    => { this.vulkan = std::some(move v); },
+                std::error(e) => std::log::error(f"Vulkan: {e}"),
+            }
+        }
+
+        wnd::bindings<tool_action>              keys;
+        std::darray<inspector>                  inspectors = default;
+        std::option<wnd::gl_window>             sandbox = std::none;
+        std::option<engine::vk::surface_view>   vulkan = std::none;
+        u32                                     next_inspector = 1;
+        u32                                     shown_fps = 0;
+        std::option<u32>                        shown_texture = std::none;
+        std::darray<wnd::event>                 events = default;
+    }
+
+    // The frame stats as bars: fps (of 240) and the frame's work (of 16 ms), and one tick per R.
+    private void draw_inspector(gl::functions& f, mut wnd::opengl::frame& frame, u32 refreshes, engine::frame_stats& stats,
+                                std::option<u32> shared_texture) {
+        wnd::size fb = frame.framebuffer_size();
+        i32 height = cast::saturate<i32>(fb.height);
+        gl::clear(f, fb, gl::color{ .r = 0.12, .g = 0.12, .b = 0.1 });
+        i32 width = cast::saturate<i32>(fb.width) - 32;
+        f64 fps_part = cast<f64>(stats.fps) / 240.0;
+        f64 ms_part = stats.frame_ms / 16.0;
+        i32 fps_bar = cast::saturate<i32>(cast<f64>(width) * (if (fps_part > 1.0) { 1.0 } else { fps_part }));
+        i32 ms_bar = cast::saturate<i32>(cast<f64>(width) * (if (ms_part > 1.0) { 1.0 } else { ms_part }));
+        gl::fill(f, height, 16, 40, fps_bar, 12, gl::color{ .r = 0.2, .g = 0.8, .b = 0.5 });
+        gl::fill(f, height, 16, 60, ms_bar, 12, gl::color{ .r = 0.9, .g = 0.5, .b = 0.2 });
+        for (u32 n : 0..refreshes % 20) {
+            gl::fill(f, height, 16 + cast::saturate<i32>(n) * 12, 90, 8, 8, gl::color{ .r = 0.8, .g = 0.8, .b = 0.8 });
+        }
+        engine::draw_sharing_marker(f, fb, shared_texture);
+    }
+}

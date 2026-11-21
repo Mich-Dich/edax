@@ -16,6 +16,10 @@ add_library(rift STATIC
     src/llvm_backend.cpp
     src/llvm_runtime.cpp
     src/driver.cpp
+    src/c_import.cpp
+    src/cpp_wrap.cpp
+    src/cmake_reader.cpp
+    src/definition.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp
 )
 target_include_directories(rift PUBLIC include)
@@ -23,7 +27,8 @@ target_include_directories(rift PUBLIC include)
 # The standard library's Rift source is compiled into riftc. CMake re-runs when it changes.
 # Each module is a .rifth and a .rifts in library/std: `std` is std.*, `std::filesystem` is
 # filesystem.*. The first one is the core module.
-set(RIFT_STD_MODULES std filesystem env build build/mode thread time meta derive log)
+set(RIFT_STD_MODULES std filesystem env build build/mode thread time meta derive log parallel
+    windowing/core windowing/bindings windowing/x11 windowing)
 set(RIFT_STD_ENTRIES "")
 set(RIFT_STD_TEXTS "")
 # A text becomes a function that joins pieces of at most 60000 characters at startup: C++ only

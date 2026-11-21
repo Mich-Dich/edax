@@ -100,6 +100,7 @@ private:
         if (diags_.error_count() == errors_before) {
             file.ast = parse(sources_.file(*id), *id, tokens, diags_);
         }
+        program_.file_tokens[*id] = std::move(tokens);
         (is_header ? module.header : module.source) = std::move(file);
     }
 
@@ -138,21 +139,29 @@ private:
         }
     }
 
-    /// Standard library modules that are loaded only when the program names them (their text
-    /// contains `std::log`): checking them costs time, and a program that never names them can't
-    /// be affected by them (spec 31: std::log).
-    static bool on_demand(std::string_view name) { return name == "std::log"; }
+    // Standard library modules that are loaded only when the program names them: checking them
+    // costs time, and a program that never names them can't be affected by them (spec 31:
+    // std::log). Returns the name a program's text must contain, or an empty view for the
+    // modules every `import std;` loads. `std::windowing` and its parts (std::windowing::x11, ...)
+    // all load together when a file names `std::windowing`.
+    static std::string_view on_demand_trigger(std::string_view name) {
+        if (name == "std::log") return name;
+        if (name == "std::windowing" || name.starts_with("std::windowing::")) return "std::windowing";
+        return {};
+    }
+    static bool on_demand(std::string_view name) { return !on_demand_trigger(name).empty(); }
 
-    /// Loads the on-demand std modules that some loaded file names.
+    // Loads the on-demand std modules that some loaded file names.
     void load_named_std() {
         if (!program_.std_module) return;
         for (const StdModule& m : std_modules()) {
             if (!on_demand(m.name) || program_.modules.count(std::string(m.name))) continue;
+            std::string_view trigger = on_demand_trigger(m.name);
             bool named = false;
             for (const auto& [mname, mod] : program_.modules) {
                 if (mod->project == "std") continue;
                 for (const auto* f : {&mod->header, &mod->source}) {
-                    if (*f && sources_.file((*f)->id).text().find(m.name) != std::string_view::npos) named = true;
+                    if (*f && sources_.file((*f)->id).text().find(trigger) != std::string_view::npos) named = true;
                 }
             }
             if (named) add_std_module(m);
@@ -170,7 +179,7 @@ private:
         program_.modules.emplace(module->name, std::move(module));
     }
 
-    /// The standard library is built into riftc (library/std/std.rifth) and loaded once.
+    // The standard library is built into riftc (library/std/std.rifth) and loaded once.
     void load_std() {
         if (program_.std_module) return;
         for (const StdModule& m : std_modules()) {

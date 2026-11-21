@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+two readers: 0 0
+write while reading: false
+try_read while writing: false
+a = 4005
+timed lock while held: false
+timed lock free: true
+wait_for: false, waited >= 30ms: true
+empty: timed out
+one: 7
+closed: closed
+--- stderr

@@ -2,8 +2,8 @@
 // (spec 26). Every number marked "computed at compile time" is a constant in the program.
 import std;
 
-/// A compile_time function runs in riftc's interpreter. `compile_time run_time` would also exist
-/// at run time.
+// A compile_time function runs in riftc's interpreter. `compile_time run_time` would also exist
+// at run time.
 compile_time u64 factorial(u32 n) {
     mut u64 result = 1;
     for (u32 i : 2..=n) { result *= cast<u64>(i); }
@@ -12,7 +12,7 @@ compile_time u64 factorial(u32 n) {
 
 compile_time u64 fact_20 = factorial(20);                   // computed at compile time
 
-/// A table built at compile time: the bit counts of 0..15.
+// A table built at compile time: the bit counts of 0..15.
 compile_time u8 bits_in(u32 n) {
     mut u8 count = 0;
     mut u32 x = n;
@@ -23,24 +23,24 @@ compile_time u8 bits_in(u32 n) {
     return count;
 }
 
-/// Types are compile-time values: pick the smallest integer that fits.
+// Types are compile-time values: pick the smallest integer that fits.
 compile_time type counter_for(u64 max) {
     return if (max <= 255) { u8 } else if (max <= 65535) { u16 } else { u32 };
 }
 compile_time type small_counter = counter_for(200);
 compile_time type big_counter = counter_for(100000);
 
-/// Checks at file scope run once, when the module compiles.
+// Checks at file scope run once, when the module compiles.
 compile_time check (std::size_of<u64>() == 8) else "this example assumes 64-bit integers";
 
-/// An entry check runs at every call, with the call's arguments: misuse is a compile error at
-/// the call (try `set_pin(40)`).
+// An entry check runs at every call, with the call's arguments: misuse is a compile error at
+// the call (try `set_pin(40)`).
 void set_pin(u8 pin) {
     compile_time check (pin < 32) else f"pin {pin} doesn't exist: this chip has pins 0..31";
     std::println(f"pin {pin} set");
 }
 
-/// `compile_time run_time`: checked at compile time when the argument is known, at run time otherwise.
+// `compile_time run_time`: checked at compile time when the argument is known, at run time otherwise.
 compile_time run_time bool valid_baud(u32 baud) { return baud == 9600 || baud == 115200; }
 
 void open_uart(u32 baud) {
@@ -48,8 +48,8 @@ void open_uart(u32 baud) {
     std::println(f"uart at {baud} baud");
 }
 
-/// A declared warning id (spec 23): `riftc explain legacy` prints this comment;
-/// `--warn=legacy=off` silences it (a program's own global name; a library would use a namespace).
+// A declared warning id (spec 23): `riftc explain legacy` prints this comment;
+// `--warn=legacy=off` silences it (a program's own global name; a library would use a namespace).
 compile_time std::diagnostic legacy = default;
 
 void old_api() {
@@ -67,7 +67,7 @@ struct sensor {
 
 enum level : u8 { low, normal, high, critical }
 
-/// Reflection: one function prints any struct, field by field (the loop is unrolled per field).
+// Reflection: one function prints any struct, field by field (the loop is unrolled per field).
 template<type T>
 void dump(T& value) {
     std::print(f"{std::type_name<T>()} {{");
@@ -77,7 +77,7 @@ void dump(T& value) {
     std::println(" }");
 }
 
-/// The name of any simple enum value.
+// The name of any simple enum value.
 template<type E>
 std::static_str name_of(E value) {
     for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
@@ -86,7 +86,7 @@ std::static_str name_of(E value) {
     std::panic("not an alternative");
 }
 
-/// Field-wise equality for any struct.
+// Field-wise equality for any struct.
 template<type T>
 bool same(T& a, T& b) {
     for compile_time (std::meta::field f : std::meta::fields<T>()) {

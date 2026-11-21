@@ -1,0 +1,280 @@
+// The Rift standard library: module std::windowing::core, the plain data of std::windowing.
+//
+// Geometry, keys, mouse buttons, modifiers, events and the per-window input state. Everything here
+// is plain data: copy types (except input_state, which is only read through a window), sendable,
+// so events and images can be made on one thread and handled on another. The windows themselves
+// (std::windowing::window and its kinds) are in module std::windowing.
+//
+// A program reaches all of it through `import std;` and the namespace std::windowing; the module
+// is loaded only when a file names `std::windowing`.
+
+namespace std::windowing {
+    // ---- geometry ---------------------------------------------------------------------------------
+
+    // A place in a window, in screen units (not pixels on a HiDPI screen): the cursor.
+    @std::derive::formattable
+    struct position {
+        f64 x = 0.0;
+        f64 y = 0.0;
+        bool operator==(position& other) = default;
+    }
+
+    // A whole-unit place on the desktop: where a window or monitor is.
+    @std::derive::formattable
+    struct point {
+        i32 x = 0;
+        i32 y = 0;
+        bool operator==(point& other) = default;
+    }
+
+    // A width and a height.
+    @std::derive::formattable
+    struct size {
+        u32 width = 0;
+        u32 height = 0;
+        bool operator==(size& other) = default;
+    }
+
+    // A place and a size.
+    @std::derive::formattable
+    struct rect {
+        point origin = default;
+        size  extent = default;
+        bool operator==(rect& other) = default;
+    }
+
+    // Screen units to pixels: 1.0 on a normal screen, 2.0 on a "200 %" HiDPI screen.
+    @std::derive::formattable
+    struct scale {
+        f32 x = 1.0;
+        f32 y = 1.0;
+    }
+
+    // An RGBA image, 8 bits per channel, rows top to bottom: window icons and cursors. Plain data,
+    // so it can be made on a worker thread and sent to the windowing thread.
+    struct image {
+        u32 width = 0;
+        u32 height = 0;
+        // width * height * 4 bytes.
+        std::darray<u8> pixels = default;
+    }
+
+    // ---- errors and platforms --------------------------------------------------------------------
+
+    // Why std::windowing couldn't do something. Prints as its name.
+    enum error : u8 {
+        // No display to connect to: DISPLAY isn't set, or the X server can't be reached.
+        no_display,
+        // std::windowing::system::start() was called while a system is running.
+        already_started,
+        // A system library is missing: libX11 (windows), libGL (OpenGL) or libvulkan (Vulkan).
+        library_missing,
+        // OpenGL isn't available, or no framebuffer format fits the request.
+        opengl_unavailable,
+        // The driver can't make a context of that OpenGL version and profile.
+        version_unavailable,
+        // sharing::join with a group whose OpenGL config differs from the window's.
+        share_incompatible,
+        // The Vulkan loader or its window-system extensions aren't available.
+        vulkan_unavailable,
+        // The window system refused to make the window.
+        window_creation_failed,
+    }
+
+    // The window system std::windowing talks to.
+    enum platform : u8 {
+        x11,
+        // wayland, win32, cocoa: later
+    }
+
+    // The graphics APIs a window can be made for. A window is made for one of them, and its type
+    // says which: std::windowing::window (none), gl_window (opengl), vulkan_window (vulkan).
+    enum graphics_api : u8 {
+        none,
+        opengl,
+        vulkan,
+        // metal: later, as metal_window
+    }
+
+    // ---- keys, buttons, modifiers ----------------------------------------------------------------
+
+    // A key, by its place on a US keyboard layout (like GLFW): `w` is the key left of `e`, on any
+    // layout. The character a key types comes as event::text.
+    enum key : u8 {
+        unknown,
+        space, apostrophe, comma, minus, period, slash, semicolon, equal,
+        left_bracket, backslash, right_bracket, grave_accent,
+        digit_0, digit_1, digit_2, digit_3, digit_4, digit_5, digit_6, digit_7, digit_8, digit_9,
+        a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z,
+        escape, enter, tab, backspace, insert, delete, right, left, down, up,
+        page_up, page_down, home, end, caps_lock, scroll_lock, num_lock, print_screen, pause,
+        f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
+        keypad_0, keypad_1, keypad_2, keypad_3, keypad_4, keypad_5, keypad_6, keypad_7, keypad_8, keypad_9,
+        keypad_decimal, keypad_divide, keypad_multiply, keypad_subtract, keypad_add, keypad_enter, keypad_equal,
+        left_shift, left_control, left_alt, left_super, right_shift, right_control, right_alt, right_super,
+        menu,
+    }
+
+    // The number of keys (std::windowing::key's alternatives): the size of the key state.
+    compile_time usize key_count = std::meta::alternatives<key>().len();
+
+    // A mouse button.
+    enum mouse_button : u8 {
+        left,
+        right,
+        middle,
+        back,
+        forward,
+    }
+
+    // The modifier keys held during a key or button event. Lock keys are not modifiers here: they
+    // would make "Ctrl+S" fail while Caps Lock is on; read them from input_state.
+    @std::derive::formattable
+    struct modifiers {
+        bool shift = false;
+        bool control = false;
+        bool alt = false;
+        bool super = false;
+        bool operator==(modifiers& other) = default;
+    }
+
+    // What happened to a key.
+    enum key_action : u8 {
+        pressed,
+        // Held down long enough for the system's key repeat.
+        repeated,
+        released,
+    }
+
+    // What happened to a mouse button.
+    enum button_action : u8 {
+        pressed,
+        released,
+    }
+
+    // ---- events -----------------------------------------------------------------------------------
+
+    @std::derive::formattable
+    struct key_event {
+        key           key = key::unknown;
+        // The platform's code for the physical key; stable for one machine, e.g. for keys `unknown`.
+        u32           scancode = 0;
+        key_action    action = key_action::pressed;
+        modifiers     modifiers = default;
+    }
+
+    @std::derive::formattable
+    struct mouse_button_event {
+        mouse_button  button = mouse_button::left;
+        button_action action = button_action::pressed;
+        modifiers     modifiers = default;
+        // Where the cursor was.
+        position      position = default;
+    }
+
+    // Something that happened to one window. Events are copy-type values: a window's events are
+    // moved into a darray the program owns (window.drain_events), so handling them borrows nothing.
+    @std::derive::formattable
+    enum event : u8 {
+        // The user asked to close the window (the title bar's X). window.should_close() is now true;
+        // window.cancel_close() keeps it open.
+        close_requested,
+        key(key_event),
+        // A character typed (after the keyboard layout and dead keys).
+        text(char),
+        mouse_button(mouse_button_event),
+        cursor_moved(position),
+        // true: the cursor entered the window; false: it left.
+        cursor_entered(bool),
+        // Wheel or touchpad scrolling: y is vertical (positive away from the user), x horizontal.
+        scrolled(position),
+        // The window's size in screen units.
+        resized(size),
+        // The size of the window's pixels, what rendering uses. Differs from `resized` on HiDPI.
+        framebuffer_resized(size),
+        moved(point),
+        focus_changed(bool),
+        minimized(bool),
+        // The window must be drawn again (it was uncovered, or window.request_redraw() was called).
+        redraw_requested,
+    }
+
+    // Something that happened to no particular window.
+    @std::derive::formattable
+    enum system_event : u8 {
+        monitor_connected(u32),
+        monitor_disconnected(u32),
+    }
+
+    // ---- input state ------------------------------------------------------------------------------
+
+    // What a window's keyboard and mouse look like now: the state an immediate-mode UI or a game's
+    // movement code reads, instead of reacting to each event. window.input() returns it.
+    //
+    // "This frame" means: between the window's last two drain_events calls. Each drain_events
+    // starts a new frame.
+    class input_state {
+    public:
+        // Whether `k` is held down.
+        bool key_down(key k);
+        // Whether `k` went down this frame (repeats don't count).
+        bool key_pressed(key k);
+        // Whether `k` went up this frame.
+        bool key_released(key k);
+
+        bool mouse_down(mouse_button b);
+        bool mouse_pressed(mouse_button b);
+        bool mouse_released(mouse_button b);
+
+        // Where the cursor is, in window coordinates.
+        position cursor();
+        // How far the cursor moved this frame.
+        position cursor_delta();
+        // The scrolling of this frame (see event::scrolled).
+        position scroll();
+        // The text typed this frame.
+        std::str text();
+        // Whether the cursor is over the window.
+        bool hovered();
+
+        // The modifier keys held now.
+        std::windowing::modifiers modifiers();
+        bool caps_lock();
+        bool num_lock();
+
+        // Used by std::windowing's platform code while it reads the system's events.
+        void record_key(key k, key_action action) mut;
+        void record_button(mouse_button b, button_action action) mut;
+        void record_cursor(position p) mut;
+        void record_scroll(position delta) mut;
+        void record_text(char c) mut;
+        void record_hover(bool inside) mut;
+        void record_modifiers(std::windowing::modifiers held, bool caps, bool num) mut;
+        void release_all() mut;
+        void next_frame() mut;
+    }
+
+    // ---- layers ---------------------------------------------------------------------------------
+
+    // What a layer did with an event.
+    enum routing : u8 {
+        // Not for this layer: the next layer (or the program) gets it.
+        pass,
+        // Taken: nobody after this layer sees it.
+        consume,
+    }
+
+    // Something that sees a window's events before the program does: a debug UI, a console, a
+    // rebinding prompt. route() offers each event to the layer and removes what it consumes.
+    interface input_layer {
+        routing on_event(event e, input_state& input) mut;
+        // Whether the layer is active at all; an inactive layer is skipped. Default: always.
+        bool is_active() { return true; }
+    }
+
+    // Offers every event in `events` to `layer`, in order, and removes the ones it consumes.
+    // Layers are routed one after another, front to back: route(mut events, mut debug_ui, input),
+    // then route(mut events, mut console, input), then the program handles what is left.
+    template<type L : input_layer>
+    void route(mut std::darray<event>& events, mut L& layer, input_state& input);
+}

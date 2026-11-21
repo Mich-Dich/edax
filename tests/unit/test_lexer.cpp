@@ -19,7 +19,7 @@ struct Lexed {
         tokens    = tokenize(sources.file(id), id, diags);
     }
 
-    /// Codes of all diagnostics, space separated: "E1003 W1001".
+    // Codes of all diagnostics, space separated: "E1003 W1001".
     std::string codes() const {
         std::string out;
         for (const Diagnostic& d : diags.all()) {
@@ -31,7 +31,7 @@ struct Lexed {
     const Token& first() const { return tokens.at(0); }
 };
 
-/// Token kinds without the trailing eof, space separated: "kw_u32 identifier eq".
+// Token kinds without the trailing eof, space separated: "kw_u32 identifier eq".
 std::string kinds(std::string text) {
     Lexed       l(std::move(text));
     std::string out;
@@ -123,10 +123,10 @@ TEST_CASE("lexer: line and block comments are skipped") {
 }
 
 TEST_CASE("lexer: doc comments become tokens") {
-    Lexed l("/// adds one\nu32 f();");
+    Lexed l("// adds one\nu32 f();");
     CHECK_EQ(l.first().kind, TokenKind::doc_comment);
     CHECK_EQ(l.first().value, std::string(" adds one"));
-    CHECK_EQ(kinds("//// not a doc comment\nx"), std::string("identifier"));
+    CHECK_EQ(kinds("/// not a doc comment\nx"), std::string("identifier"));
 }
 
 TEST_CASE("lexer: unterminated block comment") {

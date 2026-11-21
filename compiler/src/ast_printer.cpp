@@ -8,8 +8,8 @@ namespace rift::ast {
 
 namespace {
 
-/// A printable tree: `(head child child ...)`. Leaves with no children and `atom` set print
-/// without parentheses.
+// A printable tree: `(head child child ...)`. Leaves with no children and `atom` set print
+// without parentheses.
 struct S {
     std::string    head;
     std::vector<S> kids;
@@ -125,6 +125,7 @@ std::string_view unary_name(UnaryOp op) {
     case UnaryOp::address_of_mut: return "addr-mut";
     case UnaryOp::move: return "move";
     case UnaryOp::mut_marker: return "mut";
+    case UnaryOp::spread: return "spread";
     }
     return "?";
 }
@@ -159,6 +160,16 @@ S build(const Expr& e) {
 
 S build_untyped(const Expr& e) {
     switch (e.kind) {
+    case ExprKind::tuple: {
+        S out{"tuple", {}};
+        for (const ExprPtr& x : e.as<TupleExpr>().elements) out.kids.push_back(build(*x));
+        return out;
+    }
+    case ExprKind::list: {
+        S out{"list", {}};
+        for (const ExprPtr& x : e.as<ListExpr>().elements) out.kids.push_back(build(*x));
+        return out;
+    }
     case ExprKind::int_literal:
     case ExprKind::float_literal:
     case ExprKind::char_literal:
@@ -209,6 +220,7 @@ S build_untyped(const Expr& e) {
         for (const ExprPtr& arg : c.args) {
             s.kids.push_back(build(*arg));
         }
+        if (c.wrapped) s.kids.push_back(S{"wrapped-body", {build(*c.wrapped)}});
         return s;
     }
     case ExprKind::index: {
@@ -310,6 +322,11 @@ S build(const Pattern& p) {
         return S{r.inclusive ? "..=" : "..", {build(*r.lo), build(*r.hi)}};
     }
     case PatternKind::binding: return S{"bind " + p.as<BindingPattern>().name, {}};
+    case PatternKind::tuple: {
+        S out{"tuple", {}};
+        for (const PatternPtr& e : p.as<TuplePattern>().elements) out.kids.push_back(build(*e));
+        return out;
+    }
     case PatternKind::enum_alternative: {
         const auto& ep = p.as<EnumPattern>();
         S s{"alt " + to_string(ep.path), {}};
@@ -362,6 +379,17 @@ S build(const Stmt& s) {
     case StmtKind::discard: return S{"discard", {build(*s.as<DiscardStmt>().value)}};
     case StmtKind::expression: return build(*s.as<ExprStmt>().expr);
     case StmtKind::check: return build_check(s.as<CheckStmt>().check);
+    case StmtKind::destructure: {
+        const auto& d = s.as<DestructureStmt>();
+        std::string head = d.is_auto ? "destructure auto (" : "destructure (";
+        for (std::size_t i = 0; i < d.bindings.size(); ++i) {
+            const DestructureBinding& b = d.bindings[i];
+            head += i ? ", " : "";
+            if (b.wildcard) { head += "_"; continue; }
+            head += (b.is_mut ? "mut " : "") + (b.type ? to_string(*b.type) + " " : std::string()) + b.name;
+        }
+        return S{head + ")", {build(*d.init)}};
+    }
     }
     return S{"?", {}};
 }
@@ -527,6 +555,12 @@ std::string to_string(const TypeExpr& type) {
     }
     case TypeKind::auto_: return "auto";
     case TypeKind::deduce: return "deduce";
+    case TypeKind::tuple: {
+        std::string out = "(";
+        const auto& els = type.as<TupleType>().elements;
+        for (std::size_t i = 0; i < els.size(); ++i) out += (i ? ", " : "") + to_string(*els[i]);
+        return out + ")";
+    }
     }
     return "?";
 }

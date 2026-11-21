@@ -1,0 +1,18 @@
+exit: 0
+--- stdout
+enter square (square)
+leave square
+enter square (square)
+leave square
+16 0
+enter hello (hello)
+hello rift
+leave hello
+count
+enter parse (parse)
+leave parse
+count
+enter parse (parse)
+leave parse
+42 0
+--- stderr

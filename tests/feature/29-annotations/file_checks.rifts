@@ -1,0 +1,11 @@
+// feature 29: the checks of a file annotation run like for any other target; `annotated` is a
+// std::meta::file with the file's name and module.
+import std;
+
+@owner{ .team = "" };   //~ error[E4210]: @owner of file_checks needs a team (in tests/feature/29-annotations/file_checks.rifts)
+
+annotation(std::meta::target::file) struct owner {
+    std::static_str team;
+    compile_time check (annotation.team != "")
+        else f"@owner of {annotated.module} needs a team (in {annotated.name})";
+}

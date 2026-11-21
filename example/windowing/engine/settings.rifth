@@ -1,0 +1,42 @@
+// windowing/engine/settings: what the application keeps between runs.
+//
+// The main window's attributes (title, size, position, vsync, fullscreen) live in the project's
+// config directory as `config/app_settings.cfg`: read when the application starts, written when it
+// ends, like the engine's serialize_window_attributes. The format is plain `key = value` lines, so
+// the file can be edited by hand; unknown keys and bad values are logged and skipped.
+
+import std;
+
+namespace engine {
+    // The main window's size category.
+    @std::derive::formattable
+    enum window_size_state : u8 {
+        windowed,
+        fullscreen,
+    }
+
+    // Everything needed to create (and later save) the main window.
+    @std::derive::formattable
+    struct window_attributes {
+        std::string       title = default;
+        u32               width = 960;
+        u32               height = 600;
+        i32               pos_x = 100;
+        i32               pos_y = 100;
+        bool              vsync = true;
+        window_size_state size_state = window_size_state::windowed;
+    }
+
+    // Whether serialize_window_attributes reads the file into the attributes or writes them to it.
+    enum serialize_option : u8 {
+        load,
+        save,
+    }
+
+    // The project's config directory: `<project>/config`.
+    std::filesystem::path config_dir(std::filesystem::path& project);
+
+    // Loads the window attributes from, or saves them to, `<project>/config/app_settings.cfg`.
+    // Loading a missing file keeps `attributes` as they are (the defaults).
+    void serialize_window_attributes(std::filesystem::path& project, mut window_attributes& attributes, serialize_option option);
+}

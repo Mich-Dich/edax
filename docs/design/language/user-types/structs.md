@@ -1,0 +1,58 @@
+# Structs
+
+A `struct` is **plain, fully visible data**. It may have methods.
+
+## Rules
+
+| Rule | Check |
+|---|---|
+| All fields and methods are public; no `public:`/`protected:`/`private:` | Syntax |
+| No inheritance, no `virtual`, cannot be a base | Syntax |
+| May implement interfaces (see [Inheritance and Interfaces](inheritance-and-interfaces.md)) | Allowed |
+| No destructor | Syntax. If it needs one, it's a `class` |
+| Methods: normal, `mut`, `move`, `static`, `compile_time`, `compile_time run_time` | Allowed, no restriction |
+| Nested types (see [Classes](classes.md)) | Allowed |
+| Fields: `T name;` or `T name = <default>;` | No `mut` on fields (see [Variables](../basics/variables.md)) |
+
+### Construction
+Only with designated fields: `T{ .field = value, ... }`.
+
+- Fields may be listed in **any order**. They are evaluated left to right as written.
+- Fields left out take their default. Leaving out a field **without** a default is an error.
+- Positional construction `employee{"Ann", 30, 1.0}` is not allowed.
+
+```rift
+struct employee {
+    std::string name;
+    u32         age    = 0;
+    f64         salary = 0.0;
+
+    bool is_senior() {
+        return this.age >= 30;
+    }
+
+    void give_raise(f64 percent) mut {
+        this.salary *= 1.0 + percent / 100.0;
+    }
+}
+
+mut employee e = employee{ .name = std::string::from("Ann"), .age = 41 };
+e.give_raise(5.0);              // OK: e is mut and give_raise is mut
+bool s = e.is_senior();         // OK: a normal runtime method
+
+employee f = employee{ .age = 3 };            // ERROR: .name has no default
+employee g = employee{ std::string::from("x"), 1, 2.0 };  // ERROR: positional
+```
+
+### Copying and comparing
+- A struct is a **copy type** if all its fields are copy types (see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)). Otherwise it is moved or cloned.
+- `clone()` is provided automatically if every field can be cloned.
+- `==` is **opt-in**: `bool operator==(employee& other) = default;` compares field by field.
+
+### Header / source
+A struct used by other modules is declared **completely** in the `.rifth` (all fields plus method declarations). Its method bodies go in a `struct` block in the `.rifts`, which may not add fields (see [Headers, Sources and Modules](../organization/modules.md)). A struct without methods only needs the header.
+
+## Rationale
+- **What makes a struct plain:** everything is visible, there is no hidden state, no inheritance and no destructor. Methods don't change that, so they have no restrictions.
+- **Designated-only construction:** `employee{"Ann", 30, 1.0}` breaks silently when fields are reordered. Names are explicit and survive reordering.
+- **No destructor on structs:** a type that runs code on destruction owns a resource, and that is the job of a `class`.

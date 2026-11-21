@@ -1,0 +1,35 @@
+// feature 07: interface methods with a default body; implementers that don't override them get the default.
+import std;
+
+interface sink {
+    void write(std::str line) mut;
+    bool colored() { return false; }
+}
+
+interface named {
+    bool colored() { return true; }
+}
+
+class console : sink {
+public:
+    void write(std::str line) mut override { std::println(line); }
+    bool colored() override { return true; }
+}
+
+class plain : sink {
+public:
+    void write(std::str line) mut override { std::println(line); }
+}
+
+class both : sink, named {     //~ error[E3045]: 'both' gets two defaults for 'colored()'
+public:
+    void write(std::str line) mut override { std::println(line); }
+}
+
+class fixed : sink, named {
+public:
+    void write(std::str line) mut override { std::println(line); }
+    bool colored() override { return false; }
+}
+
+bool uses_default(plain& p) { return p.colored(); }

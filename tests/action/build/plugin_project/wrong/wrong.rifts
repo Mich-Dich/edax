@@ -1,0 +1,11 @@
+import std;
+import api::greeter;
+
+namespace wrong {
+    @std::plugin_entry
+    class other : api::counter {
+    public:
+        u32 count() mut override { return 1; }
+        static other make() { return other{}; }
+    }
+}

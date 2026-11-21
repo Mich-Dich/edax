@@ -1,0 +1,19 @@
+// feature 14: '...' passes on only a parameter pack, and a pack takes the arguments it gets.
+import std;
+
+void not_a_pack(u32 x) {
+    print_one(x...);   //~ error[E4030]: only a parameter pack is passed on with '...', as an argument for another pack
+}
+
+void print_one(u32 x) { }
+
+template<type... A>
+usize count(A&... values) {
+    return values.len();
+}
+
+void counts() {
+    usize none = count();
+    usize three = count(1u8, true, 'c');
+    usize literal = count(1);   //~ error[E4160]
+}

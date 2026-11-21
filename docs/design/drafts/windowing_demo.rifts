@@ -1,310 +1,755 @@
-// windowing_demo: DESIGN DRAFT for std::windowing, a GLFW-style window and input module in the
-// standard library. Nothing here compiles yet. This file shows what using the API would look
-// like, so the API can be reviewed before any of it is built.
+// windowing_demo_v2: DESIGN DRAFT for std::windowing, a GLFW-style window and input module in the
+// standard library, with several windows per program. Nothing here compiles yet: this file shows
+// what using the API would look like, so the API can be reviewed before any of it is built.
+// Supersedes drafts/windowing_demo.rifts (one window, written before specs 26-31).
 //
-// ------------------------------------------------------------------------------------------------
+// The program opens:
+//   - a game window (OpenGL 3.3, redrawn every frame),
+//   - inspector windows on Ctrl+N (tool windows owned by the game window, redrawn only on demand),
+//     which join the game window's share group, so a texture uploaded once is usable in all of them,
+//   - a sandbox window on Ctrl+Shift+N (OpenGL 2.1, independent: shares nothing).
+// A background thread builds an image; the main thread uploads it once into the shared group.
+// A stand-in for the future debug UI shows where that UI plugs in (input routing + drawing).
+//
+// ================================================================================================
 // Design decisions, and the spec rule each one comes from
-// ------------------------------------------------------------------------------------------------
-//  1. RAII, not init/terminate. std::windowing::system::start() replaces glfwInit. The destructor
-//     of `system` replaces glfwTerminate, and the destructor of `window` replaces
-//     glfwDestroyWindow. Locals are destroyed in reverse order (12), so a window declared after
-//     the system is always closed first, which is the order GLFW needs.
-//  2. Events are values, not callbacks. sys.poll_events() returns a std::span<event>. `event` is
-//     an enum with payloads that you handle with an exhaustive `match` (08, 10). There is no
-//     glfwSet*Callback: stored callbacks would need std::function (heap) and couldn't capture
-//     references (18). One way to receive input.
-//  3. Hints become a struct. The global glfwWindowHint state machine turns into `window_config`,
-//     with designated fields and defaults (05). No hidden global state.
-//  4. Errors are values. Creation returns std::result<T, std::windowing::error> instead of NULL
-//     plus glfwSetErrorCallback (11).
-//  5. Raw handles are unsafe. GL function pointers and native handles are std::raw_ptr; turning
-//     them into something callable needs `unsafe` (13).
-//  6. Changes are visible. Anything that changes a window (title, size, cursor, fullscreen) is a
-//     `mut` method, so it only works on a `mut` window (06).
-//  7. Main thread only. `system` and `window` can't cross threads (waiting on the concurrency
-//     design, 22 #2).
+// ================================================================================================
+//  1. RAII, not init/terminate. wnd::system::start() replaces glfwInit. Every window holds a
+//     counted reference to the platform connection, so the connection closes when `sys` *and*
+//     every window are gone (12). Destruction order no longer matters, and a window moved into a
+//     longer-lived place can't outlive the connection (old draft, open question 3).
+//  2. One queue per window. sys.poll() reads the OS queue once and sorts each event into the
+//     queue of the window it belongs to. win.drain_events(mut buffer) moves them into a darray the
+//     caller owns, so nothing borrows `sys` or `win` while the events are handled (12): handlers
+//     can call `mut` methods on the window. The buffer keeps its capacity: no allocation per frame
+//     once it has grown (principle 7). Events that belong to no window (monitors, gamepads) go to
+//     sys.drain_events(...). Events are copy-type enum values matched exhaustively (08, 10); there
+//     are no callbacks (no std::function on the heap, no reference captures that would make the
+//     window a view, 18).
+//  3. Windows are independent by default in everything that isn't a GPU resource: own queue, own
+//     input state, own cursor mode, own swap interval, own redraw policy, own close flag.
+//  4. GPU resources are shared whenever they can be. `window_config.sharing` (05, a field with a
+//     default) says how:
+//        sharing::automatic    (default) join an existing share group whose OpenGL config is
+//                              compatible, otherwise start a new one
+//        sharing::join(group)  must join this group; error share_incompatible otherwise
+//        sharing::independent  a group of its own, never shared
+//     A share group is a counted handle (`.clone()` makes the cost visible, 13). It owns a hidden
+//     1x1 context, so resources can be uploaded before any window exists and survive when windows
+//     close. Monitors, cursors and the clipboard belong to the system and are shared by all
+//     windows anyway. A Vulkan program (graphics::none) shares its VkDevice across windows
+//     itself; std::windowing only makes one surface per window.
+//  5. A current GL context is a value. win.begin_gl_frame() makes the window's context current and
+//     returns a wnd::gl_frame, a view that borrows the window exclusively (12): the window can't
+//     be resized, closed or moved away mid-frame. frame.present() swaps and is a consuming method
+//     (`move`, 27 §9). share_group.make_current() returns a wnd::gl_current for work without a
+//     window. Only one context per thread may be current: making a second one current while a
+//     frame or gl_current is alive panics in debug-based modes with both locations, like the
+//     mutex re-lock check (27 §5, run_time(std::build::mode::debug) check).
+//  6. Main thread only. wnd::system, wnd::window, wnd::share_group, wnd::gl_frame hold a
+//     std::thread_bound field, so moving one to another thread is a compile error (27 §1, example
+//     5). Plain data (wnd::image, wnd::event, wnd::key, ...) is sendable: images can be made on
+//     worker threads and handed over through a channel (this demo does).
+//  7. Config is a struct, not glfwWindowHint state: designated fields with defaults (05). Errors
+//     are values: creation returns std::result<T, wnd::error> (11). Changes are visible: anything
+//     that changes a window is a `mut` method (06).
+//  8. Time comes from std::time (instant, duration), not from the windowing module: one way (20).
+//  9. Short names without `using`: a file-local namespace alias, `namespace wnd = std::windowing;`
+//     (30). This closes open question 1 of the old draft.
 //
-// ------------------------------------------------------------------------------------------------
+// ================================================================================================
+// Hooks for the debug UI (immediate and retained mode). Not designed here, only kept possible.
+// ================================================================================================
+//  a. Input routing. interface wnd::input_layer { routing on_event(event e, window& win) mut; }
+//     wnd::route(mut events, mut layer, win) offers every event to the layer first and removes
+//     the ones it answers with routing::consume. The game then sees only what the UI left.
+//  b. Input snapshot for immediate mode. win.input() is a wnd::input_state&: keys and buttons held,
+//     pressed/released since the last drain_events, cursor position, scroll and text of this
+//     frame, modifiers. It is the raw device state; a UI that wants the keyboard says so through
+//     its own wants_keyboard(), like ImGui's WantCaptureKeyboard.
+//  c. Drawing in the same frame. A gl_frame can be drawn into by several renderers before
+//     present(): the app first, the UI last. frame.window() gives the size and content scale.
+//  d. Retained mode / tool windows. window_config.redraw = redraw::on_demand: such a window is only
+//     drawn after win.request_redraw(), an expose, a resize or a scale change (win.should_draw()).
+//     sys.wait() / wait_for(d) sleep until something happens, so idle tools cost nothing.
+//  e. Multiple viewports. A panel dragged out of the game window becomes a window of kind
+//     window_kind::popup(owner) (no decoration, no taskbar entry, no focus on show). It joins the
+//     owner's share group automatically, so the UI's font atlas is uploaded once for all viewports.
+//  f. What a UI needs from the platform: cursor shapes (wnd::cursor_shape::ibeam over text),
+//     clipboard text, text input with win.set_text_input_area(rect) for IME placement,
+//     content scale per window and per monitor.
+//  g. Bindings by reflection. This demo binds keys with an @binding annotation on methods (29); a
+//     debug UI can list every binding of a type with std::meta::methods<T>() (26), so a "keys"
+//     panel never goes out of date.
+//
+// ================================================================================================
+// API sketch (only what this demo uses; the .rifth comes after the review)
+// ================================================================================================
+//  namespace std::windowing {
+//      class system {                                  // glfwInit / glfwTerminate
+//          static std::result<system, error> start();  // error::already_started on a second call
+//          platform platform();                        // wayland, x11, win32, cocoa
+//          std::span<monitor> monitors();
+//          std::option<monitor_id> primary_monitor();
+//          std::result<window, error>       create_window(window_config config) mut;
+//          std::result<share_group, error>  create_share_group(opengl_config config) mut;
+//          void poll() mut;                            // glfwPollEvents
+//          void wait() mut;                            // glfwWaitEvents
+//          void wait_for(std::time::duration limit) mut;    // glfwWaitEventsTimeout
+//          void drain_events(mut std::darray<system_event>& out) mut;
+//          std::option<gamepad_state> gamepad(u8 slot);
+//          std::option<std::string> clipboard_text();
+//          void set_clipboard_text(std::str text) mut;
+//      }
+//      class window {
+//          window_id id();
+//          void drain_events(mut std::darray<event>& out) mut;   // also starts a new input frame
+//          input_state& input();
+//          bool should_close();  void request_close() mut;  void cancel_close() mut;
+//          bool should_draw();   void request_redraw() mut;
+//          gl_frame begin_gl_frame() mut;              // makes the context current
+//          std::option<share_group_id> share_group_id();
+//          void set_title(std::str title) mut;   void set_icon(image& icon) mut;
+//          void set_cursor_mode(cursor_mode mode) mut;  void set_cursor(cursor_style style) mut;
+//          window_mode mode();  void enter_fullscreen(monitor_id m) mut;  void leave_fullscreen() mut;
+//          size size();  size framebuffer_size();  scale content_scale();  rect rect();
+//          std::darray<std::filesystem::path> take_dropped_files() mut;   // allocates, on request
+//      }
+//      class share_group : std::cloneable { share_group_id id(); gl_current make_current();
+//                                           std::option<std::raw_ptr<u8>> proc_address(std::str name); }
+//      view class gl_frame   { window& window(); size framebuffer_size(); void present() move; }
+//      view class gl_current { }                       // proof that a context is current
+//      view struct window_config { std::str title; size size; std::option<point> position;
+//          bool resizable, decorated, visible, focus_on_show, transparent, always_on_top;
+//          window_kind kind; graphics graphics; sharing sharing; redraw redraw; }
+//      enum graphics : u8 { none, opengl(opengl_config) }
+//      enum sharing : u8 { automatic, join(share_group), independent }
+//      enum window_kind : u8 { normal, tool(window_id), popup(window_id) }
+//      enum redraw : u8 { continuous, on_demand }
+//      enum event : u8 { close_requested, key(key_event), text(char), mouse_button(mouse_button_event),
+//          cursor_moved(position), cursor_entered(bool), scrolled(position), resized(size),
+//          framebuffer_resized(size), content_scale_changed(scale), moved(point),
+//          focus_changed(bool), minimized(bool), maximized(bool), files_dropped, redraw_requested }
+//      enum system_event : u8 { monitor_connected(monitor_id), monitor_disconnected(monitor_id),
+//          gamepad_connected(u8), gamepad_disconnected(u8) }
+//      interface input_layer { routing on_event(event e, window& win) mut; }
+//      template<type L : input_layer> void route(mut std::darray<event>& events, mut L& layer, window& win);
+//  }
+//
+// ================================================================================================
 // GLFW → std::windowing
-// ------------------------------------------------------------------------------------------------
-//  glfwInit / glfwTerminate            std::windowing::system::start() / ~system()
-//  glfwWindowHint + glfwCreateWindow   sys.create_window(std::windowing::window_config{ ... })
-//  glfwDestroyWindow                   ~window()
-//  glfwWindowShouldClose               win.should_close()
-//  glfwSetWindowShouldClose            win.request_close() mut / win.cancel_close() mut
-//  glfwPollEvents / glfwWaitEvents     sys.poll_events() mut / sys.wait_events() mut → std::span<event>
-//  glfwSet*Callback                    std::windowing::event alternatives (no callbacks)
-//  glfwGetKey / glfwGetMouseButton     win.key_down(key) / win.mouse_down(mouse_button)
-//  glfwGetCursorPos                    win.cursor_position() → std::windowing::position
-//  glfwSetInputMode(CURSOR, ...)       win.set_cursor_mode(cursor_mode) mut
-//  glfwGetFramebufferSize              win.framebuffer_size() → std::windowing::size
-//  glfwSetWindowMonitor                win.set_fullscreen(monitor) mut / win.set_windowed(rect) mut
-//  glfwGetMonitors / glfwGetPrimary    sys.monitors() → std::span<monitor> / sys.primary_monitor()
-//  glfwMakeContextCurrent              win.make_context_current()
-//  glfwSwapBuffers / glfwSwapInterval  win.swap_buffers() / sys.set_swap_interval(u32) mut
-//  glfwGetProcAddress                  win.gl_proc_address(name) → std::option<std::raw_ptr<u8>>
-//  glfwGetTime                         sys.time() → f64 seconds
-//  glfwGet/SetClipboardString          sys.clipboard_text() → std::option<std::string> / sys.set_clipboard_text(str) mut
-//  glfwGetGamepadState                 sys.gamepad(u8) → std::option<gamepad_state>
-//  glfwGetPlatform                     sys.platform() → std::windowing::platform (wayland, x11, ...)
-// ------------------------------------------------------------------------------------------------
+// ================================================================================================
+//  glfwInit / glfwTerminate            wnd::system::start() / last owner destroyed
+//  glfwWindowHint + glfwCreateWindow   sys.create_window(wnd::window_config{ ... })
+//  glfwCreateWindow(..., share)        .sharing = wnd::sharing::automatic / join(group) / independent
+//  glfwDestroyWindow                   ~window() (drop it, e.g. darray.retain)
+//  glfwPollEvents / glfwWaitEvents     sys.poll() / sys.wait() / sys.wait_for(d), then win.drain_events
+//  glfwSet*Callback                    wnd::event alternatives; wnd::input_layer for layered input
+//  glfwGetKey / glfwGetMouseButton     win.input().key_down(k) / .mouse_down(b) (+ pressed/released)
+//  glfwMakeContextCurrent              win.begin_gl_frame() / group.make_current() (values, not state)
+//  glfwSwapBuffers                     frame.present()
+//  glfwSwapInterval                    win.set_swap_interval(n) mut (per window: it is per context)
+//  glfwSetWindowMonitor                win.enter_fullscreen(monitor) / win.leave_fullscreen()
+//  glfwSetDropCallback                 event::files_dropped + win.take_dropped_files()
+//  glfwSetMonitorCallback              wnd::system_event via sys.drain_events
+//  glfwGetTime                         std::time::instant::now()
+// ================================================================================================
 
 import std;
-import std::windowing;
 
-/// Errors of this program. std::windowing errors are wrapped explicitly, because `?` never
-/// converts error types on its own (11).
-enum app_error : u8 {
-    windowing(std::windowing::error),
-    missing_gl_function(std::static_str),
+namespace wnd = std::windowing;                 // file-local alias (30)
+
+@std::log::level_override{ .level = std::log::level::debug };     // this file logs from debug up (31)
+
+// ------------------------------------------------------------------------------------------------
+// OpenGL: the few GL 1.1 functions this demo needs are exported by the system's GL library, so they
+// are plain C imports (13). Newer functions come from group.proc_address(...) (open question 4).
+// ------------------------------------------------------------------------------------------------
+extern(std::build::language::c) {
+    void glViewport(i32 x, i32 y, i32 width, i32 height);
+    void glClearColor(f32 red, f32 green, f32 blue, f32 alpha);
+    void glClear(u32 mask);
+    void glEnable(u32 capability);
+    void glDisable(u32 capability);
+    void glScissor(i32 x, i32 y, i32 width, i32 height);
+    void glGenTextures(i32 count, std::raw_ptr<mut u32> textures);
+    void glBindTexture(u32 target, u32 texture);
+    void glTexParameteri(u32 target, u32 name, i32 value);
+    void glTexImage2D(u32 target, i32 level, i32 internal_format, i32 width, i32 height, i32 border,
+                      u32 format, u32 type, std::raw_ptr<u8> pixels);
 }
 
-/// The two GL functions this demo needs, loaded at run time from the driver.
-struct gl_functions {
-    std::fn_ptr<void(f32, f32, f32, f32)> clear_color;    // glClearColor
-    std::fn_ptr<void(u32)>                clear;          // glClear
+compile_time u32 gl_color_buffer_bit  = 0x4000;
+compile_time u32 gl_scissor_test      = 0x0C11;
+compile_time u32 gl_texture_2d        = 0x0DE1;
+compile_time u32 gl_texture_min_filter = 0x2801;
+compile_time i32 gl_nearest           = 0x2600;
+compile_time i32 gl_rgba8             = 0x8058;
+compile_time u32 gl_rgba              = 0x1908;
+compile_time u32 gl_unsigned_byte     = 0x1401;
+
+// The context every "normal" window of this program asks for. Windows with this config join the
+// same share group automatically.
+compile_time wnd::opengl_config gl_33 = wnd::opengl_config{
+    .version_major = 3,
+    .version_minor = 3,
+    .profile       = wnd::opengl_profile::core,
+};
+
+// ------------------------------------------------------------------------------------------------
+// Key bindings as annotations on methods (29), dispatched by reflection (26)
+// ------------------------------------------------------------------------------------------------
+
+// Binds a key (with modifiers) to a method. The method is called when the key is pressed.
+annotation(std::meta::target::function) struct binding {
+    wnd::key       key;
+    wnd::modifiers modifiers = default;
+
+    bool operator==(binding& other) = default;
+
+    compile_time check (annotated.parameters.len() == 0)
+        else f"@binding: '{annotated.name}' is called on a key press, so it can't take parameters";
 }
 
-compile_time u32 gl_color_buffer_bit = 0x4000;
+// Calls the method of `target` bound to `key` + `mods`. Returns false if no method is bound.
+template<type T>
+bool dispatch_binding(mut T& target, wnd::key key, wnd::modifiers mods) {
+    // Entry check, evaluated once per instantiation (23): two methods on the same key is a compile
+    // error at the @binding, not a silent "first one wins".
+    compile_time check {
+        for (std::meta::function a : std::meta::methods<T>()) {
+            for (std::meta::function b : std::meta::methods<T>()) {
+                if (a.has<binding>() && b.has<binding>() && a.name < b.name
+                    && a.annotation<binding>() == b.annotation<binding>()) {
+                    std::compile_error(f"'{a.name}' and '{b.name}' are bound to the same key");
+                }
+            }
+        }
+    }
+    for compile_time (std::meta::function m : std::meta::methods<T>()) {
+        if compile_time (m.has<binding>()) {
+            compile_time binding b = m.annotation<binding>().expect("checked by has");
+            if (key == b.key && mods == b.modifiers) {
+                if compile_time (m.is_mut) { m.call(mut target); } else { m.call(target); }
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
-/// The program's own state. Plain data: std::windowing never sees it.
+// ------------------------------------------------------------------------------------------------
+// The program's own state. Plain data: std::windowing never sees it.
+// ------------------------------------------------------------------------------------------------
+
+@std::derive::formattable
 struct app_state {
+    bool running  = true;
+    bool paused   = false;
     f64  player_x = 640.0;
     f64  player_y = 360.0;
     f64  zoom     = 1.0;
-    bool paused   = false;
+    u32  frames   = 0;              // frames drawn in the current second
 
-    // Requests that need `sys`. While the event span borrows `sys`, the event handlers can't call
-    // its methods (12), so they set these flags and the main loop acts on them afterwards.
-    bool toggle_fullscreen_requested = false;
-    bool copy_position_requested     = false;
+    // Requests the bindings can't carry out themselves: they need `sys`, or they change the list of
+    // windows that the main loop is walking (12: a container can't change while it's borrowed).
+    bool fullscreen_requested  = false;
+    bool tool_window_requested = false;
+    bool sandbox_requested     = false;
 
-    // Where the window was before going fullscreen, so it can go back there.
-    std::windowing::rect saved_rect = default;
+    @binding{ .key = wnd::key::escape }
+    void quit() mut { this.running = false; }
 
-    u32 frames_this_second = 0;
-    f64 second_started     = 0.0;
+    @binding{ .key = wnd::key::space }
+    void toggle_pause() mut { this.paused = !this.paused; }
+
+    @binding{ .key = wnd::key::f11 }
+    void toggle_fullscreen() mut { this.fullscreen_requested = true; }
+
+    @binding{ .key = wnd::key::n, .modifiers = wnd::modifiers{ .control = true } }
+    void open_tool_window() mut { this.tool_window_requested = true; }
+
+    @binding{ .key = wnd::key::n, .modifiers = wnd::modifiers{ .control = true, .shift = true } }
+    void toggle_sandbox() mut { this.sandbox_requested = true; }
+
+    // @binding{ .key = wnd::key::space } void jump() mut { ... }
+    //   → error: 'jump' and 'toggle_pause' are bound to the same key
 }
 
-/// Looks up the GL entry points. Asking for an address is safe; turning it into something
-/// callable is `unsafe`, because Rift can't check the signature (13).
-std::result<gl_functions, app_error> load_gl(std::windowing::window& win) {
-    std::raw_ptr<u8> clear_color = win.gl_proc_address("glClearColor")
-        .or_error(app_error::missing_gl_function("glClearColor"))?;
-    std::raw_ptr<u8> clear = win.gl_proc_address("glClear")
-        .or_error(app_error::missing_gl_function("glClear"))?;
+// An inspector window. Destroying it (dropping it from the darray) closes the OS window.
+struct tool_window {
+    wnd::window win;
+    u32         number;
+}
+
+// ------------------------------------------------------------------------------------------------
+// Stand-in for the future debug UI. It only shows the two seams: input first, drawing last.
+// ------------------------------------------------------------------------------------------------
+
+struct debug_overlay_stub : wnd::input_layer {
+    bool visible = false;
+
+    // Sees each event before the game. Consumed events never reach handle_game_event.
+    wnd::routing on_event(wnd::event e, wnd::window& win) mut override {
+        return match (e) {
+            wnd::event::key(wnd::key_event{ .key = wnd::key::f1, .action = wnd::key_action::pressed, .. }) => {
+                this.visible = !this.visible;
+                wnd::routing::consume
+            },
+            // While visible, the panel takes the mouse and the keyboard (a real UI asks its widgets).
+            wnd::event::mouse_button(_) if this.visible => wnd::routing::consume,
+            wnd::event::scrolled(_) if this.visible     => wnd::routing::consume,
+            wnd::event::key(_) if this.visible          => wnd::routing::consume,
+            wnd::event::text(_) if this.visible         => wnd::routing::consume,
+            _                                           => wnd::routing::pass,
+        };
+    }
+
+    // For state queries (win.input()), which routing doesn't filter: the game asks the UI.
+    bool wants_keyboard() { return this.visible; }
+
+    // Draws last, into the frame the game already drew. Sized by the window's content scale, so
+    // it has the same physical size on a HiDPI monitor.
+    void draw(mut wnd::gl_frame& frame) {
+        if (!this.visible) {
+            return;
+        }
+        f32 scale  = frame.window().content_scale().x;
+        i32 width  = cast::saturate<i32>(320.0 * scale);
+        i32 height = cast::saturate<i32>(200.0 * scale);
+        i32 margin = cast::saturate<i32>(16.0 * scale);
+        i32 top    = cast::saturate<i32>(frame.framebuffer_size().height);
+        unsafe {
+            glEnable(gl_scissor_test);
+            glScissor(margin, top - margin - height, width, height);   // GL's y axis points up
+            glClearColor(0.15, 0.17, 0.22, 1.0);
+            glClear(gl_color_buffer_bit);
+            glDisable(gl_scissor_test);
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Shared resources
+// ------------------------------------------------------------------------------------------------
+
+// RGBA8 checkerboard. Runs on a worker thread: wnd::image is plain data, so it is sendable (27).
+wnd::image make_checker_image(u32 size, u32 cell) {
+    mut std::darray<u8> pixels = std::darray<u8>::with_capacity(cast<usize>(size) * cast<usize>(size) * 4);
+    for (u32 y : 0..size) {
+        for (u32 x : 0..size) {
+            u8 v = if ((x / cell + y / cell) % 2 == 0) { 40 } else { 220 };
+            pixels.push(v);
+            pixels.push(v);
+            pixels.push(v);
+            pixels.push(255);
+        }
+    }
+    return wnd::image{ .width = size, .height = size, .pixels = move pixels };
+}
+
+// Uploads into whichever context is current. The `gl` parameter is the proof that one is: you
+// can't call this without a wnd::gl_current or a wnd::gl_frame (frame.current()) in hand.
+// The texture belongs to that context's share group and is usable in every window of the group.
+u32 upload_texture(wnd::gl_current& gl, wnd::image& img) {
+    mut u32 id = 0;
     unsafe {
-        return std::ok(gl_functions{
-            .clear_color = cast::reinterpret<std::fn_ptr<void(f32, f32, f32, f32)>>(clear_color),
-            .clear       = cast::reinterpret<std::fn_ptr<void(u32)>>(clear),
-        });
+        glGenTextures(1, mut &id);
+        glBindTexture(gl_texture_2d, id);
+        glTexParameteri(gl_texture_2d, gl_texture_min_filter, gl_nearest);
+        glTexImage2D(gl_texture_2d, 0, gl_rgba8, cast::saturate<i32>(img.width), cast::saturate<i32>(img.height),
+                     0, gl_rgba, gl_unsigned_byte, img.pixels.as_ptr());
+    }
+    return id;
+}
+
+void log_sharing(std::str label, wnd::window& win) {
+    match (win.share_group_id()) {
+        std::some(group) => std::log::info(f"{label}: share group {group}"),
+        std::none        => std::log::info(f"{label}: no graphics context"),
     }
 }
 
-/// A key press. Releases and repeats are filtered out by the pattern in handle_event.
-void handle_key_press(mut app_state& state, mut std::windowing::window& win,
-                      std::windowing::key key, std::windowing::modifiers mods) {
-    match (key) {
-        std::windowing::key::escape            => win.request_close(),
-        std::windowing::key::space             => { state.paused = !state.paused; },
-        std::windowing::key::f11               => { state.toggle_fullscreen_requested = true; },
-        std::windowing::key::c if mods.control => { state.copy_position_requested = true; },
-        _                                      => {},
-    }
+// ------------------------------------------------------------------------------------------------
+// Creating windows
+// ------------------------------------------------------------------------------------------------
+
+std::result<tool_window, wnd::error> open_tool_window(mut wnd::system& sys, wnd::window& owner, u32 number) {
+    return std::ok(tool_window{
+        .win = sys.create_window(wnd::window_config{
+            .title    = std::format(f"Inspector {number}"),      // a temporary: copied by create_window
+            .size     = wnd::size{ .width = 360, .height = 480 },
+            .kind     = wnd::window_kind::tool(owner.id()),     // stays above its owner, no taskbar entry
+            .graphics = wnd::graphics::opengl(gl_33),
+            .redraw   = wnd::redraw::on_demand,                 // drawn only when something changed
+            // .sharing isn't written: automatic, so it joins the owner's group (same config)
+        })?,
+        .number = number,
+    });
 }
 
-/// One event. The match is exhaustive: a new alternative added to std::windowing::event is a
-/// compile error here until it's handled (or ignored on purpose with `_`).
-void handle_event(mut app_state& state, mut std::windowing::window& win, std::windowing::event& e) {
-    match (e) {
-        std::windowing::event::close_requested(_) => {
-            // win.should_close() is already true. Calling win.cancel_close() here would keep the
-            // window open, e.g. to ask "save changes?".
-            std::println("close requested");
-        },
+// A window that shares nothing: another GL version and profile, and sharing::independent even if
+// a compatible group existed. Textures of the other windows don't exist in it.
+std::result<wnd::window, wnd::error> open_sandbox(mut wnd::system& sys) {
+    return sys.create_window(wnd::window_config{
+        .title    = "Sandbox (GL 2.1, independent)",
+        .size     = wnd::size{ .width = 480, .height = 320 },
+        .graphics = wnd::graphics::opengl(wnd::opengl_config{
+            .version_major = 2,
+            .version_minor = 1,
+            .profile       = wnd::opengl_profile::compatibility,
+        }),
+        .sharing  = wnd::sharing::independent,
+    });
+}
 
-        // Struct patterns pick out presses; `..` skips the fields we don't need (window, scancode).
-        std::windowing::event::key(std::windowing::key_event{
-            .action = std::windowing::key_action::pressed, .key = k, .modifiers = m, ..
-        }) => handle_key_press(mut state, mut win, k, m),
-        std::windowing::event::key(_) => {},                    // released, repeated
-
-        std::windowing::event::text(t) => std::println(f"typed '{t.character}'"),
-
-        std::windowing::event::mouse_button(b) => {
-            match (b.button) {
-                // Holding the right button captures the cursor (hidden, unlimited movement).
-                std::windowing::mouse_button::right => {
-                    match (b.action) {
-                        std::windowing::button_action::pressed =>
-                            win.set_cursor_mode(std::windowing::cursor_mode::captured),
-                        std::windowing::button_action::released =>
-                            win.set_cursor_mode(std::windowing::cursor_mode::normal),
-                    }
-                },
-                _ => {},
+void toggle_fullscreen(wnd::system& sys, mut wnd::window& win) {
+    match (win.mode()) {
+        wnd::window_mode::fullscreen(_) => win.leave_fullscreen(),    // back to its old size and place
+        _ => {
+            match (sys.primary_monitor()) {
+                std::some(m) => win.enter_fullscreen(m),
+                std::none    => std::log::warn("no monitor to go fullscreen on"),
             }
         },
+    }
+}
 
-        std::windowing::event::cursor_moved(_) => {},           // read with win.cursor_position()
+// ------------------------------------------------------------------------------------------------
+// Events
+// ------------------------------------------------------------------------------------------------
 
-        std::windowing::event::scrolled(s) => {
+// One event of the game window, after the debug UI took what it wanted.
+void handle_game_event(mut app_state& state, mut wnd::window& win, wnd::event e) {
+    match (e) {
+        wnd::event::close_requested => { state.running = false; },
+
+        // Struct patterns pick out presses; `..` skips scancode.
+        wnd::event::key(wnd::key_event{ .action = wnd::key_action::pressed, .key = k, .modifiers = m, .. }) => {
+            dispatch_binding(mut state, k, m) else {          // `else` after a bool call (10)
+                std::log::debug(f"no binding for {k}");
+            }
+        },
+        wnd::event::key(_) => {},                             // released, repeated
+
+        // Holding the right button captures the cursor (hidden, unlimited movement).
+        wnd::event::mouse_button(wnd::mouse_button_event{ .button = wnd::mouse_button::right, .action = a, .. }) => {
+            win.set_cursor_mode(match (a) {
+                wnd::button_action::pressed  => wnd::cursor_mode::captured,
+                wnd::button_action::released => wnd::cursor_mode::normal,
+            });
+        },
+
+        wnd::event::scrolled(s) => {
             f64 next = state.zoom * (1.0 + s.y * 0.1);
             state.zoom = if (next < 0.25) { 0.25 } else if (next > 8.0) { 8.0 } else { next };
         },
 
-        // Window size is in screen coordinates; the framebuffer is in pixels. They differ on
-        // HiDPI screens. Rendering uses the framebuffer size.
-        std::windowing::event::resized(_) => {},
-        std::windowing::event::framebuffer_resized(r) =>
-            std::println(f"framebuffer is now {r.width}x{r.height} pixels"),
+        wnd::event::focus_changed(focused) => {
+            if (!focused) {
+                state.paused = true;
+            }
+        },
 
-        std::windowing::event::focus_changed(f) => { state.paused = !f.focused; },
+        // The paths stay in the window until asked for: only this arm allocates them.
+        wnd::event::files_dropped => {
+            for (std::filesystem::path& p : win.take_dropped_files()) {
+                std::log::info(f"dropped {p}");
+            }
+        },
+
+        // Size, position and cursor are read as state (win.framebuffer_size(), win.input()) when
+        // needed. Writing `_` is a decision: new alternatives of wnd::event land here silently.
+        _ => {},
     }
 }
 
-i32 main() {
-    // ---- start: glfwInit ------------------------------------------------------------------
-    mut std::windowing::system sys = match (std::windowing::system::start()) {
-        std::ok(s)    => move s,
-        std::error(e) => {
-            std::eprintln(f"cannot start the windowing system: {e}");   // e.g. no_display
-            return 1;
-        },
-    };
-    std::println(f"platform: {sys.platform()}");                      // wayland, x11, win32, cocoa
+// The sandbox window: its own events and its own frame. Returns false once it should close.
+bool pump_sandbox(mut wnd::window& win, mut std::darray<wnd::event>& events) {
+    win.drain_events(mut events);
+    for (wnd::event e : events) {
+        match (e) {
+            wnd::event::key(wnd::key_event{ .key = wnd::key::escape, .action = wnd::key_action::pressed, .. }) =>
+                win.request_close(),
+            _ => {},
+        }
+    }
+    if (win.should_close()) {
+        return false;
+    }
+    if (win.should_draw()) {
+        mut wnd::gl_frame frame = win.begin_gl_frame();
+        unsafe {
+            glClearColor(0.25, 0.1, 0.1, 1.0);
+            glClear(gl_color_buffer_bit);
+            // glBindTexture(gl_texture_2d, shared_texture) here would be a GL error: the texture
+            // belongs to another share group, and GL ids are plain integers (open question 2).
+        }
+        frame.present();
+    }
+    return true;
+}
 
-    // monitor is a copy-type handle, like GLFWmonitor*. Its queries return values, not views.
-    for (std::windowing::monitor m : sys.monitors()) {
-        std::windowing::video_mode mode = m.video_mode();
-        std::println(f"monitor {m.name()}: {mode.width}x{mode.height} @ {mode.refresh_rate} Hz");
+// ------------------------------------------------------------------------------------------------
+// Drawing (the renderer itself is out of scope; clears and binds stand in for it)
+// ------------------------------------------------------------------------------------------------
+
+void draw_game(mut wnd::gl_frame& frame, app_state& state, std::option<u32> texture) {
+    wnd::size fb = frame.framebuffer_size();       // pixels; differs from win.size() on HiDPI
+    f32 shade = if (state.paused) { 0.05 } else { 0.12 };
+    unsafe {
+        glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+        glClearColor(shade, shade, shade + 0.03, 1.0);
+        glClear(gl_color_buffer_bit);
+        glBindTexture(gl_texture_2d, texture.value_or(0));      // shared: uploaded once, used here...
+        // ... draw the world at (state.player_x, state.player_y) with state.zoom
+    }
+}
+
+void draw_tool(mut wnd::gl_frame& frame, u32 number, std::option<u32> texture) {
+    wnd::size fb = frame.framebuffer_size();
+    f32 tint = cast::round<f32>(number % 4) * 0.05;
+    unsafe {
+        glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+        glClearColor(0.1 + tint, 0.12, 0.1, 1.0);
+        glClear(gl_color_buffer_bit);
+        glBindTexture(gl_texture_2d, texture.value_or(0));      // ...and here, in another window
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// The program
+// ------------------------------------------------------------------------------------------------
+
+std::result<void, wnd::error> run() {
+    // ---- start: glfwInit -----------------------------------------------------------------------
+    mut wnd::system sys = wnd::system::start()?;
+    std::log::info(f"windowing platform: {sys.platform()}");
+    for (wnd::monitor& m : sys.monitors()) {
+        std::log::info(f"monitor '{m.name}': {m.mode.width}x{m.mode.height} @ {m.mode.refresh_rate} Hz, scale {m.content_scale.x:.2}");
     }
 
-    // ---- create a window: glfwWindowHint + glfwCreateWindow -------------------------------
-    // Every field not listed takes its default (visible = true, decorated = true, ...).
-    mut std::windowing::window win = match (sys.create_window(std::windowing::window_config{
+    // ---- one share group for the program's resources, made before any window ------------------
+    // It owns a hidden context, so textures can be uploaded now and outlive every window.
+    wnd::share_group assets = sys.create_share_group(gl_33)?;
+
+    // ---- the game window --------------------------------------------------------------------------
+    mut wnd::window game = sys.create_window(wnd::window_config{
         .title     = "Rift windowing demo",
-        .size      = std::windowing::size{ .width = 1280, .height = 720 },
-        .resizable = true,
-        .graphics  = std::windowing::graphics::opengl(std::windowing::opengl_config{
-            .version_major = 3,
-            .version_minor = 3,
-            .profile       = std::windowing::opengl_profile::core,
-        }),
-        // For Vulkan: `.graphics = std::windowing::graphics::none`, then
-        // sys.vulkan_required_extensions() and the unsafe win.create_vulkan_surface(instance).
-    })) {
-        std::ok(w)    => move w,
-        std::error(e) => {
-            std::eprintln(f"cannot create the window: {e}");          // e.g. version_unavailable
-            return 1;
-        },
-    };
+        .size      = wnd::size{ .width = 1280, .height = 720 },
+        .graphics  = wnd::graphics::opengl(gl_33),
+        .sharing   = wnd::sharing::join(assets.clone()),     // explicit: count + 1, visible
+    })?;
+    game.set_swap_interval(1);                               // vsync, for this window only
+    log_sharing("game", game);
 
-    // ---- graphics context --------------------------------------------------------------
-    win.make_context_current();
-    sys.set_swap_interval(1);                                         // vsync
-    gl_functions gl = match (load_gl(win)) {
-        std::ok(g) => g,
-        std::error(app_error::missing_gl_function(name)) => {
-            std::eprintln(f"the GL driver has no {name}");
-            return 1;
-        },
-        std::error(app_error::windowing(e)) => {
-            std::eprintln(f"windowing error: {e}");
-            return 1;
-        },
-    };
+    // ---- background work: a worker thread builds an image and sends it over --------------------
+    std::channel<wnd::image> loaded = std::channel<wnd::image>::bounded(1);
+    std::thread::handle<void> loader = std::thread::spawn([out = loaded.sender()]() {
+        _ = out.send(make_checker_image(256, 32));
+    });
+    std::channel_receiver<wnd::image> arrivals = loaded.receiver();
+    // std::thread::spawn([move game]() { ... })  → error: 'wnd::window' isn't std::sendable
+    //                                               (its field 'thread' is a std::thread_bound)
 
-    mut app_state state = default;
-    mut f64 last_frame = sys.time();
-    state.second_started = last_frame;
+    // ---- the rest of the program's state ----------------------------------------------------------
+    mut std::darray<tool_window>       tools          = default;
+    mut std::option<wnd::window>       sandbox        = std::none;
+    mut std::darray<wnd::event>        events         = std::darray<wnd::event>::with_capacity(256);
+    mut std::darray<wnd::system_event> system_events  = default;
+    mut debug_overlay_stub             overlay        = default;
+    mut app_state                      state          = default;
+    mut std::option<u32>               shared_texture = std::none;
+    mut u32                            next_tool      = 1;
+    mut std::time::instant             last_frame     = std::time::instant::now();
+    mut std::time::instant             second_started = last_frame;
 
-    // ---- main loop -------------------------------------------------------------------------
-    while (!win.should_close()) {
-        // 1. Events. The span is a view into `sys`, valid until the next poll. While it's alive,
-        //    `sys` can't be used (12): writing sys.set_clipboard_text(...) inside this loop is
-        //    a compile error. That's why the handlers only set request flags.
-        for (std::windowing::event& e : sys.poll_events()) {
-            handle_event(mut state, mut win, e);
+    // ---- main loop ------------------------------------------------------------------------------------
+    while (state.running) {
+        // 1. Read the OS queue once, for every window. Paused: sleep until something happens.
+        if (state.paused) {
+            sys.wait_for(std::time::duration::milliseconds(250));
+        } else {
+            sys.poll();
         }
 
-        // 2. Requests that need `sys`. std::take returns the flag and resets it to false.
-        if (std::take(mut state.toggle_fullscreen_requested)) {
-            match (win.mode()) {
-                std::windowing::window_mode::windowed => {
-                    match (sys.primary_monitor()) {
-                        std::some(m) => {
-                            state.saved_rect = win.rect();
-                            win.set_fullscreen(m);
-                        },
-                        std::none => std::eprintln("no monitor to go fullscreen on"),
-                    }
-                },
-                std::windowing::window_mode::fullscreen(_) => win.set_windowed(state.saved_rect),
+        // 2. Events that belong to no window.
+        sys.drain_events(mut system_events);
+        for (wnd::system_event e : system_events) {
+            match (e) {
+                wnd::system_event::monitor_connected(id)       => std::log::info(f"monitor {id} connected"),
+                wnd::system_event::monitor_disconnected(id)    => std::log::info(f"monitor {id} disconnected"),
+                wnd::system_event::gamepad_connected(slot)     => std::log::info(f"gamepad {slot} connected"),
+                wnd::system_event::gamepad_disconnected(slot)  => std::log::info(f"gamepad {slot} disconnected"),
             }
         }
-        if (std::take(mut state.copy_position_requested)) {
-            sys.set_clipboard_text(std::format(f"{state.player_x:.1}, {state.player_y:.1}"));
-            std::println("position copied to the clipboard");
+
+        // 3. Each window's own events. `events` is a separate local, so nothing borrows a window
+        //    while its events are handled.
+        game.drain_events(mut events);
+        wnd::route(mut events, mut overlay, game);           // the debug UI goes first
+        for (wnd::event e : events) {
+            handle_game_event(mut state, mut game, e);
         }
 
-        // 3. Continuous input: state queries (glfwGetKey), not events.
-        f64 now = sys.time();
-        f64 dt  = now - last_frame;
-        last_frame = now;
-        if (!state.paused) {
-            f64 step = 300.0 * dt;
-            if (win.key_down(std::windowing::key::w)) { state.player_y -= step; }
-            if (win.key_down(std::windowing::key::s)) { state.player_y += step; }
-            if (win.key_down(std::windowing::key::a)) { state.player_x -= step; }
-            if (win.key_down(std::windowing::key::d)) { state.player_x += step; }
+        for (mut tool_window& t : tools) {
+            t.win.drain_events(mut events);
+            for (wnd::event e : events) {
+                match (e) {
+                    wnd::event::close_requested => std::log::debug(f"inspector {t.number} closes"),
+                    _                           => {},
+                }
+            }
+        }
+        tools.retain([](tool_window& t) { return !t.win.should_close(); });   // dropped = OS window closed
 
-            // A gamepad is a value read once per frame, like glfwGetGamepadState.
-            match (sys.gamepad(0)) {
+        bool sandbox_open = match (mut sandbox) {
+            std::some(w) => pump_sandbox(mut w, mut events),
+            std::none    => false,
+        };
+        if (!sandbox_open) {
+            sandbox = std::none;                              // destroys the window, if there was one
+        }
+
+        // 4. Requests the bindings left for us: they need `sys`, or they change `tools`.
+        if (std::take(mut state.fullscreen_requested)) {
+            toggle_fullscreen(sys, mut game);
+        }
+        if (std::take(mut state.tool_window_requested)) {
+            match (open_tool_window(mut sys, game, next_tool)) {
+                std::ok(t) => {
+                    log_sharing(f"inspector {t.number}", t.win);   // the same group as the game
+                    tools.push(move t);
+                    next_tool += 1;
+                },
+                std::error(e) => std::log::error(f"can't open an inspector: {e}"),
+            }
+        }
+        if (std::take(mut state.sandbox_requested)) {
+            if (sandbox_open) {
+                sandbox = std::none;
+            } else {
+                match (open_sandbox(mut sys)) {
+                    std::ok(w) => {
+                        log_sharing("sandbox", w);                // a group of its own
+                        sandbox = std::some(move w);
+                    },
+                    std::error(e) => std::log::error(f"can't open the sandbox: {e}"),
+                }
+            }
+        }
+
+        // 5. Work from the loader thread: uploaded once, into the shared group, with no window's
+        //    context involved. Every window of the group (game, inspectors) can use it from now on.
+        match (arrivals.try_receive()) {
+            std::ok(img) => {
+                {
+                    wnd::gl_current gl = assets.make_current();
+                    shared_texture = std::some(upload_texture(gl, img));
+                }                                             // gl destroyed: no context current
+                game.set_icon(img);                           // the platform copies the pixels
+                for (mut tool_window& t : tools) {
+                    t.win.request_redraw();                   // on-demand windows: show the new texture
+                }
+                std::log::info(f"shared texture ready ({img.width}x{img.height})");
+            },
+            std::error(_) => {},                              // nothing yet, or the loader is done
+        }
+
+        // 6. Simulation: continuous input is state, not events (glfwGetKey).
+        f64 dt = last_frame.elapsed().seconds();
+        last_frame = std::time::instant::now();
+        if (!state.paused && !overlay.wants_keyboard()) {
+            wnd::input_state& input = game.input();
+            f64 step = 300.0 * dt / state.zoom;
+            if (input.key_down(wnd::key::w)) { state.player_y -= step; }
+            if (input.key_down(wnd::key::s)) { state.player_y += step; }
+            if (input.key_down(wnd::key::a)) { state.player_x -= step; }
+            if (input.key_down(wnd::key::d)) { state.player_x += step; }
+
+            match (sys.gamepad(0)) {                          // a value, read once per frame
                 std::some(pad) => {
-                    state.player_x += cast<f64>(pad.axis(std::windowing::gamepad_axis::left_x)) * step;
-                    state.player_y += cast<f64>(pad.axis(std::windowing::gamepad_axis::left_y)) * step;
-                    if (pad.button_down(std::windowing::gamepad_button::start)) { win.request_close(); }
+                    state.player_x += cast<f64>(pad.axis(wnd::gamepad_axis::left_x)) * step;
+                    state.player_y += cast<f64>(pad.axis(wnd::gamepad_axis::left_y)) * step;
                 },
                 std::none => {},
             }
         }
 
-        // 4. Draw. Calling a pointer from the driver is unsafe (13).
-        f32 shade = if (state.paused) { 0.05 } else { 0.12 };
-        unsafe {
-            gl.clear_color(shade, shade, shade + 0.03, 1.0);
-            gl.clear(gl_color_buffer_bit);
+        // 7. Draw. Each window has its own context; a frame makes it current and present() swaps.
+        if (game.should_draw()) {                             // false while minimized
+            mut wnd::gl_frame frame = game.begin_gl_frame();
+            draw_game(mut frame, state, shared_texture);
+            overlay.draw(mut frame);                          // the debug UI draws last, same frame
+            frame.present();                                  // consumes the frame (`move`)
+            state.frames += 1;
         }
-        win.swap_buffers();
+        for (mut tool_window& t : tools) {
+            if (t.win.should_draw()) {                        // on demand: rarely true
+                mut wnd::gl_frame frame = t.win.begin_gl_frame();
+                draw_tool(mut frame, t.number, shared_texture);
+                frame.present();
+            }
+        }
 
-        // 5. Frame counter in the title. std::format allocates, and you can see that it does.
-        state.frames_this_second += 1;
-        if (now - state.second_started >= 1.0) {
-            win.set_title(std::format(f"Rift windowing demo - {state.frames_this_second} fps"));
-            state.frames_this_second = 0;
-            state.second_started     = now;
+        // 8. Once a second: fps in the title, and the inspectors redraw their numbers.
+        if (second_started.elapsed() >= std::time::duration::seconds(1)) {
+            game.set_title(std::format(f"Rift windowing demo - {state.frames} fps"));
+            for (mut tool_window& t : tools) {
+                t.win.request_redraw();
+            }
+            std::log::debug(f"{state}");                      // @std::derive::formattable
+            state.frames   = 0;
+            second_started = std::time::instant::now();
         }
     }
 
-    std::println(f"bye, last position {state.player_x:.1}, {state.player_y:.1}");
-    return 0;
-}   // win is destroyed first (glfwDestroyWindow), then sys (glfwTerminate)
+    std::log::info(f"bye, last position {state.player_x:.1}, {state.player_y:.1}");
+    return std::ok();
+}   // Destroyed in reverse order: the loader (joined), the sandbox and the tools (OS windows closed),
+    // the game window, `assets` (the group's GL objects are freed with its last context), then
+    // `sys`. The platform connection closes with the last of them, whatever the order.
 
-// ------------------------------------------------------------------------------------------------
+std::exit_code main() {
+    std::thread::set_current_name("main");                    // the windowing thread
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make(), std::log::sink_options{ .pattern = std::log::patterns::minimal });
+
+    return match (run()) {
+        std::ok()     => std::exit_code::success,
+        std::error(e) => {
+            std::log::fatal(f"windowing failed: {e}");        // e.g. no_display, version_unavailable
+            std::exit_code::failure
+        },
+    };
+}
+
+// ================================================================================================
 // Open questions found while writing this demo
-// ------------------------------------------------------------------------------------------------
-//  1. Name length. Every name is written in full, so `std::windowing::key::escape` gets long in
-//     input code. This is a real data point for module aliases (22 #12, #30).
-//  2. C function pointers. std::fn_ptr has Rift's calling convention. GL pointers need a C one,
-//     e.g. std::fn_ptr<extern(std::build::language::c) void(u32)>. Not designed yet.
-//  3. Window outliving the system. Reverse destruction order handles the normal case, but
-//     `move win` into a longer-lived place could outlive `sys`. Options: every window holds a
-//     shared count on the platform connection, or windows are handles (ids) owned by `sys`.
-//  4. Dropped files. A files_dropped event would carry paths. As a span into `sys` the event
-//     becomes a view type; as std::darray<std::filesystem::path> every poll allocates.
-//  5. Threads. Some platforms only allow windowing on the main thread. This needs the
-//     "may cross threads" rule from the concurrency design (22 #2).
-//  6. One event span for all windows (as here, events carry `.window`), or one queue per
-//     window (`win.poll_events()`)? The first matches GLFW; the second is simpler with one window.
+// ================================================================================================
+//  1. Automatic sharing vs. "explicit beats implicit". sharing::automatic is the default because
+//     sharing is what you want when it's possible, but which group a window lands in isn't written
+//     at the call. It's visible through win.share_group_id() and a debug log line from the library.
+//     Alternative: default sharing::independent, and automatic only when asked for.
+//  2. Typed GL objects. GL ids are plain u32, so using a texture in a window of another share group
+//     can't be caught. A wnd::gl_object<texture> that carries its group id would allow a
+//     debug-mode check (and a destructor that deletes it in the right group).
+//  3. Render threads. Contexts and frames are thread_bound here. Rendering a window on its own
+//     thread needs a way to hand a context over (win.render_target() move → something sendable that
+//     comes back), while events stay on the main thread. Vulkan avoids this; GL doesn't.
+//  4. C function pointers (old draft, open question 2). group.proc_address returns a raw pointer;
+//     calling it needs std::fn_ptr with C's calling convention, e.g.
+//     std::fn_ptr<extern(std::build::language::c) void(u32)>. Not designed yet.
+//  5. Popup positions. Multi-viewport UIs place popups in desktop coordinates; Wayland has none.
+//     window_kind::popup(owner) probably needs an offset relative to its owner instead.
+//  6. Text input. text(char) covers typing; IME composition (preedit text, cursor inside it) needs
+//     its own events before the debug UI's text fields can support CJK input.
+//  7. Event buffer growth. drain_events reuses the caller's capacity, but a burst (a drag over many
+//     pixels) still grows it once. Coalescing cursor_moved per drain would bound it.
+//  8. Nested type names (22 #39). wnd::window::config / wnd::share_group::id would read better
+//     than wnd::window_config / wnd::share_group_id.
+//  9. Routing and state. A consumed event is removed from the buffer, but win.input() still shows
+//     the key as held. Should a layer be able to mask parts of the input state as well?
+// 10. Vulkan surfaces. graphics::none + an unsafe win.create_vulkan_surface(instance) is the GLFW
+//     shape; with std::windowing in std, the surface's lifetime (it must die before the window)
+//     could be a view of the window instead of a raw handle.

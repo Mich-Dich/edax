@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+1 9 1 9 1 9 8
+other
+equal
+1 true s
+--- stderr

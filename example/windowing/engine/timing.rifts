@@ -1,0 +1,71 @@
+// windowing/engine/timing (see timing.rifth).
+
+import std;
+
+namespace engine {
+    class interval_controller {
+    public:
+        static interval_controller with_fps(u32 fps) {
+            mut interval_controller c = interval_controller{ .interval = std::time::duration::milliseconds(16), .frame_start = std::time::instant::now() };
+            c.set_target_fps(fps);
+            return c;
+        }
+
+        void set_target_fps(u32 fps) mut {
+            u32 rate = if (fps == 0) { 1 } else { fps };
+            this.fps = rate;
+            this.interval = std::time::duration::microseconds(cast<u64>(1000000 / rate));
+        }
+
+        u32 target_fps() { return this.fps; }
+
+        void begin() mut { this.frame_start = std::time::instant::now(); }
+
+        void wait() mut {
+            std::time::duration used = this.frame_start.elapsed();
+            if (used < this.interval) {
+                std::thread::sleep(this.interval - used);
+            }
+        }
+    private:
+        u32                 fps = 60;
+        std::time::duration interval;
+        std::time::instant  frame_start;
+    }
+
+    class frame_clock {
+    public:
+        static frame_clock start() {
+            std::time::instant now = std::time::instant::now();
+            return frame_clock{ .started = now, .last_frame = now, .second_started = now };
+        }
+
+        bool tick() mut {
+            std::time::instant now = std::time::instant::now();
+            this.counted.delta_time = now.since(this.last_frame).as_seconds_f64();
+            this.counted.total_time = now.since(this.started).as_seconds_f64();
+            this.counted.frame_count += 1;
+            this.last_frame = now;
+            this.frames += 1;
+            if (now.since(this.second_started) >= std::time::duration::seconds(1)) {
+                this.counted.fps = this.frames;
+                this.frames = 0;
+                this.second_started = now;
+                return true;
+            }
+            return false;
+        }
+
+        frame_stats& stats() { return this.counted; }
+
+        void work_done() mut {
+            this.counted.frame_ms = this.last_frame.elapsed().as_seconds_f64() * 1000.0;
+        }
+    private:
+        std::time::instant started;
+        std::time::instant last_frame;
+        std::time::instant second_started;
+        u32                frames = 0;
+        frame_stats        counted = default;
+    }
+}

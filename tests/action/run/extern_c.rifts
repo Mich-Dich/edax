@@ -11,7 +11,7 @@ extern(std::build::language::c) {
     void free(std::raw_ptr<mut u8> p);
 }
 
-/// Exported: C sees it as `int rift_compare(const void*, const void*)`.
+// Exported: C sees it as `int rift_compare(const void*, const void*)`.
 extern(std::build::language::c) i32 rift_compare(std::raw_ptr<i32> a, std::raw_ptr<i32> b) {
     unsafe { return *a - *b; }
 }

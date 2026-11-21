@@ -1,0 +1,5 @@
+exit: 1
+--- stdout
+--- stderr
+riftc: error: the package 'odd': vendor/odd/CMakeLists.txt:3: the command 'execute_process' isn't understood by the CMake reader
+note: the CMake reader stops at what it can't translate, never guessing; give the package a build.rifts of its own (.build = std::build::package_build::rift)

@@ -1,0 +1,9 @@
+// feature 14: a darray of structs that can't be cloned compiles as long as nothing clones it.
+import std;
+class handle { public: u32 id = 0; ~handle() {} }
+struct owner { handle h; u32 n = 0; }
+
+void keep(mut std::darray<owner>& list) {
+    list.push(owner{ .h = handle{}, .n = 1 });
+    list.retain([](owner& o) { return o.n > 0; });
+}

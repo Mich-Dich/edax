@@ -1,0 +1,12 @@
+exit: 0
+--- stdout
+enter twice
+leave
+42
+enter twice
+leave
+3.0
+enter show
+box of 7
+leave
+--- stderr

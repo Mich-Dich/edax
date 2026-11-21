@@ -1,0 +1,72 @@
+// windowing/game/debug_overlay (see debug_overlay.rifth).
+
+import std;
+import windowing::engine::gl;
+import windowing::engine::layer;
+import windowing::engine::renderer;
+import windowing::engine::timing;
+
+namespace game {
+    namespace wnd = std::windowing;
+    namespace gl = engine::gl;
+
+    class debug_overlay {
+    public:
+        std::static_str name() override { return "debug overlay"; }
+
+        bool is_open() { return this.open; }
+
+        engine::event_result on_event(wnd::event& e, mut engine::context& ctx) mut override {
+            match (e) {
+                wnd::event::key(k) => {
+                    if (k.key == wnd::key::f1 && k.action == wnd::key_action::pressed) {
+                        this.open = !this.open;
+                        std::log::debug(f"debug overlay {if (this.open) { "open" } else { "closed" }}");
+                        return engine::event_result::handled;
+                    }
+                },
+                wnd::event::mouse_button(b) => {
+                    if (this.open && b.action == wnd::button_action::pressed) {
+                        this.clicks += 1;
+                    }
+                },
+                _ => {},
+            }
+            // Open: the keyboard and mouse are the overlay's. Window events (resize, focus, close)
+            // always go on to the layers below.
+            bool input = match (e) {
+                wnd::event::key(_)          => true,
+                wnd::event::text(_)         => true,
+                wnd::event::scrolled(_)     => true,
+                wnd::event::mouse_button(_) => true,
+                _                           => false,
+            };
+            return if (this.open && input) { engine::event_result::handled } else { engine::event_result::pass };
+        }
+
+        void on_render(engine::render_context& rc, mut wnd::opengl::frame& frame) mut override {
+            if (!this.open) {
+                return;
+            }
+            gl::functions& f = rc.renderer.gl();
+            f32 scale = frame.window().content_scale().x;
+            i32 height = cast::saturate<i32>(frame.framebuffer_size().height);
+            i32 margin = cast::saturate<i32>(16.0 * scale);
+            i32 width  = cast::saturate<i32>(260.0 * scale);
+            i32 panel  = cast::saturate<i32>(160.0 * scale);
+            gl::fill(f, height, margin, margin, width, panel, gl::color{ .r = 0.13, .g = 0.15, .b = 0.2 });
+            i32 box = cast::saturate<i32>(12.0 * scale);
+            for (u32 i : 0..this.clicks % 16) {
+                i32 x = margin + box + cast::saturate<i32>(i) * (box + 4);
+                gl::fill(f, height, x, margin + box, box, box, gl::color{ .r = 0.9, .g = 0.7, .b = 0.2 });
+            }
+            // The fps as a bar: of 240.
+            f64 part = cast<f64>(rc.stats.fps) / 240.0;
+            i32 bar = cast::saturate<i32>(cast<f64>(width - 2 * box) * (if (part > 1.0) { 1.0 } else { part }));
+            gl::fill(f, height, margin + box, margin + panel - 2 * box, bar, box, gl::color{ .r = 0.2, .g = 0.8, .b = 0.5 });
+        }
+    private:
+        bool open = false;
+        u32  clicks = 0;
+    }
+}

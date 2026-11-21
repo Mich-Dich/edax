@@ -1,0 +1,137 @@
+// windowing/game/game_layer (see game_layer.rifth).
+
+import std;
+import windowing::engine::gl;
+import windowing::engine::layer;
+import windowing::engine::renderer;
+import windowing::engine::timing;
+import windowing::game::actions;
+
+namespace game {
+    namespace wnd = std::windowing;
+    namespace gl = engine::gl;
+
+    class game_layer {
+    public:
+        static game_layer make() {
+            return game_layer{ .keys = wnd::bindings<game_action>::defaults() };
+        }
+
+        std::static_str name() override { return "game"; }
+
+        world& state() { return this.world; }
+
+        void on_attach(mut engine::context& ctx) mut override {
+            this.bindings_file = ctx.config_dir / "bindings.txt";
+            this.keys = load_bindings(this.bindings_file);
+        }
+
+        void on_detach(mut engine::context& ctx) mut override {
+            std::log::info(f"bye: {this.world}");
+        }
+
+        engine::event_result on_event(wnd::event& e, mut engine::context& ctx) mut override {
+            // The rebinding prompt, while it waits, takes every key for itself.
+            if (this.prompt.is_active() && this.prompt.on_event(e, ctx.main_window.input()) == wnd::routing::consume) {
+                return engine::event_result::handled;
+            }
+            match (e) {
+                wnd::event::focus_changed(focused) => {
+                    if (!focused) {
+                        this.world.paused = true;
+                    }
+                },
+                _ => {},
+            }
+            return match (this.keys.action_for(e)) {
+                std::some(a) => {
+                    this.act(a, mut ctx);
+                    engine::event_result::handled
+                },
+                std::none => engine::event_result::pass,
+            };
+        }
+
+        void on_update(mut engine::context& ctx) mut override {
+            match (this.prompt.take_result()) {
+                std::some((action, c)) => {
+                    this.keys.unbind(action);                     // the new key replaces the old ones
+                    match (this.keys.bind(action, c)) {
+                        std::some(lost) => std::log::info(f"'{action}' is now {wnd::chord_text(c)} ('{lost}' lost it)"),
+                        std::none       => std::log::info(f"'{action}' is now {wnd::chord_text(c)}"),
+                    }
+                },
+                std::none => {},
+            }
+            if (this.world.paused) {
+                ctx.commands.idle = true;                         // nothing moves: the loop may sleep
+                return;
+            }
+            // Held actions are state, read every frame.
+            wnd::input_state& input = ctx.main_window.input();
+            f64 step = this.world.speed * ctx.stats.delta_time;
+            if (this.keys.is_down(game_action::move_up, input))    { this.world.player_y -= step; }
+            if (this.keys.is_down(game_action::move_down, input))  { this.world.player_y += step; }
+            if (this.keys.is_down(game_action::move_left, input))  { this.world.player_x -= step; }
+            if (this.keys.is_down(game_action::move_right, input)) { this.world.player_x += step; }
+            // Mouse look while the look action is held: the cursor is captured, its movement moves
+            // the box.
+            bool looking = this.keys.is_down(game_action::look, input);
+            if (looking) {
+                wnd::position delta = input.cursor_delta();
+                this.world.player_x += delta.x;
+                this.world.player_y += delta.y;
+            }
+            if (looking != this.world.looking) {
+                this.world.looking = looking;
+                ctx.main_window.set_cursor_mode(if (looking) { wnd::cursor_mode::captured } else { wnd::cursor_mode::normal });
+            }
+        }
+
+        void on_render(engine::render_context& rc, mut wnd::opengl::frame& frame) mut override {
+            gl::functions& f = rc.renderer.gl();
+            wnd::size fb = frame.framebuffer_size();
+            f32 shade = if (this.world.paused) { 0.05 } else { 0.1 };
+            gl::clear(f, fb, gl::color{ .r = shade, .g = shade, .b = shade + 0.04 });
+            f32 scale = frame.window().content_scale().x;
+            i32 box = cast::saturate<i32>(32.0 * scale);
+            gl::fill(f, cast::saturate<i32>(fb.height),
+                     cast::saturate<i32>(this.world.player_x * cast<f64>(scale)), cast::saturate<i32>(this.world.player_y * cast<f64>(scale)),
+                     box, box, gl::color{ .r = 0.3, .g = 0.6, .b = 1.0 });
+            engine::draw_sharing_marker(f, fb, rc.renderer.shared_texture());
+        }
+    private:
+        // One game action, from a key or button press.
+        void act(game_action a, mut engine::context& ctx) mut {
+            match (a) {
+                game_action::quit         => { ctx.commands.quit = true; },
+                game_action::pause        => { this.world.paused = !this.world.paused; },
+                game_action::fullscreen   => { ctx.commands.toggle_fullscreen = true; },
+                game_action::rebind_pause => this.prompt.start(game_action::pause),
+                game_action::switch_profile => {
+                    // A whole set of bindings at once: what a "vehicle mode" or a menu would do.
+                    this.arrows = !this.arrows;
+                    this.keys = if (this.arrows) {
+                        wnd::bindings<game_action>::from_text(arrows_profile).expect("the built-in profile parses")
+                    } else {
+                        wnd::bindings<game_action>::defaults()
+                    };
+                    std::log::info(f"bindings: {if (this.arrows) { "arrow keys" } else { "WASD" }}");
+                },
+                game_action::save_bindings => save_bindings(this.keys, this.bindings_file),
+                // Held, not pressed: read every update with keys.is_down.
+                game_action::move_up    => {},
+                game_action::move_down  => {},
+                game_action::move_left  => {},
+                game_action::move_right => {},
+                game_action::look       => {},
+            }
+        }
+
+        world                      world = default;
+        wnd::bindings<game_action> keys;
+        rebind_prompt              prompt = default;
+        bool                       arrows = false;
+        std::filesystem::path      bindings_file = std::filesystem::path::relative("bindings.txt");
+    }
+}

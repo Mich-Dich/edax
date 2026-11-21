@@ -32,7 +32,7 @@ struct BuildGraph;
 
 namespace rift::ast {
 
-/// Filled in by name resolution (M3); null until then or when unresolved.
+// Filled in by name resolution (M3); null until then or when unresolved.
 using SymbolRef = sema::Symbol*;
 
 struct TypeExpr;
@@ -49,7 +49,7 @@ using StmtPtr    = std::unique_ptr<Stmt>;
 using DeclPtr    = std::unique_ptr<Decl>;
 using BlockPtr   = std::unique_ptr<BlockExpr>;
 
-/// Base for every node family: a kind tag plus the source span.
+// Base for every node family: a kind tag plus the source span.
 template <typename Kind>
 struct Node {
     Kind kind;
@@ -66,7 +66,7 @@ struct Node {
 
 // --- node family bases (defined first so unique_ptr members can be destroyed) ------
 
-enum class TypeKind { named, reference, function, auto_, deduce };
+enum class TypeKind { named, reference, function, auto_, deduce, tuple };
 
 struct TypeExpr : Node<TypeKind> {
     using Node::Node;
@@ -76,43 +76,47 @@ enum class ExprKind {
     int_literal, float_literal, char_literal, string_literal, bool_literal, nullptr_literal,
     this_, default_, path, unary, binary, range, call, index, member, try_, cast, bit,
     struct_literal, lambda, if_, match, block, while_, for_, return_, break_, continue_, error,
+    tuple, list,
 };
 
 struct Expr : Node<ExprKind> {
     using Node::Node;
     const types::Type* type = nullptr;   // filled in by the type checker (M4)
-    /// The value, when the checker computed it at compile time and code generation should use it
-    /// as a constant (compile_time constants, `f.name` in a `for compile_time` loop, ...).
+    // The value, when the checker computed it at compile time and code generation should use it
+    // as a constant (compile_time constants, `f.name` in a `for compile_time` loop, ...).
     std::shared_ptr<const ct::Value> constant;
-    /// An implicit conversion the checker found where the value is used (spec 19): a
-    /// `std::string` read as a `std::str`, or a literal that becomes a `std::string`.
+    // An implicit conversion the checker found where the value is used (spec 19): a
+    // `std::string` read as a `std::str`, or a literal that becomes a `std::string`.
     enum class Conversion : unsigned char { none, string_to_str, literal_to_string, pointer_upcast, to_callable };
     Conversion conversion = Conversion::none;
     const types::Type* converted_to = nullptr;   // pointer_upcast: `std::unique_ptr<shape>` from `<circle>`
 };
 
-enum class PatternKind { wildcard, literal, range, binding, enum_alternative, struct_, error };
+enum class PatternKind { wildcard, literal, range, binding, enum_alternative, struct_, error, tuple };
 
 struct Pattern : Node<PatternKind> {
     using Node::Node;
 };
 
-enum class StmtKind { variable, assign, discard, expression, check };
+enum class StmtKind { variable, assign, discard, expression, check, destructure };
 
 struct Stmt : Node<StmtKind> {
     using Node::Node;
+    // `@std::allow{ .id = gfx::deprecated } stmt;`: the warning ids silenced for this statement
+    // alone (the `.id` values, as written).
+    std::vector<ExprPtr> allowed;
 };
 
 // --- paths and template arguments ---------------------------------------------------------
 
-/// One argument in `<...>`: a type (`employee`, `mut T`) or a value (`16`, `N + 1`).
-/// A bare name like `buffer_size` is parsed as a type; name resolution decides later.
+// One argument in `<...>`: a type (`employee`, `mut T`) or a value (`16`, `N + 1`).
+// A bare name like `buffer_size` is parsed as a type; name resolution decides later.
 struct TemplateArg {
     TypePtr type;
     ExprPtr value;
     bool    is_mut = false;   // `std::raw_ptr<mut T>`
     Span    span;
-    /// A value argument, once the checker has evaluated it (spec 14, 15): an interned value type.
+    // A value argument, once the checker has evaluated it (spec 14, 15): an interned value type.
     mutable const types::Type* evaluated = nullptr;
 };
 
@@ -123,7 +127,7 @@ struct PathSegment {
     std::vector<TemplateArg> template_args;
 };
 
-/// `std::darray<employee>::make`, `u32`, `parse_error::bad_line`.
+// `std::darray<employee>::make`, `u32`, `parse_error::bad_line`.
 struct Path {
     std::vector<PathSegment> segments;
     Span                     span;
@@ -138,28 +142,34 @@ struct NamedType : TypeExpr {
     NamedType(Span s, Path p) : TypeExpr(TypeKind::named, s), path(std::move(p)) {}
 };
 
-/// `T&` or `mut T&`.
+// `T&` or `mut T&`.
 struct ReferenceType : TypeExpr {
     TypePtr inner;
     bool    is_mut = false;
     ReferenceType(Span s, TypePtr i) : TypeExpr(TypeKind::reference, s), inner(std::move(i)) {}
 };
 
-/// `R(A, B)` inside template arguments: `std::function<u32(u32)>`.
+// `R(A, B)` inside template arguments: `std::function<u32(u32)>`.
 struct FunctionType : TypeExpr {
     TypePtr              result;
     std::vector<TypePtr> params;
     FunctionType(Span s, TypePtr r) : TypeExpr(TypeKind::function, s), result(std::move(r)) {}
 };
 
-/// `auto` (variables) and `deduce` (template return types) carry no data.
+// `(A, B, ...)`: a tuple type (two or more elements).
+struct TupleType : TypeExpr {
+    std::vector<TypePtr> elements;
+    TupleType(Span s) : TypeExpr(TypeKind::tuple, s) {}
+};
+
+// `auto` (variables) and `deduce` (template return types) carry no data.
 struct PlaceholderType : TypeExpr {
     using TypeExpr::TypeExpr;
 };
 
 // --- expressions --------------------------------------------------------------------------
 
-/// `{expr:spec}` in an f-string (spec 19). Everything is optional except the expression.
+// `{expr:spec}` in an f-string (spec 19). Everything is optional except the expression.
 struct FormatSpec {
     char align     = 0;    // 0, '<', '>' or '^'
     bool plus      = false;
@@ -170,7 +180,7 @@ struct FormatSpec {
     bool present   = false;
 };
 
-/// One piece of an f-string: literal text, or a hole with an expression.
+// One piece of an f-string: literal text, or a hole with an expression.
 struct FormatPart {
     std::string text;   // literal text (escapes decoded); empty for holes
     ExprPtr     expr;   // the hole's expression; null for literal text
@@ -189,7 +199,7 @@ struct LiteralExpr : Expr {
     LiteralExpr(ExprKind k, Span s, TokenKind tk) : Expr(k, s), token_kind(tk) {}
 };
 
-/// `{ stmts; tail }`. The tail is the last expression without `;` (the block's value).
+// `{ stmts; tail }`. The tail is the last expression without `;` (the block's value).
 struct BlockExpr : Expr {
     bool                 is_unsafe = false;
     std::vector<StmtPtr> statements;
@@ -197,7 +207,7 @@ struct BlockExpr : Expr {
     BlockExpr(Span s) : Expr(ExprKind::block, s) {}
 };
 
-/// `this`, `default`, `break`, `continue`, error placeholders.
+// `this`, `default`, `break`, `continue`, error placeholders.
 struct SimpleExpr : Expr {
     using Expr::Expr;
 };
@@ -217,6 +227,7 @@ enum class UnaryOp {
     address_of_mut,// mut &x
     move,          // move x
     mut_marker,    // mut x   (call-site / match marker: f(mut v), match (mut v))
+    spread,        // values...  (a parameter pack passed on whole, templates "Parameter packs")
 };
 
 struct UnaryExpr : Expr {
@@ -235,7 +246,7 @@ struct BinaryExpr : Expr {
         : Expr(ExprKind::binary, s), op(o), lhs(std::move(l)), rhs(std::move(r)) {}
 };
 
-/// `a..b` and `a..=b`.
+// `a..b` and `a..=b`.
 struct RangeExpr : Expr {
     ExprPtr lo;
     ExprPtr hi;
@@ -247,6 +258,9 @@ struct RangeExpr : Expr {
 struct CallExpr : Expr {
     ExprPtr              callee;
     std::vector<ExprPtr> args;
+    // `std::meta::wrapped_body()` in a function an annotation wraps (annotations, section 8): the
+    // function's own body. It runs like a lambda's body; its `return` gives the call its value.
+    std::unique_ptr<BlockExpr> wrapped;
     CallExpr(Span s, ExprPtr c) : Expr(ExprKind::call, s), callee(std::move(c)) {}
 };
 
@@ -257,7 +271,7 @@ struct IndexExpr : Expr {
     IndexExpr(Span s, ExprPtr o, ExprPtr i) : Expr(ExprKind::index, s), object(std::move(o)), index(std::move(i)) {}
 };
 
-/// `obj.name`, `obj.name<T>`, `this.shape::describe`, `ptr->field`.
+// `obj.name`, `obj.name<T>`, `this.shape::describe`, `ptr->field`.
 struct MemberExpr : Expr {
     ExprPtr object;
     Path    name;
@@ -273,7 +287,7 @@ struct TryExpr : Expr {
     TryExpr(Span s, ExprPtr e) : Expr(ExprKind::try_, s), operand(std::move(e)) {}
 };
 
-/// `cast<T>(x)`, `cast::truncate<T>(x)`, ...; `variant` is empty for the plain lossless cast.
+// `cast<T>(x)`, `cast::truncate<T>(x)`, ...; `variant` is empty for the plain lossless cast.
 struct CastExpr : Expr {
     std::string variant;
     TypePtr     target;
@@ -281,7 +295,7 @@ struct CastExpr : Expr {
     CastExpr(Span s) : Expr(ExprKind::cast, s) {}
 };
 
-/// `bit(n)` or `bit<T>(n)`.
+// `bit(n)` or `bit<T>(n)`.
 struct BitExpr : Expr {
     TypePtr type;   // may be null
     ExprPtr operand;
@@ -294,15 +308,27 @@ struct FieldInit {
     ExprPtr     value;
 };
 
-/// `T{ .field = value, ... }`.
+// `(a, b, ...)`: a tuple value.
+struct TupleExpr : Expr {
+    std::vector<ExprPtr> elements;
+    TupleExpr(Span s) : Expr(ExprKind::tuple, s) {}
+};
+
+// `[a, b, c]`: a list literal; its type (std::array<T, N> or std::span<T>) comes from context.
+struct ListExpr : Expr {
+    std::vector<ExprPtr> elements;
+    ListExpr(Span s) : Expr(ExprKind::list, s) {}
+};
+
+// `T{ .field = value, ... }`.
 struct StructLiteralExpr : Expr {
     TypePtr                type;
     std::vector<FieldInit> fields;
     StructLiteralExpr(Span s, TypePtr t) : Expr(ExprKind::struct_literal, s), type(std::move(t)) {}
 };
 
-/// `@range{ .min = 0, .max = 100 }` or `@json::skip` before a declaration, field, parameter or
-/// enum alternative (spec 29).
+// `@range{ .min = 0, .max = 100 }` or `@json::skip` before a declaration, field, parameter or
+// enum alternative (spec 29).
 struct AnnotationUse {
     Path      path;                     // the annotation, as written
     Span      span;                     // from '@' to the end
@@ -324,13 +350,15 @@ struct Capture {
 
 struct Param {
     bool        is_mut = false;   // `mut T x` (by-value mutable); `mut T&` sets ReferenceType::is_mut
-    /// `implicit T x` (spec 31): a call may leave the argument out; the compiler supplies
-    /// `T::from_call(<call site>)`.
+    // `implicit T x` (spec 31): a call may leave the argument out; the compiler supplies
+    // `T::from_call(<call site>)`.
     bool        is_implicit = false;
-    /// `compile_time T x` (spec 31): the argument is a compile-time value and a constant in the
-    /// body. The parser adds a hidden template value parameter `$x` for it, so the function is
-    /// instantiated per distinct value.
+    // `compile_time T x` (spec 31): the argument is a compile-time value and a constant in the
+    // body. The parser adds a hidden template value parameter `$x` for it, so the function is
+    // instantiated per distinct value.
     bool        is_compile_time = false;
+    // `A&... values`: takes the arguments matching the template's pack `A`.
+    bool        is_pack = false;
     TypePtr     type;
     std::string name;
     Span        span;
@@ -394,7 +422,7 @@ struct BindingPattern : Pattern {
     BindingPattern(Span s, std::string n) : Pattern(PatternKind::binding, s), name(std::move(n)) {}
 };
 
-/// `token::plus`, `token::number(n)`, `std::ok(e)`.
+// `token::plus`, `token::number(n)`, `std::ok(e)`.
 struct EnumPattern : Pattern {
     Path       path;
     PatternPtr payload;   // may be null
@@ -408,12 +436,18 @@ struct FieldPattern {
     PatternPtr  pattern;
 };
 
-/// `employee{ .age = a, .. }`.
+// `employee{ .age = a, .. }`.
 struct StructPattern : Pattern {
     Path                      path;
     std::vector<FieldPattern> fields;
     bool                      has_rest = false;
     StructPattern(Span s, Path p) : Pattern(PatternKind::struct_, s), path(std::move(p)) {}
+};
+
+// `(p1, p2, ...)`: matches a tuple element by element.
+struct TuplePattern : Pattern {
+    std::vector<PatternPtr> elements;
+    TuplePattern(Span s) : Pattern(PatternKind::tuple, s) {}
 };
 
 struct SimplePattern : Pattern {   // wildcard, error
@@ -424,7 +458,7 @@ struct SimplePattern : Pattern {   // wildcard, error
 
 enum class Storage { local, compile_time, static_, thread_local_ };
 
-/// `[mut] T name = init;`, `compile_time T name = init;`
+// `[mut] T name = init;`, `compile_time T name = init;`
 struct VariableStmt : Stmt {
     Storage     storage = Storage::local;
     bool        is_mut  = false;
@@ -436,7 +470,25 @@ struct VariableStmt : Stmt {
     VariableStmt(Span s) : Stmt(StmtKind::variable, s) {}
 };
 
-/// `target op value;` where op is `=`, `+=`, `<<=`, `+%=`, ...
+// One name of a destructuring declaration: `mut u32 lo`, `auto` names, or `_`.
+struct DestructureBinding {
+    bool        is_mut   = false;
+    bool        wildcard = false;   // `_`
+    TypePtr     type;               // null with `auto (a, b)` and for `_`
+    std::string name;
+    Span        span;
+    SymbolRef   symbol = nullptr;
+};
+
+// `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`: consumes a tuple into new variables.
+struct DestructureStmt : Stmt {
+    bool                            is_auto = false;
+    std::vector<DestructureBinding> bindings;
+    ExprPtr                         init;
+    DestructureStmt(Span s) : Stmt(StmtKind::destructure, s) {}
+};
+
+// `target op value;` where op is `=`, `+=`, `<<=`, `+%=`, ...
 struct AssignStmt : Stmt {
     TokenKind op;
     ExprPtr   target;
@@ -446,7 +498,7 @@ struct AssignStmt : Stmt {
         : Stmt(StmtKind::assign, s), op(o), target(std::move(t)), value(std::move(v)) {}
 };
 
-/// `_ = expr;`
+// `_ = expr;`
 struct DiscardStmt : Stmt {
     ExprPtr value;
     DiscardStmt(Span s, ExprPtr v) : Stmt(StmtKind::discard, s), value(std::move(v)) {}
@@ -457,8 +509,8 @@ struct ExprStmt : Stmt {
     ExprStmt(Span s, ExprPtr e) : Stmt(StmtKind::expression, s), expr(std::move(e)) {}
 };
 
-/// A check (spec 23): `compile_time check (c) else msg;`, `run_time(debug) check (c) else msg;`,
-/// `compile_time run_time check (...)`, or the block form `compile_time check { ... }`.
+// A check (spec 23): `compile_time check (c) else msg;`, `run_time(debug) check (c) else msg;`,
+// `compile_time run_time check (...)`, or the block form `compile_time check { ... }`.
 struct Check {
     bool                     is_compile_time = false;
     bool                     is_run_time     = false;
@@ -488,7 +540,7 @@ struct WhileExpr : Expr {
     WhileExpr(Span s) : Expr(ExprKind::while_, s) {}
 };
 
-/// `for ([mut] T name : iterable) { }`
+// `for ([mut] T name : iterable) { }`
 struct ForExpr : Expr {
     bool        is_compile_time = false;   // `for compile_time`: the body is copied per element (spec 26)
     std::vector<BlockPtr>  copies;          // the checked copies of the body, in order (set by the checker)
@@ -517,25 +569,31 @@ enum class Access { none, public_, protected_, private_ };
 
 struct TemplateParam {
     bool                 is_type = true;   // `type T` vs `usize N`
+    bool                 is_pack = false;  // `type... A`: any number of types
     std::string          name;
     Span                 span;
     std::vector<TypePtr> constraints;      // `type T : a & b`
     TypePtr              value_type;       // `usize N`
+    TypePtr              default_type;     // `type A = std::global_allocator`
+    ExprPtr              default_value;    // `usize N = 16`
 };
 
 struct Decl : Node<DeclKind> {
     std::string                name;
     Span                       name_span;
-    std::string                doc;          // from `///` comments
+    std::string                doc;          // from `//` comments
     std::string                ns;           // the enclosing `namespace a::b { }` of a file-scope declaration ("" = global, spec 30)
     bool                       is_private = false;   // file-scope `private`
+    // A type declared inside a struct or class (`thread_pool::options`): the outer type's name.
+    // The parser moves it to file scope with `ns` = the outer type's namespace + its name.
+    std::string                nested_in;
     Access                     access     = Access::none;   // class member section
     bool                       is_template = false;
     std::vector<TemplateParam> template_params;
     std::vector<AnnotationUse> annotations;   // `@name{...}` written before it (spec 29)
-    /// Set on members an annotation's `generate` block added (spec 29): the annotation use.
+    // Set on members an annotation's `generate` block added (spec 29): the annotation use.
     const AnnotationUse*       generated_by = nullptr;
-    /// The parameters' symbols from the latest resolution of this declaration (name resolution).
+    // The parameters' symbols from the latest resolution of this declaration (name resolution).
     mutable std::vector<SymbolRef> template_param_symbols;
     using Node::Node;
 };
@@ -563,12 +621,12 @@ struct FunctionDecl : Decl {
     bool               is_operator     = false;   // name is the operator spelling, e.g. "=="
     bool               is_defaulted    = false;   // `= default;`
     BlockPtr           body;                      // null for declarations
-    /// `deduce` (spec 15): the return type found in the body, once checked.
+    // `deduce` (spec 15): the return type found in the body, once checked.
     mutable const types::Type* deduced_result = nullptr;
     FunctionDecl(Span s) : Decl(DeclKind::function, s) {}
 };
 
-/// File-scope variable (`static` / `compile_time`) or a struct/class field.
+// File-scope variable (`static` / `compile_time`) or a struct/class field.
 struct VariableDecl : Decl {
     Storage storage = Storage::local;
     bool    is_mut  = false;
@@ -577,8 +635,8 @@ struct VariableDecl : Decl {
     VariableDecl(DeclKind k, Span s) : Decl(k, s) {}
 };
 
-/// `unsafe std::sendable(condition)` in a base list (spec 27): a thread-safety promise the
-/// compiler can't check.
+// `unsafe std::sendable(condition)` in a base list (spec 27): a thread-safety promise the
+// compiler can't check.
 struct ThreadPromise {
     bool                shareable = false;   // std::shareable (else std::sendable)
     Path                path;                // as written
@@ -587,8 +645,8 @@ struct ThreadPromise {
     std::optional<bool> value;               // the condition's value, once evaluated (per instance)
 };
 
-/// struct, class and interface share one node.
-/// `generate : interfaces { members }` in an annotation (spec 29).
+// struct, class and interface share one node.
+// `generate : interfaces { members }` in an annotation (spec 29).
 struct GenerateBlock {
     Span                 span;
     std::vector<TypePtr> bases;
@@ -598,10 +656,11 @@ struct GenerateBlock {
 struct TypeDecl : Decl {
     bool                 is_open = false;
     bool                 is_view = false;
-    /// `annotation(std::meta::target::field, ...) struct` (spec 29): the targets as written.
+    // `annotation(std::meta::target::field, ...) struct` (spec 29): the targets as written.
     bool                 is_annotation = false;
     std::vector<Path>    annotation_targets;
     std::unique_ptr<GenerateBlock> generate;
+    std::unique_ptr<BlockExpr>     wrap;        // `wrap { ... }` in a function annotation (section 8)
     std::vector<TypePtr> bases;
     std::vector<ThreadPromise> promises;     // `unsafe std::sendable(...)` bases
     std::vector<DeclPtr> members;
@@ -622,14 +681,14 @@ struct EnumDecl : Decl {
     EnumDecl(Span s) : Decl(DeclKind::enum_, s) {}
 };
 
-/// A check at file scope or in a type body (spec 23).
+// A check at file scope or in a type body (spec 23).
 struct CheckDecl : Decl {
     Check check;
     CheckDecl(Span s) : Decl(DeclKind::check, s) {}
 };
 
-/// One parsed source file.
-/// `namespace vk = gfx::vulkan;` (spec 30): a file-local short name for a namespace.
+// One parsed source file.
+// `namespace vk = gfx::vulkan;` (spec 30): a file-local short name for a namespace.
 struct NamespaceAlias {
     std::string name;
     Span        span;     // the alias name
@@ -637,7 +696,7 @@ struct NamespaceAlias {
     std::string ns;       // the namespace block it is written in
 };
 
-/// One `namespace a::b {` opening (spec 30), for ownership and name-conflict checks.
+// One `namespace a::b {` opening (spec 30), for ownership and name-conflict checks.
 struct NamespaceBlock {
     std::string path;     // "a::b"
     Span        span;     // the written path
@@ -648,7 +707,7 @@ struct File {
     std::vector<DeclPtr>        decls;
     std::vector<NamespaceAlias> aliases;
     std::vector<NamespaceBlock> namespaces;
-    /// `@a{ ... };` after the imports: annotations of the file itself (spec 31).
+    // `@a{ ... };` after the imports: annotations of the file itself (spec 31).
     std::vector<AnnotationUse>  annotations;
 };
 

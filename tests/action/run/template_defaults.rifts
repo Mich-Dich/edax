@@ -1,0 +1,22 @@
+// RUN: riftc run %s
+// Default template arguments; a default may name earlier parameters (templates).
+import std;
+struct heap_alloc { u32 id = 7; }
+template<type T, type A = heap_alloc, usize N = 4>
+struct holder {
+    T value;
+    A alloc;
+    usize cap() { return N; }
+}
+template<type T, type U = std::option<T>>
+struct pairish {
+    T a;
+    U b;
+}
+std::exit_code main() {
+    holder<u32> h = holder<u32>{ .value = 5, .alloc = heap_alloc{} };
+    holder<u32, heap_alloc, 9> h2 = holder<u32, heap_alloc, 9>{ .value = 5, .alloc = heap_alloc{} };
+    pairish<u32> p = pairish<u32>{ .a = 1, .b = std::some(2u32) };
+    std::println(f"{h.value} {h.alloc.id} {h.cap()} {h2.cap()} {p.b.value_or(0)}");
+    return std::exit_code::success;
+}

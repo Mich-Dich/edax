@@ -4,32 +4,32 @@
 // and the functions that are written in Rift.
 
 namespace std::meta {
-    /// Where an annotation can be written: `annotation(std::meta::target::field) struct range { }`
-    /// (spec 29).
+    // Where an annotation can be written: `annotation(std::meta::target::field) struct range { }`
+    // (spec 29).
     enum target : u8 {
         type,
         field,
         function,
         parameter,
         alternative,
-        /// A .rifts file: `@a{ ... };` after the imports (spec 31).
+        // A .rifts file: `@a{ ... };` after the imports (spec 31).
         file,
     }
 
-    /// How a reflected parameter is passed (spec 26).
+    // How a reflected parameter is passed (spec 26).
     enum passing : u8 {
         by_value,
         by_reference,
         by_mut_reference,
     }
 
-    /// The name of the alternative `value` holds: `std::meta::name_of(color::red)` is "red".
-    /// Works at run time too.
+    // The name of the alternative `value` holds: `std::meta::name_of(color::red)` is "red".
+    // Works at run time too.
     template<type E>
     std::static_str name_of(E& value);
 
-    /// The alternative of `E` without a payload called `text`, or `std::none`. Works at run
-    /// time too.
+    // The alternative of `E` without a payload called `text`, or `std::none`. Works at run
+    // time too.
     template<type E>
     std::option<E> from_name(std::str text);
 }

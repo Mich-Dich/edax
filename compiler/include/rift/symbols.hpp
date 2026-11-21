@@ -8,6 +8,7 @@
 //
 // Symbols are owned by their Module (stable addresses in a deque) and referenced from the AST.
 
+#include "rift/token.hpp"
 #include "rift/ast.hpp"
 #include "rift/diagnostics.hpp"
 
@@ -46,12 +47,6 @@ enum class SymbolKind {
 
 std::string_view to_string(SymbolKind kind);
 
-/// The std types that are named as members of another std type (`std::thread_pool::options` is
-/// the library's `thread_pool_options`, spec 28). Rift has no nested type declarations; these
-/// names are the standard library's only ones.
-inline bool is_std_nested_type(std::string_view name) {
-    return name == "thread_pool_options" || name == "thread_pool_task" || name == "thread_pool_scoped_task";
-}
 
 enum class LocalKind { variable, value_param, ref_param, binding, loop_variable, capture };
 
@@ -83,6 +78,18 @@ struct Symbol {
     // Instances of a template type (spec 14): the template, the copy's index among the template's
     // instances (for names), and the type each template parameter stands for.
     const Symbol*                               template_of    = nullptr;
+    // A function template with a parameter pack, made ordinary for `pack_count` arguments
+    // (templates, "Parameter packs"): the template it was made from.
+    // `@std::simd::multiversion` (SIMD, "Choosing widths"): the copies of the function, one per
+    // CPU level, the last one the build's own; a copy's level ("" for the build's own).
+    std::vector<Symbol*>                        versions;
+    std::string                                 cpu_level;
+    const Symbol*                               version_of     = nullptr;
+    // A field of a template instance whose `= default` doesn't work for the argument
+    // (`A alloc = default;` with an arena allocator): the instance has no default then.
+    bool                                        no_default     = false;
+    const Symbol*                               pack_origin    = nullptr;
+    std::size_t                                 pack_count     = 0;
     unsigned                                    instance_index = 0;
     std::map<const Symbol*, const types::Type*> template_subst;
     std::vector<const types::Type*>             template_args;   // the arguments in order
@@ -100,8 +107,8 @@ struct Symbol {
     const ast::TypeExpr* value_type = nullptr;   // template value parameters: `usize` in `template<usize N>`
     std::shared_ptr<const ct::Value> ct_value;   // the value of a compile_time constant, once evaluated
 
-    /// The name with its namespace: "std::darray", "geometry::vec2", "main". Module items are
-    /// stored under it.
+    // The name with its namespace: "std::darray", "geometry::vec2", "main". Module items are
+    // stored under it.
     [[nodiscard]] std::string key() const { return ns.empty() ? name : ns + "::" + name; }
 
     [[nodiscard]] bool is_type() const {
@@ -116,7 +123,7 @@ struct Symbol {
         return decl && (decl->kind == ast::DeclKind::class_) && decl->as<ast::TypeDecl>().is_open;
     }
 
-    /// The base class (not an interface), or null (spec 07: at most one, written first).
+    // The base class (not an interface), or null (spec 07: at most one, written first).
     [[nodiscard]] const Symbol* base_class() const {
         for (const Symbol* b : bases) {
             if (b->kind == SymbolKind::class_) return b;
@@ -124,18 +131,18 @@ struct Symbol {
         return nullptr;
     }
 
-    /// Whether objects of this class start with a vtable pointer: an `open` class at the root of
-    /// its hierarchy (its destructor is virtual, spec 07). Derived classes reach it through their
-    /// base, which is their first member.
+    // Whether objects of this class start with a vtable pointer: an `open` class at the root of
+    // its hierarchy (its destructor is virtual, spec 07). Derived classes reach it through their
+    // base, which is their first member.
     [[nodiscard]] bool has_vtable_pointer() const { return is_open() && !base_class(); }
 
-    /// The members an object starts with before its own fields: the base object or the vtable
-    /// pointer (0 or 1).
+    // The members an object starts with before its own fields: the base object or the vtable
+    // pointer (0 or 1).
     [[nodiscard]] unsigned layout_prefix() const { return base_class() || has_vtable_pointer() ? 1 : 0; }
 };
 
-/// The parameter substitution of the template instance that declares `s` (a member, payload or
-/// alternative belongs to its enclosing type), or null outside instances.
+// The parameter substitution of the template instance that declares `s` (a member, payload or
+// alternative belongs to its enclosing type), or null outside instances.
 inline const std::map<const Symbol*, const types::Type*>* substitution_of(const Symbol* s) {
     for (; s; s = s->parent) {
         if (!s->template_subst.empty()) return &s->template_subst;
@@ -143,7 +150,7 @@ inline const std::map<const Symbol*, const types::Type*>* substitution_of(const 
     return nullptr;
 }
 
-/// One parsed file of a module.
+// One parsed file of a module.
 struct ModuleFile {
     FileId    id;
     ast::File ast;
@@ -151,8 +158,8 @@ struct ModuleFile {
 
 struct Module {
     std::string               name;   // "counter", "shapes::circle"; the entry file's own name too
-    /// The project it belongs to (spec 30): "" for the program's own files, "std" for the
-    /// standard library, else the root directory of the dependency it was loaded from.
+    // The project it belongs to (spec 30): "" for the program's own files, "std" for the
+    // standard library, else the root directory of the dependency it was loaded from.
     std::string               project;
     std::optional<ModuleFile> header;
     std::optional<ModuleFile> source;
@@ -162,14 +169,14 @@ struct Module {
     bool                 header_imports_std = false;
     bool                 source_imports_std = false;
 
-    /// Module scope by namespace-qualified name (`Symbol::key`: "std::darray", "main"); functions
-    /// may overload. A module is not a namespace (spec 30): its items live in the namespaces their
-    /// `namespace` blocks say.
+    // Module scope by namespace-qualified name (`Symbol::key`: "std::darray", "main"); functions
+    // may overload. A module is not a namespace (spec 30): its items live in the namespaces their
+    // `namespace` blocks say.
     std::map<std::string, std::vector<Symbol*>> items;
     std::vector<Symbol*>                        item_order;
     std::set<std::string>                       namespaces;   // every namespace it declares into, with its parents
 
-    /// The first item called `key` ("std::string"), or null.
+    // The first item called `key` ("std::string"), or null.
     [[nodiscard]] Symbol* item(const std::string& key) const {
         auto it = items.find(key);
         return it == items.end() || it->second.empty() ? nullptr : it->second.front();
@@ -187,19 +194,19 @@ struct Module {
     }
 };
 
-/// `g.set_for_files(target, pattern, name, value)` in build.rifts (spec 31): a setting for the
-/// files matching a pattern. `files` are absolute, normalized paths.
+// `g.set_for_files(target, pattern, name, value)` in build.rifts (spec 31): a setting for the
+// files matching a pattern. `files` are absolute, normalized paths.
 struct FileSetting {
     std::vector<std::string>         files;
     std::string                      name;
     std::shared_ptr<const ct::Value> value;
 };
 
-/// Where an annotation can be written (spec 29: `std::meta::target`).
+// Where an annotation can be written (spec 29: `std::meta::target`).
 enum class AnnotationTarget { type, field, function, parameter, alternative, other, file };
 
-/// One use of an annotation whose struct has checks (spec 29): a copy of the checks, resolved
-/// with `annotation` and `annotated` bound to this use. The checker runs it.
+// One use of an annotation whose struct has checks (spec 29): a copy of the checks, resolved
+// with `annotation` and `annotated` bound to this use. The checker runs it.
 struct AnnotationCheck {
     AnnotationTarget          target = AnnotationTarget::type;
     ast::CheckDecl*           check  = nullptr;   // the copy (owned by Program::cloned_decls)
@@ -212,7 +219,7 @@ struct AnnotationCheck {
     bool                      done = false;
 };
 
-/// The use of the annotation `key` ("std::deprecated") in `uses`, or null.
+// The use of the annotation `key` ("std::deprecated") in `uses`, or null.
 inline const ast::AnnotationUse* find_annotation(const std::vector<ast::AnnotationUse>& uses, std::string_view key) {
     for (const ast::AnnotationUse& u : uses) {
         if (u.symbol && u.symbol->key() == key) return &u;
@@ -223,47 +230,65 @@ inline const ast::AnnotationUse* find_annotation(const std::vector<ast::Annotati
 struct Program {
     std::map<std::string, std::unique_ptr<Module>> modules;   // by module name
     Module*                                        entry = nullptr;
-    /// The standard library module (library/std, built into riftc), loaded on the first
-    /// `import std`; null if nothing imports it. Also in `modules` as "std".
+    // The standard library module (library/std, built into riftc), loaded on the first
+    // `import std`; null if nothing imports it. Also in `modules` as "std".
     Module*                                        std_module = nullptr;
-    /// The build mode being compiled for (spec 24): decides which mode-gated checks exist (spec 23).
+    // The build mode being compiled for (spec 24): decides which mode-gated checks exist (spec 23).
     std::string                                    build_mode = "debug";
-    /// The class of that mode (`std::build::mode::release`, or a mode of build.rifts), once
-    /// resolved; null without the standard library.
+    // The class of that mode (`std::build::mode::release`, or a mode of build.rifts), once
+    // resolved; null without the standard library.
     const Symbol*                                  build_mode_class = nullptr;
-    /// The values of the mode's settings by method name, as text: "optimization" → "speed",
-    /// "allow_undefined_behavior" → "false" (spec 24). Empty without the standard library.
+    // The values of the mode's settings by method name, as text: "optimization" → "speed",
+    // "allow_undefined_behavior" → "false" (spec 24). Empty without the standard library.
     std::map<std::string, std::string>             mode_settings;
-    /// The build target being compiled (`{target}` of a `std::call_site`, spec 31): the target's
-    /// name from build.rifts, or the main file's name without `.rifts`.
+    // The build target being compiled (`{target}` of a `std::call_site`, spec 31): the target's
+    // name from build.rifts, or the main file's name without `.rifts`.
     std::string                                    build_target;
-    /// What build.rifts passed to the target being compiled: `std::build::setting<T>(name)`.
+    // What build.rifts passed to the target being compiled: `std::build::setting<T>(name)`.
     std::map<std::string, std::shared_ptr<const ct::Value>> build_settings;
-    /// What build.rifts passed to some files of that target: `std::build::setting_at<T>(where, name)`.
+    // What build.rifts passed to some files of that target: `std::build::setting_at<T>(where, name)`.
     std::vector<FileSetting>                       file_settings;
-    /// The graph that build.rifts' `build(g)` fills in; null when compiling ordinary code.
+    // The graph that build.rifts' `build(g)` fills in; null when compiling ordinary code.
     ct::BuildGraph*                                build_graph = nullptr;
-    /// `--warn=id=level` (spec 23): the level of each named diagnostic that is not the default.
+    // `--warn=id=level` (spec 23): the level of each named diagnostic that is not the default.
     std::map<std::string, std::string>             warn_levels;
     std::shared_ptr<types::TypeContext>            types;     // owns every Type the checker creates
-    /// Instances of template types, in creation order. They are not in any module's items.
+    // Instances of template types, in creation order. They are not in any module's items.
     std::vector<Symbol*>                           instances;
-    /// The AST copy of each instance (same order), which the later phases walk.
+    // The AST copy of each instance (same order), which the later phases walk.
     std::vector<ast::Decl*>                        instance_copies;
-    /// The re-parsed copies of templates that instances are made of (see check.cpp).
+    // The re-parsed copies of templates that instances are made of (see check.cpp).
     std::deque<ast::File>                          instance_files;
-    /// Errors in methods of class template instances, kept until the method is used: like
-    /// C++, an instance's method is only required to compile when it is called
-    /// (`std::darray<std::unique_ptr<T>>` without `clone()`). By the method's declaration.
+    // A plugin is being built (`g.add_plugin`): its @std::plugin_entry class, the interface the
+    // program uses it through, its make() and the hash of the interface (dynamic libraries).
+    bool                                           is_plugin = false;
+    const Symbol*                                  plugin_class = nullptr;       // the @std::plugin_entry class
+    const Symbol*                                  plugin_interface = nullptr;   // the interface it is used through
+    const Symbol*                                  plugin_make = nullptr;        // its static make()
+    std::uint64_t                                  plugin_interface_hash = 0;
+    // The plain loops of `@std::simd::must_vectorize` functions, by their number in the loop
+    // metadata (the backend fills it; SIMD, "Requiring vectorized code").
+    std::vector<std::pair<Span, std::string>>      must_vectorize_loops;   // the loop and its LLVM function
+    // The tokens of each loaded file, kept for re-parsing templates (see check.cpp).
+    std::map<FileId, std::vector<Token>>           file_tokens;
+    // Errors in methods of class template instances, kept until the method is used: like
+    // C++, an instance's method is only required to compile when it is called
+    // (`std::darray<std::unique_ptr<T>>` without `clone()`). By the method's declaration.
     std::map<const ast::Decl*, std::vector<Diagnostic>> deferred_errors;
-    /// Copies of resolved declarations: the instances of method templates (spec 14), the
-    /// constants that hold annotation values and the copies of annotation checks (spec 29).
+    // The methods of template instances that the program uses (calls, operators): the
+    // ownership pass checks only those, like the type checker reports only their errors.
+    std::set<const ast::Decl*> used_instance_methods;
+    // Copies of resolved declarations: the instances of method templates (spec 14), the
+    // constants that hold annotation values and the copies of annotation checks (spec 29).
     std::deque<std::unique_ptr<ast::Decl>>         cloned_decls;
-    /// The checks of annotations, one entry per use (spec 29), in the order they were made.
+    // The checks of annotations, one entry per use (spec 29), in the order they were made.
     std::deque<AnnotationCheck>                    annotation_checks;
-    /// The warning ids that `@std::allow` silences in the function being checked (spec 29).
+    // `annotated` inside the `wrap` blocks applied to functions (annotations, section 8): the
+    // handle global and the function it describes. The checker gives each its value.
+    std::vector<std::pair<Symbol*, const Symbol*>> wrap_handles;
+    // The warning ids that `@std::allow` silences in the function being checked (spec 29).
     std::vector<std::string>                       allowed_warnings;
-    /// Uses that were warned about already (`@std::deprecated`): file, offset, symbol.
+    // Uses that were warned about already (`@std::deprecated`): file, offset, symbol.
     std::set<std::tuple<FileId, std::uint32_t, const Symbol*>> reported_uses;
 };
 

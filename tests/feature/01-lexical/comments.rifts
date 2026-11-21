@@ -4,8 +4,8 @@
 /* block comment */
 /* block comment
    over several lines */
-/// doc comment, attached to the next declaration
+// doc comment, attached to the next declaration
 u32 main() {
     return 0; // trailing comment
 }
-//// four slashes is an ordinary comment
+/// four slashes is an ordinary comment

@@ -6,12 +6,22 @@ Syntax highlighting, build, and step-through debugging for the Rift language (`.
 ## Install
 
 ```sh
-code --install-extension rift-language-0.6.0.vsix
+code --install-extension rift-language-0.7.0.vsix
 ```
 
 Or in VS Code: Extensions view → `…` menu → **Install from VSIX…**. Debugging uses
 [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
 (`vadimcn.vscode-lldb`); VS Code installs it along with this extension.
+
+## Go to definition
+
+Ctrl+click a name (or F12, or right-click → **Go to Definition**) to jump to where it is declared:
+types, functions, methods, fields, locals, enum alternatives, struct literal fields, and modules
+(an `import` line opens the module's header). It works in the standard library too (`std::darray`
+opens `library/std/std.rifth`), and from there onwards. The extension runs
+`riftc definition <file> <line>:<column>` with the nearest folder above the file that has a
+`build.rifts` as the project root. riftc reads the saved file, so save before jumping from code
+you just changed.
 
 ## Debugging
 
@@ -123,7 +133,7 @@ when the file is saved. They come from `riftc insights <file>`, which prints the
 
 ## Highlighting
 
-- Comments: `//`, `/* */`, and `///` doc comments
+- Comments: `//`, `/* */`, and `//` doc comments
 - Strings: `"..."` with escapes, raw `r"..."`, C strings `c"..."`, and format strings `f"..."` with
   `{expr}` / `{expr:spec}` interpolation and `{{ }}` escapes
 - Char literals, including `'\u{1F600}'`

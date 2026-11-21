@@ -1,0 +1,13 @@
+// feature 27: thread options for another operating system than the target's are an error at the call.
+import std;
+
+void start() {
+    std::thread::handle<u32> a = std::thread::spawn(std::thread::options{   //~ error[E4210]: these thread options are for another operating system than the target's
+        .platform = std::thread::platform_options::windows(std::thread::windows_options{ .priority = std::thread::windows_priority::highest }),
+    }, []() { return 7u32; });
+    _ = a.join();
+    std::thread::handle<u32> b = std::thread::spawn(std::thread::options{
+        .platform = std::thread::platform_options::linux(std::thread::linux_options{ .policy = std::thread::linux_policy::idle }),
+    }, []() { return 7u32; });
+    _ = b.join();
+}

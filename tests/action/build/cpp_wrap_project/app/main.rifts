@@ -1,0 +1,30 @@
+// Uses the C++ classes that g.wrap_cpp wrapped: constructors as `make`, methods, overloads,
+// operators and default arguments under the names the report lists, exceptions as results.
+import std;
+import counter_cpp;
+
+i32 main() {
+    mut demo::Counter c = demo::Counter::make_2(5).expect("C++");
+    std::println(f"value {c.value()}, live {demo::Counter::live()}");
+    c.add(10).expect("C++");
+    c.add_2(3, 4).expect("C++");
+    std::println(f"value {c.value()}");
+    match (c.add(1000)) {
+        std::ok(_) => std::println("no exception?"),
+        std::error(e) => std::println(f"caught: {e.what()}"),
+    }
+    c.set_name("apples").expect("C++");
+    std::println(f"name {c.name().expect("C++")}, ratio {c.ratio(4.0).expect("C++")}, default ratio {c.ratio_default().expect("C++")}");
+    {
+        demo::Counter d = c.doubled().expect("C++");
+        std::println(f"doubled {d.value()} '{d.name().expect("C++")}', equal {c.equals(d).expect("C++")}, live {demo::Counter::live()}");
+        mut demo::Counter e = demo::Counter::make().expect("C++");
+        e.absorb(mut c).expect("C++");
+        std::println(f"absorbed: e {e.value()}, c {c.value()}");
+    }
+    std::println(f"live after the block {demo::Counter::live()}");
+    mut demo::Box_int b = demo::Box_int::make().expect("C++");
+    b.set(42);
+    std::println(f"box {b.get()}");
+    return 0;
+}

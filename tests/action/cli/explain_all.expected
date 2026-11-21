@@ -47,7 +47,7 @@ E2024  error    default arguments are not allowed
 E2025  error    'auto' is not allowed in function signatures
 E2026  error    lambda captures must be named
 E2027  error    enum needs an underlying tag type
-E2028  error    interface methods cannot have a body
+E2028  error    no longer used: interface methods may have a default body
 E2029  error    '_' can only be used in patterns and in '_ = expr;'
 E2030  error    malformed format string
 E2031  error    a check says when it runs: 'compile_time' or 'run_time'
@@ -102,6 +102,7 @@ E3047  error    not a base class of this class
 E3048  error    'abstract' methods are 'virtual' and have no body
 E3049  error    destructor name does not match the class
 E3050  error    lambda uses a local it does not capture
+E3051  error    an override is compile_time exactly when the method it implements is
 E3060  error    name found in more than one enclosing namespace
 E3061  error    namespace belongs to another project
 E3062  error    a name is either a namespace or a declaration, not both
@@ -114,6 +115,7 @@ E3071  error    annotation written on a target it doesn't allow
 E3072  error    the same annotation twice on one declaration
 E3073  error    annotations are written in the header
 E3074  error    a generate block on a type that can't have generated methods
+E3076  error    a wrap block runs the function's body exactly once
 E3075  error    a generated member conflicts with another member
 E4001  error    value has no type from context
 E4002  error    literal does not fit in its type
@@ -185,6 +187,9 @@ E4240  error    an annotation's field has a type that compile-time code can't ho
 E4250  error    the type of an implicit parameter must implement std::implicit<T>
 E4251  error    an f-string hole can't change anything (it may never be evaluated)
 E4252  error    'else' after a call that doesn't return 'bool'
+E4253  error    a list literal becomes a std::array or a std::span
+E4254  error    'else' after a call to a function that is not '@std::check_result'
+E4255  error    a raw SIMD intrinsic needs a CPU feature the build's CPU level doesn't have
 E5001  error    value of a non-copy type would be copied implicitly
 E5002  error    use of a moved value
 E5010  error    references cannot be stored in fields
@@ -199,6 +204,7 @@ E5023  error    value used while something borrows it mutably
 E5030  error    type cannot be cloned
 E6001  error    not supported by code generation yet
 E6002  error    the program has no 'main' function
+E6003  error    a loop of a '@std::simd::must_vectorize' function is not vectorized
 W1001  warning  '/*' inside a block comment (block comments do not nest)
 W4001  warning  unreachable match arm
 W4002  warning  implicit allocation of std::string from a string literal

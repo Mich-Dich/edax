@@ -1,0 +1,11 @@
+// build.rifts of a test project (allocators): programs with other global allocators.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target sealed = g.add_executable(std::build::rift_target{ .name = "sealed", .root = "app/sealed.rifts" });
+        g.set_global_allocator(sealed, std::sealable_allocator);
+        std::build::target counted = g.add_executable(std::build::rift_target{ .name = "counted", .root = "app/counted.rifts" });
+        g.set_global_allocator(counted, "app::counting_heap");
+    }
+}

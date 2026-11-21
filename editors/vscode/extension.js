@@ -39,7 +39,41 @@ function activate(context) {
             if (file) await buildProgram({ program: file }, folderOf(file));
         }),
     );
+    context.subscriptions.push(vscode.languages.registerDefinitionProvider({ language: "rift" }, new RiftDefinitionProvider()));
     new InsightsController(context, { compilerPath, output });
+}
+
+// --- go to definition ---------------------------------------------------------------------------
+
+/**
+ * Ctrl+click / F12: `riftc definition <file> <line>:<column>` prints where the name at that place is
+ * declared. The project root is the nearest folder above the file with a build.rifts (else the
+ * file's folder), so imports resolve as they do when the program is built. riftc reads the file
+ * from disk: in a file with unsaved changes the places are those of the saved text.
+ */
+class RiftDefinitionProvider {
+    async provideDefinition(document, position) {
+        const file = document.uri.fsPath;
+        const folder = folderOf(file);
+        const args = ["definition", `--root=${projectRootOf(file)}`, file, `${position.line + 1}:${position.character + 1}`];
+        const result = await run(compilerPath(folder), args, path.dirname(file));
+        if (result.code !== 0) return undefined;
+        const match = /^(.*):(\d+):(\d+)\s*$/.exec(result.stdout.trim());
+        if (!match) return undefined;
+        const target = path.resolve(path.dirname(file), match[1]);   // riftc ran in the file's folder
+        return new vscode.Location(vscode.Uri.file(target), new vscode.Position(Number(match[2]) - 1, Number(match[3]) - 1));
+    }
+}
+
+/** The nearest folder above `file` that has a build.rifts, else the file's own folder. */
+function projectRootOf(file) {
+    let dir = path.dirname(file);
+    for (;;) {
+        if (fs.existsSync(path.join(dir, "build.rifts"))) return dir;
+        const parent = path.dirname(dir);
+        if (parent === dir) return path.dirname(file);
+        dir = parent;
+    }
 }
 
 function deactivate() {}

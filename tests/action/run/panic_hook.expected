@@ -1,0 +1,5 @@
+exit: 134
+--- stdout
+--- stderr
+hook: 'index out of bounds' at panic_hook.rifts:9 on 'panic_hook'
+tests/action/run/panic_hook.rifts:9:13: panic: index out of bounds

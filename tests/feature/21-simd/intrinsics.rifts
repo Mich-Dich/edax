@@ -1,0 +1,12 @@
+// feature 21: raw intrinsics are unsafe, need their CPU feature, and take vectors of their width.
+import std;
+
+void use(u8x16 a, u8x32 b, f32x4 f) {
+    unsafe {
+        u8x16 s = std::simd::x86::mm_shuffle_epi8(a, a);   //~ error[E4255]: 'std::simd::x86::mm_shuffle_epi8' needs ssse3, which the CPU level 'x86_64' doesn't have
+        i32 m = std::simd::x86::mm_movemask_epi8(b);       //~ error[E4010]: 'std::simd::x86::mm_movemask_epi8' takes an integer vector of 128 bits here, not 'u8x32'
+        f32x4 r = std::simd::x86::mm_rcp_ps(f);
+        u8x16 n = std::simd::x86::mm_nonsense(a);          //~ error[E3020]: cannot find 'mm_nonsense' in namespace 'std::simd::x86'
+    }
+    i32 outside = std::simd::x86::mm_movemask_epi8(a);     //~ error[E4100]
+}

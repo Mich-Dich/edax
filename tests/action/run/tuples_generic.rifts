@@ -1,0 +1,12 @@
+// RUN: riftc run %s
+// Tuples inside containers, options and comparisons.
+import std;
+std::exit_code main() {
+    mut std::darray<(u32, std::static_str)> pairs = default;
+    pairs.push((1, "one"));
+    pairs.push((2, "two"));
+    std::option<(u32, u32)> o = std::some((3u32, 4u32));
+    for ((u32, std::static_str)& p : pairs) { std::print(f"{p.0}={p.1} "); }
+    std::println(f"{o.value_or((0, 0)).1} {(1u32, 2u32) < (1u32, 3u32)}");
+    return std::exit_code::success;
+}

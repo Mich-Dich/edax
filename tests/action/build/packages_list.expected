@@ -1,0 +1,15 @@
+exit: 0
+--- stdout
+mini
+  source:  local vendor/mini
+  version: local
+  path:    vendor/mini
+  build:   cmake (CMakeLists.txt, read by riftc)
+  no local changes
+hdr
+  source:  local vendor/hdr
+  version: local
+  path:    vendor/hdr
+  build:   headers_only
+  no local changes
+--- stderr

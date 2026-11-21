@@ -41,7 +41,7 @@ struct Registrar {
     }
 };
 
-/// Thrown by REQUIRE to abort the current test case.
+// Thrown by REQUIRE to abort the current test case.
 struct AbortTest {};
 
 void record_check();

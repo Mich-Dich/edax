@@ -1,0 +1,8 @@
+import std;
+
+extern(std::build::language::c) i32 mini_value();
+
+i32 main() {
+    unsafe { std::println(f"mini_value = {mini_value()}"); }
+    return 0;
+}

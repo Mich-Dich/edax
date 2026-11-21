@@ -2,7 +2,7 @@
   "name": "rift-language",
   "displayName": "Rift Language",
   "description": "Rift (.rifts / .rifth): syntax highlighting, build, step-through debugging, and code insights that show what the compiler does implicitly",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "dominikm",
   "license": "MIT",
   "engines": {

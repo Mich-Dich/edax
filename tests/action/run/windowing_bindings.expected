@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+quit = escape; jump = space; fire = mouse_left; save = control+s; crouch =
+space no longer does jump
+quit = escape; jump = j; fire = mouse_left; save = control+s; crouch = space
+reloaded 5 bindings: quit = escape; jump = j; fire = mouse_left; save = control+s; crouch = space
+ctrl+s -> save
+jump held with shift: true, pressed: true
+quit = escape; jump = space; fire = mouse_left; save = control+s; crouch =
+--- stderr

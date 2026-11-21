@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+shuffled: 15 14 0
+movemask: 65535
+crc32: 2651215084
+sad: 16 16
+no avx2 on this level
+--- stderr

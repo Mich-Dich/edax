@@ -2,7 +2,7 @@
 // (spec 18).
 import std;
 
-/// An event bus keeps callbacks: `std::function` owns its lambda (and the lambda's captures).
+// An event bus keeps callbacks: `std::function` owns its lambda (and the lambda's captures).
 class event_bus {
 public:
     void subscribe(std::string topic, std::function<void(u32)> handler) mut {
@@ -21,7 +21,7 @@ private:
     std::darray<std::function<void(u32)>> handlers = default;
 }
 
-/// A template takes any callable: each lambda type makes its own instance (no indirection).
+// A template takes any callable: each lambda type makes its own instance (no indirection).
 template<type F>
 u32 apply_n(F f, u32 times, u32 start) {
     mut u32 x = start;
@@ -29,7 +29,7 @@ u32 apply_n(F f, u32 times, u32 start) {
     return x;
 }
 
-/// A plain function pointer: only lambdas without captures convert to it.
+// A plain function pointer: only lambdas without captures convert to it.
 struct operation {
     std::static_str name = "";
     std::fn_ptr<i64(i64, i64)> run;

@@ -2,7 +2,7 @@
 // few local rules, checked in each function - no garbage collector and no lifetime syntax.
 import std;
 
-/// A class that owns a resource. Its destructor runs exactly once, when its owner goes away.
+// A class that owns a resource. Its destructor runs exactly once, when its owner goes away.
 class connection {
 public:
     std::string host = std::string::from("");
@@ -17,18 +17,18 @@ public:
     ~connection() { std::println(f"  close {this.host}"); }
 }
 
-/// Taking a parameter by value takes ownership: the caller's variable is moved.
+// Taking a parameter by value takes ownership: the caller's variable is moved.
 void consume(connection c) {
     c.send("bye");
 }   // c is destroyed here
 
-/// `T&` borrows for the call; `mut T&` borrows mutably, and the call site says `mut`.
+// `T&` borrows for the call; `mut T&` borrows mutably, and the call site says `mut`.
 void rename(mut std::string& name, std::str suffix) {
     name.push_str(suffix);
 }
 
-/// A returned reference (or view, like std::str) borrows from the only reference parameter.
-/// With two reference parameters it would be ambiguous, and that is a compile error (E5012).
+// A returned reference (or view, like std::str) borrows from the only reference parameter.
+// With two reference parameters it would be ambiguous, and that is a compile error (E5012).
 std::str first_word(std::string& text) {
     std::str all = text.as_str();
     return match (all.find(" ")) {

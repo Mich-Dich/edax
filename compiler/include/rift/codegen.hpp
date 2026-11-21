@@ -18,17 +18,17 @@
 
 namespace rift {
 
-/// The C runtime prepended to every generated program.
+// The C runtime prepended to every generated program.
 extern const std::string_view c_runtime;
 
 struct CodegenOptions {
-    /// Generate every non-template function, not only those reachable from `main` (a missing
-    /// `main` is then allowed). For testing the backend on code that is never run.
+    // Generate every non-template function, not only those reachable from `main` (a missing
+    // `main` is then allowed). For testing the backend on code that is never run.
     bool all_functions = false;
 };
 
-/// Translates `program` (resolved, type checked and ownership checked) to C. The result is
-/// only meaningful when no error was added to `diags`.
+// Translates `program` (resolved, type checked and ownership checked) to C. The result is
+// only meaningful when no error was added to `diags`.
 std::string generate_c(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
                        CodegenOptions options = {});
 

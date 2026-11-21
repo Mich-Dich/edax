@@ -1,0 +1,34 @@
+// RUN: riftc run %s
+// @std::simd::multiversion: a copy per CPU level, each with its own native_lanes and CPU features,
+// and the best one for the running CPU picked at the first call.
+import std;
+
+@std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v2, std::build::cpu::x86_64_v3, std::build::cpu::x86_64_v4] }
+usize lanes_here() {
+    compile_time usize w = std::simd::native_lanes<f32>();
+    if compile_time (std::build::target_has_cpu_feature(std::build::cpu_feature::avx2)) {
+        unsafe {
+            u8x32 x = std::simd::x86::mm256_shuffle_epi8(u8x32::splat(1), u8x32::splat(0));
+            _ = x;
+        }
+    }
+    return w;
+}
+
+@std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v3] }
+f32 sum(std::span<f32> values) {
+    compile_time usize w = std::simd::native_lanes<f32>();
+    mut std::simd::vec<f32, w> acc = default;
+    for (std::simd::block<w> at : std::simd::blocks<w>(values.len())) {
+        acc = acc + values.load(at);
+    }
+    return acc.reduce_add();
+}
+
+i32 main() {
+    usize w = lanes_here();
+    std::println(f"lanes of the copy the CPU got: {w == 4 || w == 8 || w == 16}");
+    std::darray<f32> data = std::darray<f32>::from([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    std::println(f"sum {sum(data.as_span())} {sum(data.as_span())}");
+    return 0;
+}

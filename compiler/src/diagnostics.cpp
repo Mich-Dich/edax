@@ -73,13 +73,13 @@ struct Mark {
     std::string_view color;
 };
 
-/// Prints one source line with markers underneath:
-///
-///   6 |     u32 b = (2 + 3;
-///     |             -     ^ unexpected here
-///
-/// Multi-line spans are marked up to the end of their first line. Tabs in the source are
-/// repeated in the marker line so the markers line up.
+// Prints one source line with markers underneath:
+//
+//   6 |     u32 b = (2 + 3;
+//     |             -     ^ unexpected here
+//
+// Multi-line spans are marked up to the end of their first line. Tabs in the source are
+// repeated in the marker line so the markers line up.
 void render_snippet(std::ostream& out, const SourceFile& file, const std::vector<Mark>& marks,
                     std::string_view label, std::string_view label_color, std::size_t gutter,
                     const Style& style) {

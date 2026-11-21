@@ -1,0 +1,25 @@
+// annotations: a wrap block runs the function's body exactly once on every path and can't see
+// the parameters.
+import std;
+
+annotation(std::meta::target::function)
+struct twice {
+    wrap {                                       //~ error[E3076]: the wrap block must call 'std::meta::wrapped_body()' exactly once on every path
+        std::meta::wrapped_body();
+        std::meta::wrapped_body();
+    }
+}
+
+annotation(std::meta::target::function)
+struct peeks {
+    wrap {
+        std::println(f"{x}");                    //~ error[E3020]: cannot find 'x' in this scope
+        std::meta::wrapped_body();
+    }
+}
+
+@twice
+void a() { }
+
+@peeks
+void b(u32 x) { }

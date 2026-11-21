@@ -6,7 +6,7 @@ std::static_str text() {
     return "the quick brown fox jumps over the lazy dog the fox sleeps and the dog barks";
 }
 
-/// The primes below N with a sieve: `std::bitset<N>` stores one bit per number, inline.
+// The primes below N with a sieve: `std::bitset<N>` stores one bit per number, inline.
 template<usize N>
 std::darray<u32> primes_below() {
     mut std::bitset<N> composite = default;
@@ -23,7 +23,7 @@ std::darray<u32> primes_below() {
     return out;
 }
 
-/// A `std::span` views part of a container without copying.
+// A `std::span` views part of a container without copying.
 u32 sum(std::span<u32> values) {
     mut u32 total = 0;
     for (u32 v : values) { total += v; }

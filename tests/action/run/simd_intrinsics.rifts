@@ -1,0 +1,24 @@
+// RUN: riftc run --cpu=x86_64_v2 %s
+// Raw SIMD intrinsics under their vendor's names (SIMD, "Raw intrinsics"); SSSE3 and SSE4.2 are
+// in x86_64_v2. Code tests for a feature with std::build::target_has_cpu_feature.
+import std;
+
+i32 main() {
+    u8x16 bytes = u8x16::iota();
+    u8x16 backwards = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+    unsafe {
+        u8x16 shuffled = std::simd::x86::mm_shuffle_epi8(bytes, backwards);
+        std::println(f"shuffled: {shuffled[0]} {shuffled[1]} {shuffled[15]}");
+        std::println(f"movemask: {std::simd::x86::mm_movemask_epi8(u8x16::splat(128))}");
+        std::println(f"crc32: {std::simd::x86::mm_crc32_u32(0, 42)}");
+        u64x2 sums = std::simd::x86::mm_sad_epu8(u8x16::splat(3), u8x16::splat(1));
+        std::println(f"sad: {sums[0]} {sums[1]}");
+        if compile_time (std::build::target_has_cpu_feature(std::build::cpu_feature::avx2)) {
+            u8x32 wide = std::simd::x86::mm256_shuffle_epi8(u8x32::splat(1), u8x32::splat(0));
+            std::println(f"avx2 {wide[0]}");
+        } else {
+            std::println("no avx2 on this level");
+        }
+    }
+    return 0;
+}

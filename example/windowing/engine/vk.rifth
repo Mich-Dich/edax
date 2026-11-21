@@ -1,0 +1,68 @@
+// windowing/engine/vk: a Vulkan window next to the OpenGL ones.
+//
+// std::windowing gives Vulkan what it needs from a window system and nothing more: the loader
+// (vkGetInstanceProcAddr), the instance extensions a surface needs, and a surface per window.
+// The program makes the instance and the device, as it would with GLFW. This module makes an
+// instance, the window's surface, picks a device that can present to it and reads the surface's
+// capabilities. Rendering (swapchain, command buffers) is the renderer's job and not shown here.
+//
+// Ownership: the window owns its surface and destroys it before itself; the instance must outlive
+// the window. surface_view keeps that order in its destructor, which is why create_surface is the
+// one `unsafe` call of std::windowing's public API.
+
+import std;
+
+namespace engine::vk {
+    namespace wnd = std::windowing;
+
+    // The instance-level functions used here; fields named like the Vulkan functions, loaded by
+    // reflection through vkGetInstanceProcAddr (like gl::functions).
+    struct instance_functions {
+        std::fn_ptr<void(u64, std::raw_ptr<u8>)>                                       vkDestroyInstance;
+        std::fn_ptr<i32(u64, std::raw_ptr<mut u32>, std::raw_ptr<mut u64>)>           vkEnumeratePhysicalDevices;
+        std::fn_ptr<i32(u64, u64, std::raw_ptr<mut surface_capabilities>)>            vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+    }
+
+    struct extent {
+        u32 width = 0;
+        u32 height = 0;
+    }
+
+    // VkSurfaceCapabilitiesKHR.
+    struct surface_capabilities {
+        u32    min_image_count = 0;
+        u32    max_image_count = 0;
+        extent current_extent = default;
+        extent min_image_extent = default;
+        extent max_image_extent = default;
+        u32    max_image_array_layers = 0;
+        u32    supported_transforms = 0;
+        u32    current_transform = 0;
+        u32    supported_composite_alpha = 0;
+        u32    supported_usage_flags = 0;
+    }
+
+    // A VkInstance, destroyed with this object.
+    class instance {
+    public:
+        u64 handle();
+        instance_functions& functions();
+        ~instance();
+    }
+
+    // A Vulkan window with its instance, surface and presenting device.
+    //
+    // Its fields are declared loader, instance, window: they are destroyed in the reverse order
+    // (12), so the window (and with it the surface) goes first, then the instance, then the
+    // loader. The order Vulkan needs is the order of the declarations; no destructor code.
+    class surface_view {
+    public:
+        static std::result<surface_view, std::string> open(mut wnd::system& sys);
+
+        wnd::vulkan_window& window();
+        mut wnd::vulkan_window& window_mut() mut;
+
+        // The surface's size now (it follows the window).
+        extent current_extent();
+    }
+}

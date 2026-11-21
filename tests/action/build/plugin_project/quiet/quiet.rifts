@@ -1,0 +1,12 @@
+import std;
+import api::greeter;
+
+namespace quiet {
+    @std::plugin_entry
+    class soft : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"hi {who}"); }
+        u32 calls() mut override { return 100; }
+        static soft make() { return soft{}; }
+    }
+}

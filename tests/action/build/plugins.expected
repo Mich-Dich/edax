@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+HELLO, plugins!
+hi plugins
+calls: 2 100
+shout: the object is destroyed before the library is unloaded
+wrong interface: true
+missing: true
+--- stderr

@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+colored=true 8
+plain colored=false 8
+false
+--- stderr

@@ -1,0 +1,2 @@
+// RUN: riftc package list --root=%S/packages_project --out-dir=%t
+// riftc package list: each package's source, version, path and how riftc builds it.

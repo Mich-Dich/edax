@@ -1,0 +1,17 @@
+// feature 07/30: an override may spell the interface's parameter types differently (a namespace
+// alias, a qualified name): what counts is the type they name.
+import std;
+namespace gfx {
+    struct event { u32 code = 0; }
+    interface listener {
+        bool on_event(event e) mut;
+    }
+}
+namespace g = gfx;
+struct logger : g::listener {
+    u32 seen = 0;
+    bool on_event(g::event e) mut override { this.seen += e.code; return true; }
+}
+struct wrong : g::listener {   //~ error[E3045]
+    bool on_event(u32 code) mut override { return false; }   //~ error[E3043]
+}

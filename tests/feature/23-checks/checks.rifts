@@ -31,7 +31,7 @@ void configure(u32 baud) {
     compile_time run_time check (is_supported(baud)) else f"{baud} baud is not supported";
 }
 
-/// Calls to functions that are going away.
+// Calls to functions that are going away.
 compile_time std::diagnostic old = default;
 
 void deprecated() {

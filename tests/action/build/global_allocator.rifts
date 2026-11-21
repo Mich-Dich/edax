@@ -1,0 +1,2 @@
+// RUN: riftc run --root=%S/allocator_project --out-dir=%t counted
+// g.set_global_allocator: the program's own allocator gets every allocation, with its size.

@@ -7,9 +7,10 @@
 //   riftc run --root=example -Dgreeting=hi build_info      an option
 import std;
 
-/// Set by build.rifts with `g.set(...)`. Reading one that is not set is a compile error.
-compile_time std::static_str greeting = std::build::setting<std::static_str>("greeting");
-compile_time u32 build_number = std::build::setting<u32>("build_number");
+// Set by build.rifts with `g.set(...)`; build.rifts declares them in namespace build. Reading one
+// that is not set is a compile error.
+compile_time std::static_str greeting = build::greeting.value();
+compile_time u32 build_number = build::build_number.value();
 
 std::static_str optimization_name() {
     return match (std::build::current_mode().optimization()) {

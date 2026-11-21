@@ -19,9 +19,9 @@
 
 namespace rift {
 
-/// Something the compiler does that the source does not spell out (or only hints at): a stack
-/// slot, a heap allocation, a drop at the end of a scope, a move, a copy, a temporary, an implicit
-/// conversion, a virtual call, a run-time check. `riftc insights` lists them for editors.
+// Something the compiler does that the source does not spell out (or only hints at): a stack
+// slot, a heap allocation, a drop at the end of a scope, a move, a copy, a temporary, an implicit
+// conversion, a virtual call, a run-time check. `riftc insights` lists them for editors.
 struct Insight {
     std::string category;    // stack, heap, drops, moves, copies, temporaries, conversions, dispatch, checks
     std::string kind;        // finer: frame, alloc, free, drop, move, copy, ...
@@ -33,44 +33,86 @@ struct Insight {
 };
 
 struct LlvmOptions {
-    /// Generate every non-template function in the entry module, not only those reachable from
-    /// `main`. For testing the backend on code that is never run.
+    // Generate every non-template function in the entry module, not only those reachable from
+    // `main`. For testing the backend on code that is never run.
     bool all_functions = false;
-    /// `panic()` returning `trap` (spec 24): every panic is a trap instruction, without a message.
+    // `panic()` returning `trap` (spec 24): every panic is a trap instruction, without a message.
     bool panic_trap = false;
-    /// The mode's debug_info() is not `none`: DWARF line tables for every Rift function.
+    // The mode's debug_info() is not `none`: DWARF line tables for every Rift function.
     bool debug_info = false;
-    /// The mode's debug_info() is `full`: also locals, parameters, `this` and their types, so
-    /// that a debugger can show variables (needs debug_info).
+    // The mode's debug_info() is `full`: also locals, parameters, `this` and their types, so
+    // that a debugger can show variables (needs debug_info).
     bool debug_variables = false;
-    /// When set, the backend lists what it does implicitly here (`riftc insights`).
+    // When set, the backend lists what it does implicitly here (`riftc insights`).
     std::vector<Insight>* insights = nullptr;
 };
 
-/// How the object code is made (the mode's settings, spec 24).
+// How the object code is made (the mode's settings, spec 24).
 struct CodegenOptions {
     std::string optimization = "none";   // "none", "size", "speed"
     bool        debug_info   = false;    // (the IR carries it: LlvmOptions::debug_info)
+    bool        shared       = false;    // a shared library (a plugin) instead of a program
 };
 
-/// Lowers the checked program to textual LLVM IR (LLVM 18 syntax). Returns an empty string when
-/// errors were added to `diags`.
+// Lowers the checked program to textual LLVM IR (LLVM 18 syntax). Returns an empty string when
+// errors were added to `diags`.
 std::string generate_llvm_ir(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
                              LlvmOptions options = {});
 
-/// Compiles LLVM IR text to an object file for the host and links an executable at `out_path`
-/// with `linker` (for example "cc"). Returns false and sets `error` on failure.
-/// Compiles for `platform` (an LLVM triple such as "aarch64-linux-gnu", spec 25 `--target=`);
-/// empty: the host. False with `error` set when riftc can't compile for it.
+// Compiles LLVM IR text to an object file for the host and links an executable at `out_path`
+// with `linker` (for example "cc"). Returns false and sets `error` on failure.
+// Compiles for `platform` (an LLVM triple such as "aarch64-linux-gnu", spec 25 `--target=`);
+// empty: the host. False with `error` set when riftc can't compile for it.
 bool set_build_target(const std::string& platform, std::string& error);
 
-/// Whether programs built for the current target can run here.
+// Whether programs built for the current target can run here.
 bool target_is_host();
+
+// The platform being compiled for (build system, "Target platforms"): its triple, operating
+// system, CPU level, the CPU features that level includes and the capabilities.
+struct TargetPlatform {
+    std::string              triple;         // "x86_64-pc-linux-gnu"
+    std::string              os;             // "linux", "windows", "macos" or "none"
+    std::string              cpu;            // the CPU level: "x86_64_v3", "armv8", ...
+    std::vector<std::string> features;       // the level's CPU features: "avx2", "fma", "neon", ...
+    std::vector<std::string> capabilities;   // "os", "threads", "heap", "files", "dynamic_libraries", "simd"
+    unsigned                 vector_bytes = 16;   // the widest vector register of the level
+    bool has(const std::string& capability) const;
+    bool has_feature(const std::string& feature) const;
+};
+
+// The current target platform.
+const TargetPlatform& target_platform();
+
+// The platform riftc runs on (for `g.host()`).
+TargetPlatform host_platform();
+
+// Sets the CPU level (`--cpu=x86_64_v3`); empty: the baseline of the architecture. False with
+// `error` set when the level doesn't exist or doesn't fit the target's architecture.
+bool set_build_cpu(const std::string& level, std::string& error);
+
+// The CPU levels riftc knows, for the architecture of the target (for messages).
+std::vector<std::string> cpu_levels();
+
+// The CPU features of a level, or none when it is unknown.
+std::vector<std::string> cpu_level_features(const std::string& level);
+
+// Checks and generates code for `level` instead of the build's CPU level (a multiversion copy,
+// SIMD "Choosing widths"); empty: back to the build's. Returns the previous override.
+std::string set_cpu_level_override(const std::string& level);
+
+// The widest vector register of a level in bytes (16 when it is unknown).
+unsigned cpu_level_vector_bytes(const std::string& level);
+
+// A user target description (`--target=board.rifts`): replaces the platform's triple,
+// operating system, CPU level and capabilities. False with `error` set when riftc can't compile
+// for the triple or the level doesn't fit it.
+bool set_target_description(const TargetPlatform& description, std::string& error);
 
 bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
                       const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});
 
-/// The runtime every generated module is linked with, as LLVM IR text (llvm_runtime.cpp).
+// The runtime every generated module is linked with, as LLVM IR text (llvm_runtime.cpp).
 std::string llvm_runtime_ir();
 
 } // namespace rift

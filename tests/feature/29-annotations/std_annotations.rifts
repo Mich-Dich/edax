@@ -1,7 +1,7 @@
 // feature 29: the standard library's annotations that the compiler acts on.
 import std;
 
-/// Kept for old callers.
+// Kept for old callers.
 compile_time std::diagnostic legacy = default;
 
 @std::deprecated{ .message = "use new_api()" }

@@ -1,0 +1,57 @@
+// RUN: riftc run %s
+// SIMD: vector types, operators, masks, blocks over spans, reductions, shuffles, split and join.
+import std;
+
+void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
+    run_time check (a.len() == result.len() && b.len() == result.len()) else "add_arrays: lengths differ";
+    for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
+        result.store(at, a.load(at) + b.load(at));
+    }
+}
+
+f32 dot(std::span<f32> a, std::span<f32> b) {
+    mut f32x8 sum = default;
+    for (std::simd::block<8> at : std::simd::blocks<8>(a.len())) {
+        sum = a.load(at).mul_add(b.load(at), sum);
+    }
+    return sum.reduce_add();
+}
+
+std::option<usize> find_byte(std::span<u8> text, u8 wanted) {
+    u8x32 w = u8x32::splat(wanted);
+    for (std::simd::block<32> at : std::simd::blocks<32>(text.len())) {
+        std::simd::mask<32> hits = (text.load(at) == w) & at.active;
+        match (hits.first()) {
+            std::some(k) => { return std::some(at.start + k); },
+            std::none    => { },
+        }
+    }
+    return std::none;
+}
+
+std::exit_code main() {
+    mut std::darray<f32> a = default;
+    mut std::darray<f32> b = default;
+    mut std::darray<f32> r = default;
+    for (u32 i : 0..19) {
+        a.push(cast<f32>(cast::truncate<u16>(i)));
+        b.push(1.5);
+        r.push(0.0);
+    }
+    add_arrays(a.as_span(), b.as_span(), r.as_mut_span());
+    std::println(f"{r[0]} {r[7]} {r[18]} {dot(a.as_span(), b.as_span())}");
+    f32x8 ramp = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+    f32x8 twos = f32x8::splat(2.0);
+    std::simd::mask<8> big = ramp > f32x8::splat(4.5);
+    f32x8 limited = big.select(f32x8::splat(4.5), ramp);
+    std::println(f"{(ramp * twos)[7]} {big.count()} {big.any()} {limited.reduce_max()} {ramp.reverse()[0]}");
+    i32x8 idx = i32x8::iota();
+    std::println(f"{idx.reduce_add()} {(idx +% idx)[3]} {idx.max(i32x8::splat(5))[2]} {idx.with(0, 100)[0]}");
+    (i32x4 lo, i32x4 hi) = idx.split();
+    std::println(f"{lo[3]} {hi[0]} {std::simd::join(lo, hi)[7]} {idx.shuffle([7, 6, 5, 4, 3, 2, 1, 0])[0]}");
+    mut std::darray<u8> text = default;
+    for (u32 i : 0..70) { text.push(cast::truncate<u8>(i)); }
+    std::println(f"{find_byte(text.as_span(), 65).value_or(999)} {find_byte(text.as_span(), 200).value_or(999)}");
+    std::println(f"{std::simd::native_lanes<f32>()}");
+    return std::exit_code::success;
+}

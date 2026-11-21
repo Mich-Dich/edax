@@ -1,5 +1,6 @@
 #include "rift/token.hpp"
 
+#include <unordered_map>
 #include <algorithm>
 #include <array>
 #include <ostream>
@@ -32,12 +33,16 @@ bool             is_keyword(TokenKind kind) { return info(kind).keyword; }
 bool             is_type_keyword(TokenKind kind) { return info(kind).type_keyword; }
 
 std::optional<TokenKind> keyword_kind(std::string_view word) {
-    for (std::size_t i = 0; i < kind_table.size(); ++i) {
-        if (kind_table[i].keyword && kind_table[i].spelling == word) {
-            return static_cast<TokenKind>(i);
+    static const std::unordered_map<std::string_view, TokenKind> keywords = [] {
+        std::unordered_map<std::string_view, TokenKind> m;
+        for (std::size_t i = 0; i < kind_table.size(); ++i) {
+            if (kind_table[i].keyword) m.emplace(kind_table[i].spelling, static_cast<TokenKind>(i));
         }
-    }
-    return std::nullopt;
+        return m;
+    }();
+    auto it = keywords.find(word);
+    if (it == keywords.end()) return std::nullopt;
+    return it->second;
 }
 
 std::ostream& operator<<(std::ostream& out, TokenKind kind) { return out << token_kind_name(kind); }

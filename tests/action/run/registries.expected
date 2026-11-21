@@ -1,0 +1,10 @@
+exit: 0
+--- stdout
+app::commands::greet
+hello
+app::commands::bye
+bye
+11
+position
+velocity
+--- stderr

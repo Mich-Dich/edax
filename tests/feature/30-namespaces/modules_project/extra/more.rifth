@@ -9,6 +9,6 @@ namespace shapes {
 }
 
 namespace extra {
-    /// An operator for a type of another module: not allowed.
+    // An operator for a type of another module: not allowed.
     shapes::circle operator+(shapes::circle& a, shapes::circle& b);   //~ error[E3066]: 'operator+' is declared away from its operand types
 }

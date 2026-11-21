@@ -34,6 +34,7 @@ namespace rift::types {
 
 enum class Kind {
     error, untyped_int, untyped_float, untyped_default,   // untyped_default: `default` without context
+    untyped_list,   // a list literal `[a, b]`, or a tuple `(1, 2)` with untyped elements: typed by context
     int_, float_, bool_, char_, void_, never, nullptr_, static_str,
     user,        // struct / class / enum / interface (non-template)
     reference,   // T& / mut T&
@@ -49,6 +50,9 @@ enum class Kind {
     fn_ptr,      // std::fn_ptr<R(A...)>: a plain function pointer; args as for function
     array,       // std::raw::array<T, N>: N values of T inline (inner = T, args[0] = the value_arg N)
     meta,        // std::meta::field, std::meta::alternative (name says which)
+    tuple,       // (A, B, ...): args = the element types, two or more
+    vector,      // std::simd::vec<T, N> (f32x8, ...): inner = the lane type, bits = the lane count
+    mask,        // std::simd::mask<N>: bits = the lane count
 };
 
 struct Type {
@@ -68,69 +72,83 @@ struct Type {
     [[nodiscard]] bool is_numeric() const { return kind == Kind::int_ || kind == Kind::float_; }
     [[nodiscard]] bool is_untyped() const {
         return kind == Kind::untyped_int || kind == Kind::untyped_float || kind == Kind::untyped_default ||
-               kind == Kind::pending;
+               kind == Kind::pending || kind == Kind::untyped_list;
     }
-    /// Types whose values exist only at compile time (spec 26).
+    // Types whose values exist only at compile time (spec 26).
     [[nodiscard]] bool is_compile_time_only() const { return kind == Kind::type_value || kind == Kind::meta; }
-    /// Types the checker cannot reason about: anything goes, nothing is reported.
+    // A C function of a loaded library (`std::c_library::function<R(A...)>`): a function pointer
+    // that is a view of its library and is called in `unsafe`.
+    [[nodiscard]] bool is_c_function() const { return kind == Kind::fn_ptr && is_size; }
+    // Types the checker cannot reason about: anything goes, nothing is reported.
     [[nodiscard]] bool is_unknown() const { return kind == Kind::error || kind == Kind::type_param; }
     [[nodiscard]] bool is_user(sema::SymbolKind k) const;
-    /// `std::result<...>` and friends: the external spelling up to the first '<'.
+    // `std::result<...>` and friends: the external spelling up to the first '<'.
     [[nodiscard]] std::string_view external_base() const;
 };
 
-/// Size and alignment in bytes, following the backend's layout (the interop rules of 13).
+// Size and alignment in bytes, following the backend's layout (the interop rules of 13).
 struct Layout {
     std::uint64_t size  = 0;
     std::uint64_t align = 1;
+    bool          empty = false;   // a struct without data: size 0, but known (std::global_allocator)
 };
 
-/// Evaluates a template value argument (`N + 1`) for the template parameter `param` of `templ`,
-/// with `subst` for the parameters in scope. Set by the checker; null when it cannot be done.
+// Evaluates a template value argument (`N + 1`) for the template parameter `param` of `templ`,
+// with `subst` for the parameters in scope. Set by the checker; null when it cannot be done.
 using ValueArgResolver = std::function<const Type*(const sema::Symbol* templ, std::size_t index, const ast::Expr& value,
                                                    const std::map<const sema::Symbol*, const Type*>* subst)>;
 
-/// The type a compile_time `type` variable or parameter holds (spec 26). Set by the checker.
+// The type a compile_time `type` variable or parameter holds (spec 26). Set by the checker.
 using TypeValueResolver = std::function<const Type*(const sema::Symbol* symbol)>;
 
-/// Makes the instance of a template type for concrete arguments (spec 14). Set by the checker.
+// Makes the instance of a template type for concrete arguments (spec 14). Set by the checker.
 using TypeInstantiator = std::function<const Type*(const sema::Symbol* templ, const std::vector<const Type*>& args)>;
 
 class TypeContext {
 public:
     TypeContext();
 
-    /// Without an instantiator, template types lower to `error` (nothing is instantiated).
+    // Without an instantiator, template types lower to `error` (nothing is instantiated).
     void set_instantiator(TypeInstantiator instantiator) { instantiator_ = std::move(instantiator); }
     void set_type_value_resolver(TypeValueResolver resolver) { type_values_ = std::move(resolver); }
     void set_value_arg_resolver(ValueArgResolver resolver) { value_args_ = std::move(resolver); }
 
-    /// The interned template value argument `bits` of type `of` (an integer type or bool).
+    // The interned template value argument `bits` of type `of` (an integer type or bool).
     const Type* value_arg(u128 bits, const Type* of);
-    /// The type of the lambda `l` (one per lambda). Its signature is set once the lambda is checked.
+    // The type of the lambda `l` (one per lambda). Its signature is set once the lambda is checked.
     const Type* closure(const ast::LambdaExpr* l);
     void        set_closure_signature(const Type* closure, std::vector<const Type*> params, const Type* result);
     const ast::LambdaExpr* lambda_of(const Type* closure) const;
-    /// `std::function<R(A...)>` (kind function) or `std::fn_ptr<R(A...)>` (kind fn_ptr), interned.
+    // `std::function<R(A...)>` (kind function) or `std::fn_ptr<R(A...)>` (kind fn_ptr), interned.
     const Type* callable(Kind kind, std::vector<const Type*> params, const Type* result);
-    /// `std::raw::array<T, N>` (the storage of std::array, spec 13 and 20), interned.
+    // `std::c_library::function<R(A...)>`, also a bare `R(A...)` written as a type.
+    const Type* c_function(std::vector<const Type*> params, const Type* result);
+    // `std::raw::array<T, N>` (the storage of std::array, spec 13 and 20), interned.
     const Type* array(const Type* element, const Type* count);
-    /// The number of elements of an array type.
+    // The tuple type `(A, B, ...)`, interned.
+    const Type* tuple(std::vector<const Type*> elements);
+    // `std::simd::vec<T, N>` and `std::simd::mask<N>` (SIMD), interned.
+    const Type* vector(const Type* lane, int lanes);
+    const Type* mask(int lanes);
+    // A built-in type name, including the SIMD short names `f32x8`, `u8x32`, ...
+    const Type* builtin_or_vector(std::string_view name);
+    // The number of elements of an array type.
     std::uint64_t array_count(const Type* array) const;
-    /// Where the type being instantiated right now is written (for the type-body checks of 23).
+    // Where the type being instantiated right now is written (for the type-body checks of 23).
     [[nodiscard]] std::optional<Span> instantiation_site() const { return site_; }
     u128        value_bits(const Type* value_arg) const;
-    /// A template value argument of any compile-time-capable type (a `compile_time` parameter's
-    /// argument, spec 31: enums, `std::static_str`, structs), interned by its source-like text.
-    /// `payload` is the checker's value (a ct::Value), kept opaque here.
+    // A template value argument of any compile-time-capable type (a `compile_time` parameter's
+    // argument, spec 31: enums, `std::static_str`, structs), interned by its source-like text.
+    // `payload` is the checker's value (a ct::Value), kept opaque here.
     const Type* value_arg_of(const std::string& text, const Type* of, std::shared_ptr<const void> payload);
-    /// The payload of a value argument made by value_arg_of; null for integer and bool arguments.
+    // The payload of a value argument made by value_arg_of; null for integer and bool arguments.
     [[nodiscard]] std::shared_ptr<const void> value_payload(const Type* value_arg) const;
 
     const Type* error() const { return error_; }
     const Type* untyped_int() const { return untyped_int_; }
     const Type* untyped_float() const { return untyped_float_; }
     const Type* untyped_default() const { return untyped_default_; }
+    const Type* untyped_list() const { return untyped_list_; }
     const Type* bool_() const { return bool_t_; }
     const Type* char_() const { return char_t_; }
     const Type* void_() const { return void_t_; }
@@ -141,14 +159,15 @@ public:
     const Type* meta_field() const { return meta_field_; }
     const Type* meta_alternative() const { return meta_alternative_; }
     const Type* meta_function() const { return meta_function_; }
+    const Type* meta_file() const { return meta_file_; }
     const Type* meta_parameter() const { return meta_parameter_; }
 
-    /// Size and alignment of a sized type (64-bit host). Null-safe; unknown types give {0, 1}.
+    // Size and alignment of a sized type (64-bit host). Null-safe; unknown types give {0, 1}.
     Layout layout(const Type* t);
-    /// Byte offset of each non-static field of a struct/class type, in declaration order.
+    // Byte offset of each non-static field of a struct/class type, in declaration order.
     std::vector<std::uint64_t> field_offsets(const Type* t);
 
-    /// Built-in type by keyword spelling ("u32", "f64", "bool", ...), or null.
+    // Built-in type by keyword spelling ("u32", "f64", "bool", ...), or null.
     const Type* builtin(std::string_view name) const;
     const Type* reference(const Type* inner, bool is_mut);
     const Type* pointer(const Type* inner, bool is_mut);
@@ -156,16 +175,16 @@ public:
     const Type* user(const sema::Symbol* symbol);
     const Type* type_param(const sema::Symbol* symbol);
     const Type* external(const std::string& spelling);
-    /// The instance of the template type `templ` for `args` (spec 14). Error when the arguments
-    /// do not fit, are unknown, or no instantiator is set.
+    // The instance of the template type `templ` for `args` (spec 14). Error when the arguments
+    // do not fit, are unknown, or no instantiator is set.
     const Type* instance(const sema::Symbol* templ, const std::vector<const Type*>& args);
-    /// A value of the template enum `templ` whose null arguments are not known yet.
+    // A value of the template enum `templ` whose null arguments are not known yet.
     const Type* pending(const sema::Symbol* templ, const std::vector<const Type*>& args);
 
-    /// The type a written TypeExpr denotes (after name resolution). Template parameters found in
-    /// `subst` are replaced; template user types are not instantiated yet (error).
+    // The type a written TypeExpr denotes (after name resolution). Template parameters found in
+    // `subst` are replaced; template user types are not instantiated yet (error).
     const Type* lower(const ast::TypeExpr& t, const std::map<const sema::Symbol*, const Type*>* subst = nullptr);
-    /// Template arguments of an external type as written, e.g. `std::result<u32, e>` -> {u32, e}.
+    // Template arguments of an external type as written, e.g. `std::result<u32, e>` -> {u32, e}.
     const std::vector<const Type*>* external_args(const Type* t) const;
     void set_external_args(const Type* t, std::vector<const Type*> args) { external_args_[t] = std::move(args); }
 
@@ -183,6 +202,9 @@ private:
     std::map<const ast::LambdaExpr*, const Type*>               closures_;
     std::map<std::pair<Kind, std::vector<const Type*>>, const Type*> callables_;
     std::map<std::pair<const Type*, const Type*>, const Type*>       arrays_;
+    std::map<std::vector<const Type*>, const Type*>                 tuples_;
+    std::map<std::pair<const Type*, int>, const Type*>               vectors_;
+    std::map<int, const Type*>                                       masks_;
     std::map<const Type*, const ast::LambdaExpr*>               lambdas_;
     std::map<std::pair<const sema::Symbol*, std::vector<const Type*>>, const Type*> instances_;
     std::deque<Type>                                            storage_;
@@ -197,6 +219,7 @@ private:
     const Type* untyped_int_;
     const Type* untyped_float_;
     const Type* untyped_default_;
+    const Type* untyped_list_;
     const Type* bool_t_;
     const Type* char_t_;
     const Type* void_t_;
@@ -207,35 +230,36 @@ private:
     const Type* meta_field_;
     const Type* meta_alternative_;
     const Type* meta_function_;
+    const Type* meta_file_;
     const Type* meta_parameter_;
 };
 
-/// Source-like spelling: `u32`, `mut employee&`, `std::raw_ptr<u8>`, `{integer}`.
+// Source-like spelling: `u32`, `mut employee&`, `std::raw_ptr<u8>`, `{integer}`.
 std::string to_string(const Type* type);
-/// Like to_string, with every user type's module: `geometry::point`, `std::darray<shapes::circle>`.
+// Like to_string, with every user type's module: `geometry::point`, `std::darray<shapes::circle>`.
 std::string qualified_name(const Type* type);
 std::string type_name(const Type* type, bool qualified);
 
-/// Whether `t` (references removed) is an instance of the std template `name` ("option",
-/// "result"): `std::option<u32>`.
+// Whether `t` (references removed) is an instance of the std template `name` ("option",
+// "result"): `std::option<u32>`.
 bool is_std_instance(const Type* t, std::string_view name);
 
-/// The built-in methods of std::option and std::result (spec 11), provided by the compiler.
+// The built-in methods of std::option and std::result (spec 11), provided by the compiler.
 bool is_std_builtin_method(const Type* receiver, std::string_view method);
-/// `is_some`/`is_none`/`is_ok`/`is_error`: they look at the value without taking it.
+// `is_some`/`is_none`/`is_ok`/`is_error`: they look at the value without taking it.
 bool is_std_query_method(std::string_view method);
 
-/// Removes any reference: `T&` -> `T`.
+// Removes any reference: `T&` -> `T`.
 const Type* strip_ref(const Type* type);
 
-/// Whether an integer literal with this magnitude (negated if `negative`) fits in `type`.
+// Whether an integer literal with this magnitude (negated if `negative`) fits in `type`.
 bool literal_fits(u128 magnitude, bool negative, const Type* type);
 
-/// Methods of standard-library containers known to change their receiver (`push`, `clear`, ...).
-/// Until the library is written in Rift, this table stands in for their trailing `mut`.
+// Methods of standard-library containers known to change their receiver (`push`, `clear`, ...).
+// Until the library is written in Rift, this table stands in for their trailing `mut`.
 bool is_mutating_library_method(const Type* receiver, std::string_view method);
 
-/// Smallest and largest value of an integer type, as text (for messages).
+// Smallest and largest value of an integer type, as text (for messages).
 std::string integer_range(const Type* type);
 
 } // namespace rift::types

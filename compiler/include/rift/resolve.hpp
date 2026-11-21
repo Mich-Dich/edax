@@ -12,22 +12,22 @@ namespace rift {
 
 void resolve_program(sema::Program& program, DiagnosticEngine& diags);
 
-/// Resolves an instance of the template type `templ` (spec 14): `decl` is a fresh copy of the
-/// template's declaration, which must outlive the program. Returns the instance's symbol (not
-/// registered in the module); `params` receives the symbols of its template parameters.
+// Resolves an instance of the template type `templ` (spec 14): `decl` is a fresh copy of the
+// template's declaration, which must outlive the program. Returns the instance's symbol (not
+// registered in the module); `params` receives the symbols of its template parameters.
 sema::Symbol* resolve_instance(sema::Program& program, DiagnosticEngine& diags, const sema::Symbol* templ,
                                ast::Decl& decl, std::vector<sema::Symbol*>& params);
 
-/// Resolves an instance of the function template `templ` (spec 14): `decl` is a fresh copy of the
-/// template's function, signature and body included. Same contract as resolve_instance.
+// Resolves an instance of the function template `templ` (spec 14): `decl` is a fresh copy of the
+// template's function, signature and body included. Same contract as resolve_instance.
 sema::Symbol* resolve_function_instance(sema::Program& program, DiagnosticEngine& diags, const sema::Symbol* templ,
                                         ast::FunctionDecl& decl, std::vector<sema::Symbol*>& params);
 
-/// `riftc symbols`: the merged module interface, members in layout order.
+// `riftc symbols`: the merged module interface, members in layout order.
 void print_symbols(std::ostream& out, const sema::Module& module, const SourceManager& sources);
 
-/// `riftc expand <file> <type>` (spec 29): the type as written, followed by every member its
-/// annotations generate, written out. False when the program has no such type.
+// `riftc expand <file> <type>` (spec 29): the type as written, followed by every member its
+// annotations generate, written out. False when the program has no such type.
 bool print_expansion(std::ostream& out, const sema::Program& program, const SourceManager& sources, std::string_view type);
 
 } // namespace rift

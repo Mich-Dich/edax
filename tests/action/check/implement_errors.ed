@@ -1,0 +1,3 @@
+// RUN: edaxc check --root=tests/feature/34-performance/implement_project tests/feature/34-performance/implement_project/bad.ed
+// `implement I for T` errors (spec 34): a missing method, a non-interface, and an implementation
+// written in a third module.

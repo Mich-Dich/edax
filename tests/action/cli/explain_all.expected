@@ -205,6 +205,7 @@ E5030  error    type cannot be cloned
 E6001  error    not supported by code generation yet
 E6002  error    the program has no 'main' function
 E6003  error    a loop of a '@std::simd::must_vectorize' function is not vectorized
+E6004  error    a run-time check is left in a '@std::no_checks_left' function
 W1001  warning  '/*' inside a block comment (block comments do not nest)
 W4001  warning  unreachable match arm
 W4002  warning  implicit allocation of std::string from a string literal

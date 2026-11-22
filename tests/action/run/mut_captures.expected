@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+called 1 times
+called 2 times
+called 3 times
+called 4 times
+called 5 times
+--- stderr

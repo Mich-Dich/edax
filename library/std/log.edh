@@ -248,6 +248,11 @@ namespace std::log {
         void write(std::log::record& r, std::str line) mut;
         // Hands everything written so far on (to the file, the terminal, ...).
         void flush() mut;
+        // Whether the sink shows live lines (std::log::status): a console on a terminal does.
+        bool shows_status() { return false; }
+        // Replaces the live lines at the bottom with `lines`; empty removes them. Only called
+        // when shows_status().
+        void draw_status(std::darray<std::string>& lines) mut {}
     }
 
     // Options for one sink of a session.
@@ -271,7 +276,8 @@ namespace std::log {
         off,
     }
 
-    // stdout; `error` and `fatal` records go to stderr.
+    // stdout; `error` and `fatal` records go to stderr. On a terminal it shows the session's
+    // live lines (std::log::status) under the records.
     class console : std::log::sink {
     public:
         static std::unique_ptr<std::log::console> make();
@@ -279,6 +285,8 @@ namespace std::log {
         bool colored() override;
         void write(std::log::record& r, std::str line) mut override;
         void flush() mut override;
+        bool shows_status() override;
+        void draw_status(std::darray<std::string>& lines) mut override;
     }
 
     // Whether a log file is emptied or continued.
@@ -367,6 +375,27 @@ namespace std::log {
         std::log::when_full when_full = std::log::when_full::wait;
     }
 
+    // Live lines at the bottom of the console (on a terminal): rewritten in place while records
+    // scroll above them. Progress of long work: "importing [12/40] rock.png". Made by
+    // session.status(); destroying it removes the lines.
+    //
+    // Sinks that don't show live lines (a file, a console on a pipe) never see them: print()
+    // and finish() write ordinary `info` records there, so a program needs no `if` for CI.
+    // Redrawn by the log thread at most every 50 ms, cut to the terminal's width and height.
+    class status {
+    public:
+        // The live lines from now on: one line.
+        void set(std::format_args line) mut;
+        // The live lines from now on: several lines (the last ones are kept when the
+        // terminal is shorter).
+        void set_lines(std::span<std::string> lines) mut;
+        // A line printed once above the live lines; it stays: an `info` record.
+        void print(std::format_args line, implicit compile_time std::call_site where) mut;
+        // Removes the live lines and logs `text` as an `info` record in their place.
+        void finish(std::format_args text, implicit compile_time std::call_site where) move;
+        ~status();
+    }
+
     // The running logger: one thread that owns the sinks. Destroying it writes what is queued,
     // flushes and destroys the sinks, and joins the thread. Changes travel through the same
     // queue as records, so they apply between the records sent before and after them.
@@ -379,6 +408,9 @@ namespace std::log {
         void set_palette(std::log::sink_id id, std::log::palette p);
         // Returns once everything sent before it is written and every sink is flushed.
         void flush();
+        // Live lines under the log (see std::log::status). One at a time: a second one's
+        // lines replace the first one's.
+        std::log::status status() mut;
         ~session();
     }
 

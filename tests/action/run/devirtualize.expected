@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+console: area 4.0 at level 1
+console: area 6.0 at level 1
+woof ... animal
+--- stderr

@@ -16,7 +16,9 @@ struct Fixture {
 
     std::string render_with(DiagnosticFormat format) {
         std::ostringstream out;
-        render_all(out, diags, sources, RenderOptions{format, false});
+        RenderOptions options;
+        options.format = format;
+        render_all(out, diags, sources, options);
         return out.str();
     }
 };

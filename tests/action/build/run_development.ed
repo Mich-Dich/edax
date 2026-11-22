@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/perf_project --out-dir=%t --mode=development app
+// The development mode (spec 34): a debug mode with light optimization; math/ is optimized by
+// build.ed, one function is kept unoptimized with @std::optimize.

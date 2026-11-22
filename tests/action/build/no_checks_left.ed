@@ -1,0 +1,37 @@
+// RUN: edaxc build %s -o %t/prog
+// @std::no_checks_left (spec 34): a check the optimizer can't remove is an error naming it;
+// std::assume (one fact per call) lets it remove the rest.
+import std;
+
+@std::no_checks_left
+f32 total(std::darray<f32>& xs) {
+    mut f32 s = 0.0;
+    for (f32 x : xs) {
+        s += x;
+    }
+    return s;
+}
+
+@std::no_checks_left
+void scale(mut std::darray<f32>& a, std::darray<f32>& b) {
+    for (usize i : 0..a.len()) {
+        a[i] *= b[i];
+    }
+}
+
+@std::no_checks_left
+void scale_assumed(mut std::darray<f32>& a, std::darray<f32>& b) {
+    usize n = a.len();
+    std::assume(b.len() == n);
+    for (usize i : 0..n) {
+        a[i] *= b[i];
+    }
+}
+
+void main() {
+    mut std::darray<f32> a = std::darray<f32>::from([1.0f32, 2.0]);
+    std::darray<f32> b = std::darray<f32>::from([3.0f32, 4.0]);
+    scale(mut a, b);
+    scale_assumed(mut a, b);
+    std::println(f"{total(a)}");
+}

@@ -1,0 +1,23 @@
+// RUN: edaxc run %s
+// Niches with values other than 0 (spec 34): options of bool, char, enums and options.
+import std;
+enum color : u8 { red, green, blue }
+struct flags { u32 id; bool visible; }
+void main() {
+    std::println(f"{std::size_of<std::option<bool>>()} {std::size_of<std::option<char>>()} {std::size_of<std::option<color>>()} {std::size_of<std::option<std::option<u32>>>()} {std::size_of<std::option<flags>>()} {std::size_of<std::result<u32, color>>()}");
+    mut std::option<bool> b = std::none;
+    std::println(f"{b.is_some()}");
+    b = std::some(false);
+    if (b is std::some(v)) { std::println(f"some {v}"); }
+    std::option<color> c = std::some(color::blue);
+    std::option<color> n = std::none;
+    if (c is std::some(x)) { std::println(f"blue {x == color::blue} none {n.is_some()}"); }
+    std::option<std::option<u32>> oo = std::some(std::none);
+    std::option<std::option<u32>> on = std::none;
+    std::option<std::option<u32>> os = std::some(std::some(7u32));
+    std::println(f"{oo.is_some()} {on.is_some()} {os.is_some()}");
+    if (os is std::some(inner)) { std::println(f"inner {inner.value_or(0)}"); }
+    if (oo is std::some(inner2)) { std::println(f"inner2 {inner2.is_some()}"); }
+    std::option<char> ch = std::some('x');
+    std::println(f"{ch.value_or('?')}");
+}

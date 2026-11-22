@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/target_cpu_project --out-dir=%t base
+// g.target_cpu (spec 34): `base` has no target_cpu, so it stays at the platform's baseline.

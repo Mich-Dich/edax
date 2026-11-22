@@ -1,0 +1,24 @@
+// std::graphics::vulkan: structs with sType filled in, version-checked commands (made from vk.xml).
+import std;
+namespace vk = std::graphics::vulkan;
+
+compile_time std::graphics::api vk_10 = std::graphics::api{
+    .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1 } };
+compile_time std::graphics::api vk_13 = std::graphics::api{
+    .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1, .minor = 3 } };
+compile_time std::graphics::api vk_19 = std::graphics::api{
+    .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1, .minor = 9 } };
+
+compile_time check (vk::make_version(vk_13.version) == 4206592) else "VK_MAKE_API_VERSION(0, 1, 3, 0)";
+
+void dynamic_rendering(vk::functions<vk_13>& f, u64 commands) {
+    vk::VkRenderingInfo info = vk::VkRenderingInfo{ .layerCount = 1 };
+    unsafe { f.vkCmdBeginRendering(commands, &info); }
+}
+
+void too_old(vk::functions<vk_10>& f, u64 commands) {
+    vk::VkRenderingInfo info = vk::VkRenderingInfo{ .layerCount = 1 };
+    unsafe { f.vkCmdBeginRendering(commands, &info); }   //~ error[E4210]: vkCmdBeginRendering is in Vulkan 1.3; the program asks for Vulkan 1.0
+}
+
+void future(vk::functions<vk_19>& f) {}   //~ error[E4210]: Vulkan 1.9.0 isn't in the registry

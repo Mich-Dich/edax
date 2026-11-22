@@ -52,12 +52,26 @@ struct CodegenOptions {
     std::string optimization = "none";   // "none", "size", "speed"
     bool        debug_info   = false;    // (the IR carries it: LlvmOptions::debug_info)
     bool        shared       = false;    // a shared library (a plugin) instead of a program
+    std::string sanitize     = "none";   // the mode's sanitize() (spec 34): "none", "address", "thread"
 };
 
 // Lowers the checked program to textual LLVM IR (LLVM 18 syntax). Returns an empty string when
 // errors were added to `diags`.
 std::string generate_llvm_ir(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
                              LlvmOptions options = {});
+
+// A run-time check of the program (spec 34 §5, `edaxc explain-checks`): where it reports, what it
+// checks, and whether the optimizer (-O2) kept it.
+struct CheckSite {
+    std::string              where;   // "file:line:column"
+    std::vector<std::string> what;    // the messages, or "the checks of <function>"
+    bool                     kept = false;
+};
+
+// Generates the program, optimizes it like a release build and lists its checks.
+// `file`'s functions are not inlined into each other: each is looked at for any arguments.
+std::vector<CheckSite> explain_checks(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
+                                      const std::string& file, LlvmOptions options = {});
 
 // Compiles LLVM IR text to an object file for the host and links an executable at `out_path`
 // with `linker` (for example "cc"). Returns false and sets `error` on failure.
@@ -91,6 +105,9 @@ TargetPlatform host_platform();
 // `error` set when the level doesn't exist or doesn't fit the target's architecture.
 bool set_build_cpu(const std::string& level, std::string& error);
 
+// The CPU level set with set_build_cpu (empty: the baseline).
+const std::string& build_cpu();
+
 // The CPU levels edaxc knows, for the architecture of the target (for messages).
 std::vector<std::string> cpu_levels();
 
@@ -108,6 +125,9 @@ unsigned cpu_level_vector_bytes(const std::string& level);
 // operating system, CPU level and capabilities. False with `error` set when edaxc can't compile
 // for the triple or the level doesn't fit it.
 bool set_target_description(const TargetPlatform& description, std::string& error);
+
+// The LLVM version edaxc is built with ("18.1.3").
+std::string llvm_version();
 
 bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
                       const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});

@@ -122,6 +122,37 @@ for compile_time (std::meta::field f : std::meta::fields<T>()) {
 - The loop is a statement with no value.
 - Inside a `compile_time` function, an ordinary `for` over `std::meta::fields<T>()` also runs at compile time. Its loop variable is not a compile-time constant, though, so it can read `f.name` or `f.index` but cannot call `f.get(...)`. Use `for compile_time` when the body depends on the element's type.
 
+### Type ids
+`std::meta::type_id<T>()` is a `u64` that identifies `T`: a hash of its fully qualified name with template arguments, the same in every module and every plugin built from the same interfaces. It is a compile-time value usable at run time. Two types with the same id are a link error naming both.
+
+### Run-time type information, when asked for
+`@std::reflect` on a type (or a call of `std::meta::runtime_info<T>()`) makes the compiler emit a **static, read-only table**: name, size, alignment, type id, fields (name, offset, type id, annotations that are `@std::reflect` themselves), methods marked `@std::reflect` (callable through it), enum alternatives. Editors, property grids, serializers, undo and network replication read it. Types that don't ask cost nothing.
+
+Compile-time values that hold texts, function pointers and lists become static data the same way, so lookup tables and baked curves are written as compile-time code.
+
+### Types whose fields come from another type
+A struct template may declare fields with `for compile_time` over the fields of another type. Every field it makes takes its name from a written declaration (the other type's field), optionally with a written prefix or suffix:
+```edax
+template<type T, type A = std::global_allocator>
+struct soa_columns {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        std::darray<f.type, A> f.name;            // one column per field of T, with T's field name
+    }
+}
+
+mut soa_columns<particle> ps = default;
+ps.position.push(p0);                             // `position` is declared in `particle`
+```
+- Inside, only field declarations whose type and name come from the loop value are allowed (`f.name`, `f.name ~ "_dirty"`). `@f.annotations` copies the field's annotations.
+- Tools treat a generated field's declaration as the source field's, so "go to definition" lands on `particle::position`.
+- This is how SoA containers, GPU mirrors of CPU structs (`gpu_mirror<T>` inserting std140 padding) and replication deltas are written as library code.
+
+### Embedding files
+`std::embed("shaders/blit.spv")` is the file's bytes as a `std::span<u8>` in static memory; `std::embed_text("help.txt")` is a `std::static_str`. The path is relative to the source file and is a recorded input of the build, so changing the file rebuilds what embeds it.
+
+### Seeing generated code
+`edaxc expand <file> <type>` prints a type with every annotation-generated member, every `for compile_time` unrolled and every generated field written out.
+
 ## Examples
 
 ### 1. Printing any struct
@@ -224,3 +255,5 @@ The command table is built from the methods themselves: adding a command is addi
 - **Only methods are generated, and only through annotations:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types, plus derive-style methods on a type its author marked (see [Annotations](annotations.md)). Not generating whole types or free functions means every name has a declaration a reader can find. Code generation beyond that is a build step (see [Edax as a Build System](../../build/build-system.md)).
 - **Registries from the import graph only:** `functions_with` sees exactly what the target compiles, so its result is deterministic and changes only when the code does.
 - **Methods as handles with `m.call(...)`:** the reflected call is checked like a written one, so reflection never bypasses types, `mut` or privacy.
+- **Generated fields with written names:** engines need SoA storage and mirrors of their structs. Taking every generated name from a declared field keeps "every name has a written declaration" true and keeps tools working.
+- **RTTI on request:** C++ either has RTTI for everything or for nothing. Edax emits it for the types that ask, built from the same reflection compile-time code uses.

@@ -52,6 +52,9 @@ employee g = employee{ std::string::from("x"), 1, 2.0 };  // ERROR: positional
 ### Header / source
 A struct used by other modules is declared **completely** in the `.edh` (all fields plus method declarations). Its method bodies go in a `struct` block in the `.ed`, which may not add fields (see [Headers, Sources and Modules](../organization/modules.md)). A struct without methods only needs the header.
 
+### Layout
+A struct has C's layout: fields in declaration order, each aligned for its type. `@std::layout` raises the alignment, packs the struct or makes implicit padding an error; `std::padding<N>` writes padding out (see [Memory Layout](layout.md)).
+
 ## Rationale
 - **What makes a struct plain:** everything is visible, there is no hidden state, no inheritance and no destructor. Methods don't change that, so they have no restrictions.
 - **Designated-only construction:** `employee{"Ann", 30, 1.0}` breaks silently when fields are reordered. Names are explicit and survive reordering.

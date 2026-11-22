@@ -1,0 +1,55 @@
+// RUN: edaxc run %s
+// Niches (spec 34): options of unique_ptr, nonzero and references are stored without a tag;
+// none, some, patterns, containers, clones and drops all go through the niche.
+import std;
+struct P { i32 x; }
+struct handle {
+    u32 index;
+    std::nonzero<u32> generation;
+}
+void main() {
+    std::println(f"{std::size_of<std::option<u32>>()} {std::size_of<std::option<std::unique_ptr<P>>>()} {std::size_of<std::option<std::nonzero<u64>>>()} {std::size_of<std::option<handle>>()} {std::size_of<std::option<P&>>()}");
+    mut std::option<std::unique_ptr<P>> a = std::none;
+    std::println(f"{a.is_some()}");
+    a = std::some(std::unique_ptr<P>::make(P{ .x = 7 }));
+    if (a is std::some(p)) {
+        std::println(f"x = {(*p).x}");
+    }
+    std::option<std::nonzero<u32>> z = std::nonzero<u32>::of(0);
+    std::option<std::nonzero<u32>> w = std::nonzero<u32>::of(5);
+    u32 wv = w.expect("w").get();
+    std::println(f"{z.is_some()} {w.is_some()} {wv}");
+    std::option<handle> h = std::some(handle{ .index = 3, .generation = std::nonzero<u32>::make(2) });
+    if (h is std::some(hv)) {
+        u32 g = hv.generation.get();
+        std::println(f"handle {hv.index} gen {g}");
+    }
+    mut std::darray<std::option<std::unique_ptr<P>>> list = default;
+    for (i32 i : 0..5) {
+        if (i % 2 == 0) {
+            list.push(std::some(std::unique_ptr<P>::make(P{ .x = i })));
+        } else {
+            list.push(std::none);
+        }
+    }
+    mut i32 sum = 0;
+    for (std::option<std::unique_ptr<P>>& o : list) {
+        if (o is std::some(q)) {
+            sum += (*q).x;
+        }
+    }
+    std::println(f"sum {sum}");
+    mut std::darray<i32> xs = default;
+    xs.push(10);
+    xs.push(20);
+    std::option<i32&> second = xs.get(1);
+    std::option<i32&> third = xs.get(2);
+    if (second is std::some(r)) {
+        std::println(f"second {r} third {third.is_some()}");
+    }
+    std::option<std::shared_ptr<P>> s = std::some(std::shared_ptr<P>::make(P{ .x = 9 }));
+    std::option<std::shared_ptr<P>> t = s.clone();
+    if (t is std::some(sp)) {
+        std::println(f"shared {(*sp).x}");
+    }
+}

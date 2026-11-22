@@ -82,6 +82,13 @@ enum class DiagnosticFormat { human, short_form };
 struct RenderOptions {
     DiagnosticFormat format = DiagnosticFormat::human;
     bool             color  = false;
+    // Human format: after this many errors the rest are counted, not shown (0: show all). The
+    // first errors are the ones to fix; a wall of follow-up errors overflows the terminal.
+    std::size_t      error_limit = 20;
+    // Where every diagnostic can be read when some aren't shown (build.log), or empty.
+    std::string      full_log;
+    // Human format: the closing "N errors, M warnings" line (a build's checklist counts them itself).
+    bool             summary_line = true;
 };
 
 void render(std::ostream& out, const Diagnostic& diag, const SourceManager& sources,

@@ -2,3 +2,9 @@ exit: 0
 --- stdout
 mini_value = 11714
 --- stderr
+edaxc run: debug, 3 targets
+ ✓ build.ed       5 targets, 2 dependencies <t>
+ ✓ mini:mini      3 units, 345 B <t>  %t/c/libmini:mini.a
+ = hdr:hdr        up to date                                                 %t/c/libhdr:hdr.a
+ ✓ app            5 units, 154 B <t>  %t/debug/app
+built 3 targets in <t> (1 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

@@ -5,6 +5,7 @@
 #include "edax/ast_printer.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <format>
 #include <functional>
 #include <ostream>
@@ -211,6 +212,7 @@ public:
         check_namespaces();
         for (auto& [name, m] : program_.modules) process_annotations(*m);
         for (auto& [name, m] : program_.modules) resolve_bases(*m);
+        apply_implements();
         for (auto& [name, m] : program_.modules) check_hierarchy(*m);
         for (auto& [name, m] : program_.modules) resolve_bodies(*m);
     }
@@ -320,11 +322,19 @@ private:
         if (m.header) {
             check_header(m);
             for (const DeclPtr& d : m.header->ast.decls) {
+                if (is_implement(*d)) {
+                    implements_.push_back(PendingImplement{&m, const_cast<TypeDecl*>(&d->as<TypeDecl>()), true});
+                    continue;
+                }
                 add_item(m, *d, /*from_header=*/true);
             }
         }
         if (m.source) {
             for (const DeclPtr& d : m.source->ast.decls) {
+                if (is_implement(*d)) {
+                    implements_.push_back(PendingImplement{&m, const_cast<TypeDecl*>(&d->as<TypeDecl>()), false});
+                    continue;
+                }
                 if (m.header) {
                     merge_source_item(m, *d);
                 } else {
@@ -459,6 +469,10 @@ private:
         sym->access     = member_access(type, mem);
         sym->is_static  = is_fn ? mem.as<FunctionDecl>().is_static
                                 : mem.as<VariableDecl>().storage != Storage::local;
+        if (!is_fn) {   // `type element = u32;` (spec 34): a type usable as `T::element`
+            const auto& v      = mem.as<VariableDecl>();
+            sym->is_type_value = v.storage == Storage::compile_time && v.type && is_type_type(*v.type);
+        }
         type->members[mem.name].push_back(sym);
         type->member_order.push_back(sym);
         symbol_of_[&mem] = sym;
@@ -812,8 +826,10 @@ private:
     // The modules whose declarations this file can name: itself, its imports, and the standard
     // library's modules after `import std;`. A module is not a namespace: their names are found
     // under the namespaces they declare.
-    std::vector<Module*> visible_modules() const {
-        std::vector<Module*> out{module_};
+    const std::vector<Module*>& visible_modules() const {
+        std::vector<Module*>& out = module_->visible_cache[in_header_ ? 1 : 0];
+        if (!out.empty()) return out;
+        out.push_back(module_);
         auto add = [&](Module* m) {
             if (std::find(out.begin(), out.end(), m) == out.end()) out.push_back(m);
         };
@@ -839,9 +855,9 @@ private:
     Found find_items(const std::string& key) const {
         Found f;
         for (Module* m : visible_modules()) {
-            auto it = m->items.find(key);
-            if (it == m->items.end()) continue;
-            for (Symbol* s : it->second) {
+            const std::vector<Symbol*>* found = m->find_item(key);
+            if (!found) continue;
+            for (Symbol* s : *found) {
                 if (m != module_ && s->is_private) f.hidden = true;
                 else f.symbols.push_back(s);
             }
@@ -1491,6 +1507,82 @@ private:
 
     static std::string describe_generated(const FunctionDecl& f) { return f.name + params_sig(f); }
 
+    // --- `implement I for T` (spec 34) -----------------------------------------------------
+
+    struct PendingImplement {
+        Module*   module;
+        TypeDecl* decl;
+        bool      header;
+    };
+    std::vector<PendingImplement> implements_;
+
+    static bool is_implement(const Decl& d) {
+        return (d.kind == DeclKind::struct_) && d.as<TypeDecl>().implement_target != nullptr;
+    }
+
+    // Makes T implement I: I joins T's bases, and the block's methods become T's methods, resolved
+    // where the block is written (like the members an annotation generates). Only the module of
+    // I or of T may write it, so two libraries can't give competing implementations.
+    void apply_implements() {
+        for (PendingImplement& p : implements_) {
+            TypeDecl&   d = *p.decl;
+            const Symbol* iface  = nullptr;
+            Symbol*       target = nullptr;
+            {
+                FileScope fs(*this, p.module, p.header);
+                ns_ = d.ns;
+                resolve_type(*d.bases[0]);
+                resolve_type(*d.implement_target);
+                if (d.bases[0]->kind == TypeKind::named) iface = d.bases[0]->as<NamedType>().symbol;
+                if (d.implement_target->kind == TypeKind::named) target = const_cast<Symbol*>(d.implement_target->as<NamedType>().symbol);
+            }
+            if (!iface || !target) continue;   // already reported
+            if (iface->kind != SymbolKind::interface) {
+                error(DiagCode::E3022, d.bases[0]->span, std::format("'{}' is not an interface", iface->name), "not an interface");
+                continue;
+            }
+            if (target->kind != SymbolKind::struct_ && target->kind != SymbolKind::class_) {
+                error(DiagCode::E3022, d.implement_target->span,
+                      std::format("only structs and classes implement interfaces; '{}' is a {}", target->name, sema::to_string(target->kind)),
+                      "not a struct or class");
+                continue;
+            }
+            if (p.module != iface->module && p.module != target->module) {
+                note(error(DiagCode::E3022, d.name_span,
+                           std::format("'implement {} for {}' must be written in the module of '{}' or of '{}'", iface->name,
+                                       target->name, iface->name, target->name),
+                           "neither module"),
+                     "otherwise two libraries could give the same type competing implementations");
+                continue;
+            }
+            if (std::find(target->bases.begin(), target->bases.end(), iface) != target->bases.end()) {
+                error(DiagCode::E3010, d.name_span, std::format("'{}' already implements '{}'", target->name, iface->name), "twice");
+                continue;
+            }
+            target->bases.push_back(const_cast<Symbol*>(iface));
+            auto& td = const_cast<TypeDecl&>(target->decl->as<TypeDecl>());
+            for (DeclPtr& mem : d.members) {
+                if (mem->kind != DeclKind::function) {
+                    error(DiagCode::E3016, mem->name_span, "an implementation adds methods only", "not a method");
+                    continue;
+                }
+                auto& fn   = mem->as<FunctionDecl>();
+                fn.access  = target->kind == SymbolKind::struct_ ? Access::none : Access::public_;
+                fn.ns      = target->ns;
+                if (!fn.is_override) {
+                    note(error(DiagCode::E3016, fn.name_span, std::format("'{}' in an implementation of '{}' needs 'override'", fn.name, iface->name),
+                               "missing override"),
+                         "an implementation only provides the interface's methods");
+                }
+                Symbol* sym     = add_member(*target->module, target, fn, false);
+                sym->definition = &fn;
+                generated_[&fn] = GeneratedOrigin{p.module, p.header, d.ns, nullptr};
+                td.members.push_back(std::move(mem));
+            }
+            d.members.clear();
+        }
+    }
+
     // --- phase B and C: bases and class hierarchies --------------------------------------
 
     void resolve_bases(Module& m) {
@@ -1822,6 +1914,30 @@ private:
                 note(e, "declared here", req->span);
             }
         }
+        // The associated types of its interfaces (spec 34): `type element;` needs `type element = ...;`.
+        std::vector<const Symbol*> todo(t->bases.begin(), t->bases.end());
+        std::set<const Symbol*>    visited;
+        while (!todo.empty()) {
+            const Symbol* i = todo.back();
+            todo.pop_back();
+            if (!i || !visited.insert(i).second) continue;
+            for (const Symbol* b : i->bases) todo.push_back(b);
+            if (i->kind != SymbolKind::interface) continue;
+            for (const Symbol* req : i->member_order) {
+                if (req->kind != SymbolKind::field || !req->is_type_value) continue;
+                bool found = false;
+                for (Symbol* c : chain) {
+                    auto it = c->members.find(req->name);
+                    if (it != c->members.end() && !it->second.empty() && it->second.front()->is_type_value) found = true;
+                }
+                if (!found && reported.insert("type " + req->name).second) {
+                    Diagnostic& e = error(DiagCode::E3045, t->span, std::format("'{}' does not give the type '{}' of '{}'", t->name, req->name, i->name),
+                                          "missing associated type");
+                    note(e, std::format("write 'type {} = ...;' in '{}'", req->name, t->name));
+                    note(e, "declared here", req->span);
+                }
+            }
+        }
     }
 
     // --- phase D: bodies ------------------------------------------------------------------
@@ -1880,9 +1996,11 @@ private:
             return;
         case DeclKind::variable:
         case DeclKind::field: {
-            auto& v = d.as<VariableDecl>();
+            auto&   v     = d.as<VariableDecl>();
+            Symbol* saved = std::exchange(member_scope_, self);   // a field's type may name an associated type
             resolve_type(*v.type);
             if (v.init) resolve_expr(*v.init);
+            member_scope_ = saved;
             return;
         }
         case DeclKind::struct_:
@@ -2190,7 +2308,7 @@ private:
 
     std::vector<std::string> type_candidates() const {
         std::vector<std::string> out = {"bool", "char", "void", "never", "i8", "i16", "i32", "i64", "i128", "isize",
-                                        "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64"};
+                                        "u8", "u16", "u32", "u64", "u128", "usize", "f16", "f32", "f64"};
         for (const std::string& level : enclosing_levels(ns_)) {
             for (std::string& n : names_in(level)) {
                 Found f = find_items(join_ns(level, n));
@@ -2216,6 +2334,9 @@ private:
         if (!s || !s->is_type() || !s->decl || !s->decl->is_template) return;
         std::size_t given = path.segments.empty() ? 0 : path.segments.back().template_args.size();
         std::size_t wanted = s->decl->template_params.size();
+        if (!s->decl->template_params.empty() && s->decl->template_params.back().is_pack) {   // a pack takes any number (spec 34)
+            if (given + 1 >= wanted) return;
+        }
         std::size_t required = 0;
         for (const TemplateParam& p : s->decl->template_params) {
             if (!p.default_type && !p.default_value) ++required;
@@ -2294,6 +2415,8 @@ private:
         return true;
     }
 
+    Symbol* member_scope_ = nullptr;   // the type whose field is being resolved (associated types)
+
     Symbol* check_want(Symbol* sym, Want want, Span span, std::string_view display) {
         if (!sym) return nullptr;
         if (want == Want::type && sym->is_type_value) return sym;   // a compile_time type value used as a type (spec 26)
@@ -2353,6 +2476,11 @@ private:
             return nullptr;
         }
         if (want == Want::type) {
+            // An associated type of the type whose body this is (spec 34): `element` for `type element = u32;`.
+            if (Symbol* in = fn_.self_type ? fn_.self_type : member_scope_) {
+                bool opaque = false;
+                if (Symbol* mem = find_member(in, name, opaque); mem && mem->is_type_value) return mem;
+            }
             suggest(error(DiagCode::E3021, span, std::format("cannot find type '{}'", name), "unknown type"), name,
                     type_candidates());
             return nullptr;
@@ -2473,7 +2601,8 @@ private:
                 note(e, "declared here", mem->span);
                 return nullptr;
             }
-            if (mem->kind == SymbolKind::field || (mem->kind == SymbolKind::method && !mem->is_static)) {
+            if ((mem->kind == SymbolKind::field && !(mem->is_static && mem->is_type_value)) ||
+                (mem->kind == SymbolKind::method && !mem->is_static)) {
                 Diagnostic& e = error(DiagCode::E3038, seg,
                                       std::format("'{}::{}' is a {}{}", display, name,
                                                   mem->kind == SymbolKind::field ? "field" : "method",
@@ -2878,6 +3007,10 @@ private:
         }
         case ExprKind::return_: {
             auto& r = e.as<ReturnExpr>();
+            if (r.value && r.value->kind == ExprKind::tuple) {   // `return (mut this.a, this.b);` (spec 34)
+                for (ExprPtr& x : r.value->as<TupleExpr>().elements) resolve_expr(*x, ExprFlags{true, false});
+                return;
+            }
             if (r.value) resolve_expr(*r.value);
             return;
         }
@@ -3024,8 +3157,24 @@ private:
         bool                     missing_private = false;
         for (Symbol* f : fields) {
             if (given.count(f->name) || f->decl->as<VariableDecl>().init) continue;
+            // `std::padding<N>` (spec 34) is never written in a literal: it is always zero.
+            if (const auto& ft = f->decl->as<VariableDecl>().type; ft && ast::to_string(*ft).starts_with("std::padding<")) continue;
             missing.push_back("'" + f->name + "'");
             missing_private = missing_private || (f->access == Access::private_ && f->parent->module != module_);
+        }
+        if (t->decl && t->decl->kind == DeclKind::struct_ && t->decl->as<TypeDecl>().is_union) {   // spec 34: one member
+            if (sl.fields.size() != 1) {
+                note(error(DiagCode::E3035, sl.type->span, std::format("a literal of the union '{}' sets exactly one member", display),
+                           sl.fields.empty() ? "no member" : "more than one member"),
+                     "the members share memory: write the one to store, e.g. '{ .bits = 0 }'");
+            }
+            return;
+        }
+        if (t->decl && t->decl->kind == DeclKind::struct_ && t->decl->as<TypeDecl>().is_distinct) {
+            note(error(DiagCode::E3035, sl.type->span, std::format("'{}' is a distinct type: it is built with a cast, not with '{{...}}'", display),
+                       "not a struct literal"),
+                 std::format("write 'cast<{}>(value)'", display));
+            return;
         }
         if (!missing.empty()) {
             std::string list;
@@ -3068,7 +3217,7 @@ private:
         for (std::size_t i = 0; i < l.captures.size(); ++i) {
             Capture& c   = l.captures[i];
             bool     ref = c.kind == CaptureKind::ref || c.kind == CaptureKind::mut_ref;
-            c.symbol     = declare_local(c.name, c.span, LocalKind::capture, c.kind == CaptureKind::mut_ref, ref,
+            c.symbol     = declare_local(c.name, c.span, LocalKind::capture, c.kind == CaptureKind::mut_ref || c.is_mut, ref,
                                          /*check_shadowing=*/c.kind == CaptureKind::init);
         }
         for (Param& p : l.params) {

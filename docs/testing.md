@@ -112,7 +112,7 @@ u32 main() { return 0; }
 
 `%s` is the test file and `%S` its directory, relative to the repository root (the runner's
 working directory), so paths in the output are stable. `%t` is a fresh temporary directory
-for outputs (`// RUN: edaxc build %s -o %t/prog`); it is written as `%t` in the golden file.
+for outputs (`// RUN: edaxc build %s -o %t/prog`); it is written as `%t` in the golden file. Durations (`12.4 s`, from the build checklist) are written as `<t>`.
 The RUN line may point at any file, e.g. `// RUN: edaxc check examples/employees.ed`.
 
 **Running compiled programs.** `edaxc run` builds the program in a temporary directory and

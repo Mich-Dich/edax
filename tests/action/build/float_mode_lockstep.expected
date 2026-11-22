@@ -1,0 +1,13 @@
+exit: 1
+--- stdout
+edaxc build: lockstep, 1 target
+ ✓ build.ed       2 targets <t>
+ ✗ fastmath       1 error <t>
+build failed: 1 error, 0 warnings   details: %t/lockstep/build.log
+--- stderr
+error[E4210]: @std::float_mode is not allowed in this build: the mode's float_determinism() is strict
+ --> tests/action/build/perf_project/app/fastmath.ed:3:1
+  |
+3 | @std::float_mode{ .contract = true, .reassociate = true }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ relaxes floating point
+  = note: a strict mode keeps float results identical on every machine (lockstep games, replays)

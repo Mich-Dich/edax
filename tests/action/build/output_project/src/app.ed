@@ -1,0 +1,6 @@
+import std;
+
+i32 main() {
+    std::print("app\n");
+    return 0;
+}

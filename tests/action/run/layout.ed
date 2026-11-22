@@ -1,0 +1,29 @@
+// RUN: edaxc run %s
+// @std::layout{ .align } and std::padding (spec 34): over-aligned values on the stack, in
+// containers and on the heap.
+import std;
+
+@std::layout{ .align = 32 }
+struct block { f32 a; f32 b; }
+
+@std::layout{ .no_implicit_padding = true }
+struct light {
+    f32             intensity;
+    std::padding<4> _pad;
+    f64             range;
+}
+
+void main() {
+    block local = block{ .a = 1.0, .b = 2.0 };
+    mut std::darray<block> many = default;
+    for (u32 i : 0..5) {
+        many.push(block{ .a = 1.0, .b = 2.0 });
+    }
+    std::unique_ptr<block> boxed = std::unique_ptr<block>::make(local);
+    mut usize at = 0;
+    unsafe { at = cast::reinterpret<usize>(&local); }
+    std::println(f"size {std::size_of<block>()}, align {std::align_of<block>()}");
+    std::println(f"stack aligned: {at % 32 == 0}, boxed b = {boxed->b}, {many.len()} in a darray");
+    light l = light{ .intensity = 2.0, .range = 10.0 };
+    std::println(f"light: {std::size_of<light>()} bytes, range {l.range}");
+}

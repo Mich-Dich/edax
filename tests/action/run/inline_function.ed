@@ -1,0 +1,29 @@
+// RUN: edaxc run %s
+// std::inline_function (no allocation) and std::function with a std::sendable bound (spec 34).
+import std;
+
+struct button {
+    std::inline_function<void(i32), 32> on_click;
+}
+
+struct job_queue {
+    std::darray<std::function<void(), std::sendable>> jobs = default;
+}
+
+void main() {
+    i32 base = 10;
+    std::string name = std::string::from("ok");
+    button b = button{ .on_click = [base, move name](i32 x) { std::println(f"{name}: {base + x}"); } };
+    b.on_click(5);
+    std::println(f"size {std::size_of<std::inline_function<void(i32), 32>>()}");
+    mut std::darray<std::inline_function<i32(i32), 16>> fs = default;
+    for (i32 k : 0..3) {
+        fs.push([k](i32 x) { return x * k; });
+    }
+    mut i32 total = 0;
+    for (usize i : 0..fs.len()) { total += fs[i](10); }
+    std::println(f"total {total}");
+    std::function<void(), std::sendable> job = [base]() { std::println(f"job {base}"); };
+    std::thread::handle<void> h = std::thread::spawn([move job]() { job(); });
+    h.join();
+}

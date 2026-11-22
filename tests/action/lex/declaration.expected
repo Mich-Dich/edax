@@ -1,5 +1,6 @@
 exit: 0
 --- stdout
+1:1     doc_comment             // RUN: edaxc lex %s  value=" RUN: edaxc lex %s"
 2:1     kw_mut                  mut
 2:5     kw_u32                  u32
 2:9     identifier              count

@@ -80,6 +80,7 @@ mut T& operator[](usize i) mut { ... }
 - `p->x` on a type with `operator*` means `(*p).x`; the `mut operator*` is used when `p` is mutable.
 - `!=`, `<`, `<=`, `>`, `>=` come from `==` and `<=>` automatically.
 - `a += b` uses `operator+=` if it's defined, and `a = a + b` otherwise.
+- **In compile-time code** (checks, `compile_time` constants, `if compile_time`) a user-defined operator runs like any other function, so it must be marked like one: `compile_time run_time std::ordering operator<=>(version& other) { ... }`. A defaulted `==` always works. An operator that isn't marked is a compile error where compile-time code uses it, never a check that passes unseen (see [Checks](../errors/checks.md)).
 
 ## Rationale
 - **Precedence fix:** C's precedence for `&` and `|` is a known mistake from 1972. Go, Rust and Swift have all fixed it.

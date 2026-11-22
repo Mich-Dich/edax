@@ -75,6 +75,18 @@ g.wrap_cpp(physics, std::build::cpp_wrap{
 - Templates are wrapped only for the instances listed. Operators, overloaded functions and default arguments get distinct Edax names, listed in the step's report.
 
 
+### Engine libraries in C++
+Engines depend on C++ libraries (physics, UI, audio, platform SDKs). The wrapper generator also covers:
+
+| Need | How |
+|---|---|
+| Edax implementing a C++ virtual interface (contact listeners, UI backends, allocator hooks) | `extern(cpp) class my_listener : JPH::ContactListener { ... override ... }`: the generator writes a C++ subclass that forwards each virtual to the Edax method |
+| C++ templates | `build.ed` lists the instantiations it needs: `.instantiate = ["JPH::Ref<JPH::Shape>"]`. They're wrapped like classes; edaxc never instantiates C++ templates on its own |
+| C++ value types stored inline | `@cpp::value` on a wrapped class whose C++ type is trivially relocatable: stored inside Edax values, not behind a pointer. The generated C++ checks this with a `static_assert` |
+| Strings and spans | `std::str` ↔ `std::string_view` and `std::span<T>` ↔ `std::span<T>` convert in wrappers |
+| Exceptions | A wrapped call catches every exception at the boundary and returns `std::result<T, std::cpp_exception>` (or panics, per wrapper option). No exception crosses an Edax frame |
+| Windows | Wrappers follow the MSVC C++ ABI there; `extern(c)` declarations can name `stdcall`/`vectorcall` |
+
 ## Rationale
 - **Generated headers instead of hand-written ones:** large C APIs (Vulkan, GLFW) are usable at once and stay in sync with the C headers. What can't be translated faithfully is reported, never guessed.
 - **C++ only through C wrappers:** C++'s ABI (name mangling, exceptions, templates) differs per compiler. A generated C layer keeps the boundary simple and makes exceptions into ordinary error values.

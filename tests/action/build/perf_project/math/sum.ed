@@ -1,0 +1,9 @@
+namespace math {
+    u64 mix(u64 n) {
+        mut u64 s = 0;
+        for (u64 i : 0..n) {
+            s = (s +% i *% i) ^ (s >> 3);
+        }
+        return s;
+    }
+}

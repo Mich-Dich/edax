@@ -42,6 +42,19 @@ Path Cloner::path(const Path& p) {
         seg.span              = s.span;
         seg.has_template_args = s.has_template_args;
         for (const TemplateArg& a : s.template_args) {
+            if (pack_ && a.value && a.value->kind == ExprKind::unary && a.value->as<UnaryExpr>().op == UnaryOp::spread &&
+                is_pack_value(*a.value->as<UnaryExpr>().operand)) {   // `f<N...>`: one argument per element (spec 34)
+                for (std::size_t i = 0; i < pack_count_; ++i) {
+                    Path element;
+                    element.span = a.span;
+                    element.segments.push_back(PathSegment{pack_value_ + "$" + std::to_string(i), a.span, false, {}});
+                    TemplateArg arg;
+                    arg.value = std::make_unique<PathExpr>(a.span, std::move(element));
+                    arg.span  = a.span;
+                    seg.template_args.push_back(std::move(arg));
+                }
+                continue;
+            }
             TemplateArg arg;
             arg.type   = opt(a.type);
             arg.value  = opt(a.value);
@@ -327,7 +340,7 @@ ExprPtr Cloner::expr(const Expr& e) {
         const auto& l   = e.as<LambdaExpr>();
         auto        out = std::make_unique<LambdaExpr>(l.span);
         for (const Capture& c : l.captures) {
-            Capture copy{c.kind, c.name, c.span, opt(c.init), nullptr, ref(c.captured)};
+            Capture copy{c.kind, c.name, c.span, opt(c.init), c.is_mut, nullptr, ref(c.captured)};
             copy.symbol = fresh(c.symbol);
             out->captures.push_back(std::move(copy));
         }
@@ -384,7 +397,7 @@ ExprPtr Cloner::expr(const Expr& e) {
             for (std::size_t i = 0; i < pack_count_; ++i) {
                 std::string element = pack_type_ + "$" + std::to_string(i);
                 auto        saved   = rename_;
-                rename_[pack_type_] = element;
+                if (!pack_type_.empty()) rename_[pack_type_] = element;   // a value pack renames no type
                 auto one            = std::make_unique<BlockExpr>(f.span);
                 auto var            = std::make_unique<VariableStmt>(f.span);
                 var->is_mut         = f.is_mut;

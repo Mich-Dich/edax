@@ -1,0 +1,11 @@
+import math::vec3;
+
+namespace geometry {
+    interface point {
+        f64 px();
+        f64 py();
+    }
+
+    template<type P : geometry::point>
+    f64 distance_sq(P& a, P& b);
+}

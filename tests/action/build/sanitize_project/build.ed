@@ -1,0 +1,20 @@
+// build.ed of a test project (spec 34): modes that instrument the program with sanitizers.
+import std;
+
+namespace build {
+    class asan : std::build::mode::debug {
+    public:
+        compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::address; }
+    }
+
+    class tsan : std::build::mode::debug {
+    public:
+        compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::thread; }
+    }
+
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(asan);
+        g.add_mode(tsan);
+        g.add_executable(std::build::edax_target{ .name = "app", .root = "app.ed" });
+    }
+}

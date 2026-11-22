@@ -16,6 +16,8 @@ namespace std::build {
         compile_time void set(std::build::target t, std::build::setting<T> s, T value) mut { }
         template<type T>
         compile_time void set_for_files(std::build::target t, std::static_str pattern, std::build::setting<T> s, T value) mut { }
+        compile_time void optimize_files(std::build::target t, std::static_str pattern, std::build::optimization level) mut { }
+        compile_time void target_cpu(std::build::target t, std::build::cpu level) mut { }
         compile_time void add_include_dirs(std::build::target t, std::span<std::static_str> dirs, std::build::visibility v) mut { }
         compile_time void add_arguments(std::build::step s, std::span<std::static_str> arguments) mut { }
         compile_time void add_inputs(std::build::step s, std::span<std::build::path> files) mut { }
@@ -63,6 +65,8 @@ namespace std::build {
         compile_time std::build::package package(std::build::package_spec spec) mut { return std::build::package{}; }
         compile_time void set_global_allocator(std::build::target t, type allocator) mut { }
         compile_time void set_global_allocator(std::build::target t, std::static_str allocator) mut { }
+        compile_time void output(std::build::output o) mut { }
+        compile_time void details(std::build::target t, std::span<std::build::detail> d) mut { }
         compile_time std::build::platform host() { std::compile_error("provided by edaxc"); }
         compile_time std::build::platform target_platform() { std::compile_error("provided by edaxc"); }
     }

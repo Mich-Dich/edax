@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/perf_project --out-dir=%t --mode=release fastmath
+// @std::float_mode relaxes floating point in one function (spec 34).

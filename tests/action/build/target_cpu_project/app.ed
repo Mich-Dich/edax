@@ -1,0 +1,12 @@
+import std;
+
+compile_time bool has_sse4 = std::build::target_has_cpu_feature(std::build::cpu_feature::sse4_2);
+
+void main() {
+    std::println(f"sse4.2: {has_sse4}");
+    mut u64 total = 0;
+    for (u32 i : 0..1000) {
+        total += cast<u64>(std::count_ones(i *% 2654435761u32));
+    }
+    std::println(f"bits: {total}");
+}

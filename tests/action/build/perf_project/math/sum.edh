@@ -1,0 +1,4 @@
+// Hot math: build.ed optimizes this file in every mode.
+namespace math {
+    u64 mix(u64 n);
+}

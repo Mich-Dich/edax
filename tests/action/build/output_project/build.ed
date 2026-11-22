@@ -1,0 +1,19 @@
+// build.ed of a test project (docs/design/build/build-output.md): the console shows the
+// `sources` detail of every target, and `units` too for `app`. `broken` doesn't compile, so
+// `needs_broken` isn't built; `app` is built anyway (a failure doesn't stop the others).
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        g.output(std::build::output{ .progress = std::build::progress::lines, .details = [std::build::detail::sources] });
+        std::build::target good = g.add_c_library(std::build::c_target{ .name = "good" });
+        g.add_sources(good, "vendor/good.c");
+        std::build::target broken = g.add_c_library(std::build::c_target{ .name = "broken" });
+        g.add_sources(broken, "vendor/broken.c");
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "src/app.ed" });
+        g.link(app, good);
+        g.details(app, [std::build::detail::sources, std::build::detail::units]);
+        std::build::target needs = g.add_executable(std::build::edax_target{ .name = "needs_broken", .root = "src/app.ed" });
+        g.link(needs, broken);
+    }
+}

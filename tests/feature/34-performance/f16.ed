@@ -1,0 +1,15 @@
+// feature 34: f16 is a 2-byte float; widening is lossless, narrowing says how.
+import std;
+
+compile_time f16 third = cast::round<f16>(1.0f64 / 3.0);
+compile_time check (std::size_of<f16>() == 2) else "two bytes";
+compile_time check (cast<f32>(third) == 0.333251953125) else "rounded to 11 significant bits";
+compile_time check (f16::max == 65504.0) else "the largest f16";
+
+void f(f32 x, u8 small, u16 medium) {
+    f16 a = cast::round<f16>(x);
+    f32 b = cast<f32>(a);
+    f16 c = cast<f16>(small);
+    f16 d = cast<f16>(x);             //~ error[E4090]
+    f16 e = cast<f16>(medium);        //~ error[E4090]
+}

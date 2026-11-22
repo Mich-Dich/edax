@@ -235,7 +235,7 @@ S build_untyped(const Expr& e) {
     case ExprKind::cast: {
         const auto& c = e.as<CastExpr>();
         std::string head = c.variant.empty() ? "cast" : "cast::" + c.variant;
-        return S{head + " " + to_string(*c.target), {build(*c.operand)}};
+        return S{c.target ? head + " " + to_string(*c.target) : head, {build(*c.operand)}};
     }
     case ExprKind::bit: {
         const auto& b = e.as<BitExpr>();

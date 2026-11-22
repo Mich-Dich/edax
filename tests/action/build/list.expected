@@ -7,7 +7,7 @@ targets:
   shifter              program (app/shifter.ed)
   util_test            test (tests/util_test.ed)
 modes:
-  debug, release, release_with_debug_info, profile, fast, embedded
+  debug, development, release, release_with_debug_info, profile, fast, embedded
 options:
   -Dverbose=<bool>  Print more (now true)
 --- stderr

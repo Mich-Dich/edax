@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+8 8 8 8 8
+false
+x = 7
+false true 5
+handle 3 gen 2
+sum 6
+second 20 third false
+shared 9
+--- stderr

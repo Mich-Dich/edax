@@ -1,0 +1,17 @@
+// RUN: edaxc run %s
+// std::embed and std::embed_text (spec 34): a file's bytes or text in static memory, read when
+// the program is compiled. Paths are relative to the source file.
+import std;
+
+compile_time std::static_str help = std::embed_text("embed_data/help.txt");
+compile_time check (help.len() == 18) else "the help text is known at compile time";
+
+void main() {
+    std::span<u8> blob = std::embed("embed_data/blob.bin");
+    mut u32 sum = 0;
+    for (u8 b : blob) {
+        sum += cast<u32>(b);
+    }
+    std::print(help);
+    std::println(f"{blob.len()} bytes, sum {sum}");
+}

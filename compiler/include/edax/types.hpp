@@ -86,6 +86,23 @@ struct Type {
     [[nodiscard]] std::string_view external_base() const;
 };
 
+// Bytes of a type that never hold one value in a live value (spec 34, "Niches"): an `option` of
+// the type stores `none` as that value there and needs no tag. Zero for references and
+// `@std::never_zero` fields, 2 for `bool`, 0x110000 for `char`, an unused tag for enums.
+struct Niche {
+    std::uint64_t offset = 0;
+    std::uint64_t size   = 0;   // 1, 2, 4 or 8
+    std::uint64_t value  = 0;   // the bits that mean "the other alternative"
+};
+
+// A two-alternative enum (`std::option<T>`, ...) stored without a tag: `with` carries a payload
+// that has a niche, `without` carries nothing and is stored as the niche's value.
+struct NicheEnum {
+    const sema::Symbol* with    = nullptr;
+    const sema::Symbol* without = nullptr;
+    Niche               niche;
+};
+
 // Size and alignment in bytes, following the backend's layout (the interop rules of 13).
 struct Layout {
     std::uint64_t size  = 0;
@@ -120,7 +137,13 @@ public:
     void        set_closure_signature(const Type* closure, std::vector<const Type*> params, const Type* result);
     const ast::LambdaExpr* lambda_of(const Type* closure) const;
     // `std::function<R(A...)>` (kind function) or `std::fn_ptr<R(A...)>` (kind fn_ptr), interned.
-    const Type* callable(Kind kind, std::vector<const Type*> params, const Type* result);
+    // `std::function<R(A...), I...>` / `std::inline_function<R(A...), N, I...>` / `std::fn_ptr`.
+    // A function type keeps `inline_bytes` in `bits` (0: the callable is on the heap), the bound
+    // `std::sendable` in `is_signed` and `std::shareable` in `is_mut` (spec 34).
+    const Type* callable(Kind kind, std::vector<const Type*> params, const Type* result, unsigned inline_bytes = 0,
+                         bool sendable = false, bool shareable = false);
+    // The size and alignment of a lambda's captures, as the backend lays them out.
+    Layout closure_layout(const Type* closure);
     // `std::c_library::function<R(A...)>`, also a bare `R(A...)` written as a type.
     const Type* c_function(std::vector<const Type*> params, const Type* result);
     // `std::raw::array<T, N>` (the storage of std::array, spec 13 and 20), interned.
@@ -166,6 +189,11 @@ public:
     Layout layout(const Type* t);
     // Byte offset of each non-static field of a struct/class type, in declaration order.
     std::vector<std::uint64_t> field_offsets(const Type* t);
+    // A part of `t` with a value it never holds, if any (references, `@std::never_zero` fields,
+    // `std::nonzero<T>`, `bool`, `char`, enum tags, and structs holding one).
+    std::optional<Niche> niche(const Type* t);
+    // Whether the enum `e` is stored without a tag (see NicheEnum).
+    std::optional<NicheEnum> niche_enum(const sema::Symbol* e);
 
     // Built-in type by keyword spelling ("u32", "f64", "bool", ...), or null.
     const Type* builtin(std::string_view name) const;
@@ -189,6 +217,7 @@ public:
     void set_external_args(const Type* t, std::vector<const Type*> args) { external_args_[t] = std::move(args); }
 
 private:
+    std::map<const sema::Symbol*, std::optional<NicheEnum>> niche_cache_;   // niche_enum
     const Type* make(Type t);
 
     TypeInstantiator                                            instantiator_;
@@ -200,7 +229,7 @@ private:
     std::map<const Type*, std::shared_ptr<const void>>          rich_value_of_;
     std::optional<Span>                                         site_;
     std::map<const ast::LambdaExpr*, const Type*>               closures_;
-    std::map<std::pair<Kind, std::vector<const Type*>>, const Type*> callables_;
+    std::map<std::tuple<Kind, unsigned, bool, bool, std::vector<const Type*>>, const Type*> callables_;
     std::map<std::pair<const Type*, const Type*>, const Type*>       arrays_;
     std::map<std::vector<const Type*>, const Type*>                 tuples_;
     std::map<std::pair<const Type*, int>, const Type*>               vectors_;
@@ -247,6 +276,17 @@ bool is_std_instance(const Type* t, std::string_view name);
 // The built-in methods of std::option and std::result (spec 11), provided by the compiler.
 bool is_std_builtin_method(const Type* receiver, std::string_view method);
 // `is_some`/`is_none`/`is_ok`/`is_error`: they look at the value without taking it.
+// `@std::layout{ .align = N }` on a struct or class (spec 34): N, or 0 without one.
+std::uint64_t requested_alignment(const sema::Symbol* s);
+// `@std::layout{ .packed = true }` on a struct (spec 34).
+bool is_packed(const sema::Symbol* s);
+
+// Whether `s` is a `union` (spec 34): its fields share memory at offset 0.
+bool is_union(const sema::Symbol* s);
+
+// `x.sqrt()`, `a.min(b)`, ...: a method of a number type (spec 34), and how many arguments it takes.
+bool        is_number_method(const Type* receiver, std::string_view method);
+std::size_t number_method_arity(std::string_view method);
 bool is_std_query_method(std::string_view method);
 
 // Removes any reference: `T&` -> `T`.

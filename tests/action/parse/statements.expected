@@ -1,6 +1,7 @@
 exit: 0
 --- stdout
 (fn f -> u32
+  (doc " RUN: edaxc parse %s")
   (param list : mut std::darray<u32>&)
   (block
     (var total : mut u32 (int 0))

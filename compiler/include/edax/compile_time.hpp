@@ -77,6 +77,8 @@ struct BuildTarget {
     const sema::Symbol*                      mode = nullptr;    // `g.set_mode(t, ...)`
     Span                                     span;              // the call that added it
     std::vector<std::size_t>                 steps;             // `g.depends_on(t, s)`
+    std::vector<std::string>                 details;           // `g.details(t, [...])`
+    bool                                     has_details = false;
     std::string                              library_root;      // system libraries: `-L<root>/lib`
     std::size_t                              dependency = 0;    // foreign: 1 + the dependency's index
     std::string                              base;              // the root its paths are relative to ("" = the project's)
@@ -131,7 +133,18 @@ struct BuildOption {
     std::string value;    // as text, for --list
 };
 
+// `g.output(std::build::output{...})`: how the build reports itself (build-output.md).
+struct BuildOutput {
+    bool                     set = false;
+    std::string              progress;     // "automatic", "live", "lines", "quiet"
+    std::vector<std::string> details;
+    bool                     log_file = true;
+    unsigned                 keep_logs = 5;
+    std::string              target_line, done_line, source_row, last_line, failed_line;   // "": the default
+};
+
 struct BuildGraph {
+    BuildOutput                               output;
     std::vector<BuildTarget>                  targets;
     std::vector<const sema::Symbol*>          modes;      // `g.add_mode(...)`
     std::vector<BuildOption>                  options;

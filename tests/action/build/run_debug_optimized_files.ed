@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/perf_project --out-dir=%t app
+// A debug build in which build.ed optimizes the files of math/ (g.optimize_files, spec 34).

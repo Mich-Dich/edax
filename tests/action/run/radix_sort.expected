@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+sorted: true true true true true true, same values: true
+ends: true true -4 5
+ascending stable: true, from -49 to 49
+span: 0 999 true
+descending stable: true, from 49 to -49
+--- stderr

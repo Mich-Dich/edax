@@ -1,6 +1,7 @@
 exit: 0
 --- stdout
 (fn f -> u64
+  (doc " RUN: edaxc typed %s\n Every expression with its type: literals take the type of their context.")
   (param a : u32)
   (param b : u64)
   (block

@@ -1,0 +1,59 @@
+// RUN: edaxc run %s
+// Devirtualization (spec 34 §8): calls with one possible target are direct; the others still
+// dispatch. The results must not depend on which.
+import std;
+
+interface logger {
+    void log(std::str text);
+    // A default body: implementers that don't override it share it.
+    u32 level() { return 1; }
+}
+
+// The only logger in the program: calls through logger& go straight to it.
+struct console : logger {
+    void log(std::str text) override { std::println(f"console: {text}"); }
+}
+
+interface shape {
+    f32 area();
+}
+
+struct square : shape {
+    f32 side;
+    f32 area() override { return this.side * this.side; }
+}
+
+struct rect : shape {
+    f32 w;
+    f32 h;
+    f32 area() override { return this.w * this.h; }
+}
+
+open class animal {
+public:
+    virtual std::str sound() { return "..."; }
+    virtual std::str kind() { return "animal"; }
+}
+
+class dog : animal {
+public:
+    std::str sound() override { return "woof"; }
+}
+
+void report(logger& l, shape& s) {
+    std::string text = std::format(f"area {s.area()} at level {l.level()}");
+    l.log(text);
+}
+
+std::str speak(animal& a) { return a.sound(); }
+
+std::str kind_of(animal& a) { return a.kind(); }
+
+void main() {
+    console c = console{};
+    report(c, square{ .side = 2.0 });
+    report(c, rect{ .w = 2.0, .h = 3.0 });
+    dog d = dog{};
+    animal a = animal{};
+    std::println(f"{speak(d)} {speak(a)} {kind_of(d)}");
+}

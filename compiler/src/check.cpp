@@ -12,6 +12,10 @@
 #include "edax/types.hpp"
 
 #include <algorithm>
+#include <utility>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <format>
 #include <functional>
 #include <limits>
@@ -44,7 +48,7 @@ bool lossless(const Type* from, const Type* to) {
     }
     if (from->is_integer() && to->is_float()) {
         int bits = from->is_size ? 64 : from->bits;
-        return to->bits == 32 ? bits <= 16 : bits <= 32;
+        return to->bits == 16 ? bits <= 8 : to->bits == 32 ? bits <= 16 : bits <= 32;
     }
     if (from->is_float() && to->is_float()) return from->bits <= to->bits;
     if (from->is_user(SymbolKind::enum_) && to->is_integer()) {
@@ -232,7 +236,104 @@ public:
         }
         if (program_.entry) check_main(*program_.entry);
         make_versions();
+        read_codegen_annotations();
         if (program_.is_plugin) find_plugin_entry();
+    }
+
+    // `@std::layout` (spec 34): the alignment is a power of two up to 64, written as a number;
+    // with `.no_implicit_padding` every gap between fields is an error.
+    void check_layout(Symbol* t) {
+        if (!t->decl || (t->decl->is_template && !t->template_of)) return;
+        for (const Symbol* f : t->member_order) {   // @std::never_zero (spec 34): integers and pointers
+            if (f->kind != SymbolKind::field || !f->decl) continue;
+            const AnnotationUse* nz = sema::find_annotation(f->decl->annotations, "std::never_zero");
+            if (!nz) continue;
+            const Type* ft = tc_.lower(*f->decl->as<VariableDecl>().type, sema::substitution_of(f));
+            if (!ft->is_integer() && !ft->is(types::Kind::pointer)) {
+                error(DiagCode::E4210, nz->span, std::format("@std::never_zero is for integer and pointer fields, not {}", quoted(ft)),
+                      "not an integer or pointer");
+            }
+        }
+        const AnnotationUse* u = sema::find_annotation(t->decl->annotations, "std::layout");
+        if (!u) return;
+        if (t->kind != SymbolKind::struct_ && t->kind != SymbolKind::class_) {
+            error(DiagCode::E4210, u->span, "@std::layout is for structs and classes", "not a struct or class");
+            return;
+        }
+        std::shared_ptr<const ct::Value> v = u->value_symbol ? ensure_constant(u->value_symbol) : nullptr;
+        if (!v || v->elements.size() < 2) return;
+        std::uint64_t align = static_cast<std::uint64_t>(v->elements[0].integer);
+        if (align != 0) {
+            if (types::requested_alignment(t) != align) {
+                error(DiagCode::E4210, u->span, "write the alignment of @std::layout as a number: '.align = 16'", "not a number");
+            } else if ((align & (align - 1)) != 0 || align > 64) {
+                error(DiagCode::E4210, u->span, std::format("the alignment {} is not a power of two up to 64", align), "bad alignment");
+            }
+        }
+        if (!v->elements[1].boolean) return;
+        const Type*   self   = tc_.user(t);
+        std::uint64_t offset = 0;
+        const Symbol* prev   = nullptr;
+        for (const Symbol* f : t->member_order) {
+            if (f->kind != SymbolKind::field || f->is_static) continue;
+            types::Layout l = tc_.layout(tc_.lower(*f->decl->as<VariableDecl>().type, sema::substitution_of(f)));
+            std::uint64_t at = (offset + l.align - 1) / l.align * l.align;
+            if (at != offset) {
+                note(error(DiagCode::E4210, f->span,
+                           std::format("{} bytes of padding before '{}' ({} has no implicit padding)", at - offset, f->name, quoted(self)),
+                           "implicit padding"),
+                     std::format("write the gap out: 'std::padding<{}> _pad_{};' {}", at - offset, f->name,
+                                 prev ? std::format("after '{}'", prev->name) : std::string("first")));
+            }
+            offset = at + l.size;
+            prev   = f;
+        }
+        types::Layout whole = tc_.layout(self);
+        if (whole.size > offset && prev) {
+            note(error(DiagCode::E4210, u->span, std::format("{} bytes of padding at the end of {}", whole.size - offset, quoted(self)),
+                       "implicit padding"),
+                 std::format("write it out: 'std::padding<{}> _pad_end;' after '{}'", whole.size - offset, prev->name));
+        }
+    }
+
+    // `@std::optimize` and `@std::float_mode` (spec 34): what the backend needs from them, stored
+    // on the function (for a template, on the template: every instance follows it).
+    void read_codegen_annotations() {
+        for (auto& [name, m] : program_.modules) {
+            for (Symbol* item : m->item_order) {
+                if (item->is_type()) check_layout(item);
+            }
+            std::vector<Symbol*> functions;
+            for (Symbol* item : m->item_order) {
+                if (item->kind == SymbolKind::function) functions.push_back(item);
+                if (item->is_type()) {
+                    for (Symbol* member : item->member_order) {
+                        if (member->kind == SymbolKind::method) functions.push_back(member);
+                    }
+                }
+            }
+            for (Symbol* f : functions) {
+                if (!f->decl) continue;
+                const auto& uses = f->decl->annotations;
+                if (const AnnotationUse* u = sema::find_annotation(uses, "std::optimize")) {
+                    std::shared_ptr<const ct::Value> v = u->value_symbol ? ensure_constant(u->value_symbol) : nullptr;
+                    if (v && !v->elements.empty() && v->elements[0].symbol) f->optimize_level = v->elements[0].symbol->name;
+                }
+                if (const AnnotationUse* u = sema::find_annotation(uses, "std::float_mode")) {
+                    std::shared_ptr<const ct::Value> v = u->value_symbol ? ensure_constant(u->value_symbol) : nullptr;
+                    static constexpr unsigned bits[] = {sema::float_mode_contract, sema::float_mode_reassociate, sema::float_mode_finite_only,
+                                                        sema::float_mode_no_signed_zeros, sema::float_mode_reciprocal};
+                    for (std::size_t i = 0; v && i < v->elements.size() && i < std::size(bits); ++i) {
+                        if (v->elements[i].kind == ct::Value::Kind::boolean && v->elements[i].boolean) f->float_mode |= bits[i];
+                    }
+                    if (f->float_mode != 0 && program_.mode_settings["float_determinism"] == "strict") {
+                        note(error(DiagCode::E4210, u->span, "@std::float_mode is not allowed in this build: the mode's float_determinism() is strict",
+                                   "relaxes floating point"),
+                             "a strict mode keeps float results identical on every machine (lockstep games, replays)");
+                    }
+                }
+            }
+        }
     }
 
     // A plugin (`g.add_plugin`): its one `@std::plugin_entry` class T, which implements an
@@ -492,7 +593,7 @@ public:
         const Symbol* mode = program_.build_mode_class;
         if (!mode) return;
         for (const char* name : {"optimization", "debug_info", "overflow", "shifts", "bounds", "run_time_checks", "panic",
-                                 "link_time_optimization", "allow_undefined_behavior"}) {
+                                 "link_time_optimization", "allow_undefined_behavior", "float_determinism", "sanitize"}) {
             std::shared_ptr<const ct::Value> v = evaluator().mode_setting(mode, name);
             if (!v) continue;
             program_.mode_settings[name] = v->kind == ct::Value::Kind::boolean ? (v->boolean ? "true" : "false")
@@ -556,6 +657,14 @@ public:
         module_        = g->module;
         global_symbol_ = g;   // e.g. the constant holding an annotation's value (spec 29): not a module item
         check_decl(const_cast<Decl&>(*g->decl), nullptr);
+    }
+
+    // An associated type `type element = u32;` (spec 34), checked when it is first used as a type.
+    void check_member_type(const Symbol* m) {
+        module_        = m->parent->module;
+        subst_         = m->parent->template_subst;
+        global_symbol_ = m;
+        check_decl(const_cast<Decl&>(*m->decl), const_cast<Symbol*>(m->parent));
     }
 
     // Checks the members of a template instance (spec 14): `copy` is the instance's own copy of
@@ -840,6 +949,34 @@ private:
         return t->is(Kind::external) && t->name == "std::string";
     }
 
+    // Spec 34: an inline function holds captures of at most its size; a bound needs the lambda to
+    // meet it (`std::function<void(), std::sendable>` takes only lambdas whose captures are sendable).
+    void check_callable_fits(const Expr& e, const Type* closure, const Type* t) {
+        if (t->bits > 0) {
+            types::Layout l = tc_.closure_layout(closure);
+            if (l.size > static_cast<std::uint64_t>(t->bits)) {
+                note(error(DiagCode::E4010, e.span,
+                           std::format("this lambda's captures take {} bytes, but {} holds {}", l.size, quoted(t), t->bits),
+                           "too big to store inline"),
+                     std::format("make the inline size at least {} (a multiple of 8), capture less, or use std::function (on the heap)",
+                                 (l.size + 7) / 8 * 8));
+            } else if (l.align > 8) {
+                error(DiagCode::E4010, e.span, std::format("this lambda's captures need {}-byte alignment; an inline function gives 8", l.align),
+                      "over-aligned captures");
+            }
+        }
+        for (bool shareable : {false, true}) {
+            if (shareable ? !t->is_mut : !t->is_signed) continue;
+            std::string why;
+            if (!thread_safe(closure, shareable, &why, nullptr, 0)) {
+                note(error(DiagCode::E4010, e.span,
+                           std::format("this lambda is not {}, but {} needs one that is", shareable ? "std::shareable" : "std::sendable", quoted(t)),
+                           "not thread-safe"),
+                     why);
+            }
+        }
+    }
+
     // A lambda converts to `std::function<R(A...)>` with the same signature, and to
     // `std::fn_ptr<R(A...)>` when it captures nothing (spec 18).
     bool lambda_fits(const Type* f, const Type* t) const {
@@ -849,7 +986,18 @@ private:
             const ast::LambdaExpr* l = tc_.lambda_of(f);
             if (!l || !l->captures.empty()) return false;
         }
+        if (has_mut_captures(f)) return false;   // its call changes it: std::function calls aren't `mut`
         return true;
+    }
+
+    // A lambda with `[mut ...]` captures: calling it changes it (spec 34).
+    bool has_mut_captures(const Type* closure) const {
+        const ast::LambdaExpr* l = closure && closure->is(Kind::closure) ? tc_.lambda_of(closure) : nullptr;
+        if (!l) return false;
+        for (const ast::Capture& c : l->captures) {
+            if (c.is_mut) return true;
+        }
+        return false;
     }
 
     // `std::unique_ptr<circle>` → `std::unique_ptr<shape>` (and shared_ptr, weak_ptr): an
@@ -1297,6 +1445,7 @@ private:
                     break;
                 }
             }
+            if (t->is(Kind::function)) check_callable_fits(e, types::strip_ref(e.type), t);
         }
         if (smart_upcast(types::strip_ref(e.type), t) && !target->is(Kind::reference)) {
             e.conversion   = Expr::Conversion::pointer_upcast;
@@ -1485,7 +1634,7 @@ private:
                 }
             }
             if (!v.init) {
-                if (d.kind == DeclKind::field && compile_time_only(lower(*v.type))) {
+                if (d.kind == DeclKind::field && compile_time_only(lower(*v.type)) && v.storage != Storage::compile_time) {
                     run_time_use(v.type->span, lower(*v.type), std::format("'{}' is a field", v.name),
                                  "values of a struct or class exist at run time");
                 }
@@ -1514,8 +1663,12 @@ private:
             const Type* declared = lower(*v.type);
             coerce(*v.init, declared);
             fn_ = saved;
-            if (d.kind == DeclKind::variable && v.storage == Storage::compile_time) {
-                if (Symbol* g = symbol_for(d); g && diags_.error_count() == errors) {
+            if ((d.kind == DeclKind::variable || d.kind == DeclKind::field) && v.storage == Storage::compile_time) {   // a field: `type element = u32;`
+                Symbol* g = symbol_for(d);
+                if (!g && d.kind == DeclKind::field && self) {
+                    if (auto it = self->members.find(v.name); it != self->members.end() && !it->second.empty()) g = it->second.front();
+                }
+                if (g && diags_.error_count() == errors) {
                     g->ct_value = evaluate(*v.init, std::format("the value of compile_time constant '{}' is computed at compile time", v.name));
                 }
             } else if (d.kind == DeclKind::variable && v.storage == Storage::thread_local_ && diags_.error_count() == errors) {
@@ -1612,7 +1765,9 @@ private:
         fn_.name            = fn.name;
         fn_.generic         = (fn.is_template && subst_.empty()) ||
                       (self && self->decl && self->decl->is_template && !self->template_of);
-        if (has_pack(fn)) {   // a pack template's body is checked per argument count, in its instances
+        bool in_pack_type = self && self->decl && self->decl->is_template && !self->template_of &&
+                            !self->decl->template_params.empty() && self->decl->template_params.back().is_pack;
+        if (has_pack(fn) || in_pack_type) {   // a pack template's body is checked per argument count, in its instances
             fn_ = saved;
             end_check(&fn);
             return;
@@ -1788,6 +1943,10 @@ private:
 
     // Evaluates a template value argument for the parameter `index` of `templ` (spec 14).
     const Type* evaluate_value_arg(const Symbol* templ, std::size_t index, Expr& value) {
+        if (templ->decl && !templ->decl->template_params.empty() && templ->decl->template_params.back().is_pack &&
+            index >= templ->decl->template_params.size()) {
+            index = templ->decl->template_params.size() - 1;   // the rest of the arguments go to the pack (spec 34)
+        }
         if (!templ->decl || index >= templ->decl->template_params.size() || templ->decl->template_params[index].is_type ||
             !templ->decl->template_params[index].value_type) {
             error(DiagCode::E4180, value.span, std::format("'{}' takes a type here, not a value", templ->name), "a value");
@@ -1798,15 +1957,15 @@ private:
         infer(value);
         coerce(value, want);
         if (diags_.error_count() != errors) return tc_.error();
-        if (!want->is_integer() && !want->is(Kind::bool_)) {
-            error(DiagCode::E4180, value.span, std::format("template value parameters of type {} are not supported yet", quoted(want)),
-                  "use an integer or bool");
-            return tc_.error();
-        }
         std::shared_ptr<const ct::Value> v =
             evaluate(value, std::format("a template argument of '{}' must be known at compile time", templ->name));
         if (!v) return tc_.error();
-        return tc_.value_arg(v->kind == ct::Value::Kind::boolean ? u128{v->boolean} : v->integer, want);
+        if (want->is_integer() || want->is(Kind::bool_)) {
+            return tc_.value_arg(v->kind == ct::Value::Kind::boolean ? u128{v->boolean} : v->integer, want);
+        }
+        // Any other compile-time value (a struct, an enum): interned by its text, like the
+        // argument of a `compile_time` parameter (spec 31).
+        return tc_.value_arg_of(ct::to_string(*v), want, v);
     }
 
     // The type a type value denotes, when the expression is one (`u32`, `point`, `T`).
@@ -1841,19 +2000,22 @@ private:
                 continue;
             }
             std::string name = path.starts_with(prefix) ? path.substr(prefix.size()) : std::string();
-            if (name != "debug" && name != "release" && name != "release_with_debug_info") {
+            auto builtin = [](const std::string& x) {
+                return x == "debug" || x == "development" || x == "release" || x == "release_with_debug_info";
+            };
+            if (!builtin(name)) {
                 Diagnostic& d = error(DiagCode::E4212, span, std::format("unknown build mode '{}'", path), "unknown mode");
-                if (path == "debug" || path == "release" || path == "release_with_debug_info") {
+                if (builtin(path)) {
                     note(d, std::format("write 'std::build::mode::{}': std names are written in full", path));
                 } else {
-                    note(d, "the built-in modes are std::build::mode::debug, ::release and ::release_with_debug_info "
-                            "(user modes need build.ed)");
+                    note(d, "the built-in modes are std::build::mode::debug, ::development, ::release and "
+                            "::release_with_debug_info (user modes need build.ed)");
                 }
                 continue;
             }
             if (program_.build_mode_class) {   // the mode is (or derives from) that class
                 for (const Symbol* c = program_.build_mode_class; c; c = c->base_class()) active = active || c->name == name;
-            } else if (name == m || (name == "release" && m == "release_with_debug_info")) {
+            } else if (name == m || (name == "release" && m == "release_with_debug_info") || (name == "debug" && m == "development")) {
                 active = true;
             }
         }
@@ -1914,7 +2076,21 @@ private:
             evaluator().evaluate(*c.block, "");
             return;
         }
+        std::size_t errors = diags_.error_count();
         std::shared_ptr<const ct::Value> v = evaluate(*c.condition, "the condition of a compile_time check must be known at compile time");
+        bool broken = false;   // an operand already reported (or still waiting for a template parameter)
+        ast::walk_exprs(*c.condition, [&](Expr& x) {
+            if (!x.type || x.type->is_unknown() || x.type->is_untyped()) broken = true;
+            return !broken;
+        });
+        if (!v && diags_.error_count() == errors && !fn_.generic && !broken) {
+            // Not reported and not waiting for a template parameter: the evaluator can't run this
+            // condition. A check must never pass without being evaluated (spec 23).
+            note(error(DiagCode::E4200, c.condition->span, "the compiler can't evaluate this condition at compile time",
+                       "not evaluated"),
+                 "a compile_time check that isn't evaluated would pass unseen, so it is an error");
+            return;
+        }
         if (!v || v->kind != ct::Value::Kind::boolean || v->boolean) return;
         std::shared_ptr<const ct::Value> m = evaluate(*c.message, "");
         bool        at_use = self && self->template_of && instance_site_;   // reported where the instance is written (spec 23)
@@ -2119,6 +2295,7 @@ private:
                     }
                     declared = t->is(Kind::never) ? tc_.error() : t;
                 } else {
+                    if (declared && declared->is(Kind::reference)) reject_packed_reference(*v.init, "borrowed");
                     coerce(*v.init, declared);
                 }
             }
@@ -2179,7 +2356,9 @@ private:
     }
 
     void check_assign(AssignStmt& a) {
+        union_store_       = a.op == TokenKind::eq && a.target->kind == ExprKind::member;   // writing a union member is safe
         const Type* target = infer(*a.target);
+        union_store_       = false;
         if (a.target->kind == ExprKind::index && a.target->as<IndexExpr>().op_symbol) {
             // Assigning through `v[i]` uses `mut T& operator[](usize) mut` (spec 16).
             auto&       ix  = a.target->as<IndexExpr>();
@@ -2201,6 +2380,23 @@ private:
         }
         TokenKind   op = compound_base(a.op);
         const Type* t  = types::strip_ref(target);
+        if (const Type* u = distinct_arithmetic(t)) {   // `d += e`, `d *= 2.0` on a distinct type (spec 34)
+            const Type* vt = types::strip_ref(value);
+            if (op == TokenKind::plus || op == TokenKind::minus || op == TokenKind::percent) {
+                if (vt != t && !vt->is_unknown()) {
+                    error(DiagCode::E4013, a.span, std::format("'{}' on {} takes a {}", token_kind_spelling(a.op), quoted(t), quoted(t)), "wrong type");
+                    return;
+                }
+                to_underlying(a.value, u);
+            } else if (op == TokenKind::star || op == TokenKind::slash) {
+                coerce(*a.value, u);
+            } else {
+                error(DiagCode::E4013, a.span, std::format("'{}' is not defined for {}", token_kind_spelling(a.op), quoted(t)), "no such operator");
+                return;
+            }
+            a.distinct_underlying = u;
+            return;
+        }
         if (t->is_unknown() || t->is(Kind::external)) {
             if (value->is_untyped()) settle(*a.value, t);
             return;
@@ -2340,7 +2536,10 @@ private:
                               "immutable");
         if (p.local) {
             const Type* t = type_of_symbol(p.local);
-            if (t->is(Kind::reference)) {
+            if (p.local->local_kind == sema::LocalKind::capture && !t->is(Kind::reference)) {
+                note(d, std::format("a lambda changes its own copy only when the capture says so: '[mut {} ...]'", p.local->name),
+                     p.local->span);
+            } else if (t->is(Kind::reference)) {
                 note(d, std::format("'{}' is an immutable reference; declare it 'mut {}'", p.local->name,
                                     types::to_string(t)),
                      p.local->span);
@@ -2548,6 +2747,15 @@ private:
         v.kind = ct::Value::Kind::floating;
         v.type = t;
         bool f32 = t->bits == 32;
+        if (t->bits == 16) {   // f16 (spec 34): IEEE binary16
+            if (name == "max") v.floating = 65504.0;
+            else if (name == "min") v.floating = -65504.0;
+            else if (name == "infinity") v.floating = std::numeric_limits<double>::infinity();
+            else if (name == "nan") v.floating = std::numeric_limits<double>::quiet_NaN();
+            else if (name == "epsilon") v.floating = 0.0009765625;
+            else return std::nullopt;
+            return v;
+        }
         if (name == "max") v.floating = f32 ? static_cast<double>(std::numeric_limits<float>::max()) : std::numeric_limits<double>::max();
         else if (name == "min") v.floating = f32 ? -static_cast<double>(std::numeric_limits<float>::max()) : -std::numeric_limits<double>::max();
         else if (name == "infinity") v.floating = std::numeric_limits<double>::infinity();
@@ -2813,6 +3021,7 @@ private:
         }
         const Type* l = types::strip_ref(infer(*b.lhs));
         const Type* r = types::strip_ref(infer(*b.rhs));
+        if (distinct_arithmetic(l) || distinct_arithmetic(r)) return infer_distinct_binary(b, l, r);
 
         if (l->is(Kind::vector) || r->is(Kind::vector) || l->is(Kind::mask) || r->is(Kind::mask)) return infer_vector_binary(b, l, r);
         if (l->is(Kind::tuple) || r->is(Kind::tuple)) {   // element by element
@@ -2972,6 +3181,13 @@ private:
                 return set(u, tc_.reference(target, u.op_symbol->function()->is_mut));
             }
         }
+        if (const Type* under = u.op == UnaryOp::negate ? distinct_arithmetic(s) : nullptr) {   // `-d` (spec 34)
+            to_underlying(u.operand, under);
+            u.distinct_result = s;
+            set(u, s);
+            if (u.operand->constant) u.constant = evaluate(u, "");
+            return s;
+        }
         if (s->is(Kind::user) && (u.op == UnaryOp::negate || u.op == UnaryOp::bit_not)) {   // spec 16
             std::string_view spelling = u.op == UnaryOp::negate ? "-" : "~";
             if (const Type* res = find_operator(spelling, s, nullptr, &u.op_symbol)) return set(u, res);
@@ -3076,6 +3292,7 @@ private:
     }
 
     const Type* infer_member(MemberExpr& m) {
+        bool        union_store = std::exchange(union_store_, false);   // `u.member = value;`
         const Type* objt = infer(*m.object);
         const Type* t    = types::strip_ref(objt);
         std::string name = m.name.segments.back().name;
@@ -3136,14 +3353,80 @@ private:
             return set(m, tc_.error());
         }
         if (mem->kind != SymbolKind::field) return set(m, tc_.error());
+        if (!union_store && types::is_union(t->symbol)) {   // spec 34: which member holds a value is not known
+            require_unsafe(m.span, std::format("reading the member '{}' of the union {}", name, quoted(t)));
+        }
         return set(m, lower_owned(mem, *mem->decl->as<VariableDecl>().type));
     }
+
+    bool union_store_ = false;   // the target of `x.member = value;` is being checked
 
     // --- reflection (spec 26) -------------------------------------------------------------
 
     // `std::is_integer<T>()`, `std::size_of<T>()`, `std::meta::fields<T>()`, ...: compile-time
     // functions of the compiler. Their value is computed here, so run-time code gets a constant.
+    // `std::embed("file")` → the file's bytes as a std::span<u8> in static memory;
+    // `std::embed_text("file")` → its text as a std::static_str (spec 34). The path is relative to
+    // the source file, and the file is an input of the build.
+    const Type* infer_embed(CallExpr& c, const std::string& name) {
+        namespace fs = std::filesystem;
+        bool        text = name == "embed_text";
+        const Type* u8   = tc_.builtin("u8");
+        const Symbol* span = std_item("span");
+        const Type* result = text ? tc_.static_str() : span ? tc_.instance(span, {u8}) : tc_.error();
+        set(c, result);
+        if (c.args.size() != 1) {
+            error(DiagCode::E4030, c.span, std::format("'std::{}' takes one path: 'std::{}(\"shaders/blit.spv\")'", name, name), "wrong arguments");
+            return result;
+        }
+        coerce(*c.args[0], tc_.static_str());
+        std::string rel;
+        if (c.args[0]->kind == ExprKind::string_literal) {
+            rel = c.args[0]->as<LiteralExpr>().value;
+        } else if (c.args[0]->constant && c.args[0]->constant->kind == ct::Value::Kind::string) {
+            rel = c.args[0]->constant->string;
+        } else {
+            error(DiagCode::E4200, c.args[0]->span, std::format("the path of 'std::{}' must be known at compile time", name), "not a constant");
+            return result;
+        }
+        std::error_code ec;
+        fs::path        path = fs::path(rel).is_absolute() ? fs::path(rel) : fs::path(source_path(c.span)).parent_path() / rel;
+        std::ifstream   in(path, std::ios::binary);
+        if (!in) {
+            note(error(DiagCode::E4201, c.args[0]->span, std::format("cannot read '{}'", path.lexically_normal().string()), "no such file"),
+                 "the path is relative to the directory of the source file");
+            return result;
+        }
+        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (text && !valid_utf8(bytes)) {
+            error(DiagCode::E4201, c.args[0]->span, std::format("'{}' is not UTF-8 text; use std::embed for bytes", rel), "not text");
+            return result;
+        }
+        program_.embedded_files.push_back(fs::absolute(path, ec).lexically_normal().string());
+        auto v    = std::make_shared<ct::Value>();
+        v->kind   = ct::Value::Kind::string;
+        v->type   = result;
+        v->string = std::move(bytes);
+        c.constant = v;
+        return result;
+    }
+
+    static bool valid_utf8(const std::string& s) {
+        std::size_t i = 0;
+        while (i < s.size()) {
+            auto c = static_cast<unsigned char>(s[i]);
+            std::size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+            if (n == 0 || i + n > s.size()) return false;
+            for (std::size_t k = 1; k < n; ++k) {
+                if ((static_cast<unsigned char>(s[i + k]) >> 6) != 2) return false;
+            }
+            i += n;
+        }
+        return true;
+    }
+
     const Type* infer_builtin(CallExpr& c, const std::string& name) {
+        if (name == "embed" || name == "embed_text") return infer_embed(c, name);
         if (name.starts_with("compile_")) return infer_diagnostic(c, name);
         if (name == "is_compile_time" || name == "location_of" || name == "literal_text") return infer_parameter_query(c, name);
         if (name == "meta::function_annotation" || name == "meta::type_annotation" || name == "meta::file_annotation") {
@@ -3193,7 +3476,7 @@ private:
                       : name == "meta::types_with"                ? list_of(tc_.type_value())
                       : name == "meta::interfaces" || name == "meta::template_args" ? list_of(tc_.type_value())
                       : name == "meta::annotation"                ? option_of_annotation(seg.template_args[0], c.span)
-                      : name == "meta::interface_hash"            ? tc_.builtin("u64")
+                      : name == "meta::interface_hash" || name == "meta::type_id" ? tc_.builtin("u64")
                                                                   : tc_.bool_();
         set(c, t);
         c.constant = evaluate(c, "");
@@ -3268,8 +3551,89 @@ private:
         return set(c, name == "atomic_store" ? tc_.void_() : v ? v : tc_.error());
     }
 
+    // Why `t` can't be reinterpreted as plain bits (spec 34: std::bit_cast), or "" when it can:
+    // numbers and SIMD number vectors, and arrays, tuples and structs of them without padding.
+    // Every bit pattern of such a type is a valid value, and every bit of it is part of a value.
+    std::string not_plain_bits(const Type* t) {
+        if (!t) return "unknown";
+        switch (t->kind) {
+            case Kind::int_: case Kind::float_: return "";
+            case Kind::vector: return not_plain_bits(t->inner);
+            case Kind::array: return not_plain_bits(t->inner);
+            case Kind::bool_: return "a bool has invalid bit patterns";
+            case Kind::char_: return "a char has invalid bit patterns (surrogates, values above 0x10FFFF)";
+            case Kind::pointer: case Kind::fn_ptr: return "a pointer is not plain bits";
+            case Kind::reference: return "a reference is not plain bits";
+            case Kind::tuple: case Kind::user: {
+                std::vector<const Type*> parts;
+                if (t->is(Kind::tuple)) {
+                    parts = t->args;
+                } else {
+                    if (t->symbol->kind != SymbolKind::struct_) return std::format("{} is not a struct", quoted(t));
+                    for (const Symbol* m : t->symbol->member_order) {
+                        if (m->kind == SymbolKind::field && !m->is_static && m->decl) {
+                            parts.push_back(tc_.lower(*m->decl->as<VariableDecl>().type, sema::substitution_of(m)));
+                        }
+                    }
+                }
+                std::uint64_t sum = 0;
+                for (const Type* p : parts) {
+                    if (std::string why = not_plain_bits(p); !why.empty()) return why;
+                    sum += tc_.layout(p).size;
+                }
+                if (sum != tc_.layout(t).size) return std::format("{} has padding between or after its fields", quoted(t));
+                return "";
+            }
+            default: return std::format("{} is not plain bits", quoted(t));
+        }
+    }
+
+    // `std::bit_cast<T>(x)` (spec 34): the bits of `x` as a `T` of the same size. Safe: both
+    // types must be plain bits (no padding, every bit pattern valid).
+    const Type* infer_bit_cast(CallExpr& c, const std::vector<Expr*>& args) {
+        auto& seg = c.callee->as<PathExpr>().path.segments.back();
+        if (seg.template_args.size() != 1 || !seg.template_args[0].type || args.size() != 1) {
+            error(DiagCode::E4030, c.span, "'std::bit_cast' takes a type and a value: 'std::bit_cast<T>(x)'", "wrong arguments");
+            return set(c, tc_.error());
+        }
+        const Type* to   = lower(*seg.template_args[0].type);
+        const Type* from = types::strip_ref(args[0]->type);
+        if (from && from->is_untyped()) {
+            no_context(*args[0], "(write the type of the value)");
+            return set(c, tc_.error());
+        }
+        if (!from || from->is_unknown() || !to || to->is_unknown()) return set(c, to ? to : tc_.error());
+        for (const auto& [t, which] : {std::pair{from, "value"}, std::pair{to, "result"}}) {
+            if (std::string why = not_plain_bits(t); !why.empty()) {
+                note(error(DiagCode::E4010, which == std::string("value") ? args[0]->span : c.span,
+                           std::format("std::bit_cast needs plain bits, but the {} type {} is not: {}", which, quoted(t), why), "not plain bits"),
+                     "plain bits are numbers, SIMD vectors, and arrays, tuples and structs of them without padding; "
+                     "anything else is cast::reinterpret in unsafe code");
+                return set(c, to);
+            }
+        }
+        std::uint64_t a = tc_.layout(from).size, b = tc_.layout(to).size;
+        if (a != b) {
+            error(DiagCode::E4010, c.span, std::format("std::bit_cast between types of different sizes: {} is {} bytes, {} is {}", quoted(from), a,
+                                                       quoted(to), b),
+                  "different sizes");
+        }
+        set(c, to);
+        if (args[0]->constant) c.constant = evaluate(c, "");
+        return to;
+    }
+
     const Type* infer_raw(CallExpr& c, const std::string& name, const std::vector<Expr*>& args) {
         require_unsafe(c.span, std::format("'std::raw::{}'", name));
+        if (name == "assume" || name == "unreachable") {   // spec 34: facts for the optimizer
+            std::size_t want = name == "assume" ? 1 : 0;
+            if (args.size() != want) {
+                error(DiagCode::E4030, c.span, std::format("'std::raw::{}' takes {} argument{}", name, want, want == 1 ? "" : "s"), "wrong arguments");
+                return set(c, tc_.error());
+            }
+            if (want) coerce(*args[0], tc_.bool_());
+            return set(c, name == "assume" ? tc_.void_() : tc_.never());
+        }
         if (name.starts_with("atomic_") || name.starts_with("futex_") || name == "spin_hint") return infer_thread_raw(c, name, args);
         auto& seg = c.callee->as<PathExpr>().path.segments.back();
         std::size_t want = name == "allocate" || name == "free" || name == "read" || name == "drop" ? 1
@@ -3710,10 +4074,17 @@ private:
         }
         if (pattern.kind != TypeKind::named) return;
         const auto& nt = pattern.as<NamedType>();
-        if (nt.symbol && nt.symbol->kind == SymbolKind::type_param && !subst.count(nt.symbol)) subst[nt.symbol] = unknown;
+        if (nt.symbol && (nt.symbol->kind == SymbolKind::type_param || nt.symbol->kind == SymbolKind::value_param) &&
+            !subst.count(nt.symbol)) {
+            subst[nt.symbol] = unknown;
+        }
         for (const PathSegment& seg : nt.path.segments) {
             for (const TemplateArg& a : seg.template_args) {
                 if (a.type) unknown_params(*a.type, unknown, subst);
+                if (a.value && a.value->kind == ExprKind::path) {   // a value parameter: `N` of `box<N>&`
+                    const Symbol* v = a.value->as<PathExpr>().symbol;
+                    if (v && v->kind == SymbolKind::value_param && !subst.count(v)) subst[v] = unknown;
+                }
             }
         }
     }
@@ -3739,6 +4110,10 @@ private:
             if (!subst.count(sym)) subst[sym] = at;
             return;
         }
+        if (sym->kind == SymbolKind::value_param) {   // `A` of `functions<A>&`: the argument's value
+            if (!subst.count(sym)) subst[sym] = at;
+            return;
+        }
         if (!nt.path.segments.empty()) {   // `std::span<mut T>` is the library's span_mut<T> (spec 20)
             const auto& ta = nt.path.segments.back().template_args;
             if (sym->name == "span" && sym->module && sym->module->name == "std" && ta.size() == 1 && ta[0].is_mut && ta[0].type &&
@@ -3754,7 +4129,7 @@ private:
                 unify(*targs[i].type, given[i], subst);
             } else if (targs[i].value && targs[i].value->kind == ExprKind::path) {   // a value parameter: `N`
                 const Symbol* v = targs[i].value->as<PathExpr>().symbol;
-                if (v && v->kind == SymbolKind::type_param && !subst.count(v)) subst[v] = given[i];
+                if (v && (v->kind == SymbolKind::type_param || v->kind == SymbolKind::value_param) && !subst.count(v)) subst[v] = given[i];
             }
         }
     }
@@ -3953,6 +4328,11 @@ private:
                 if (!p.is_pack && !p.is_implicit) ++fixed;
             }
             std::size_t n = args.size() > fixed ? args.size() - fixed : 0;
+            if (!pf->template_params.empty() && !pf->template_params.back().is_type && pf->template_params.back().is_pack) {
+                // a value pack: as many as the explicit arguments after the fixed parameters
+                std::size_t given = explicit_args ? explicit_args->template_args.size() : 0;
+                n = given + 1 > pf->template_params.size() ? given + 1 - pf->template_params.size() : 0;
+            }
             if (Symbol* expanded = instantiator_pack_variant(s, n)) s = expanded;
         }
         Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}, false, {}, {}};
@@ -4158,10 +4538,26 @@ private:
     }
 
     // Call-site `mut` (spec 04) and the argument's type.
+    // A field of a packed struct (spec 34), reached through member accesses: `h.size`, `w.header.size`.
+    bool in_packed_struct(const Expr& e) {
+        if (e.kind != ExprKind::member) return false;
+        const auto& me = e.as<MemberExpr>();
+        const Type* ot = types::strip_ref(me.object->type);
+        if (ot && ot->is(Kind::user) && ot->symbol && ot->symbol->kind == SymbolKind::struct_ && types::is_packed(ot->symbol)) return true;
+        return in_packed_struct(*me.object);
+    }
+
+    void reject_packed_reference(const Expr& e, std::string_view what) {
+        if (!in_packed_struct(e)) return;
+        note(error(DiagCode::E4210, e.span, std::format("a field of a packed struct can't be {}: it may be misaligned", what), "packed field"),
+             "copy it into a local first, and assign it back if it changes");
+    }
+
     void check_argument(Expr& arg, const Type* param) {
         bool marked  = arg.kind == ExprKind::unary && arg.as<UnaryExpr>().op == UnaryOp::mut_marker;
         bool mut_ref = param->is(Kind::reference) && param->is_mut;
         Expr& value  = marked ? *arg.as<UnaryExpr>().operand : arg;
+        if (param->is(Kind::reference)) reject_packed_reference(value, "passed by reference");
         if (mut_ref && !marked) {
             Place p = place_of(value);
             Diagnostic& d = error(DiagCode::E4023, arg.span, "a mutable reference argument is marked with 'mut'",
@@ -4241,6 +4637,7 @@ private:
             Symbol* s  = pe.symbol;
             if (Symbol* member = instance_member(pe, s)) s = pe.symbol = member;   // `box<u32>::make(...)`
             if (std::string b = ct::builtin_name(c); !b.empty()) return infer_builtin(c, b);
+            if (std::string r = ct::raw_intrinsic(c); r == "bit_cast") return infer_bit_cast(c, args);
             if (std::string r = ct::raw_intrinsic(c); !r.empty()) return infer_raw(c, r, args);
             if (s && s->is_type()) {
                 Diagnostic& d = error(DiagCode::E3022, callee.span,
@@ -4409,6 +4806,7 @@ private:
             if (types::is_std_builtin_method(t, name)) return infer_std_method(c, t, name, args);
             if (t->is(Kind::meta)) return infer_meta_method(c, me, t, name, args);
             if (t->is(Kind::vector) || t->is(Kind::mask)) return infer_vector_method(c, me, t, name, args);
+            if (types::is_number_method(t, name)) return infer_number_method(c, t, name, args);
             if ((is_std_instance(t, "span") || is_std_instance(t, "span_mut")) && (name == "load" || name == "store") &&
                 !args.empty() && is_simd_block(types::strip_ref(args[0]->type))) {
                 return infer_span_block(c, me, t, name, args);
@@ -4492,6 +4890,12 @@ private:
                         return r;
                     }
                 }
+                if (t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_)) {
+                    Diagnostic& d = error(DiagCode::E4070, me.name.span, std::format("{} has no method '{}'", quoted(t), name), "unknown method");
+                    if (t->is_integer() && types::is_number_method(tc_.builtin("f64"), name)) {
+                        note(d, std::format("'{}' is a method of f32 and f64: convert first, e.g. 'cast<f64>(x).{}()'", name, name));
+                    }
+                }
                 return set(c, tc_.error());
             }
             std::vector<Symbol*> methods;
@@ -4499,6 +4903,9 @@ private:
                 methods.push_back(me.symbol);   // this.base::method()
             } else {
                 methods = find_methods(t->symbol, name);
+            }
+            if (!methods.empty() && methods[0]->function() && !methods[0]->function()->is_static) {
+                reject_packed_reference(*me.object, "the receiver of a method");
             }
             callee.type = nullptr;
             if (methods.empty() && name == "clone" && args.empty() &&
@@ -4583,11 +4990,123 @@ private:
 
     // --- other expressions ----------------------------------------------------------------
 
+    // The underlying type of a `distinct type` (spec 34), or null.
+    const Type* distinct_underlying(const Type* t) {
+        if (!t || !t->is(Kind::user) || !t->symbol || !t->symbol->decl || t->symbol->kind != SymbolKind::struct_) return nullptr;
+        const auto& td = t->symbol->decl->as<TypeDecl>();
+        if (!td.is_distinct) return nullptr;
+        for (const Symbol* m : t->symbol->member_order) {
+            if (m->kind == SymbolKind::field && !m->is_static) return tc_.lower(*m->decl->as<VariableDecl>().type, sema::substitution_of(m));
+        }
+        return nullptr;
+    }
+
+    // The underlying type of a distinct type with @std::derive::arithmetic (spec 34), or null.
+    const Type* distinct_arithmetic(const Type* t) {
+        const Type* u = distinct_underlying(t);
+        if (!u || !sema::find_annotation(t->symbol->decl->annotations, "std::derive::arithmetic")) return nullptr;
+        return u;
+    }
+
+    // Replaces `e` (a value of a distinct type) with `cast<underlying>(e)`, already checked.
+    void to_underlying(ExprPtr& e, const Type* u) {
+        auto c     = std::make_unique<CastExpr>(e->span);
+        c->type    = u;
+        if (e->constant && e->constant->kind == ct::Value::Kind::aggregate && !e->constant->elements.empty()) {
+            c->constant = std::make_shared<const ct::Value>(e->constant->elements[0]);
+        }
+        c->operand = std::move(e);
+        e          = std::move(c);
+    }
+
+    // `a + b`, `d * 2.0`, `a / b`, `a < b` on distinct types with @std::derive::arithmetic: the
+    // underlying type's operation, rewritten on casts (spec 34).
+    const Type* infer_distinct_binary(BinaryExpr& b, const Type* l, const Type* r) {
+        TokenKind   op = b.op;
+        const Type* ul = distinct_arithmetic(l);
+        const Type* ur = distinct_arithmetic(r);
+        auto fail = [&](std::string why) {
+            note(error(DiagCode::E4013, b.span, std::format("operator '{}' is not defined for {} and {}", token_kind_spelling(op), quoted(l), quoted(r)),
+                       "no such operator"),
+                 why);
+            return set(b, tc_.error());
+        };
+        auto finish = [&](const Type* result, const Type* wrap) {
+            b.distinct_result = wrap;
+            set(b, result);
+            if (b.lhs->constant && b.rhs->constant) b.constant = evaluate(b, "");
+            return result;
+        };
+        bool same = l == r;
+        bool eq = op == TokenKind::eq_eq || op == TokenKind::bang_eq;
+        if (eq || op == TokenKind::spaceship || is_comparison(op)) {
+            if (!same) return fail("values of a distinct type compare only with values of the same type");
+            to_underlying(b.lhs, ul);
+            to_underlying(b.rhs, ul);
+            return finish(op == TokenKind::spaceship ? ordering_type() : tc_.bool_(), nullptr);
+        }
+        if (op == TokenKind::plus || op == TokenKind::minus || op == TokenKind::percent) {
+            if (!same) {
+                return fail(std::format("'{}' takes two values of the same distinct type; scale with '*' and '/' by {}",
+                                        token_kind_spelling(op), quoted(ul ? ul : ur)));
+            }
+            to_underlying(b.lhs, ul);
+            to_underlying(b.rhs, ul);
+            return finish(l, l);
+        }
+        if (op == TokenKind::star) {
+            if (ul && (r == ul || r->is_untyped())) {   // meters * f32
+                coerce(*b.rhs, ul);
+                to_underlying(b.lhs, ul);
+                return finish(l, l);
+            }
+            if (ur && (l == ur || l->is_untyped())) {   // f32 * meters
+                coerce(*b.lhs, ur);
+                to_underlying(b.rhs, ur);
+                return finish(r, r);
+            }
+            return fail(std::format("a distinct type is scaled by its underlying type: {} * {}", quoted(ul ? l : r), quoted(ul ? ul : ur)));
+        }
+        if (op == TokenKind::slash) {
+            if (ul && (r == ul || r->is_untyped())) {   // meters / f32
+                coerce(*b.rhs, ul);
+                to_underlying(b.lhs, ul);
+                return finish(l, l);
+            }
+            if (same) {   // meters / meters: a plain ratio
+                to_underlying(b.lhs, ul);
+                to_underlying(b.rhs, ul);
+                return finish(ul, nullptr);
+            }
+            return fail(std::format("a distinct type is divided by its underlying type or by itself"));
+        }
+        return fail(std::format("@std::derive::arithmetic gives + - * / % and comparisons"));
+    }
+
     const Type* infer_cast(CastExpr& c) {
         const Type* to   = lower(*c.target);
         const Type* from = types::strip_ref(infer(*c.operand));
         set(c, to);
         const std::string& v = c.variant;
+        // `cast<meters>(x)` and `cast<f32>(m)`: a distinct type and its underlying type (spec 34).
+        if (v.empty() && (distinct_underlying(to) || distinct_underlying(from))) {
+            const Type* under_to   = distinct_underlying(to);
+            const Type* under_from = distinct_underlying(from);
+            if (under_to && (from->is_untyped() || from == under_to)) {
+                coerce(*c.operand, under_to);
+                if (c.operand->constant) c.constant = evaluate(c, "");
+                return to;
+            }
+            if (under_from && to == under_from) {
+                if (c.operand->constant) c.constant = evaluate(c, "");
+                return to;
+            }
+            if (from->is_unknown() || to->is_unknown()) return to;
+            const Type* expected = under_to ? under_to : under_from;
+            note(error(DiagCode::E4091, c.span, std::format("cast cannot convert {} to {}", quoted(from), quoted(to)), "not its underlying type"),
+                 std::format("a distinct type converts only to and from its underlying type, {}; convert in two steps", quoted(expected)));
+            return to;
+        }
         if (v == "reinterpret") {
             if (unsafe_depth_ == 0) {
                 note(error(DiagCode::E4103, c.span, "cast::reinterpret requires 'unsafe'", "outside 'unsafe'"),
@@ -5087,6 +5606,25 @@ private:
     }
 
     // Methods of vectors and masks (SIMD, sections 3, 4, 5, 7).
+    // The methods of numbers (spec 34): `x.sqrt()`, `a.min(b)`, `x.mul_add(y, z)`, `angle.sin()`.
+    // Arguments take the receiver's type; there is no implicit conversion.
+    const Type* infer_number_method(CallExpr& c, const Type* t, const std::string& name, std::vector<Expr*>& args) {
+        c.callee->type = tc_.error();
+        std::size_t want = types::number_method_arity(name);
+        if (args.size() != want) {
+            error(DiagCode::E4030, c.span, std::format("'{}' on {} takes {} argument{}, but {} {} given", name, quoted(t), want,
+                                                       want == 1 ? "" : "s", args.size(), args.size() == 1 ? "is" : "are"),
+                  "wrong number of arguments");
+            for (Expr* a : args) {
+                if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+            }
+            return set(c, tc_.error());
+        }
+        for (Expr* a : args) coerce(*a, t);
+        if (name == "is_nan" || name == "is_infinite" || name == "is_finite") return set(c, tc_.bool_());
+        return set(c, t);
+    }
+
     const Type* infer_vector_method(CallExpr& c, MemberExpr& me, const Type* t, const std::string& name, std::vector<Expr*>& args) {
         me.type = tc_.error();
         auto same = [&](std::size_t n) {
@@ -5314,6 +5852,16 @@ private:
     // `f(args)` where `f` holds a lambda.
     const Type* infer_closure_call(CallExpr& c, const Type* closure, std::vector<Expr*>& args) {
         if (closure->is_c_function()) require_unsafe(c.span, "calling a C function of a library (std::c_library)");
+        if (has_mut_captures(closure)) {   // the call changes the lambda's own values (spec 34)
+            Place p = place_of(*c.callee);
+            if (p.is_place && !p.is_mutable && !p.is_temporary) {
+                Diagnostic& d = error(DiagCode::E4022, c.callee->span,
+                                      std::format("calling '{}' changes its 'mut' captures, but '{}' is not mutable", p.name, p.name),
+                                      "immutable lambda");
+                if (p.local) note(d, std::format("declare it 'mut': 'mut auto {} = ...' (a parameter: 'mut F {}')", p.local->name, p.local->name),
+                                  p.local->span);
+            }
+        }
         std::size_t n = closure->args.size() - 1;
         if (args.size() != n) {
             error(DiagCode::E4030, c.span, std::format("this lambda takes {} argument{}, but {} {} given", n, n == 1 ? "" : "s",
@@ -5667,8 +6215,18 @@ private:
         auto& segs = pe.path.segments;
         if (segs.size() < 2 || !segs[segs.size() - 2].has_template_args) return nullptr;
         std::vector<const Type*> args;
-        for (const TemplateArg& a : segs[segs.size() - 2].template_args) {
-            if (!a.type) return nullptr;
+        for (std::size_t i = 0; i < segs[segs.size() - 2].template_args.size(); ++i) {
+            const TemplateArg& a = segs[segs.size() - 2].template_args[i];
+            if (!a.type) {   // a value argument: `box<3>::make()`, `functions<gl_33>::load(...)`
+                if (!a.value) return nullptr;
+                if (!a.evaluated) {
+                    const Type* v = evaluate_value_arg(s->parent, i, *a.value);
+                    if (!v->is_unknown()) a.evaluated = v;
+                }
+                if (!a.evaluated) return nullptr;
+                args.push_back(a.evaluated);
+                continue;
+            }
             const Type* t = lower(*a.type);
             if (t->is_unknown() || t->is(Kind::type_param)) return nullptr;
             args.push_back(t);
@@ -5763,9 +6321,11 @@ private:
             return ok;
         }
         case Kind::array: return thread_safe(t->inner, shareable, why, where, depth + 1);
-        case Kind::function:
-            return fail(std::format("{} can hold any lambda, so what it captures is unknown; pass the lambda itself (a template "
-                                    "parameter) instead", quoted(t)));
+        case Kind::function:   // its bounds say it (spec 34): `std::function<void(), std::sendable>`
+            if (shareable ? t->is_mut : t->is_signed) return true;
+            return fail(std::format("{} can hold any lambda, so what it captures is unknown; add the bound to its type "
+                                    "(`std::function<..., {}>`) or pass the lambda itself (a template parameter)",
+                                    quoted(t), shareable ? "std::shareable" : "std::sendable"));
         case Kind::closure: {
             const LambdaExpr* l = tc_.lambda_of(t);
             if (!l) return true;
@@ -5909,6 +6469,8 @@ private:
         }
     }
 
+    const std::map<const Symbol*, const Type*>* constraint_args_ = nullptr;   // template parameter → argument, while checking
+
     // Whether `t` satisfies the constraint `c`; `why` says what is missing.
     bool satisfies(const Type* t, const Type* c, std::string& why) {
         if (c->is(Kind::external) && (c->name == "std::sendable" || c->name == "std::shareable")) {
@@ -5931,6 +6493,34 @@ private:
         }
         if (!c->is(Kind::external)) return true;
         std::string_view name = c->name;
+        {   // operators as interfaces (spec 34): implemented by writing the operator
+            std::string_view base = c->external_base();
+            static const std::map<std::string_view, std::string_view> ops = {
+                {"std::addable", "+"}, {"std::subtractable", "-"}, {"std::multipliable", "*"}, {"std::dividable", "/"}, {"std::negatable", "-"}};
+            if (auto it = ops.find(base); it != ops.end()) {
+                bool        unary = base == "std::negatable";
+                const auto* args  = tc_.external_args(c);
+                const Type* r     = unary ? nullptr : args && !args->empty() && (*args)[0] ? types::strip_ref((*args)[0]) : t;
+                if (r && r->is(Kind::type_param) && constraint_args_) {   // `V : std::addable<V>`: the instance's argument
+                    if (auto at = constraint_args_->find(r->symbol); at != constraint_args_->end() && at->second) r = types::strip_ref(at->second);
+                }
+                if (r && r->is_unknown()) return true;
+                bool ok = false;
+                if (t->is_numeric() || t->is(Kind::vector)) {   // built-in arithmetic: the same type on both sides
+                    ok = unary ? !(t->is_integer() && !t->is_signed) : r == t || (t->is(Kind::vector) && r == t->inner);
+                } else if (const Type* u = distinct_arithmetic(t)) {   // a distinct type with @std::derive::arithmetic
+                    std::string_view op = it->second;   // d + d, d - d, d * k, d / k, d / d, -d
+                    ok = unary || ((op == "+" || op == "-") && r == t) || (op == "*" && r == u) || (op == "/" && (r == u || r == t));
+                } else if (t->is(Kind::user)) {
+                    ok = find_operator(it->second, t, r) != nullptr;
+                }
+                if (!ok) {
+                    why = unary ? std::format("{} has no unary 'operator-'", quoted(t))
+                                : std::format("{} has no 'operator{}' taking {}", quoted(t), it->second, quoted(r));
+                }
+                return ok;
+            }
+        }
         if (name == "std::comparable") {
             if (t->is_numeric() || t->is(Kind::char_) || t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) return true;
             if (t->is(Kind::user) && find_operator("<=>", t, t)) return true;
@@ -6029,8 +6619,13 @@ private:
                     ok = false;
                     continue;
                 }
-                std::string why;
-                if (satisfies(args[i], c, why)) continue;
+                std::string                              why;
+                std::map<const Symbol*, const Type*>     by_param;   // the arguments, for `std::addable<V>`
+                for (std::size_t j = 0; j < params.size() && j < args.size(); ++j) by_param[params[j]] = args[j];
+                constraint_args_ = &by_param;
+                bool met         = satisfies(args[i], c, why);
+                constraint_args_ = nullptr;
+                if (met) continue;
                 Diagnostic& d = error(DiagCode::E4161, span, why, std::format("'{}' needs {} for '{}'", display, quoted(c), params[i]->name));
                 note(d, "the constraint is here", params[i]->template_param->span);
                 ok = false;
@@ -6512,6 +7107,11 @@ public:
         if (auto it = memo_.find(key); it != memo_.end()) return it->second;
         Decl* copy = copy_of(*templ);
         if (!copy) return program_.types->error();
+        if (copy->kind != DeclKind::function && !copy->template_params.empty() && copy->template_params.back().is_pack &&
+            !copy->template_params.back().is_type) {   // `tensor<f32, 4, 4>` (spec 34): the value pack for these arguments
+            std::size_t fixed = copy->template_params.size() - 1;
+            expand_type_pack(copy->as<TypeDecl>(), args.size() > fixed ? args.size() - fixed : 0);
+        }
         std::vector<Symbol*> params;
         Symbol*              inst = resolve_instance(program_, diags_, templ, *copy, params);
         if (params.size() != args.size()) return program_.types->error();
@@ -6519,6 +7119,13 @@ public:
         inst->instance_index = ++count_[templ];
         for (std::size_t i = 0; i < params.size(); ++i) inst->template_subst[params[i]] = args[i];
         inst->template_args = args;
+        // The interfaces the template implements that don't depend on its parameters: `box<T> : named`.
+        for (Symbol* b : templ->bases) {
+            if (b && b->kind == SymbolKind::interface && !(b->decl && b->decl->is_template) &&
+                std::find(inst->bases.begin(), inst->bases.end(), b) == inst->bases.end()) {
+                inst->bases.push_back(b);
+            }
+        }
         const Type* t = program_.types->user(inst);
         memo_[key]    = t;
         program_.instances.push_back(inst);
@@ -6615,10 +7222,24 @@ public:
     static void expand_pack(FunctionDecl& f, std::size_t n) {
         auto none = [](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); };
         std::string type_name;
+        std::string value_pack;
         std::vector<TemplateParam> tparams;
         for (TemplateParam& p : f.template_params) {
             if (!p.is_pack) {
                 tparams.push_back(std::move(p));
+                continue;
+            }
+            if (!p.is_type) {   // `usize... N`: the values N$0, ..., N$n-1, walked as the pack `N` (spec 34)
+                value_pack = p.name;
+                for (std::size_t i = 0; i < n; ++i) {
+                    ast::Cloner   c(none);
+                    TemplateParam e;
+                    e.is_type    = false;
+                    e.value_type = c.type(*p.value_type);
+                    e.name       = p.name + "$" + std::to_string(i);
+                    e.span       = p.span;
+                    tparams.push_back(std::move(e));
+                }
                 continue;
             }
             type_name = p.name;
@@ -6631,6 +7252,14 @@ public:
             }
         }
         f.template_params = std::move(tparams);
+        if (!value_pack.empty()) {
+            if (f.body) {
+                ast::Cloner c(none);
+                c.expand_pack("", value_pack, n);
+                f.body = c.block(*f.body);
+            }
+            return;
+        }
         std::string value_name;
         std::vector<Param> params;
         for (Param& p : f.params) {
@@ -6655,6 +7284,40 @@ public:
             ast::Cloner c(none);
             c.expand_pack(type_name, value_name, n);
             f.body = c.block(*f.body);
+        }
+    }
+
+    // A type template's value pack `usize... N` as `N$0, ..., N$n-1` (spec 34); its members walk
+    // `N` with `for compile_time`, pass it on as `f<N...>` and count it with `N.len()`.
+    static void expand_type_pack(TypeDecl& t, std::size_t n) {
+        auto          none = [](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); };
+        TemplateParam pack = std::move(t.template_params.back());
+        t.template_params.pop_back();
+        for (std::size_t i = 0; i < n; ++i) {
+            ast::Cloner   c(none);
+            TemplateParam e;
+            e.is_type    = false;
+            e.value_type = c.type(*pack.value_type);
+            e.name       = pack.name + "$" + std::to_string(i);
+            e.span       = pack.span;
+            t.template_params.push_back(std::move(e));
+        }
+        auto cloner = [&] {
+            ast::Cloner c(none);
+            c.expand_pack("", pack.name, n);
+            return c;
+        };
+        for (DeclPtr& m : t.members) {
+            if (m->kind == DeclKind::function) {
+                auto& f = m->as<FunctionDecl>();
+                for (Param& p : f.params) p.type = cloner().type(*p.type);
+                if (f.result) f.result = cloner().type(*f.result);
+                if (f.body) f.body = cloner().block(*f.body);
+            } else if (m->kind == DeclKind::field || m->kind == DeclKind::variable) {
+                auto& v = m->as<VariableDecl>();
+                if (v.type) v.type = cloner().type(*v.type);
+                if (v.init) v.init = cloner().expr(*v.init);
+            }
         }
     }
 
@@ -6819,6 +7482,9 @@ void check_types(sema::Program& program, const SourceManager& sources, Diagnosti
     program.types->set_type_value_resolver([&](const Symbol* s) -> const Type* {
         if (!s->ct_value && s->kind == SymbolKind::global && s->decl && !instantiator.states.count(s->decl)) {
             Checker(program, diags, &instantiator).check_global_symbol(s);
+        }
+        if (!s->ct_value && s->kind == SymbolKind::field && s->is_type_value && s->decl && s->parent) {   // `type element = u32;`
+            Checker(program, diags, &instantiator).check_member_type(s);
         }
         if (!s->ct_value || s->ct_value->kind != ct::Value::Kind::type) return nullptr;
         return s->ct_value->type_value;

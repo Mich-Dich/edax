@@ -4,7 +4,11 @@
 #include "edax/ast_printer.hpp"
 #include "edax/ast_clone.hpp"
 
+#include <algorithm>
+#include <utility>
+#include <deque>
 #include <format>
+#include <mutex>
 #include <optional>
 
 namespace edax {
@@ -731,6 +735,7 @@ private:
             } else {
                 p.is_type    = false;
                 p.value_type = parse_type({});
+                p.is_pack    = accept(TokenKind::ellipsis);   // `usize... N` (spec 34): a value pack
                 p.name       = expect_identifier("a template parameter name");
                 if (accept(TokenKind::eq)) p.default_value = parse_binary(prec_add);
             }
@@ -978,7 +983,62 @@ private:
         expect_close(TokenKind::r_brace, open);
     }
 
+    // `distinct type meters = f32;` (spec 34): a new type with the layout of `f32`.
+    bool union_next_ = false;   // the next type declaration is a `union`
+
+    DeclPtr parse_distinct(Modifiers& m) {
+        auto decl = std::make_unique<TypeDecl>(DeclKind::struct_, m.start);
+        apply_common(*decl, m);
+        decl->is_distinct = true;
+        advance();   // distinct
+        advance();   // type
+        decl->name_span = cur().span;
+        decl->name      = expect_identifier("a type name");
+        expect(TokenKind::eq, "after the name of a distinct type");
+        auto field   = std::make_unique<VariableDecl>(DeclKind::field, decl->name_span);
+        field->name  = "$value";
+        field->name_span = decl->name_span;
+        field->type  = parse_type({});
+        expect(TokenKind::semicolon, "after a distinct type");
+        decl->members.push_back(std::move(field));
+        decl->span = from(m.start);
+        return decl;
+    }
+
+    // `implement geometry::point for math::vec3 { ... }` (spec 34): methods that make an existing
+    // type implement an interface.
+    DeclPtr parse_implement(Modifiers& m) {
+        auto decl = std::make_unique<TypeDecl>(DeclKind::struct_, m.start);
+        apply_common(*decl, m);
+        advance();   // implement
+        decl->name_span = cur().span;
+        decl->bases.push_back(parse_type({}));
+        expect(TokenKind::kw_for, "after the interface in 'implement I for T'");
+        decl->implement_target = parse_type({});
+        decl->name             = "implement";
+        Span open = expect(TokenKind::l_brace, "to start the implementation").span;
+        Access access = Access::none;
+        while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
+            std::size_t before = pos_;
+            try {
+                if (DeclPtr member = parse_member(MemberContext::struct_, access)) decl->members.push_back(std::move(member));
+            } catch (const ParseError&) {
+                synchronize(false);
+            }
+            if (pos_ == before) advance();
+        }
+        expect_close(TokenKind::r_brace, open);
+        decl->span = from(m.start);
+        return decl;
+    }
+
     DeclPtr parse_top_level_item(Modifiers& m) {
+        if (at(TokenKind::identifier) && cur().text == "distinct" && peek(1).kind == TokenKind::kw_type) return parse_distinct(m);
+        if (at(TokenKind::identifier) && cur().text == "union" && peek(1).kind == TokenKind::identifier && peek(2).kind == TokenKind::l_brace) {
+            union_next_ = true;   // `union u { ... }` (spec 34): a struct whose fields share memory
+            return parse_type_decl(m, DeclKind::struct_);
+        }
+        if (at(TokenKind::identifier) && cur().text == "implement" && peek(1).kind != TokenKind::l_paren) return parse_implement(m);
         switch (cur().kind) {
         case TokenKind::kw_import: return parse_import(m);
         case TokenKind::kw_struct: return parse_type_decl(m, DeclKind::struct_);
@@ -1044,7 +1104,8 @@ private:
             decl->is_annotation      = m.is_annotation;
             decl->annotation_targets = std::move(m.annotation_targets);
         }
-        std::string_view what = kind == DeclKind::struct_ ? "struct" : kind == DeclKind::class_ ? "class" : "interface";
+        decl->is_union = std::exchange(union_next_, false);
+        std::string_view what = decl->is_union ? "union" : kind == DeclKind::struct_ ? "struct" : kind == DeclKind::class_ ? "class" : "interface";
         advance();
         decl->name_span = cur().span;
         decl->name      = expect_identifier(std::format("a {} name", what));
@@ -1157,10 +1218,41 @@ private:
         if (at(TokenKind::kw_struct) || at(TokenKind::kw_class) || at(TokenKind::kw_interface) || at(TokenKind::kw_enum)) {
             return parse_nested_type(m, ctx, access);
         }
+        if (at(TokenKind::kw_type) && peek(1).kind == TokenKind::identifier &&
+            (peek(2).kind == TokenKind::eq || peek(2).kind == TokenKind::semicolon)) {
+            return parse_associated_type(m, ctx, access);
+        }
         if (!starts_declaration(/*member=*/true)) {
             fail_unexpected("a field or method declaration");
         }
         return parse_function_or_variable(m, ctx, access);
+    }
+
+    // `type element = u32;` in a type, `type element;` in an interface (spec 34): an associated
+    // type, a member `compile_time type element = u32;` that `T::element` names.
+    DeclPtr parse_associated_type(Modifiers& m, MemberContext ctx, Access access) {
+        auto decl = std::make_unique<VariableDecl>(DeclKind::field, m.start);
+        apply_common(*decl, m);
+        decl->access  = access;
+        decl->storage = Storage::compile_time;
+        Path p;
+        p.span = cur().span;
+        PathSegment seg;
+        seg.name = "type";
+        seg.span = cur().span;
+        p.segments.push_back(std::move(seg));
+        decl->type = std::make_unique<NamedType>(advance().span, std::move(p));   // type
+        decl->name_span = cur().span;
+        decl->name      = expect_identifier("the name of the associated type");
+        if (accept(TokenKind::eq)) {
+            decl->init = parse_expr();
+        } else if (ctx != MemberContext::interface) {
+            report(DiagCode::E2001, decl->name_span, "an associated type outside an interface needs its type: 'type name = T;'",
+                   "no type");
+        }
+        expect(TokenKind::semicolon, "after an associated type");
+        decl->span = from(m.start);
+        return decl;
     }
 
     // A struct, class, enum or interface inside a struct or class: parsed like a file-scope type,
@@ -1553,6 +1645,17 @@ private:
             auto tuple = std::make_unique<TupleType>(open);
             do {
                 if (at(TokenKind::r_paren)) break;
+                if (at(TokenKind::kw_mut) && opts.allow_reference) {   // `(mut A&, B&)`: references into distinct fields (spec 34)
+                    Span m      = advance().span;
+                    TypePtr ref = parse_type({});
+                    if (ref->kind != TypeKind::reference) {
+                        report(DiagCode::E2003, from(m), "'mut' in a tuple type marks a reference: write 'mut T&'", "not a reference");
+                    } else {
+                        ref->as<ReferenceType>().is_mut = true;
+                    }
+                    tuple->elements.push_back(std::move(ref));
+                    continue;
+                }
                 tuple->elements.push_back(parse_type({}));
             } while (accept(TokenKind::comma));
             expect_close(TokenKind::r_paren, open);
@@ -1658,6 +1761,11 @@ private:
         } else {
             // Value arguments stop before `<`, `>` and `>>`: use parentheses for those.
             arg.value = parse_binary(prec_add);
+        }
+        if (arg.value && at(TokenKind::ellipsis)) {   // `product<N...>`: a value pack passed on (spec 34)
+            Span all  = from(start);
+            advance();
+            arg.value = std::make_unique<UnaryExpr>(all, UnaryOp::spread, std::move(arg.value));
         }
         arg.span = from(start);
         return arg;
@@ -2000,12 +2108,81 @@ private:
         }
     }
 
+    // `(value is pattern)` or `(value is pattern && guard)` as the condition of `if` and `while`
+    // (spec 34): one `match` arm. The scrutinee, pattern and guard, or null when the condition is
+    // an ordinary one (then `plain` holds it).
+    struct IsCondition {
+        ExprPtr    plain;
+        ExprPtr    value;
+        PatternPtr pattern;
+        ExprPtr    guard;
+    };
+
+    IsCondition parse_condition_with_is(std::string_view construct) {
+        IsCondition out;
+        Span open = expect(TokenKind::l_paren, std::format("after '{}'", construct)).span;
+        try {
+            ExprPtr cond = parse_expr();
+            if (at(TokenKind::identifier) && cur().text == "is") {   // a contextual keyword
+                advance();
+                out.value   = std::move(cond);
+                out.pattern = parse_pattern();
+                if (accept(TokenKind::amp_amp)) out.guard = parse_expr();
+                expect_close(TokenKind::r_paren, open);
+                return out;
+            }
+            if (is_assignment_op(cur().kind)) {
+                fail(DiagCode::E2006, cur().span, "assignment is a statement, not an expression",
+                     "this assigns", {Note{"compare with '==', or assign before the condition", std::nullopt}});
+            }
+            expect_close(TokenKind::r_paren, open);
+            out.plain = std::move(cond);
+        } catch (const ParseError&) {
+            skip_past_close_paren();
+            out.plain = std::make_unique<SimpleExpr>(ExprKind::error, from(open));
+        }
+        return out;
+    }
+
+    // `if (v is p) { a } else { b }` is `match (v) { p => { a }, _ => { b } }`.
+    ExprPtr if_is(Span start, IsCondition c, BlockPtr then_block, ExprPtr else_branch) {
+        auto m       = std::make_unique<MatchExpr>(start);
+        m->scrutinee = std::move(c.value);
+        MatchArm yes;
+        yes.span    = c.pattern->span;
+        yes.pattern = std::move(c.pattern);
+        yes.guard   = std::move(c.guard);
+        yes.body    = std::move(then_block);
+        MatchArm no;
+        no.span    = start;
+        no.pattern = std::make_unique<SimplePattern>(PatternKind::wildcard, start);
+        no.body    = else_branch ? std::move(else_branch) : ExprPtr(std::make_unique<BlockExpr>(start));
+        m->arms.push_back(std::move(yes));
+        m->arms.push_back(std::move(no));
+        m->span = from(start);
+        return m;
+    }
+
     ExprPtr parse_while() {
-        Span start = advance().span;
-        auto loop  = std::make_unique<WhileExpr>(start);
-        loop->condition = parse_paren_condition("while");
-        loop->body      = parse_body("while");
-        loop->span      = from(start);
+        Span        start = advance().span;
+        auto        loop  = std::make_unique<WhileExpr>(start);
+        IsCondition c     = parse_condition_with_is("while");
+        loop->body        = parse_body("while");
+        if (c.pattern) {   // `while (v is p) { body }`: `while (true) { match (v) { p => { body }, _ => { break; } } }`
+            auto stop = std::make_unique<BlockExpr>(start);
+            stop->statements.push_back(std::make_unique<ExprStmt>(start, std::make_unique<SimpleExpr>(ExprKind::break_, start)));
+            ExprPtr m  = if_is(start, std::move(c), std::move(loop->body), std::move(stop));
+            auto    body = std::make_unique<BlockExpr>(m->span);
+            body->statements.push_back(std::make_unique<ExprStmt>(m->span, std::move(m)));
+            loop->body = std::move(body);
+            auto yes   = std::make_unique<LiteralExpr>(ExprKind::bool_literal, start, TokenKind::kw_true);
+            yes->bool_value = true;
+            yes->text       = "true";
+            loop->condition = std::move(yes);
+        } else {
+            loop->condition = std::move(c.plain);
+        }
+        loop->span = from(start);
         return loop;
     }
 
@@ -2567,8 +2744,19 @@ private:
         Span start = advance().span;
         auto node  = std::make_unique<IfExpr>(start);
         node->is_compile_time = accept(TokenKind::kw_compile_time);
-        node->condition       = parse_paren_condition("if");
+        IsCondition cond      = parse_condition_with_is("if");
         node->then_block      = parse_body("if");
+        if (cond.pattern) {   // `if (v is p)` (spec 34)
+            if (node->is_compile_time) report(DiagCode::E2001, start, "'if compile_time' takes a condition, not 'is' with a pattern", "'is'");
+            ExprPtr else_branch;
+            if (accept(TokenKind::kw_else)) {
+                else_branch = at(TokenKind::kw_if) ? parse_if(as_value) : ExprPtr(parse_body("else"));
+            } else if (as_value) {
+                report(DiagCode::E2020, start, "'if' used as a value needs an 'else' branch", "this 'if' has no 'else'");
+            }
+            return if_is(start, std::move(cond), std::move(node->then_block), std::move(else_branch));
+        }
+        node->condition = std::move(cond.plain);
         if (accept(TokenKind::kw_else)) {
             if (at(TokenKind::kw_if)) {
                 node->else_branch = parse_if(as_value);
@@ -2692,6 +2880,10 @@ private:
                     break;
                 }
                 continue;
+            }
+            if (at(TokenKind::kw_mut) && peek(1).kind != TokenKind::amp) {   // `[mut x = 0]`: a value the lambda changes
+                advance();
+                cap.is_mut = true;
             }
             if (accept(TokenKind::kw_move)) {
                 cap.kind = CaptureKind::move;
@@ -2857,9 +3049,212 @@ private:
 
 } // namespace
 
+namespace {
+
+// ---- unbalanced delimiters ---------------------------------------------------------------------
+//
+// A missing or extra `}`, `)` or `]` makes a parser report errors far away from the mistake, one
+// after another, until the end of the file. Before parsing, the tokens are matched: when they
+// don't balance, indentation says where the mistake is (a closer that lines up with an outer
+// opener closes that one; a block ends where the code dedents to the opener's line), the
+// mistake is reported there, once, and the tokens are repaired so the parser sees a balanced
+// file and reports only what is really wrong elsewhere.
+
+bool is_opener(TokenKind k) { return k == TokenKind::l_brace || k == TokenKind::l_paren || k == TokenKind::l_bracket; }
+bool is_closer(TokenKind k) { return k == TokenKind::r_brace || k == TokenKind::r_paren || k == TokenKind::r_bracket; }
+TokenKind closer_of(TokenKind k) {
+    return k == TokenKind::l_brace ? TokenKind::r_brace : k == TokenKind::l_paren ? TokenKind::r_paren : TokenKind::r_bracket;
+}
+TokenKind opener_of(TokenKind k) {
+    return k == TokenKind::r_brace ? TokenKind::l_brace : k == TokenKind::r_paren ? TokenKind::l_paren : TokenKind::l_bracket;
+}
+
+bool balanced(const std::vector<Token>& tokens) {
+    std::vector<TokenKind> stack;
+    for (const Token& t : tokens) {
+        if (is_opener(t.kind)) stack.push_back(t.kind);
+        if (is_closer(t.kind)) {
+            if (stack.empty() || closer_of(stack.back()) != t.kind) return false;
+            stack.pop_back();
+        }
+    }
+    return stack.empty();
+}
+
+std::vector<Token> repair_delimiters(const SourceFile& file, FileId id, const std::vector<Token>& tokens, DiagnosticEngine& diags) {
+    if (balanced(tokens)) return tokens;
+    auto line_of = [&](const Token& t) { return file.line_col(t.span.begin).line; };
+    auto indent_of = [&](std::uint32_t line) {
+        std::uint32_t n = 0;
+        for (char c : file.line_text(line)) {
+            if (c == ' ') ++n;
+            else if (c == '\t') n += 4;
+            else break;
+        }
+        return n;
+    };
+    auto first_on_line = [&](std::size_t i) { return i == 0 || line_of(tokens[i - 1]) < line_of(tokens[i]); };
+    auto text_of = [&](const Token& t) { return std::string(file.text().substr(t.span.begin, t.span.size())); };
+    auto synthetic = [&](TokenKind k, std::uint32_t at) {
+        Token t;
+        t.kind = k;
+        t.span = Span{id, at, at};
+        t.text = token_kind_spelling(k);
+        return t;
+    };
+    struct Open {
+        std::size_t   index;
+        std::uint32_t line;
+        std::uint32_t indent;
+    };
+    constexpr int max_reports = 3;
+    int reported = 0;
+    auto unclosed = [&](const Open& o, std::string note, std::optional<Span> where) {
+        if (reported++ >= max_reports) return;
+        std::string open = text_of(tokens[o.index]);
+        Diagnostic& d = diags.report(DiagCode::E2016, tokens[o.index].span, std::format("unclosed '{}'", open),
+                                     std::format("this '{}' is never closed", open));
+        d.notes.push_back(Note{std::move(note), where});
+    };
+
+    std::vector<Token> out;
+    out.reserve(tokens.size() + 4);
+    std::vector<Open> stack;
+    // Inserts a closer into `out` before the token that starts at `at`.
+    auto insert_before = [&](TokenKind k, std::uint32_t at) {
+        auto pos = std::find_if(out.begin(), out.end(), [&](const Token& x) { return x.span.begin >= at && x.span.size() > 0; });
+        out.insert(pos, synthetic(k, at));
+    };
+    // A '(' or '[' left open ends with its statement or where a block starts: the first ';' or
+    // '{' after it on its line (`take(1;`, `if (x > 3 {`). Reported and closed there; false when
+    // its line has neither.
+    auto close_at_semicolon = [&](const Open& o) {
+        if (tokens[o.index].kind == TokenKind::l_brace) return false;
+        for (std::size_t j = o.index + 1; j < tokens.size() && line_of(tokens[j]) == o.line; ++j) {
+            if (tokens[j].kind != TokenKind::semicolon && tokens[j].kind != TokenKind::l_brace) continue;
+            std::string close(token_kind_spelling(closer_of(tokens[o.index].kind)));
+            unclosed(o, tokens[j].kind == TokenKind::semicolon
+                            ? std::format("the statement ends here, before its '{}'", close)
+                            : std::format("a block starts here, so the '{}' is probably missing before it", close),
+                     tokens[j].span);
+            insert_before(closer_of(tokens[o.index].kind), tokens[j].span.begin);
+            return true;
+        }
+        return false;
+    };
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        const Token& t = tokens[i];
+        if (t.kind == TokenKind::eof) {
+            // Openers left at the end: each block ends where the code dedents to its opener's line.
+            while (!stack.empty()) {
+                Open o = stack.back();
+                stack.pop_back();
+                if (close_at_semicolon(o)) continue;
+                std::size_t end = tokens.size() - 1;
+                for (std::size_t j = o.index + 1; j < tokens.size() - 1; ++j) {
+                    if (first_on_line(j) && line_of(tokens[j]) > o.line && indent_of(line_of(tokens[j])) <= o.indent) {
+                        end = j;
+                        break;
+                    }
+                }
+                std::string close(token_kind_spelling(closer_of(tokens[o.index].kind)));
+                if (end < tokens.size() - 1) {
+                    unclosed(o, std::format("line {} is no longer indented inside it: the '{}' is probably missing before it", line_of(tokens[end]), close),
+                             tokens[end].span);
+                } else {
+                    unclosed(o, std::format("the file ends before its '{}'", close), std::nullopt);
+                }
+                insert_before(closer_of(tokens[o.index].kind), tokens[end].span.begin);   // where the block ends
+            }
+            out.push_back(t);
+            continue;
+        }
+        if (is_opener(t.kind)) {
+            stack.push_back(Open{i, line_of(t), indent_of(line_of(t))});
+            out.push_back(t);
+            continue;
+        }
+        if (!is_closer(t.kind)) {
+            out.push_back(t);
+            continue;
+        }
+        TokenKind want = opener_of(t.kind);
+        bool lines_up_elsewhere = false;
+        std::size_t match = stack.size();
+        if (first_on_line(i)) {   // a closer at the start of a line lines up with its opener's line
+            std::uint32_t col = indent_of(line_of(t));
+            for (std::size_t k = stack.size(); k-- > 0;) {
+                if (tokens[stack[k].index].kind == want && stack[k].indent == col) {
+                    match = k;
+                    break;
+                }
+            }
+            lines_up_elsewhere = match < stack.size() && match + 1 < stack.size() &&
+                                 !(tokens[stack.back().index].kind == want && stack.back().indent == col);
+        }
+        if (!lines_up_elsewhere) {
+            match = stack.size();
+            if (!stack.empty() && tokens[stack.back().index].kind == want) match = stack.size() - 1;
+            if (match == stack.size()) {   // the innermost opener of this kind
+                for (std::size_t k = stack.size(); k-- > 0;) {
+                    if (tokens[stack[k].index].kind == want) {
+                        match = k;
+                        break;
+                    }
+                }
+            }
+        }
+        if (match == stack.size()) {   // nothing to close: an extra closer, or a forgotten opener
+            out.push_back(t);          // the parser explains it (it knows whether a '{' is missing)
+            continue;
+        }
+        // Everything opened after `match` is unclosed: closed here, or, for a '(' or '[', where its
+        // statement ends (the ';' on its line).
+        while (stack.size() > match + 1) {
+            Open o = stack.back();
+            stack.pop_back();
+            if (close_at_semicolon(o)) continue;
+            unclosed(o, std::format("this '{}' on line {} lines up with the '{}' on line {}, so it closes that one",
+                                    text_of(t), line_of(t), text_of(tokens[stack[match].index]), stack[match].line),
+                     t.span);
+            out.push_back(synthetic(closer_of(tokens[o.index].kind), t.span.begin));
+        }
+        stack.pop_back();
+        out.push_back(t);
+    }
+    return out;
+}
+
+} // namespace
+
 ast::File parse(const SourceFile& file, FileId id, const std::vector<Token>& tokens,
                 DiagnosticEngine& diags) {
-    return Parser(file, id, tokens, diags).parse_file();
+    std::size_t errors_before = diags.error_count();
+    std::vector<Token> repaired = repair_delimiters(file, id, tokens, diags);
+    if (diags.error_count() == errors_before) return Parser(file, id, tokens, diags).parse_file();
+    // The file had unbalanced delimiters, reported where they are. The repaired tokens are
+    // parsed for what else is wrong; errors at the repairs themselves are the same mistake.
+    // The syntax tree may point into its tokens' text, so the repaired tokens must live as long
+    // as the program does. Only files with this error get here.
+    static std::mutex                          keep_lock;
+    static std::deque<std::vector<Token>>      kept;
+    const std::vector<Token>*                  stable = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(keep_lock);
+        kept.push_back(std::move(repaired));
+        stable = &kept.back();
+    }
+    std::size_t mark = diags.size();
+    ast::File parsed = Parser(file, id, *stable, diags).parse_file();
+    std::vector<Diagnostic> later = diags.take_since(mark);
+    for (Diagnostic& d : later) {
+        bool at_repair = false;
+        for (const Token& t : *stable) {
+            if (t.span.size() == 0 && t.span.begin == d.span.begin) at_repair = true;
+        }
+        if (!at_repair) diags.add(std::move(d));
+    }
+    return parsed;
 }
 
 ast::ExprPtr parse_expression(const SourceFile& file, FileId id, const std::vector<Token>& tokens,

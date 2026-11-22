@@ -1,0 +1,27 @@
+// RUN: edaxc run %s
+// Distinct types (spec 34): cast converts; @std::derive::arithmetic gives the underlying
+// arithmetic: d + d, d * k, k * d, d / k, d / d (a ratio), -d, comparisons, += *=.
+import std;
+
+@std::derive::arithmetic
+distinct type meters = f32;
+@std::derive::arithmetic
+distinct type seconds = f32;
+@std::derive::arithmetic
+distinct type score = i32;
+
+compile_time meters lap = cast<meters>(400.0) * 2.0;
+
+void main() {
+    mut meters d = cast<meters>(3.0);
+    meters e = d * 2.0 + 1.5 * d;
+    d += e;
+    d *= 0.5;
+    f32 ratio = e / d;
+    meters half = e / 2.0;
+    seconds t = cast<seconds>(2.0);
+    mut score s = cast<score>(10);
+    s -= cast<score>(3);
+    s *= 2;
+    std::println(f"{cast<f32>(e)} {cast<f32>(d)} {ratio} {cast<f32>(half)} {cast<f32>(-half)} {e > d} {cast<f32>(lap)} {cast<i32>(s)} {cast<i32>(s % cast<score>(5))}");
+}

@@ -138,6 +138,13 @@ annotation(std::meta::target::type) struct hashable {
 | `@std::must_use` | function, type | Ignoring the result is an error (as for `std::result`, see [Error Handling](../errors/error-handling.md)). Discard with `_ =` |
 | `@std::inline_always`, `@std::inline_never` | function | Overrides the optimizer's inlining decision |
 | `@std::cold` | function | The function is rarely called (error paths). The optimizer moves it, and branches to it, out of the hot path |
+| `@std::optimize{ .level }` | function | The function's own optimization level, whatever the mode (see [Performance](../performance/performance.md)) |
+| `@std::float_mode{ ... }` | function | Relaxed floating point for the operations written in the function |
+| `@std::no_checks_left` | function | A run-time check the optimizer couldn't remove is a compile error |
+| `@std::interior_mutable` | type | The type changes through immutable references (atomics, locks); the optimizer is not told that a `T&` of it is read-only |
+| `@std::layout{ .align, .packed, .no_implicit_padding }` | type | The memory layout of a struct or class (see [Memory Layout](../user-types/layout.md)) |
+| `@std::reflect` | type, field, function | Run-time type information is emitted for it (see [Metaprogramming](metaprogramming.md)) |
+| `@std::hot_reload_state` | type | Migrated field by field when a plugin is reloaded (see [Dynamic Libraries](../../stdlib/system/dynamic-libraries.md)) |
 | `@std::test` | function | A test: `edaxc test` finds and runs every `@std::test` function of the test targets (see [Edax as a Build System](../../build/build-system.md)). The function takes no parameters and returns `void` |
 
 The `derive` annotations are ordinary annotations with `generate` blocks, written in Edax. They're in `std` because they're needed often, not because they're special.

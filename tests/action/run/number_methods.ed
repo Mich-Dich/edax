@@ -1,0 +1,18 @@
+// RUN: edaxc run %s
+// The methods of numbers (spec 34): roots, rounding, trigonometry, min/max/clamp, a fused
+// multiply-add; integer abs panics on the minimum.
+import std;
+
+void main() {
+    f64 x = 2.0;
+    f32 angle = 0.5;
+    std::println(f"sqrt {x.sqrt()}, pow {x.pow(10.0)}, mul_add {x.mul_add(3.0, 1.0)}");
+    std::println(f"floor {(2.7f64).floor()}, ceil {(2.2f64).ceil()}, round {(2.5f64).round()}, trunc {(-2.7f64).trunc()}");
+    std::println(f"sin {angle.sin()}, cos {angle.cos()}, atan2 {angle.atan2(1.0)}");
+    std::println(f"min {x.min(1.5)}, max {x.max(3.0)}, clamp {x.clamp(0.0, 1.0)}");
+    std::println(f"nan {(0.0f64 / 0.0).is_nan()}, finite {x.is_finite()}, infinite {(1.0f64 / 0.0).is_infinite()}");
+    i32 n = -5;
+    std::println(f"abs {n.abs()}, max {n.max(3)}, clamp {n.clamp(-2, 2)}");
+    i32 lowest = i32::min;
+    std::println(f"{lowest.abs()}");
+}

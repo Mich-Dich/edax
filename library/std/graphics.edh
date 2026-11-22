@@ -1,0 +1,57 @@
+// The Edax standard library: module std::graphics, which graphics API a program uses.
+//
+// A graphics API is a name and a version, nothing else:
+//
+//     compile_time std::graphics::api gl_33 = std::graphics::api{
+//         .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+//     compile_time std::graphics::api vk_14 = std::graphics::api{
+//         .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1, .minor = 4, .patch = 320 } };
+//
+// The same value makes the window (std::windowing::opengl::config's `api`,
+// system.create_vulkan_window) and picks the functions: std::graphics::opengl::functions<gl_33>
+// and std::graphics::vulkan::functions<vk_14>. Those two modules aren't written by hand: edaxc
+// makes them from the Khronos registries (library/std/graphics/registry), so every version of
+// OpenGL, OpenGL ES and Vulkan the registry describes is there, and a command the program's
+// version doesn't have is a compile error at the call. `edaxc registry opengl` (or `vulkan`)
+// prints what edaxc made.
+//
+// The module is loaded when a file names `std::graphics` (or `std::windowing`, which uses it).
+
+namespace std::graphics {
+    // The graphics APIs, by family. A version is only meaningful together with its family:
+    // "OpenGL Core 3.3", "Vulkan 1.4.320".
+    enum api_name : u8 {
+        // OpenGL's core profile (3.2 and later): the modern API only.
+        opengl_core,
+        // OpenGL's compatibility profile: the modern API and the old fixed-function one.
+        opengl_compatibility,
+        // OpenGL ES (2.0 and later).
+        opengl_es,
+        vulkan,
+        // metal, direct3d: later
+    }
+
+    // A graphics API and the version a program asks for. Prints as "OpenGL Core 3.3.0".
+    struct api {
+        api_name     name = api_name::opengl_core;
+        std::version version = std::version{ .major = 3, .minor = 3 };
+
+        bool operator==(api& other) = default;
+        void format(mut std::formatter& out);
+    }
+
+    // The family's name as people write it: "OpenGL Core", "OpenGL Compatibility", "OpenGL ES",
+    // "Vulkan".
+    compile_time run_time std::static_str name_text(api_name name);
+
+    // Whether `name` is one of the OpenGL families.
+    compile_time run_time bool is_opengl(api_name name);
+
+    // Where an API's functions are found: an OpenGL context that is current
+    // (std::windowing::opengl::frame, ::current) or the Vulkan loader (std::windowing::vulkan::loader).
+    // The generated functions<A>::load() takes one.
+    interface function_source {
+        // The address of the function `name` ("glClear", "vkGetInstanceProcAddr"), or none.
+        std::option<std::raw_ptr<u8>> proc_address(std::str name);
+    }
+}

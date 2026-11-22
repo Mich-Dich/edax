@@ -9,3 +9,8 @@ absorbed: e 27, c 0
 live after the block 1
 box 42
 --- stderr
+edaxc run: debug, 2 targets
+ ✓ build.ed       2 targets <t>
+ ✓ counter        3 units, 6.08 KiB <t>  %t/c/libcounter.a
+ ✓ app            7 units, 13.60 KiB <t>  %t/debug/app
+built 2 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

@@ -12,6 +12,7 @@ There are no C-style casts (`(T)x`) and no constructor-style casts (`T(x)`). Eve
 | `cast::round<T>(x)` | Float → narrower float, wide integer → float | Rounds to nearest | Yes |
 | `cast::checked<T>(x)` | Any numeric → numeric | Returns `std::option<T>`: `none` if the value doesn't fit exactly | Yes |
 | `cast::dynamic<T>(x)` | Base/interface reference or pointer → derived | Returns `std::option<T>` | Yes |
+| `std::bit_cast<T>(x)` | The same bits as another type of the same size; both must be *plain bits* (numbers, SIMD vectors, arrays and structs of them without padding, see [Memory Layout](../user-types/layout.md)) | - | Yes |
 | `cast::reinterpret<T>(x)` | Bit-level reinterpretation, integer ↔ `std::raw_ptr` | - | **`unsafe` only** |
 
 A `char` is a Unicode scalar value (at most `0x10FFFF`): `cast<u32>(c)` (or any integer of at least 32 bits) is lossless. The other direction can fail, so it is `cast::checked<char>(n)`, which is `none` for surrogates and values above `0x10FFFF`.

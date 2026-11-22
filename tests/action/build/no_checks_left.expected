@@ -1,0 +1,12 @@
+exit: 1
+--- stdout
+--- stderr
+error[E6004]: 1 run-time check is left in a '@std::no_checks_left' function
+  --> tests/action/build/no_checks_left.ed:16:6
+   |
+16 | void scale(mut std::darray<f32>& a, std::darray<f32>& b) {
+   |      ^^^^^ checks left
+   = note: a check at tests/action/build/no_checks_left.ed:18:17
+   = note: state what the optimizer can't see (std::assume), iterate instead of indexing, or use the unchecked forms in unsafe code
+
+1 error, 0 warnings

@@ -1,0 +1,37 @@
+// RUN: edaxc run %s
+// Value packs (spec 34): `usize... N` in function and struct templates, walked with
+// `for compile_time`, counted with `N.len()`, passed on as `f<N...>`.
+import std;
+
+template<usize... N>
+usize product() {
+    mut usize p = 1;
+    for compile_time (usize n : N) { p *= n; }
+    return p;
+}
+
+template<usize... N>
+usize total() { return product<N...>() + N.len(); }
+
+template<type T, usize... N>
+struct tensor {
+    std::darray<T> data = default;
+    static usize rank() { return N.len(); }
+    static usize count() { return product<N...>(); }
+    usize dim(usize i) {
+        mut usize k = 0;
+        mut usize out = 0;
+        for compile_time (usize n : N) {
+            if (k == i) { out = n; }
+            k += 1;
+        }
+        return out;
+    }
+}
+
+void main() {
+    std::println(f"{product<2, 3, 4>()} {total<2, 5>()} {product<>()}");
+    tensor<f32, 4, 3, 2> t = tensor<f32, 4, 3, 2>{};
+    std::println(f"rank {tensor<f32, 4, 3, 2>::rank()} count {tensor<f32, 4, 3, 2>::count()} dim1 {t.dim(1)}");
+    std::println(f"{tensor<u8, 7>::count()} {tensor<u8>::rank()}");
+}

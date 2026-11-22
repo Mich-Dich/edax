@@ -1,0 +1,10 @@
+// A '(' left open ends with its statement; an extra '}' is reported where it is, once.
+void take(u32 a) {}
+
+void f() {
+    take(1;                                       //~ error[E2016]: unclosed '('
+    take(2);
+}
+}                                                 //~ error[E2004]: expected a declaration, found '}'
+
+void g() {}

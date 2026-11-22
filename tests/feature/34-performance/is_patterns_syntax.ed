@@ -1,0 +1,7 @@
+// feature 34: `is` needs an else to be a value, and isn't a compile-time condition.
+import std;
+
+void f(std::option<u32> o) {
+    u32 kind = if (o is std::none) { 0 };   //~ error[E2020]: needs an 'else' branch
+    if compile_time (o is std::none) { }    //~ error[E2001]: not 'is' with a pattern
+}

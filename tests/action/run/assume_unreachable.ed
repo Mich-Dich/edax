@@ -1,0 +1,24 @@
+// RUN: edaxc run %s
+// std::bit_cast, std::meta::type_id, std::assume and std::unreachable (spec 34). In a safe mode a
+// false assumption panics at the call.
+import std;
+
+struct rgba { u8 r; u8 g; u8 b; u8 a; }
+
+u32 price(u32 tier) {
+    std::assume(tier < 3);
+    return match (tier) {
+        0 => 10,
+        1 => 25,
+        2 => 60,
+        _ => std::unreachable(),
+    };
+}
+
+void main() {
+    rgba c = std::bit_cast<rgba>(0x04030201u32);
+    std::println(f"bytes {c.r} {c.g} {c.b} {c.a}, bits of 1.5: {std::bit_cast<u32>(1.5f32)}");
+    std::println(f"type ids differ: {std::meta::type_id<rgba>() != std::meta::type_id<u32>()}");
+    std::println(f"tier 1 costs {price(1)}");
+    std::println(f"tier 5 costs {price(5)}");
+}

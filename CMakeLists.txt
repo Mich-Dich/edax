@@ -6,6 +6,15 @@ project(edax
     LANGUAGES CXX
 )
 
+# Build type -----------------------------------------------------------------------------------------------------------
+# Without one, CMake compiles with no optimization at all: edaxc would check and compile Edax
+# programs 4-5x slower. A plain `cmake -S . -B build` builds an optimized compiler with debug
+# info; pass -DCMAKE_BUILD_TYPE=Debug to debug edaxc itself.
+get_property(edax_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if (NOT edax_multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+endif()
+
 # Toolchain: C++26 -----------------------------------------------------------------------------------------------------
 # Edax targets C++26 (-std=c++2c). We rely on Clang 18+ or GCC 14+.
 # CMake 3.30+ recognizes CMAKE_CXX_STANDARD 26; older CMake needs

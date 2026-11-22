@@ -59,6 +59,17 @@ unsafe {
 - A missing symbol is `std::error(std::c_library_error::symbol_not_found)`.
 - Destroying the `std::c_library` unloads it.
 
+### Hot reload
+A plugin built with `g.add_plugin(..., .hot_reload = true)` can be replaced while the program runs:
+```edax
+mut std::plugin<game_api::game> game = std::plugin<game_api::game>::load(path)?;
+...
+game.reload(path)?;          // the new build of the same plugin, with the state carried over
+```
+- `reload` checks the new library like `load` (same interface hash, same edaxc). Then it carries the plugin's state over: types marked `@std::hot_reload_state` are migrated **field by field by name** using the layout tables both builds carry; new fields take their default, removed fields are dropped, a field whose type changed is an error value (`std::plugin_error::state_changed`, naming the field). Everything else the plugin must rebuild itself.
+- Values that borrow the old library must be gone first; the borrow rules enforce it, as for unloading.
+- `std::filesystem::watch` reports changed files, so a program can rebuild and reload when a source changes.
+
 ### Requirements
 - The target must have the `dynamic_libraries` capability (see [Edax as a Build System](../../build/build-system.md)); otherwise `load` is a compile error.
 - `std::plugin` and `std::c_library` are `std::sendable` but not `std::shareable`: one thread owns a loaded library at a time.

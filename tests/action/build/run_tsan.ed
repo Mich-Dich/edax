@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/sanitize_project --out-dir=%t --mode=tsan app
+// A mode with sanitize() thread (spec 34): no race is reported for a mutex-protected counter.

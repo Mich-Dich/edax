@@ -17,6 +17,7 @@ std::static_str optimization_name() {
         std::build::optimization::none => "none",
         std::build::optimization::size => "size",
         std::build::optimization::speed => "speed",
+        std::build::optimization::basic => "basic",
     };
 }
 

@@ -29,6 +29,7 @@ struct DriverStreams {
     std::ostream& out;
     std::ostream& err;
     bool          err_is_terminal = false;
+    bool          out_is_terminal = false;   // live build output (docs/design/build/build-output.md)
 };
 
 ExitCode run_driver(std::span<const std::string_view> args, DriverStreams streams);

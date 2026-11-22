@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/output_project --out-dir=%t
+// g.output and g.details in build.ed: the details shown, a failed target, one not built.

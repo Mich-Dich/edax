@@ -1,5 +1,9 @@
 #include "edax/ast_walk.hpp"
 #include "edax/driver.hpp"
+#include "edax/build_report.hpp"
+
+#include <charconv>
+#include "edax/graphics_registry.hpp"
 
 #include "edax/ast_printer.hpp"
 #include "edax/c_import.hpp"
@@ -47,6 +51,14 @@ namespace edax {
 
 namespace {
 
+// The modes of std::build::mode (spec 24): selectable without build.ed.
+// The mode's sanitize() (spec 34) for the C and C++ targets of a build.ed build.
+std::string g_c_sanitize;
+
+bool is_builtin_mode(const std::string& mode) {
+    return mode == "debug" || mode == "development" || mode == "release" || mode == "release_with_debug_info";
+}
+
 constexpr std::string_view usage_text =
     "usage: edaxc <command> [options] [file]\n"
     "\n"
@@ -64,6 +76,8 @@ constexpr std::string_view usage_text =
     "  emit-llvm <file>      print the LLVM IR the program compiles to\n"
     "  insights <file>       list what the compiler does implicitly (stack, heap, drops, moves, ...) as JSON\n"
     "  expand <file> <type>  print a type with the members its annotations generate written out\n"
+    "  explain-checks <file> the run-time checks of the file's code and whether the optimizer removes\n"
+    "                        them (as in a release build)\n"
     "  simd-report <file> [function]\n"
     "                        what the vector code of each function becomes on the CPU level: hardware\n"
     "                        forms, split or emulated operations, masked tails, multiversion copies,\n"
@@ -76,15 +90,26 @@ constexpr std::string_view usage_text =
     "                        where the name at that place is declared, as <file>:<line>:<column>\n"
     "                        (editors' go to definition)\n"
     "  explain [code|id]     describe a diagnostic code or a warning id, or list all codes\n"
+    "  registry opengl|vulkan [--source]\n"
+    "                        print std::graphics::opengl or ::vulkan, the module edaxc makes from the\n"
+    "                        embedded Khronos registry (gl.xml, vk.xml): the header, or the source\n"
     "\n"
     "options:\n"
     "  --diagnostic-format=human|short   diagnostic layout (default: human)\n"
     "  --color=auto|always|never         colored diagnostics (default: auto)\n"
+    "  --error-limit=N                   show the first N errors, count the rest (default: 20; 0: all)\n"
+    "  --progress=automatic|live|lines|quiet\n"
+    "                                    build.ed builds: live lines on a terminal, a line per finished\n"
+    "                                    target otherwise (automatic), or only diagnostics and the last line\n"
+    "  --details=sources,units,commands,packages,toolchain,timings|all|none\n"
+    "                                    what the console shows under the targets (build.log has it all)\n"
+    "  --no-log-file                     don't write build/<mode>/build.log\n"
+    "  --stop-on-error                   don't start other targets after one fails\n"
     "  --root=DIR                        project root for imports and build.ed (default: the file's\n"
     "                                    directory; for build.ed the current directory)\n"
     "  --stop-after=PHASE                lex, parse, resolve, types or ownership\n"
-    "  --mode=MODE                       debug (default), release, release_with_debug_info, or a mode\n"
-    "                                    of build.ed\n"
+    "  --mode=MODE                       debug (default), development, release, release_with_debug_info,\n"
+    "                                    or a mode of build.ed\n"
     "  --warn=ID=off|error|on            switch a warning of a check, e.g. --warn=gfx::deprecated=off\n"
     "  -o FILE, --output=FILE            where 'build' writes the executable\n"
     "  -DNAME=VALUE                      an option of build.ed\n"
@@ -130,6 +155,12 @@ struct Options {
     std::string      bin_dir;                  // --bin-dir: where a project's programs go (default <out>/<mode>)
     std::string      target;                   // --target=<platform>: cross compiling (spec 25)
     std::string      cpu;                      // --cpu=<level>: the CPU level (build system, "Target platforms")
+    // The build's output (docs/design/build/build-output.md).
+    std::string      progress;                 // --progress=automatic|live|lines|quiet ("": build.ed's, else automatic)
+    std::set<std::string> details;             // --details=...
+    bool             details_given = false;
+    bool             no_log_file = false;      // --no-log-file
+    bool             stop_on_error = false;    // --stop-on-error
 };
 
 // Whether `program` can be started through PATH.
@@ -231,7 +262,8 @@ ExitCode usage_error(DriverStreams& s, std::string_view message) {
 std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Options& opts,
                                       DriverStreams& s) {
     bool builds = opts.command == "build" || opts.command == "run" || opts.command == "emit-llvm" || opts.command == "test";
-    bool targets = builds || opts.command == "check" || opts.command == "insights" || opts.command == "simd-report";   // --target and --cpu
+    bool targets = builds || opts.command == "check" || opts.command == "insights" || opts.command == "simd-report" ||
+                   opts.command == "explain-checks";   // --target and --cpu
     for (std::size_t i = 0; i < args.size(); ++i) {
         std::string_view arg = args[i];
         if (arg == "--" && opts.command == "run") {
@@ -299,8 +331,50 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
             opts.cc = std::string(arg.substr(5));
             continue;
         }
+        if (builds && arg.starts_with("--progress=")) {
+            opts.progress = std::string(arg.substr(11));
+            if (opts.progress != "automatic" && opts.progress != "live" && opts.progress != "lines" && opts.progress != "quiet") {
+                return usage_error(s, std::format("'{}': the progress is automatic, live, lines or quiet", arg));
+            }
+            continue;
+        }
+        if (builds && arg.starts_with("--details=")) {
+            opts.details_given = true;
+            opts.details.clear();
+            std::string_view list = arg.substr(10);
+            while (!list.empty()) {
+                std::size_t      comma = list.find(',');
+                std::string_view d     = list.substr(0, comma);
+                if (d == "all") {
+                    for (const char* x : {"sources", "units", "commands", "packages", "toolchain", "timings"}) opts.details.insert(x);
+                } else if (d == "sources" || d == "units" || d == "commands" || d == "packages" || d == "toolchain" || d == "timings") {
+                    opts.details.insert(std::string(d));
+                } else if (d != "none") {
+                    return usage_error(s, std::format("'{}': the details are sources, units, commands, packages, toolchain, timings, all or none", d));
+                }
+                list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+            }
+            continue;
+        }
+        if (builds && arg == "--no-log-file") {
+            opts.no_log_file = true;
+            continue;
+        }
+        if (builds && arg == "--stop-on-error") {
+            opts.stop_on_error = true;
+            continue;
+        }
         if (builds && arg == "--all-functions") {
             opts.all_functions = true;
+            continue;
+        }
+        if (arg.starts_with("--error-limit=")) {
+            std::string_view n = arg.substr(14);
+            std::size_t      v = 0;
+            if (n.empty() || std::from_chars(n.data(), n.data() + n.size(), v).ec != std::errc{}) {
+                return usage_error(s, std::format("'{}': the limit is a number (0: no limit)", arg));
+            }
+            opts.render.error_limit = v;
             continue;
         }
         if (arg == "--diagnostic-format=human") {
@@ -346,8 +420,8 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
     if (!opts.project && (opts.list || opts.compile_commands || !opts.defines.empty())) {
         return usage_error(s, "'--list', '--compile-commands' and '-D' work with build.ed: run them without a file");
     }
-    if (!opts.project && opts.mode != "debug" && opts.mode != "release" && opts.mode != "release_with_debug_info") {
-        return usage_error(s, std::format("unknown build mode '{}' (debug, release, release_with_debug_info; "
+    if (!opts.project && !is_builtin_mode(opts.mode)) {
+        return usage_error(s, std::format("unknown build mode '{}' (debug, development, release, release_with_debug_info; "
                                           "other modes are defined in build.ed)", opts.mode));
     }
     if (opts.input.empty() && !opts.project) {
@@ -424,6 +498,46 @@ std::string json_string(std::string_view text) {
 // `edaxc insights <file>`: what the compiler does implicitly in the file's code, as JSON for
 // editors (the VS Code extension's code insights). Every function of the file is generated,
 // whether `main` reaches it or not.
+// `edaxc explain-checks <file>` (spec 34 §5): every run-time check in the file's code (bounds,
+// overflow, entry checks of the functions it calls) and whether the optimizer removes it, as in a
+// release build. Kept checks are the ones to look at: `std::assume` states a fact that removes
+// them, `@std::no_checks_left` makes the build fail when one is left.
+ExitCode run_explain_checks(const Options& opts, sema::Program& program, SourceManager& sources, DiagnosticEngine& diags, DriverStreams& s) {
+    LlvmOptions lo;
+    lo.debug_info = false;
+    std::vector<CheckSite> sites = explain_checks(program, sources, diags, std::string(opts.input), lo);
+    if (diags.has_errors()) {
+        render_all(s.err, diags, sources, opts.render);
+        return ExitCode::compile_error;
+    }
+    std::string file = std::filesystem::path(opts.input).lexically_normal().generic_string();
+    struct Row {
+        std::string   where;
+        std::uint64_t line = 0, column = 0;
+        const CheckSite* site = nullptr;
+    };
+    std::vector<Row> rows;
+    for (const CheckSite& c : sites) {
+        std::size_t colon2 = c.where.rfind(':');
+        std::size_t colon1 = colon2 == std::string::npos ? std::string::npos : c.where.rfind(':', colon2 - 1);
+        if (colon1 == std::string::npos) continue;
+        std::string path = c.where.substr(0, colon1);
+        if (std::filesystem::path(path).lexically_normal().generic_string() != file) continue;   // the file's own code
+        rows.push_back(Row{c.where, std::stoull(c.where.substr(colon1 + 1, colon2 - colon1 - 1)), std::stoull(c.where.substr(colon2 + 1)), &c});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return std::tie(a.line, a.column) < std::tie(b.line, b.column); });
+    std::size_t kept = 0;
+    for (const Row& r : rows) kept += r.site->kept ? 1 : 0;
+    s.out << std::format("{}: {} run-time check{}, {} removed by the optimizer, {} kept\n", file, rows.size(), rows.size() == 1 ? "" : "s",
+                         rows.size() - kept, kept);
+    for (const Row& r : rows) {
+        std::string what;
+        for (const std::string& w : r.site->what) what += (what.empty() ? "" : "; ") + w;
+        s.out << std::format("  {:<8} {}  {}\n", r.site->kept ? "kept" : "removed", r.where, what);
+    }
+    return ExitCode::success;
+}
+
 // `edaxc simd-report <file> [<function>]` (SIMD, "Seeing what happens"): per function of the
 // file, its vector types and their hardware form on the CPU level, the operations that are split
 // or emulated, the masked tail steps of block loops, the multiversion copies, and the loops of
@@ -648,6 +762,8 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     CodegenOptions codegen;
     codegen.optimization = setting("optimization").empty() ? (opts.mode == "debug" ? "none" : "speed") : setting("optimization");
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
+    codegen.sanitize     = setting("sanitize").empty() ? "none" : setting("sanitize");
+    if (codegen.sanitize != "none") linker += " -fsanitize=" + codegen.sanitize;
     if (!build_executable(ir, exe.string(), linker, error, codegen)) {
         if (error.starts_with("the linker")) {
             s.err << std::format("edaxc: error: {}\n", error);
@@ -808,6 +924,9 @@ ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     if (opts.command == "simd-report" && !diags.has_errors()) {
         return run_simd_report(opts, program, sources, diags, s);
     }
+    if (opts.command == "explain-checks" && !diags.has_errors()) {
+        return run_explain_checks(opts, program, sources, diags, s);
+    }
     if (opts.command == "symbols" && resolved && program.entry) {
         print_symbols(s.out, *program.entry, sources);
     }
@@ -849,6 +968,46 @@ std::string relaxed_rules(const std::map<std::string, std::string>& ms) {
     return out;
 }
 
+// The report of the project build running now (run_project), or null: the target builders
+// report their progress to it.
+BuildReport* g_report = nullptr;
+
+std::string target_kind_text(ct::BuildTarget::Kind k) {
+    switch (k) {
+    case ct::BuildTarget::Kind::executable: return "program";
+    case ct::BuildTarget::Kind::library: return "library";
+    case ct::BuildTarget::Kind::test: return "test";
+    case ct::BuildTarget::Kind::c_library: return "C library";
+    case ct::BuildTarget::Kind::system_library: return "system library";
+    case ct::BuildTarget::Kind::foreign: return "target of a dependency";
+    case ct::BuildTarget::Kind::plugin: return "plugin";
+    }
+    return "";
+}
+
+// The checklist line of a target (added when it wasn't: a library built on the way), started.
+std::optional<std::size_t> report_start(const ct::BuildTarget& t) {
+    if (!g_report) return std::nullopt;
+    std::optional<std::size_t> item = g_report->find(t.name);
+    if (!item) item = g_report->add_item(t.name, target_kind_text(t.kind));
+    if (!g_report->started(*item)) g_report->start(*item);
+    return item;
+}
+
+// A path as the build output shows it: relative to the working directory when inside it.
+std::string shown_path(const std::filesystem::path& p) {
+    std::error_code       ec;
+    std::filesystem::path rel = std::filesystem::relative(p, std::filesystem::current_path(ec), ec);
+    if (!ec && !rel.empty() && !rel.string().starts_with("..")) return rel.string();
+    return p.string();
+}
+
+std::string command_text(const std::vector<std::string>& cmd) {
+    std::string text;
+    for (const std::string& a : cmd) text += (text.empty() ? "" : " ") + a;
+    return text;
+}
+
 // Compiles and links one Edax target of build.ed. Returns the executable's path, or empty.
 std::string build_edax_target(const Options& opts, const std::filesystem::path& root, const std::filesystem::path& out,
                               const ct::BuildTarget& t, const std::string& mode, const std::vector<std::string>& libraries,
@@ -857,10 +1016,18 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     fs::path base  = t.base.empty() ? root : fs::path(t.base);
     fs::path entry = (base / t.root).lexically_normal();
     std::error_code ec;
+    std::optional<std::size_t> item = report_start(t);
+    auto fail = [&](std::size_t errors) {
+        failed = true;
+        if (item) {
+            g_report->add_diagnostics(*item, errors, 0);
+            g_report->finish(*item, BuildReport::State::failed, {});
+        }
+        return std::string();
+    };
     if (!fs::is_regular_file(entry, ec)) {
         s.err << std::format("edaxc: error[E0001]: target '{}': cannot read '{}'\n", t.name, entry.string());
-        failed = true;
-        return {};
+        return fail(1);
     }
     // Up to date (spec 25): the executable is newer than every file it was built from, and was
     // built the same way (mode, settings, libraries, linker, this edaxc).
@@ -892,9 +1059,44 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
             std::error_code e2;
             if (!l.starts_with("-") && (!fs::exists(l, e2) || fs::last_write_time(l, e2) > built)) fresh = false;
         }
-        if (fresh) return exe_path.string();
+        if (fresh) {
+            if (item) g_report->finish(*item, BuildReport::State::up_to_date, "up to date", shown_path(exe_path));
+            return exe_path.string();
+        }
     }
     fs::remove(stamp, ec);
+    // g.target_cpu(t, level) (spec 34): the whole target is checked and compiled for the level.
+    struct CpuScope {
+        std::string before = build_cpu();
+        ~CpuScope() {
+            std::string e;
+            set_build_cpu(before, e);
+        }
+    } cpu_scope;
+    if (auto it = t.settings.find("std::build::cpu"); it != t.settings.end() && it->second && it->second->symbol &&
+                                                      it->second->symbol->name != "baseline") {
+        std::string error;
+        if (!set_build_cpu(it->second->symbol->name, error)) {
+            std::string levels;
+            for (const std::string& l : cpu_levels()) levels += (levels.empty() ? "" : ", ") + l;
+            s.err << std::format("edaxc: error: target '{}': g.target_cpu: {} (levels for this target: {})\n", t.name, error, levels);
+            return fail(1);
+        }
+    }
+    // The phases are units of the target; its source files are units too, done once checked.
+    std::size_t unit_read = 0, unit_check = 0, unit_code = 0, unit_link = 0;
+    if (item) {
+        unit_read  = g_report->add_unit(*item, "read");
+        unit_check = g_report->add_unit(*item, "check");
+        unit_code  = g_report->add_unit(*item, "code");
+        unit_link  = g_report->add_unit(*item, "link");
+        g_report->unit_start(*item, unit_read);
+    }
+    auto phase = [&](std::size_t done, std::optional<std::size_t> next, bool ok) {
+        if (!item) return;
+        g_report->unit_done(*item, done, ok);
+        if (ok && next) g_report->unit_start(*item, *next);
+    };
     SourceManager    sources;
     DiagnosticEngine diags;
     LoadOptions      load;
@@ -903,6 +1105,29 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     load.extra_roots  = extra_roots;
     sema::Program program = load_program(entry.string(), load, sources, diags);
     if (!diags.has_errors()) resolve_program(program, diags);
+    std::size_t source_units = 0;
+    if (item) {   // the target's own files: not the standard library's, not build.ed
+        std::vector<SourceInfo> files;
+        std::string             script = fs::absolute(load.build_script, ec).lexically_normal().string();
+        for (std::size_t id = 0; id < sources.count(); ++id) {
+            const std::string& path = sources.file(static_cast<FileId>(id)).path();
+            if (path.starts_with("<")) continue;
+            fs::path absolute = fs::absolute(path, ec).lexically_normal();
+            if (absolute.string() == script) continue;
+            fs::path rel   = absolute.lexically_relative(fs::absolute(base, ec).lexically_normal());
+            bool     under = !rel.empty() && !rel.string().starts_with("..");
+            files.push_back(source_info(absolute, under ? rel.string() : absolute.string()));
+        }
+        std::sort(files.begin(), files.end(), [](const SourceInfo& a, const SourceInfo& b) { return a.path < b.path; });
+        g_report->set_sources(*item, files);
+        source_units = files.size();
+        unit_read += source_units, unit_check += source_units, unit_code += source_units, unit_link += source_units;
+        if (!diags.has_errors()) {
+            for (std::size_t k = 0; k < source_units; ++k) g_report->unit_start(*item, k);
+        }
+    }
+    bool read_ok = !diags.has_errors();
+    phase(unit_read, unit_check, read_ok);
     program.build_mode     = mode;
     program.warn_levels    = opts.warn;
     program.build_settings = t.settings;
@@ -911,6 +1136,10 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     program.is_plugin      = plugin;
     if (!diags.has_errors()) check_types(program, sources, diags);
     if (!diags.has_errors()) check_ownership(program, diags);
+    if (item && !diags.has_errors()) {
+        for (std::size_t k = 0; k < source_units; ++k) g_report->unit_done(*item, k);
+    }
+    if (read_ok) phase(unit_check, unit_code, !diags.has_errors());
     std::string ir;
     auto setting = [&](const char* name) {
         auto it = program.mode_settings.find(name);
@@ -919,12 +1148,26 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     if (!diags.has_errors()) ir = generate_llvm_ir(program, sources, diags, LlvmOptions{false, setting("panic") == "trap",
                                                                          setting("debug_info") == "full" || setting("debug_info") == "line_tables",
                                                                          setting("debug_info") == "full"});
+    if (item && !diags.has_errors()) phase(unit_code, unit_link, true);
     diags.sort_by_location();
-    render_all(s.err, diags, sources, opts.render);
-    if (diags.has_errors()) {
-        failed = true;
-        return {};
+    RenderOptions render = opts.render;
+    if (g_report && opts.render.format == DiagnosticFormat::human) {
+        // The console gets the first errors, build.log all of them.
+        render.summary_line = false;
+        render.full_log     = g_report->log_path_text();
+        std::ostringstream shown, all;
+        render_all(shown, diags, sources, render);
+        RenderOptions everything = render;
+        everything.error_limit   = 0;
+        everything.color         = false;
+        render_all(all, diags, sources, everything);
+        if (!shown.str().empty()) g_report->print_console(shown.str(), true);
+        if (!all.str().empty()) g_report->log_only(all.str());
+    } else {
+        render_all(s.err, diags, sources, render);
     }
+    if (item) g_report->add_diagnostics(*item, 0, diags.warning_count());
+    if (diags.has_errors()) return fail(diags.error_count());
     fs::path exe = exe_path;
     fs::create_directories(exe.parent_path(), ec);
     std::string linker = linker_command(opts);
@@ -932,6 +1175,8 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     CodegenOptions codegen;
     codegen.optimization = setting("optimization").empty() ? "none" : setting("optimization");
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
+    codegen.sanitize     = setting("sanitize").empty() ? "none" : setting("sanitize");
+    if (codegen.sanitize != "none") linker += " -fsanitize=" + codegen.sanitize;
     codegen.shared       = plugin;
     std::string error;
     if (!build_executable(ir, exe.string(), linker, error, codegen, libraries)) {
@@ -940,8 +1185,12 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
             s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
                                  opts.target, opts.target);
         }
-        failed = true;
-        return {};
+        if (item) g_report->unit_done(*item, unit_link, false);
+        return fail(1);
+    }
+    if (item) {
+        g_report->unit_done(*item, unit_link);
+        g_report->finish(*item, BuildReport::State::done, {}, shown_path(exe));
     }
     if (std::ofstream st(stamp); st) {   // what the next build compares with
         st << signature << "\n";
@@ -950,6 +1199,7 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
             std::error_code    e2;
             if (!path.starts_with("<") && fs::exists(path, e2)) st << fs::absolute(path, e2).lexically_normal().string() << "\n";
         }
+        for (const std::string& f : program.embedded_files) st << f << "\n";   // std::embed (spec 34)
         st << fs::absolute(load.build_script, ec).lexically_normal().string() << "\n";
     }
     return exe.string();
@@ -974,11 +1224,35 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
     bool                     cpp      = t.language == "cpp";
     std::vector<std::string> compiler = c_compiler(opts, cpp);
     std::vector<std::string> objects;
+    std::optional<std::size_t> item = report_start(t);
+    if (item) {
+        std::vector<SourceInfo> files;
+        for (const std::string& src : t.sources) {
+            fs::path p = fs::path(src).is_absolute() ? fs::path(src) : base / src;
+            files.push_back(source_info(p, src));
+        }
+        g_report->set_sources(*item, files);
+    }
+    auto fail = [&]() {
+        failed = true;
+        if (item) {
+            g_report->add_diagnostics(*item, 1, 0);
+            g_report->finish(*item, BuildReport::State::failed, {});
+        }
+        return std::string();
+    };
+    // The commands: in build.log, and on the console with the `commands` detail.
+    auto show_command = [&](const std::vector<std::string>& cmd) {
+        if (!g_report) return;
+        if (g_report->shows(t.name, "commands")) g_report->print("    " + command_text(cmd) + "\n", false);
+        else g_report->log_only("    " + command_text(cmd));
+    };
     struct Job {
         std::vector<std::string> cmd;
         std::string              source;
         std::string              output;   // compiler output
         int                      status = 0;
+        std::size_t              unit   = 0;
     };
     std::vector<Job> jobs;   // the objects that are out of date: compiled in parallel
     for (std::size_t i = 0; i < t.sources.size(); ++i) {
@@ -995,7 +1269,8 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
             if (std_.starts_with("cpp")) std_ = "c++" + std_.substr(3);
             cmd.push_back("-std=" + std_);
         }
-        cmd.push_back(optimization == "none" ? "-O0" : optimization == "size" ? "-Os" : "-O2");
+        cmd.push_back(optimization == "none" ? "-O0" : optimization == "basic" ? "-O1" : optimization == "size" ? "-Os" : "-O2");
+        if (!g_c_sanitize.empty() && g_c_sanitize != "none") cmd.push_back("-fsanitize=" + g_c_sanitize);   // spec 34
         auto add_dirs = [&](const ct::BuildTarget& from, bool only_shared) {
             fs::path from_base = from.base.empty() ? root : fs::path(from.base);
             for (const auto& [d, shared] : from.include_dirs) {
@@ -1013,26 +1288,50 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         if (commands) commands->push_back(CompileCommand{base.string(), src.string(), cmd});
         objects.push_back(obj.string());
         // Up to date: the object is newer than its source (headers are not tracked yet).
-        if (fs::exists(obj, ec) && fs::last_write_time(obj, ec) >= fs::last_write_time(src, ec)) continue;
-        jobs.push_back(Job{cmd, t.sources[i], {}, 0});
+        if (fs::exists(obj, ec) && fs::last_write_time(obj, ec) >= fs::last_write_time(src, ec)) {
+            if (item) g_report->unit_up_to_date(*item, i);
+            continue;
+        }
+        jobs.push_back(Job{cmd, t.sources[i], {}, 0, i});
     }
+    for (const Job& j : jobs) show_command(j.cmd);
     {
         std::atomic<std::size_t> next{0};
         unsigned                 workers = std::max(1u, std::min<unsigned>(std::thread::hardware_concurrency(), static_cast<unsigned>(jobs.size())));
         std::vector<std::thread> pool;
         for (unsigned w = 0; w < workers && !jobs.empty(); ++w) {
             pool.emplace_back([&] {
-                for (std::size_t j; (j = next.fetch_add(1)) < jobs.size();) jobs[j].status = run_process(jobs[j].cmd, &jobs[j].output);
+                for (std::size_t j; (j = next.fetch_add(1)) < jobs.size();) {
+                    if (item) g_report->unit_start(*item, jobs[j].unit);
+                    jobs[j].status = run_process(jobs[j].cmd, &jobs[j].output);
+                    if (item) g_report->unit_done(*item, jobs[j].unit, jobs[j].status == 0);
+                }
             });
         }
         for (std::thread& th : pool) th.join();
     }
+    for (const Job& j : jobs) {   // the compilers' warnings are shown, and counted
+        if (j.status != 0 || j.output.empty()) continue;
+        s.err << j.output;
+        std::size_t warnings = 0;
+        for (std::size_t at = 0; (at = j.output.find("warning:", at)) != std::string::npos; at += 8) ++warnings;
+        if (item) g_report->add_diagnostics(*item, 0, warnings);
+    }
     for (const Job& j : jobs) {
         if (j.status == 0) continue;
         s.err << j.output << std::format("edaxc: error: target '{}': compiling '{}' failed\n", t.name, j.source);
-        failed = true;
-        return {};
+        return fail();
     }
+    std::size_t link_unit = item ? g_report->add_unit(*item, t.shared ? "link" : "archive") : 0;
+    if (item) g_report->unit_start(*item, link_unit);
+    auto finished = [&](const fs::path& made) {
+        if (item) {
+            g_report->unit_done(*item, link_unit);
+            if (jobs.empty()) g_report->finish(*item, BuildReport::State::up_to_date, "up to date", shown_path(made));
+            else g_report->finish(*item, BuildReport::State::done, {}, shown_path(made));
+        }
+        return made.string();
+    };
     if (t.shared) {   // a shared library: lib<name>.so, and the programs find it next to it (rpath)
         fs::path library = out / "c" / opts.target / ("lib" + t.name + ".so");
         std::vector<std::string> link = compiler;
@@ -1041,24 +1340,24 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         link.push_back(library.string());
         link.insert(link.end(), objects.begin(), objects.end());
         std::string output;
+        show_command(link);
         if (run_process(link, &output) != 0) {
             s.err << output << std::format("edaxc: error: target '{}': linking the shared library failed\n", t.name);
-            failed = true;
-            return {};
+            return fail();
         }
-        return library.string();
+        return finished(library);
     }
     fs::path archive = out / "c" / opts.target / ("lib" + t.name + ".a");
     fs::remove(archive, ec);
     std::vector<std::string> ar = {"ar", "rcs", archive.string()};
     ar.insert(ar.end(), objects.begin(), objects.end());
     std::string output;
+    show_command(ar);
     if (run_process(ar, &output) != 0) {
         s.err << output << std::format("edaxc: error: target '{}': 'ar' failed\n", t.name);
-        failed = true;
-        return {};
+        return fail();
     }
-    return archive.string();
+    return finished(archive);
 }
 
 // `g.import_c_headers` (C interop): preprocesses the headers of each import of C target `t`
@@ -1347,7 +1646,9 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
         in.out_dir = (out / "packages" / dep.name).string();
         for (const auto& [k, v] : dep.options) in.options[k] = v;
         for (const auto& [k, t] : dep.uses) in.uses[k] = std::to_string(t);
-        in.build_type  = opts.mode == "release" ? "Release" : opts.mode == "release_with_debug_info" ? "RelWithDebInfo" : "Debug";
+        in.build_type  = opts.mode == "release" ? "Release"
+                       : opts.mode == "release_with_debug_info" || opts.mode == "development" ? "RelWithDebInfo"
+                                                                                               : "Debug";
         in.system_name = target_platform().os == "windows" ? "Windows" : target_platform().os == "macos" ? "Darwin" : "Linux";
         in.compiles    = [&](const std::string& source) {
             fs::path probe = out / "packages" / (dep.name + ".check.c");
@@ -1709,6 +2010,7 @@ bool evaluate_build(EvaluatedBuild& b, const Options& opts, const std::filesyste
 ExitCode run_project(const Options& opts, DriverStreams& s) {
     namespace fs = std::filesystem;
     std::error_code ec;
+    auto began = std::chrono::steady_clock::now();
     fs::path root = opts.root.empty() ? fs::path(".") : fs::path(opts.root);   // as written: diagnostics show it
     if (!fs::is_regular_file(root / "build.ed", ec)) {
         return usage_error(s, std::format("no build.ed in '{}': name a .ed file, or write a build.ed (spec 25)",
@@ -1799,9 +2101,9 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     }
 
     // 2. The mode: a built-in one, or a class build.ed added with g.add_mode.
-    bool builtin = opts.mode == "debug" || opts.mode == "release" || opts.mode == "release_with_debug_info";
+    bool builtin = is_builtin_mode(opts.mode);
     bool added   = false;
-    std::string names = "debug, release, release_with_debug_info";
+    std::string names = "debug, development, release, release_with_debug_info";
     for (const sema::Symbol* m : graph.modes) {
         added = added || m->name == opts.mode;
         names += ", " + m->name;
@@ -1813,18 +2115,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         if (!known) return usage_error(s, std::format("build.ed has no option '{}' (edaxc build --list)", name));
     }
 
-    auto kind_name = [](ct::BuildTarget::Kind k) {
-        switch (k) {
-        case ct::BuildTarget::Kind::executable: return "program";
-        case ct::BuildTarget::Kind::library: return "library";
-        case ct::BuildTarget::Kind::test: return "test";
-        case ct::BuildTarget::Kind::c_library: return "C library";
-        case ct::BuildTarget::Kind::system_library: return "system library";
-        case ct::BuildTarget::Kind::foreign: return "target of a dependency";
-        case ct::BuildTarget::Kind::plugin: return "plugin";
-        }
-        return "";
-    };
+    auto kind_name = [](ct::BuildTarget::Kind k) { return target_kind_text(k); };
     if (opts.list) {
         s.out << "targets:\n";
         for (const ct::BuildTarget& t : graph.targets) {
@@ -1875,7 +2166,90 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
         selected.insert(selected.begin(), plugins.begin(), plugins.end());
     }
+
+    // The build output (docs/design/build/build-output.md): the checklist, build.log. Set by
+    // build.ed's g.output(...) and g.details(...), overridden by the command line.
+    std::ostream                real_out(s.out.rdbuf()), real_err(s.err.rdbuf());
+    std::optional<BuildReport>  report;
+    struct ReportEnder {
+        std::optional<BuildReport>& r;
+        bool                        ended = false;
+        ~ReportEnder() {
+            if (r && !ended) r->end(false);
+            g_report = nullptr;
+        }
+    } ender{report};
+    if (!opts.compile_commands) {
+        const ct::BuildOutput& wanted = graph.output;
+        ReportOptions          ro;
+        std::string progress = !opts.progress.empty() ? opts.progress : !wanted.progress.empty() ? wanted.progress : "automatic";
+        ro.progress = progress == "live" ? Progress::live : progress == "lines" ? Progress::lines : progress == "quiet" ? Progress::quiet : Progress::automatic;
+        if (opts.details_given) {
+            ro.details                   = opts.details;
+            ro.details_from_command_line = true;
+        } else {
+            ro.details.insert(wanted.details.begin(), wanted.details.end());
+            for (const ct::BuildTarget& t : graph.targets) {
+                if (t.has_details) ro.target_details[t.name] = std::set<std::string>(t.details.begin(), t.details.end());
+            }
+        }
+        ro.log_file    = wanted.log_file && !opts.no_log_file;
+        ro.keep_logs   = wanted.keep_logs;
+        ro.target_line = wanted.target_line;
+        ro.done_line   = wanted.done_line;
+        ro.source_row  = wanted.source_row;
+        ro.last_line   = wanted.last_line;
+        ro.failed_line = wanted.failed_line;
+        ro.color       = opts.render.color && s.out_is_terminal;
+        // The checklist: each selected target after the C/C++ libraries it links.
+        std::vector<std::size_t>                  order;
+        std::function<void(std::size_t, bool)>    add = [&](std::size_t i, bool selected_target) {
+            if (std::find(order.begin(), order.end(), i) != order.end()) return;
+            for (std::size_t l : graph.targets[i].links) add(l, false);
+            ct::BuildTarget::Kind k = graph.targets[i].kind;
+            if (selected_target || k == ct::BuildTarget::Kind::c_library) order.push_back(i);
+        };
+        for (std::size_t i : selected) add(i, true);
+        std::string title = std::format("edaxc {}: {}, {} target{}", opts.command, opts.mode, order.size(), order.size() == 1 ? "" : "s");
+        // `run`: the program's output is stdout, so the build's goes to stderr (as cargo's does).
+        bool to_err = opts.command == "run";
+        if (to_err) ro.color = opts.render.color;
+        report.emplace(ro, to_err ? real_err : real_out, real_err, to_err ? s.err_is_terminal : s.out_is_terminal,
+                       out / opts.mode / "build.log", out / opts.mode / ".edax" / "timings", title);
+        g_report = &*report;
+        std::string toolchain = std::format("    toolchain: {}, LLVM {}, C compiler {}, linker {}{}\n", std::string("edaxc ") + EDAX_VERSION, llvm_version(),
+                                            command_text(c_compiler(opts, false)), linker_command(opts),
+                                            opts.target.empty() ? std::string() : ", target " + opts.target);
+        if (report->shows("", "toolchain")) report->print(toolchain, false);
+        else report->log_only(toolchain);
+        std::size_t script = report->add_item("build.ed", "build.ed");
+        std::string summary = std::format("{} target{}", graph.targets.size(), graph.targets.size() == 1 ? "" : "s");
+        if (!graph.dependencies.empty()) summary += std::format(", {} dependenc{}", graph.dependencies.size(), graph.dependencies.size() == 1 ? "y" : "ies");
+        report->start(script);
+        report->finish(script, BuildReport::State::done, summary, {},
+                       std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+        std::string packages;   // the `packages` detail
+        for (const ct::BuildDependency& d : graph.dependencies) {
+            packages += std::format("    {} {}{}: {}\n", d.is_package ? "package" : "dependency", d.is_package ? d.name : d.source,
+                                    d.tag.empty() ? std::string() : " " + d.tag, d.dir);
+        }
+        if (!packages.empty()) {
+            if (report->shows("build.ed", "packages")) report->print(packages, false);
+            else report->log_only(packages);
+        }
+        for (std::size_t i : order) {
+            std::size_t item = report->add_item(graph.targets[i].name, kind_name(graph.targets[i].kind));
+            for (std::size_t l : graph.targets[i].links) {
+                if (std::find(order.begin(), order.end(), l) != order.end()) {
+                    report->set_waiting_text(item, "waits for " + graph.targets[l].name);
+                    break;
+                }
+            }
+        }
+        report->capture(s.out, s.err);
+    }
     std::string optimization = program.mode_settings["optimization"];
+    g_c_sanitize             = program.mode_settings["sanitize"];
     bool        lto          = program.mode_settings["link_time_optimization"] == "true";
     std::vector<CompileCommand> commands;
     std::map<std::size_t, std::string> archives;
@@ -2016,82 +2390,111 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     }
     int         tests_failed = 0;
     std::size_t tests_run    = 0;
+    // A failed target doesn't stop the others (like make -k); what needs it isn't built.
+    // --stop-on-error starts nothing after the first failure.
+    bool any_failed = false;
+    std::function<std::optional<std::string>(std::size_t, std::set<std::size_t>&)> failed_dependency =
+        [&](std::size_t i, std::set<std::size_t>& seen) -> std::optional<std::string> {
+        for (std::size_t l : graph.targets[i].links) {
+            if (!seen.insert(l).second) continue;
+            if (archives.count(l) && archives[l].empty()) return graph.targets[l].name;
+            if (auto deeper = failed_dependency(l, seen)) return deeper;
+        }
+        return std::nullopt;
+    };
+    auto not_built = [&](const ct::BuildTarget& t, const std::string& why) {
+        any_failed = true;
+        if (!report) return;
+        std::optional<std::size_t> item = report->find(t.name);
+        if (item) report->finish(*item, BuildReport::State::skipped, why);
+    };
     for (std::size_t i : selected) {
         const ct::BuildTarget& t = graph.targets[i];
+        if (any_failed && opts.stop_on_error) {
+            not_built(t, "not built: the build stopped at the first error");
+            continue;
+        }
         run_steps(i);
         if (failed) return ExitCode::compile_error;
         if (t.kind == ct::BuildTarget::Kind::c_library) {
             if (!archives.count(i)) archives[i] = build_c_target(opts, root, out, graph, t, optimization, lto, s, failed, &commands);
-            if (!archives[i].empty() && opts.command == "build" && !opts.compile_commands) {
-                s.out << std::format("built '{}' ({})\n", archives[i], opts.mode);
-            }
+            if (failed) any_failed = true, failed = false;
             continue;
         }
-        if (t.kind == ct::BuildTarget::Kind::plugin) {
-            if (opts.command == "run" && opts.targets.size() == 1 && opts.targets[0] == t.name) {
-                return usage_error(s, std::format("'{}' is a plugin, not a program", t.name));
-            }
-            std::vector<std::string> libs, roots;
-            std::set<std::size_t>    seen;
-            collect(i, libs, roots, seen);
-            if (failed || opts.compile_commands) continue;
-            bool        target_failed = false;
-            std::string mode          = t.mode ? t.mode->name : opts.mode;
-            std::string so            = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
-            if (target_failed) return ExitCode::compile_error;
-            if (opts.command == "build") s.out << std::format("built '{}' ({})\n", so, mode);
-            continue;
+        bool plugin = t.kind == ct::BuildTarget::Kind::plugin;
+        if (plugin && opts.command == "run" && opts.targets.size() == 1 && opts.targets[0] == t.name) {
+            return usage_error(s, std::format("'{}' is a plugin, not a program", t.name));
         }
-        if (t.kind != ct::BuildTarget::Kind::executable && t.kind != ct::BuildTarget::Kind::test) {
+        if (!plugin && t.kind != ct::BuildTarget::Kind::executable && t.kind != ct::BuildTarget::Kind::test) {
             if (opts.command == "run") return usage_error(s, std::format("'{}' is a {}, not a program", t.name, kind_name(t.kind)));
             continue;   // a Edax library is compiled into the programs that import it
         }
         std::vector<std::string> libs, roots;
         std::set<std::size_t>    seen;
         collect(i, libs, roots, seen);
-        if (failed) return ExitCode::compile_error;
-        if (opts.compile_commands) continue;
-        std::string mode = t.mode ? t.mode->name : opts.mode;
+        if (opts.compile_commands) {
+            if (failed) any_failed = true, failed = false;
+            continue;
+        }
+        {
+            std::set<std::size_t> visited;
+            std::optional<std::string> needs = failed_dependency(i, visited);
+            if (needs || failed) {
+                failed = false;
+                not_built(t, needs ? "not built: needs " + *needs : std::string("not built"));
+                continue;
+            }
+        }
+        std::string mode          = t.mode ? t.mode->name : opts.mode;
         bool        target_failed = false;
-        std::string exe = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
-        if (target_failed) return ExitCode::compile_error;
-        if (opts.command == "build") {
-            s.out << std::format("built '{}' ({})\n", exe, mode);
-        } else if (opts.command == "run") {
+        std::string exe           = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
+        if (target_failed) {
+            any_failed = true;
+            continue;
+        }
+        if (plugin || opts.command == "build") continue;
+        if (opts.command == "run") {
+            if (any_failed) continue;
+            if (report) report->end(true), ender.ended = true;
             s.out.flush();
             s.err.flush();
             std::vector<std::string> cmd = {exe};
             cmd.insert(cmd.end(), opts.program_args.begin(), opts.program_args.end());
             return static_cast<ExitCode>(run_process(cmd, nullptr));
-        } else {   // test: a program whose main returns 0, or its `@std::test` functions one by one (spec 29)
-            std::string output;
-            int status = run_process({"env", "EDAX_TEST_LIST=1", exe}, &output);
-            if (status == 0 && output.starts_with("edax-tests:\n")) {
-                std::vector<std::string> test_names;
-                std::istringstream       lines(output.substr(std::string_view("edax-tests:\n").size()));
-                for (std::string line; std::getline(lines, line);) {
-                    if (!line.empty()) test_names.push_back(line);
-                }
-                for (const std::string& name : test_names) {
-                    std::string one;
-                    int         st = run_process({"env", "EDAX_TEST_RUN=" + name, exe}, &one);
-                    s.out << std::format("{} {}::{}\n", st == 0 ? "PASS" : "FAIL", t.name, name);
-                    if (st != 0) {
-                        s.out << one;
-                        ++tests_failed;
-                    }
-                    ++tests_run;
-                }
-                continue;
+        }
+        // test: a program whose main returns 0, or its `@std::test` functions one by one (spec 29)
+        std::string output;
+        int status = run_process({"env", "EDAX_TEST_LIST=1", exe}, &output);
+        if (status == 0 && output.starts_with("edax-tests:\n")) {
+            std::vector<std::string> test_names;
+            std::istringstream       lines(output.substr(std::string_view("edax-tests:\n").size()));
+            for (std::string line; std::getline(lines, line);) {
+                if (!line.empty()) test_names.push_back(line);
             }
-            ++tests_run;
-            s.out << std::format("{} {}\n", status == 0 ? "PASS" : "FAIL", t.name);
-            if (status != 0) {
-                s.out << output;
-                ++tests_failed;
+            for (const std::string& name : test_names) {
+                std::string one;
+                int         st = run_process({"env", "EDAX_TEST_RUN=" + name, exe}, &one);
+                s.out << std::format("{} {}::{}\n", st == 0 ? "PASS" : "FAIL", t.name, name);
+                if (st != 0) {
+                    s.out << one;
+                    ++tests_failed;
+                }
+                ++tests_run;
             }
+            continue;
+        }
+        ++tests_run;
+        s.out << std::format("{} {}\n", status == 0 ? "PASS" : "FAIL", t.name);
+        if (status != 0) {
+            s.out << output;
+            ++tests_failed;
         }
     }
+    if (report) {
+        report->end(!any_failed && !failed);
+        ender.ended = true;
+    }
+    if (any_failed) return ExitCode::compile_error;
     if (failed) return ExitCode::compile_error;
     if (opts.compile_commands) {
         fs::create_directories(out, ec);
@@ -2331,9 +2734,25 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
     if (command == "package") {
         return run_package(args.subspan(1), streams);
     }
+    if (command == "registry") {
+        if (args.size() < 2 || (args[1] != "opengl" && args[1] != "vulkan") || (args.size() > 2 && args[2] != "--source")) {
+            return usage_error(streams, "usage: edaxc registry opengl|vulkan [--source]");
+        }
+        try {
+            GeneratedStdModule m = args[1] == "opengl" ? generate_opengl_module(std_registry("gl.xml")) : generate_vulkan_module(std_registry("vk.xml"));
+            streams.out << (args.size() > 2 ? m.source : m.header);
+            streams.err << std::format("{}: {} commands, {} constants, {} structs (registry: {})\n", args[1], m.commands, m.constants,
+                                       m.types, m.registry_version);
+        } catch (const std::exception& e) {
+            streams.err << std::format("edaxc: error: the {} registry: {}\n", args[1], e.what());
+            return ExitCode::compile_error;
+        }
+        return ExitCode::success;
+    }
     if (command == "lex" || command == "parse" || command == "check" || command == "symbols" || command == "typed" ||
         command == "build" || command == "run" || command == "emit-c" || command == "emit-llvm" || command == "test" ||
-        command == "insights" || command == "expand" || command == "simd-report" || command == "definition") {
+        command == "insights" || command == "expand" || command == "simd-report" || command == "definition" ||
+        command == "explain-checks") {
         Options opts;
         opts.command = command;
         if (std::optional<ExitCode> failed = parse_options(args.subspan(1), opts, streams)) {

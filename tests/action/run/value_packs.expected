@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+24 12 1
+rank 3 count 24 dim1 3
+7 0
+--- stderr

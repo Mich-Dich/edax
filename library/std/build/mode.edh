@@ -13,6 +13,8 @@ namespace std::build::mode {
         compile_time std::build::panic_behavior panic();
         compile_time bool link_time_optimization();
         compile_time bool allow_undefined_behavior();
+        compile_time std::build::float_determinism float_determinism();
+        compile_time std::build::sanitizer sanitize();
     }
 
     // No optimization, full debug info, every check (the default mode).
@@ -27,6 +29,8 @@ namespace std::build::mode {
         compile_time std::build::panic_behavior panic() override;
         compile_time bool link_time_optimization() override;
         compile_time bool allow_undefined_behavior() override;
+        compile_time std::build::float_determinism float_determinism() override;
+        compile_time std::build::sanitizer sanitize() override;
     }
 
     // Optimized for speed, no debug info, every check.
@@ -41,6 +45,15 @@ namespace std::build::mode {
         compile_time std::build::panic_behavior panic() override;
         compile_time bool link_time_optimization() override;
         compile_time bool allow_undefined_behavior() override;
+        compile_time std::build::float_determinism float_determinism() override;
+        compile_time std::build::sanitizer sanitize() override;
+    }
+
+    // `debug` with light optimization: every check of `debug` and full debug info, but code that
+    // runs fast enough to play and test with (spec 24). A `development` mode is a `debug` mode.
+    open class development : debug {
+    public:
+        compile_time std::build::optimization optimization() override;
     }
 
     // `release` with full debug info.

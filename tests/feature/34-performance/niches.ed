@@ -1,0 +1,52 @@
+// feature 34: std::option takes no extra space for types that are never all zero.
+import std;
+
+struct point { i32 x; }
+
+interface shape {
+    f32 area();
+}
+
+enum color : u8 { red, green, blue }
+
+struct flags {
+    u32 id;
+    bool visible;
+}
+
+enum sparse : u8 {
+    first = 0,
+    last = 255,
+}
+
+struct handle {
+    u32 index;
+    std::nonzero<u32> generation;
+}
+
+struct id {
+    @std::never_zero
+    u64 value;
+}
+
+compile_time check (std::size_of<std::option<std::nonzero<u32>>>() == 4) else "nonzero";
+compile_time check (std::size_of<std::option<std::nonzero<u64>>>() == 8) else "nonzero u64";
+compile_time check (std::size_of<std::option<std::unique_ptr<point>>>() == 8) else "unique_ptr";
+compile_time check (std::size_of<std::option<std::shared_ptr<point>>>() == 16) else "shared_ptr";
+compile_time check (std::size_of<std::option<point&>>() == 8) else "reference";
+compile_time check (std::size_of<std::option<shape&>>() == 16) else "interface reference";
+compile_time check (std::size_of<std::option<handle>>() == 8) else "a struct holding a nonzero";
+compile_time check (std::size_of<std::option<id>>() == 8) else "never_zero field";
+compile_time check (std::size_of<std::option<u32>>() == 8) else "no niche: a tag";
+compile_time check (std::size_of<std::option<std::option<std::nonzero<u32>>>>() == 8) else "the inner option's niche is taken";
+compile_time check (std::size_of<std::option<bool>>() == 1) else "bool: 2 is never a bool";
+compile_time check (std::size_of<std::option<char>>() == 4) else "char: above 0x10FFFF";
+compile_time check (std::size_of<std::option<color>>() == 1) else "an unused tag";
+compile_time check (std::size_of<std::option<std::option<u32>>>() == 8) else "the inner option's tag";
+compile_time check (std::size_of<std::option<flags>>() == 8) else "a struct holding a bool";
+compile_time check (std::size_of<std::option<sparse>>() == 1) else "explicit tags 0 and 255: 1 is free";
+
+struct bad {
+    @std::never_zero   //~ error[E4210]: is for integer and pointer fields
+    f32 weight;
+}

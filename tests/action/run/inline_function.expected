@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+ok: 15
+size 48
+total 30
+job 10
+--- stderr

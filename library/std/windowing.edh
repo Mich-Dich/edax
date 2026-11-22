@@ -5,19 +5,23 @@
 //
 //     namespace wnd = std::windowing;
 //     mut wnd::system sys = wnd::system::start()?;                      // glfwInit
+//     compile_time std::graphics::api gl_33 = std::graphics::api{
+//         .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
 //     mut wnd::gl_window win = sys.create_gl_window(wnd::window::config{ .title = "demo" },
-//                                                   wnd::opengl::config{}, wnd::opengl::sharing::automatic)?;
+//                                                   wnd::opengl::config{ .api = gl_33 }, wnd::opengl::sharing::automatic)?;
 //     mut std::darray<wnd::event> events = default;
 //     while (!win.should_close()) {
 //         sys.poll();                                                    // glfwPollEvents
 //         win.drain_events(mut events);                                  // this window's events
 //         for (wnd::event e : events) { ... }
 //         mut wnd::opengl::frame frame = win.begin_frame();             // glfwMakeContextCurrent
-//         ... draw ...
+//         ... draw with std::graphics::opengl::functions<gl_33> (loaded from the frame) ...
 //         frame.present();                                               // glfwSwapBuffers
 //     }
 //
 // What the types guarantee:
+// - **The graphics API is a name and a version** (std::graphics::api), the same value for both
+//   kinds: opengl::config's `api` for an OpenGL window, create_vulkan_window's `api` for Vulkan.
 // - **A window's kind is its type.** window has no graphics; gl_window has an OpenGL context;
 //   vulkan_window gives Vulkan a surface. OpenGL calls on a Vulkan window don't compile. Every kind
 //   is a std::windowing::window, so code that only handles input or titles takes a `window&`.
@@ -100,20 +104,13 @@ namespace std::windowing {
     // ---- OpenGL ------------------------------------------------------------------------------------
 
     namespace opengl {
-        enum profile : u8 {
-            // Only the modern API (3.2 and later).
-            core,
-            // The modern API and the old fixed-function one.
-            compatibility,
-        }
-
         // The context and framebuffer an OpenGL window asks for. Windows whose configs are equal
         // can share a group (see sharing).
         @std::derive::formattable
         struct config {
-            u8      major = 3;
-            u8      minor = 3;
-            opengl::profile profile = opengl::profile::core;
+            // OpenGL Core, Compatibility or ES, and its version. A Vulkan api is error::wrong_api.
+            std::graphics::api api = std::graphics::api{
+                .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
             // A debug context (GL_KHR_debug messages).
             bool    debug = false;
             u8      depth_bits = 24;
@@ -159,24 +156,26 @@ namespace std::windowing {
 
         // A window's context, current while the frame exists. Borrows the window: it can't be
         // closed, resized or moved away during the frame. present() shows what was drawn.
-        view class frame {
+        //
+        // A frame is where OpenGL's functions come from:
+        // std::graphics::opengl::functions<A>::load(frame) (see std::graphics).
+        view class frame : std::graphics::function_source {
         public:
             // The window being drawn.
             std::windowing::window& window();
             // The size of the framebuffer in pixels: what glViewport wants.
             std::windowing::size framebuffer_size();
-            // The address of an OpenGL function (`"glClearColor"`), or none. Calling it needs
-            // `cast::reinterpret` to its exact std::fn_ptr type, in `unsafe`.
-            std::option<std::raw_ptr<u8>> proc_address(std::str name);
+            // The address of an OpenGL function (`"glClearColor"`), or none.
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override;
             // Swaps the buffers: what was drawn becomes visible. Consumes the frame.
             void present() move;
             ~frame();
         }
 
         // A share group's own context, current while this exists (share_group.make_current()).
-        view class current {
+        view class current : std::graphics::function_source {
         public:
-            std::option<std::raw_ptr<u8>> proc_address(std::str name);
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override;
             ~current();
         }
     }
@@ -185,11 +184,15 @@ namespace std::windowing {
 
     namespace vulkan {
         // The Vulkan loader (libvulkan), from system.vulkan(). Keeps the window system's connection
-        // open, like a window.
-        class loader {
+        // open, like a window. Vulkan's functions come from it:
+        // std::graphics::vulkan::functions<A>::load(loader) (see std::graphics).
+        class loader : std::graphics::function_source {
         public:
-            // vkGetInstanceProcAddr, where every other Vulkan function comes from.
-            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> instance_proc_address();
+            // A global Vulkan function (vkGetInstanceProcAddr(NULL, name)): "vkCreateInstance",
+            // "vkGetInstanceProcAddr", or none.
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override;
+            // The newest Vulkan version the loader can make instances of (vkEnumerateInstanceVersion).
+            std::version version();
             // The instance extensions a surface needs on this platform, NUL-terminated for
             // VkInstanceCreateInfo::ppEnabledExtensionNames.
             std::array<std::raw_ptr<u8>, 2> required_extensions();
@@ -222,8 +225,8 @@ namespace std::windowing {
         // owner by it.
         u32 id();
 
-        // The graphics API the window was made for.
-        graphics_api graphics();
+        // The graphics API the window was made for; none for a window without graphics.
+        std::option<std::graphics::api> graphics();
 
         // Moves the window's events since the last call into `out` (cleared first) and starts a
         // new input frame (input()). Keeps `out`'s capacity: no allocation once it has grown.
@@ -325,12 +328,14 @@ namespace std::windowing {
         // A window without graphics.
         std::result<window, error> create_window(window::config config) mut;
 
-        // A window with an OpenGL context of `gl`, in the share group `sharing` chooses.
+        // A window with an OpenGL context of `gl` (gl.api: the OpenGL API and version), in the
+        // share group `sharing` chooses. error::version_unavailable: the driver can't make that version.
         std::result<gl_window, error> create_gl_window(window::config config, opengl::config gl,
                                                        opengl::sharing sharing) mut;
 
-        // A window for Vulkan.
-        std::result<vulkan_window, error> create_vulkan_window(window::config config) mut;
+        // A window for Vulkan API `api` (its instances use that version).
+        // error::version_unavailable: the loader's newest version is older than api.version.
+        std::result<vulkan_window, error> create_vulkan_window(window::config config, std::graphics::api api) mut;
 
         // A share group with no window yet (its own hidden context).
         std::result<opengl::share_group, error> create_share_group(opengl::config gl) mut;

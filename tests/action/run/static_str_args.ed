@@ -1,0 +1,16 @@
+// RUN: edaxc run %s
+// Texts as template arguments (spec 34): two instances are the same when the texts are equal.
+import std;
+
+template<std::static_str S>
+struct name_tag {
+    static std::static_str text() { return S; }
+}
+
+template<std::static_str S>
+u64 hashed() { return std::hash(S); }
+
+void main() {
+    std::println(name_tag<"player">::text());
+    std::println(f"{std::is_same<name_tag<"a">, name_tag<"a">>()} {std::is_same<name_tag<"a">, name_tag<"b">>()}");
+}

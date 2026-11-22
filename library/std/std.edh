@@ -67,6 +67,21 @@ namespace std {
         failure = 1,
     }
 
+    // A version number, major.minor.patch: of a graphics API (std::graphics::api), a library, a
+    // file format. Compares field by field, major first, and prints as "1.4.320".
+    struct version {
+        u32 major = 0;
+        u32 minor = 0;
+        u32 patch = 0;
+
+        bool operator==(version& other) = default;
+        compile_time run_time std::ordering operator<=>(version& other);
+        // Whether this version is `other` or a later one ("needs at least `other`"). Usable in
+        // compile-time code, like in a `compile_time check`.
+        compile_time run_time bool at_least(version other);
+        void format(mut std::formatter& out);
+    }
+
     // What a panic hook is told: the message, where the panic happened and on which thread.
     view struct panic_info {
         std::str       message;
@@ -195,7 +210,7 @@ namespace std {
 
         // Keeps the elements for which `keep(element)` is true, in order; the others are destroyed.
         template<type F>
-        void retain(F keep) mut;
+        void retain(mut F keep) mut;
 
         // Sorts by `key(element)`, stably (equal keys keep their order). O(n log n): a merge sort
         // with one buffer of n elements.
@@ -822,6 +837,7 @@ namespace std {
 
     // One integer, `bool`, `char` or `std::raw_ptr` that threads change atomically (spec 27).
     // Always lock-free; the size and alignment of `T`. Arithmetic wraps.
+    @std::interior_mutable
     template<type T>
     class atomic : unsafe std::sendable, unsafe std::shareable {
     public:
@@ -876,6 +892,7 @@ namespace std {
 
     // Data `T` that one thread at a time can lock and change (spec 27). The mutex owns the data:
     // there is no way to reach it without locking. Inline, no heap: `T` plus one 32-bit word.
+    @std::interior_mutable
     template<type T>
     class mutex : unsafe std::sendable(std::implements<T, std::sendable>()),
                   unsafe std::shareable(std::implements<T, std::sendable>()) {
@@ -912,6 +929,7 @@ namespace std {
     // Data `T` that is read often and written rarely: any number of readers at once, or one
     // writer. Writers are not starved: once a writer waits, new readers wait behind it. One
     // 32-bit word next to `T`, like `std::mutex`.
+    @std::interior_mutable
     template<type T>
     class rw_mutex : unsafe std::sendable(std::implements<T, std::sendable>()),
                      unsafe std::shareable(std::implements<T, std::sendable>() && std::implements<T, std::shareable>()) {
@@ -961,6 +979,7 @@ namespace std {
     }
 
     // Waits until the data behind a mutex reaches a state (spec 27).
+    @std::interior_mutable
     class condition : unsafe std::sendable, unsafe std::shareable {
     public:
         // Unlocks `guard` and sleeps until notified and `ready(*guard)` holds; returns with the
@@ -1140,6 +1159,19 @@ namespace std {
         ~thread_pool();
     }
 
+    // --- facts for the optimizer (spec 34) ---------------------------------------------------------
+
+    // Tells the optimizer that `condition` holds, so it can drop checks and branches that
+    // depend on it. Checked in every mode that doesn't allow undefined behaviour: a false
+    // assumption panics there, at the call. In a mode with `allow_undefined_behavior()` it is
+    // only a promise. Write one fact per call: `std::assume(a.len() == n); std::assume(b.len() == n);`
+    // gives the optimizer two facts, `std::assume(x && y)` only their combination.
+    void assume(bool condition);
+
+    // Marks code that can't be reached. Panics if it is reached in a safe mode; in a mode with
+    // `allow_undefined_behavior()` the optimizer removes the path.
+    never unreachable();
+
     // --- annotations (spec 29) -------------------------------------------------------------------
 
     // Every use of what it's written on is a warning with this message (id `std::deprecated`).
@@ -1177,6 +1209,73 @@ namespace std {
     // out of the hot path.
     annotation(std::meta::target::function)
     struct cold { }
+
+    // The memory layout of a struct or class (spec 34). `.align` raises its alignment (a power of
+    // two up to 64, written as a number): `@std::layout{ .align = 16 }` for SIMD and GPU data,
+    // 64 for a cache line. `.no_implicit_padding` makes every gap the compiler would insert
+    // between fields an error, so GPU and file structs spell their padding out with
+    // `std::padding<N>`.
+    annotation(std::meta::target::type)
+    struct layout {
+        u64  align               = 0;
+        bool no_implicit_padding = false;
+        bool packed              = false;   // no padding at all; fields can't be borrowed (they may be misaligned)
+    }
+
+    // `N` bytes of explicit padding in a struct (spec 34): zero when the struct is built, and
+    // never read. GPU and file layouts write their gaps out with it.
+    template<usize N>
+    struct padding {
+        std::raw::array<u8, N> bytes = default;
+    }
+
+    // The type changes through immutable references (its methods use atomics or a lock on its
+    // own fields). The optimizer is not told that a `T&` of it is read-only (spec 34). Types
+    // containing it are interior mutable too.
+    annotation(std::meta::target::type)
+    struct interior_mutable { }
+
+    // A promise that the field is never 0 (an integer) or null (a pointer) in a live value
+    // (spec 34, "Niches"): `std::option` of the type then stores `none` as 0 there and needs no
+    // tag. `std::unique_ptr`, `std::shared_ptr` and `std::nonzero` use it. Breaking the promise
+    // makes the value read as `none`.
+    annotation(std::meta::target::field)
+    struct never_zero { }
+
+    // An integer that is never 0 (spec 34): `std::option<std::nonzero<u32>>` is 4 bytes.
+    // `make` checks the value; `of` gives `none` for 0.
+    template<type T>
+    class nonzero {
+    public:
+        static nonzero<T> make(T value);
+        static std::option<nonzero<T>> of(T value);
+        T get();
+    }
+
+    // Overrides the build mode's optimization for one function (spec 34): `.level = none` to
+    // debug one function in an optimized build, `.level = speed` for a hot function in a debug build.
+    annotation(std::meta::target::function)
+    struct optimize {
+        std::build::optimization level;
+    }
+
+    // Every run-time check of the function must be removed by the optimizer (spec 34): a bounds,
+    // overflow or other check that is left is a compile error naming it (checked when the program
+    // is built, as a release build optimizes it).
+    annotation(std::meta::target::function)
+    struct no_checks_left { }
+
+    // Relaxed floating point for the operations written in one function (spec 34). The default is
+    // strict IEEE: the same results on every machine. A mode with `float_determinism()` strict
+    // rejects it.
+    annotation(std::meta::target::function)
+    struct float_mode {
+        bool contract        = false;   // a * b + c may become one fused multiply-add
+        bool reassociate     = false;   // sums may be reordered (vectorized reductions)
+        bool finite_only     = false;   // the operands are never NaN or infinite
+        bool no_signed_zeros = false;   // -0.0 and 0.0 may be treated alike
+        bool reciprocal      = false;   // a / b may become a * (1 / b)
+    }
 
     // A test: `edaxc test` finds and runs every `@std::test` function of the test targets. It
     // takes no parameters and returns nothing; it passes when it returns.

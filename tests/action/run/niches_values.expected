@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+1 4 1 8 8 8
+false
+some false
+blue true none false
+true false true
+inner 7
+inner2 false
+x
+--- stderr

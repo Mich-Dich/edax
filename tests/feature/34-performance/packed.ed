@@ -1,0 +1,20 @@
+// feature 34: a field of a packed struct can be read and assigned, not borrowed.
+import std;
+
+@std::layout{ .packed = true }
+struct header {
+    u8  kind;
+    u32 size;
+}
+compile_time check (std::size_of<header>() == 5) else "no padding";
+
+void show(u32& n) { }
+
+void f(mut header h) {
+    h.size = 7;
+    h.size += 1;
+    u32 copy = h.size;
+    show(copy);
+    show(h.size);                 //~ error[E4210]: can't be passed by reference
+    u32& r = h.size;              //~ error[E4210]: can't be borrowed
+}

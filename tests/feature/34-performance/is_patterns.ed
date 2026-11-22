@@ -1,0 +1,9 @@
+// feature 34: `is` in conditions binds names for the branch only.
+import std;
+
+void f(std::option<u32> o) {
+    if (o is std::some(v) && v > 3) {
+        u32 copy = v;
+    }
+    u32 after = v;                          //~ error[E3020]: cannot find 'v'
+}

@@ -1,0 +1,21 @@
+// feature 34: std::inline_function holds captures up to its size; bounds on std::function.
+import std;
+
+compile_time check (std::size_of<std::inline_function<void(), 32>>() == 48) else "32 bytes inline + code + drop";
+compile_time check (std::size_of<std::function<void()>>() == 24) else "a heap pointer + code + drop";
+
+void f() {
+    u64 a = 1;
+    u64 b = 2;
+    u64 c = 3;
+    std::inline_function<u64(), 16> two = [a, b]() { return a + b; };
+    std::inline_function<u64(), 16> three = [a, b, c]() { return a + b + c; };   //~ error[E4010]: captures take 24 bytes
+    std::inline_function<u64(), 16> by_ref = [&a]() { return a; };               //~ error[E5015]: reference captures
+}
+
+void g() {
+    std::raw_ptr<u64> p = nullptr;
+    std::function<void(), std::sendable> ok = []() { };
+    std::function<void(), std::sendable> bad = [p]() { };                          //~ error[E4010]: is not std::sendable
+    std::function<void()> plain = []() { };
+}

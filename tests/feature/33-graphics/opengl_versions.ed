@@ -1,0 +1,43 @@
+// std::graphics::opengl: the program's OpenGL API decides which commands it can call (made from gl.xml).
+import std;
+namespace gl = std::graphics::opengl;
+
+compile_time std::graphics::api gl_33 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+compile_time std::graphics::api gl_21 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_compatibility, .version = std::version{ .major = 2, .minor = 1 } };
+compile_time std::graphics::api es_30 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_es, .version = std::version{ .major = 3 } };
+compile_time std::graphics::api gl_37 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 7 } };
+compile_time std::graphics::api vk_13 = std::graphics::api{
+    .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1, .minor = 3 } };
+
+void core(gl::functions<gl_33>& f) {
+    mut u32 vao = 0;
+    unsafe {
+        f.glClear(gl::GL_COLOR_BUFFER_BIT);
+        f.glGenVertexArrays(1, mut &vao);
+        f.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA8, 4, 4, 0, gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, nullptr);
+        f.glBegin(gl::GL_TRIANGLES);           //~ error[E4210]: glBegin isn't in OpenGL Core 3.3: it is in OpenGL Compatibility 1.0+
+    }
+}
+
+void legacy(gl::functions<gl_21>& f) {
+    mut u32 vao = 0;
+    unsafe {
+        f.glBegin(gl::GL_TRIANGLES);
+        f.glGenVertexArrays(1, mut &vao);      //~ error[E4210]: glGenVertexArrays isn't in OpenGL Compatibility 2.1
+    }
+}
+
+void embedded(gl::functions<es_30>& f) {
+    mut u32 vao = 0;
+    unsafe {
+        f.glGenVertexArrays(1, mut &vao);
+        f.glBegin(gl::GL_TRIANGLES);           //~ error[E4210]: glBegin isn't in OpenGL ES 3.0
+    }
+}
+
+void no_such_version(gl::functions<gl_37>& f) {}   //~ error[E4210]: OpenGL Core 3.7.0 doesn't exist
+void not_opengl(gl::functions<vk_13>& f) {}        //~ error[E4210]: is not an OpenGL API

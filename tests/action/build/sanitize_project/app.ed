@@ -1,0 +1,17 @@
+import std;
+
+void main() {
+    std::mutex<u64> total = std::mutex<u64>::make(0);
+    {
+        mut std::darray<std::thread::scoped_handle<void>> running = default;
+        for (u32 t : 0..4) {
+            running.push(std::thread::spawn([&total]() {
+                for (u32 i : 0..1000) {
+                    mut std::mutex_guard<u64> g = total.lock();
+                    *g += 1;
+                }
+            }));
+        }
+    }
+    std::println(f"{*total.lock()}");
+}

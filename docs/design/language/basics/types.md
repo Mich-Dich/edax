@@ -8,7 +8,7 @@
 | `i8` `i16` `i32` `i64` `i128` | Signed integers, two's complement |
 | `u8` `u16` `u32` `u64` `u128` | Unsigned integers |
 | `isize` `usize` | Pointer-sized integers. Used for sizes and indices (`len()` returns `usize`) |
-| `f32` `f64` | IEEE-754 floats |
+| `f16` `f32` `f64` | IEEE-754 floats. `f16` (2 bytes) is for GPU and asset data: its arithmetic is rounded to `f16` after each operation (computed in `f32` where the CPU has no half-precision instructions). `cast<f32>(h)` is lossless; `u8`/`i8` convert losslessly to `f16`; anything wider needs `cast::round<f16>` |
 | `bool` | `true` / `false` |
 | `char` | One Unicode scalar value (4 bytes) |
 | `void` | "No value": a return type, or a template argument used only as a result or payload (`std::thread::handle<void>`, `std::result<void, E>`, see [Threads](../../stdlib/concurrency/threads.md)) |
@@ -25,6 +25,23 @@ Every number type has `compile_time` constants reached through its name:
 | `T::max` | Largest value | Largest finite value |
 | `T::bits` | Width in bits, as a `u32` | Width in bits, as a `u32` |
 | `f32::infinity`, `f32::nan`, `f32::epsilon` (and `f64::...`) | - | IEEE special values and the machine epsilon |
+
+### Methods of numbers
+Numbers have methods; the arguments take the receiver's type (spec 34):
+
+| Types | Methods |
+|---|---|
+| floats | `sqrt`, `abs`, `floor`, `ceil`, `round`, `trunc`, `min(x)`, `max(x)`, `clamp(lo, hi)`, `mul_add(y, z)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(x)`, `exp`, `exp2`, `log`, `log2`, `log10`, `pow(x)`, `copysign(x)`, `is_nan`, `is_infinite`, `is_finite` |
+| integers | `abs` (panics on the minimum of a signed type), `min(x)`, `max(x)`, `clamp(lo, hi)` |
+
+```edax
+f32 length = (x * x + y * y).sqrt();
+f32 t      = progress.clamp(0.0, 1.0);
+f64 fused  = a.mul_add(b, c);          // a * b + c with one rounding, always
+```
+- `min` and `max` of floats ignore a NaN operand (IEEE `minNum`/`maxNum`). `clamp` with `lo > hi` panics.
+- `mul_add` is always one fused operation, whatever `@std::float_mode` says (see [Performance](../performance/performance.md)).
+- They are `compile_time run_time`: constants can use them. The bit functions (`std::count_ones`, ...) stay free functions (see [Core utilities](../../stdlib/core/utilities.md)).
 
 ### SIMD vectors
 `f32x8`, `i32x4` and the other vector types hold several numbers that are processed together (see [SIMD](../simd/simd.md)).
@@ -99,3 +116,5 @@ This is **every** implicit conversion in the language. Anything else needs a `ca
 - **No int → float literals:** `f64 half = 1 / 2;` would otherwise be `0.5` here but `0` in C. Writing `1.0` removes the doubt.
 - **Bool conversion only in conditions:** you get the convenience of `if (ptr)` and `if (flags & mask)` without the C++ pitfall where `5` silently binds to a `bool` parameter.
 - **`usize`:** sizes depend on the target (32-bit embedded vs 64-bit desktop). Hard-coding `u64` would be wrong on small targets.
+- **Methods on numbers:** `x.sqrt()` reads left to right and needs no `std::math::` prefix or overload set per type. Integers get no `sqrt`: the error says to convert first, so the precision is chosen in the code.
+- **`f16` as storage:** GPU buffers and compressed assets use half floats; arithmetic in `f16` loses too much to be a default, so it converts to `f32`.

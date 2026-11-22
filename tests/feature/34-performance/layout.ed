@@ -1,0 +1,34 @@
+// feature 34: @std::layout raises alignment and makes implicit padding visible.
+import std;
+
+@std::layout{ .align = 16 }
+struct vec3a { f32 x; f32 y; f32 z; }
+compile_time check (std::size_of<vec3a>() == 16 && std::align_of<vec3a>() == 16) else "aligned and rounded up";
+
+@std::layout{ .align = 64 }
+struct per_thread { u64 counter; }
+compile_time check (std::size_of<per_thread>() == 64) else "a cache line";
+
+@std::layout{ .no_implicit_padding = true }
+struct gpu_light {
+    f32             intensity;
+    std::padding<4> _pad;
+    f64             range;
+}
+compile_time check (std::size_of<gpu_light>() == 16) else "padding written out";
+
+@std::layout{ .no_implicit_padding = true }
+struct file_header {
+    u16 version;
+    u32 size;          //~ error[E4210]: 2 bytes of padding before 'size'
+}
+
+@std::layout{ .align = 48 }    //~ error[E4210]: not a power of two
+struct odd { u8 a; }
+
+@std::layout{ .align = 16 }    //~ error[E4210]: for structs and classes
+enum mode : u8 { on, off }
+
+void f() {
+    gpu_light l = gpu_light{ .intensity = 1.0, .range = 5.0 };   // padding is never written
+}

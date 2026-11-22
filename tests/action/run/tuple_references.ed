@@ -1,0 +1,19 @@
+// RUN: edaxc run %s
+// A tuple of references into distinct fields (spec 34): two fields of one object at once.
+import std;
+class world {
+public:
+    static world make() { return world{ .bodies = default, .contacts = default }; }
+    (mut std::darray<u32>&, std::darray<u32>&) bodies_and_contacts() mut {
+        return (mut this.bodies, this.contacts);
+    }
+private:
+    std::darray<u32> bodies;
+    std::darray<u32> contacts;
+}
+void main() {
+    mut world w = world::make();
+    (mut std::darray<u32>& bodies, std::darray<u32>& contacts) = w.bodies_and_contacts();
+    bodies.push(cast::truncate<u32>(contacts.len()) + 5);
+    std::println(f"{bodies.len()} {bodies[0]}");
+}

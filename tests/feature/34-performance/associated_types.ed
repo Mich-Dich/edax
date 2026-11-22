@@ -1,0 +1,25 @@
+// feature 34: associated types: `type element;` in an interface, `type element = T;` in implementers.
+import std;
+
+interface source {
+    type element;
+    std::option<element> next() mut;
+}
+
+struct counter : source {
+    type element = u32;
+    u32 at = 0;
+    std::option<u32> next() mut override { return std::none; }
+}
+
+struct broken : source {           //~ error[E3045]: does not give the type 'element'
+    std::option<u32> next() mut override { return std::none; }
+}
+
+struct plain {
+    type unit = f32;
+    unit value;
+}
+
+compile_time check (std::size_of<counter::element>() == 4) else "counter::element is u32";
+compile_time check (std::size_of<plain::unit>() == 4) else "plain::unit is f32";

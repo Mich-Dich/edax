@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+built '%t/vectorize_owned_aliasing' (release)
+--- stderr

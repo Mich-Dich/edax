@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// Operators as interfaces (spec 34): generic math over user vectors, numbers and distinct types.
+import std;
+
+struct vec2 {
+    f32 x;
+    f32 y;
+    vec2 operator+(vec2& o) { return vec2{ .x = this.x + o.x, .y = this.y + o.y }; }
+    vec2 operator*(f32 k) { return vec2{ .x = this.x * k, .y = this.y * k }; }
+}
+
+@std::derive::arithmetic
+distinct type meters = f32;
+
+template<type V : std::addable<V> & std::multipliable<f32>>
+V lerp(V a, V b, f32 t) {
+    return a * (1.0 - t) + b * t;
+}
+
+template<type V : std::addable<V>>
+V twice(V v) { return v + v; }
+
+void main() {
+    vec2 p = lerp(vec2{ .x = 0.0, .y = 0.0 }, vec2{ .x = 10.0, .y = 20.0 }, 0.25);
+    std::println(f"{p.x} {p.y} {lerp(0.0f32, 8.0f32, 0.5)} {twice(21u32)} {cast<f32>(twice(cast<meters>(1.5)))}");
+}

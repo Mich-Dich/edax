@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/perf_project --out-dir=%t --mode=lockstep fastmath
+// A mode whose float_determinism() is strict rejects @std::float_mode (spec 34).

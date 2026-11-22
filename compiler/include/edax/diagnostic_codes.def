@@ -233,6 +233,7 @@ EDAX_DIAG(E5030, error,   "type cannot be cloned")
 EDAX_DIAG(E6001, error,   "not supported by code generation yet")
 EDAX_DIAG(E6002, error,   "the program has no 'main' function")
 EDAX_DIAG(E6003, error,   "a loop of a '@std::simd::must_vectorize' function is not vectorized")
+EDAX_DIAG(E6004, error,   "a run-time check is left in a '@std::no_checks_left' function")
 
 EDAX_DIAG(W1001, warning, "'/*' inside a block comment (block comments do not nest)")
 EDAX_DIAG(W4001, warning, "unreachable match arm")

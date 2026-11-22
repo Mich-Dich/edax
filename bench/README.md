@@ -26,6 +26,27 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 | `text_parse` | split a 1M-line CSV text and parse numbers |
 | `tree_map` | `tree_map<u32, u32>`: 1M random inserts, 2M lookups, ordered walk |
 | `vec_push_sum` | `darray`: push 20M integers, sum by index and by `for` |
+| `particles` | 200k particles in SoA columns, 1000 steps of gravity, drag and a bounce (spec 34) |
+
+## Results (spec 34, x86-64 baseline, GCC 13 `-O2` for C++)
+
+Measured in a shared container (best of 5; the times vary by about 10%). Abseil and Boost were not
+installed there, so the comparison is against libstdc++ only; the earlier table has them.
+
+| Benchmark | Edax (s) | C++ std (s) | Edax / C++ | What changed |
+|---|---|---|---|---|
+| hash_int | 0.260 | 0.795 | 0.33x | |
+| hash_words | 0.077 | 0.154 | 0.50x | |
+| particles | 0.135 | 0.247 | 0.55x | alias scopes for owned memory, conditional stores as selects: vectorized (was 1.37x) |
+| sort | 0.024 | 0.125 | 0.19x | radix sort for integers (was 1.12x) |
+| sort_by_key | 0.006 | 0.038 | 0.16x | radix sort for integer keys (was 1.20x) |
+| string_build | 0.014 | 0.017 | 0.82x | |
+| text_parse | 0.116 | 0.163 | 0.72x | |
+| tree_map | 0.594 | 1.647 | 0.36x | |
+| vec_push_sum | 0.123 | 0.226 | 0.55x | |
+
+With `--cpu=x86_64_v3` (AVX2), `particles` takes 0.11 s; g++ `-march=x86-64-v3` takes 0.32 s (it
+doesn't vectorize the loop).
 
 ## Results (v0.1 + std optimization, x86-64, GCC 14 for C++)
 

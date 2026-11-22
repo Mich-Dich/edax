@@ -1,0 +1,546 @@
+// windowing/application (see application.edh).
+
+import std;
+
+namespace demo {
+    namespace wnd = std::windowing;
+    namespace gl = std::graphics::opengl;
+    namespace vk = std::graphics::vulkan;
+
+    // ---- drawing --------------------------------------------------------------------------------------
+    //
+    // Boxes are scissored clears: every OpenGL version has them, so the same code draws the
+    // OpenGL 3.3 core windows and the 2.1 compatibility sandbox, with no shaders.
+
+    private struct color {
+        f32 r = 0.0;
+        f32 g = 0.0;
+        f32 b = 0.0;
+    }
+
+    // Clears the whole framebuffer.
+    private template<std::graphics::api A>
+    void clear(gl::functions<A>& f, wnd::size framebuffer, color c) {
+        unsafe {
+            f.glViewport(0, 0, cast::saturate<i32>(framebuffer.width), cast::saturate<i32>(framebuffer.height));
+            f.glClearColor(c.r, c.g, c.b, 1.0);
+            f.glClear(gl::GL_COLOR_BUFFER_BIT);
+        }
+    }
+
+    // Fills the rectangle (x, y, width, height), in pixels from the top left.
+    private template<std::graphics::api A>
+    void fill(gl::functions<A>& f, wnd::size framebuffer, i32 x, i32 y, i32 width, i32 height, color c) {
+        unsafe {
+            f.glEnable(gl::GL_SCISSOR_TEST);
+            f.glScissor(x, cast::saturate<i32>(framebuffer.height) - y - height, width, height);    // GL counts y from the bottom
+            f.glClearColor(c.r, c.g, c.b, 1.0);
+            f.glClear(gl::GL_COLOR_BUFFER_BIT);
+            f.glDisable(gl::GL_SCISSOR_TEST);
+        }
+    }
+
+    // The corner marker: green when `texture` exists in the current context (glIsTexture), red
+    // when it doesn't. The texture was made in the share group's own context, so the marker shows
+    // which windows share it.
+    private template<std::graphics::api A>
+    void sharing_marker(gl::functions<A>& f, wnd::size framebuffer, u32 texture) {
+        bool shared = unsafe { f.glIsTexture(texture) } != 0;
+        color c = if (shared) { color{ .g = 0.8 } } else { color{ .r = 0.8 } };
+        fill(f, framebuffer, cast::saturate<i32>(framebuffer.width) - 24, 8, 16, 16, c);
+    }
+
+    // An RGBA checkerboard: the window icon and the shared texture.
+    private wnd::image checker_image(u32 size, u32 cell) {
+        mut std::darray<u8> pixels = std::darray<u8>::with_capacity(cast<usize>(size) * cast<usize>(size) * 4);
+        for (u32 y : 0..size) {
+            for (u32 x : 0..size) {
+                u8 v = if ((x / cell + y / cell) % 2 == 0) { 40 } else { 220 };
+                pixels.push(v);
+                pixels.push(v);
+                pixels.push(v);
+                pixels.push(255);
+            }
+        }
+        return wnd::image{ .width = size, .height = size, .pixels = move pixels };
+    }
+
+    // A texture made from `img` in the context that is current: it belongs to that context's share group.
+    private u32 upload_texture(gl::functions<opengl>& f, wnd::image& img) {
+        mut u32 id = 0;
+        unsafe {
+            f.glGenTextures(1, mut &id);
+            f.glBindTexture(gl::GL_TEXTURE_2D, id);
+            f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, cast::truncate<i32>(gl::GL_NEAREST));
+            f.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA8, cast::saturate<i32>(img.width), cast::saturate<i32>(img.height), 0,
+                           gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, cast::reinterpret<std::raw_ptr<u8>>(&img.pixels[0]));
+            f.glFinish();                    // finished before another context of the group uses it
+        }
+        return id;
+    }
+
+    // ---- input ------------------------------------------------------------------------------------------
+
+    // How the box moves this frame: W A S D or the arrow keys, the mouse while the right button is
+    // held (the cursor is captured then), the wheel resizes it.
+    private struct movement {
+        f64  dx = 0.0;
+        f64  dy = 0.0;
+        f64  grow = 0.0;
+        bool looking = false;
+    }
+
+    private movement read_movement(wnd::input_state& input) {
+        f64 speed = 4.0;
+        mut movement m = movement{ .looking = input.mouse_down(wnd::mouse_button::right) };
+        if (input.key_down(wnd::key::a) || input.key_down(wnd::key::left))  { m.dx -= speed; }
+        if (input.key_down(wnd::key::d) || input.key_down(wnd::key::right)) { m.dx += speed; }
+        if (input.key_down(wnd::key::w) || input.key_down(wnd::key::up))    { m.dy -= speed; }
+        if (input.key_down(wnd::key::s) || input.key_down(wnd::key::down))  { m.dy += speed; }
+        if (m.looking) {
+            m.dx += input.cursor_delta().x;
+            m.dy += input.cursor_delta().y;
+        }
+        m.grow = input.scroll().y * 8.0;
+        return m;
+    }
+
+    private f64 clamp(f64 v, f64 low, f64 high) {
+        if (v < low) { return low; }
+        if (v > high) { return high; }
+        return v;
+    }
+
+    // ---- the windows ------------------------------------------------------------------------------------
+
+    // A tool window of the main window: stays above it, is drawn only when asked (redraw::on_demand).
+    private struct inspector {
+        wnd::gl_window win;
+        u32            number;
+    }
+
+    // An OpenGL 2.1 compatibility window in a share group of its own, with its own functions:
+    // a different API version is a different functions<A>.
+    private class sandbox_window {
+    public:
+        // Handles the window's events; false once it should close.
+        bool update(mut std::darray<wnd::event>& events) mut {
+            this.win.drain_events(mut events);
+            return !this.win.should_close();
+        }
+
+        // Draws the window when it needs it. `texture` is the main share group's: not in this
+        // window's group, so its marker is red.
+        void draw(u32 texture) mut {
+            if (!this.win.should_draw()) {
+                return;
+            }
+            mut wnd::opengl::frame frame = this.win.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            clear(this.gl, fb, color{ .r = 0.2, .g = 0.08, .b = 0.08 });
+            sharing_marker(this.gl, fb, texture);
+            frame.present();
+        }
+
+        wnd::gl_window                      win;
+        gl::functions<opengl_legacy>        gl;
+    }
+
+    // A VkInstance, destroyed with this object.
+    private class vulkan_instance {
+    public:
+        u64 handle() { return this.raw; }
+        vk::functions<vulkan>& functions() { return this.f; }
+        ~vulkan_instance() {
+            unsafe { this.f.vkDestroyInstance(this.raw, nullptr); }
+        }
+    private:
+        u64                   raw;
+        vk::functions<vulkan> f;
+    }
+
+    // The text of a VkPhysicalDeviceType.
+    private std::static_str device_type_text(i32 t) {
+        if (t == vk::VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)   { return "discrete GPU"; }
+        if (t == vk::VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) { return "integrated GPU"; }
+        if (t == vk::VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)    { return "virtual GPU"; }
+        if (t == vk::VK_PHYSICAL_DEVICE_TYPE_CPU)            { return "CPU"; }
+        return "other";
+    }
+
+    // A Vulkan window: the program makes the instance and picks a device; the window makes and owns
+    // the surface. Rendering (swapchain, command buffers) isn't shown: the title shows the surface's
+    // size, read from the device.
+    //
+    // The fields are declared loader, instance, window, so they are destroyed window first (and with
+    // it the surface), then the instance, then the loader: the order Vulkan needs, with no
+    // destructor code.
+    private class vulkan_view {
+    public:
+        static std::result<vulkan_view, std::string> open(mut wnd::system& sys) {
+            wnd::vulkan::loader loader = sys.vulkan().map_error([](wnd::error e) { return std::format(f"no Vulkan loader: {e}"); })?;
+            mut vk::functions<vulkan> f = vk::functions<vulkan>::load(loader)?;
+            mut wnd::vulkan_window win = sys.create_vulkan_window(wnd::window::config{
+                .title = "Vulkan",
+                .size  = wnd::size{ .width = 480, .height = 320 },
+            }, vulkan).map_error([](wnd::error e) { return std::format(f"no Vulkan window: {e}"); })?;
+
+            // The instance, with the extensions a surface needs on this platform.
+            std::array<std::raw_ptr<u8>, 2> extensions = loader.required_extensions();
+            mut u64 handle = 0;
+            unsafe {
+                vk::VkApplicationInfo application_info = vk::VkApplicationInfo{
+                    .pApplicationName = c"Edax windowing demo",
+                    .apiVersion       = vk::make_version(vulkan.version),
+                };
+                vk::VkInstanceCreateInfo info = vk::VkInstanceCreateInfo{
+                    .pApplicationInfo        = &application_info,
+                    .enabledExtensionCount   = 2,
+                    .ppEnabledExtensionNames = cast::reinterpret<std::raw_ptr<std::raw_ptr<u8>>>(&extensions),
+                };
+                i32 created = f.vkCreateInstance(&info, nullptr, mut &handle);
+                if (created != vk::VK_SUCCESS) {
+                    return std::error(std::format(f"vkCreateInstance failed: {created}"));
+                }
+            }
+            f.load_instance(handle)?;
+            vulkan_instance instance = vulkan_instance{ .raw = handle, .f = f };   // from here on, destroyed with `instance`
+
+            // The window's surface, and a device that can present to it.
+            mut u64 device = 0;
+            unsafe {
+                _ = win.create_surface(handle).map_error([](i32 r) { return std::format(f"vkCreateXlibSurfaceKHR failed: {r}"); })?;
+                vk::functions<vulkan>& v = instance.functions();
+                mut u32 count = 0;
+                _ = v.vkEnumeratePhysicalDevices(handle, mut &count, nullptr);
+                mut std::raw::array<u64, 8> devices = default;
+                if (count > 8) {
+                    count = 8;
+                }
+                _ = v.vkEnumeratePhysicalDevices(handle, mut &count, cast::reinterpret<std::raw_ptr<mut u64>>(mut &devices));
+                std::raw_ptr<u64> list = cast::reinterpret<std::raw_ptr<u64>>(&devices);
+                for (usize i : 0..cast<usize>(count)) {
+                    u64 candidate = *list.offset(i);
+                    if (win.presentation_support(handle, candidate, 0)) {
+                        device = candidate;
+                        break;
+                    }
+                }
+                if (device != 0) {
+                    mut vk::VkPhysicalDeviceProperties properties = default;
+                    v.vkGetPhysicalDeviceProperties(device, mut &properties);
+                    std::log::info(f"Vulkan: a {device_type_text(properties.deviceType)} with Vulkan {vk::version_of(properties.apiVersion)} presents to the window");
+                }
+            }
+            if (device == 0) {
+                return std::error(std::string::from("no Vulkan device can present to the window"));
+            }
+            mut vulkan_view made = vulkan_view{ .loader = move loader, .instance = move instance, .win = move win, .device = device };
+            made.show_extent();
+            return std::ok(move made);
+        }
+
+        // Handles the window's events; false once it should close.
+        bool update(mut std::darray<wnd::event>& events) mut {
+            this.win.drain_events(mut events);
+            for (wnd::event e : events) {
+                match (e) {
+                    wnd::event::resized(_) => this.show_extent(),
+                    _                      => {},
+                }
+            }
+            return !this.win.should_close();
+        }
+
+    private:
+        // The surface's size (it follows the window) in the title.
+        void show_extent() mut {
+            mut vk::VkSurfaceCapabilitiesKHR capabilities = default;
+            unsafe {
+                _ = this.instance.functions().vkGetPhysicalDeviceSurfaceCapabilitiesKHR(this.device, this.win.surface(), mut &capabilities);
+            }
+            vk::VkExtent2D size = capabilities.currentExtent;
+            this.win.set_title(std::format(f"{vulkan} - surface {size.width}x{size.height}").as_str());
+        }
+
+        wnd::vulkan::loader loader;     // destroyed last
+        vulkan_instance     instance;   // destroyed second
+        wnd::vulkan_window  win;        // destroyed first: the surface before the instance
+        u64                 device = 0;
+    }
+
+    // ---- the application ----------------------------------------------------------------------------------
+
+    class application {
+    public:
+        static std::result<application, std::string> make() {
+            mut wnd::system sys = wnd::system::start().map_error([](wnd::error e) { return std::format(f"no window system: {e}"); })?;
+            std::log::info(f"window system: {sys.platform()}");
+            for (wnd::monitor& m : sys.monitors()) {
+                std::log::info(f"monitor {m.id} '{m.name}': {m.area.extent.width}x{m.area.extent.height} at ({m.area.origin.x}, {m.area.origin.y}), {m.refresh_rate} Hz{if (m.primary) { " (primary)" } else { "" }}");
+            }
+
+            // The program's OpenGL resources live in a share group: it has a context of its own, so
+            // the texture is made before any window exists and is usable in every window of the group.
+            mut wnd::opengl::share_group group = sys.create_share_group(wnd::opengl::config{ .api = opengl })
+                .map_error([](wnd::error e) { return std::format(f"no {opengl} share group: {e}"); })?;
+            gl::functions<opengl> f = {
+                wnd::opengl::current context = group.make_current();
+                gl::functions<opengl>::load(context)?          // GLX: the same addresses in every context
+            };
+            wnd::image checker = checker_image(64, 8);
+            u32 texture = {
+                wnd::opengl::current context = group.make_current();
+                upload_texture(f, checker)
+            };
+            std::log::info(f"{opengl}: share group {group.id()}, texture {texture}");
+
+            mut wnd::gl_window main_window = sys.create_gl_window(wnd::window::config{
+                .title = "Edax windowing",
+                .size  = wnd::size{ .width = 960, .height = 600 },
+            }, wnd::opengl::config{ .api = opengl }, wnd::opengl::sharing::join(group.clone()))
+                .map_error([](wnd::error e) { return std::format(f"no main window: {e}"); })?;
+            main_window.set_swap_interval(1);
+            main_window.set_icon(checker);
+            return std::ok(application{
+                .system         = move sys,
+                .group          = move group,
+                .gl             = f,
+                .texture        = texture,
+                .main_window    = move main_window,
+                .keys           = wnd::bindings<action>::defaults(),
+                .second_started = std::time::instant::now(),
+            });
+        }
+
+        void run() mut {
+            while (!this.main_window.should_close()) {
+                // One read of the window system sorts the events into every window's queue. Paused,
+                // the loop sleeps until something happens (or a quarter second passes).
+                if (this.paused) {
+                    this.system.wait_for(std::time::duration::milliseconds(250));
+                } else {
+                    this.system.poll();
+                }
+                this.handle_main_window();
+                this.handle_tool_windows();
+                this.draw_main_window();
+                this.draw_tool_windows();
+                this.count_frame();
+            }
+            std::log::info("main window closed");
+        }
+
+    private:
+        // The main window's events through the key bindings, then the box.
+        void handle_main_window() mut {
+            mut std::darray<wnd::event> events = std::take(mut this.events);
+            this.main_window.drain_events(mut events);
+            for (wnd::event e : events) {
+                match (this.keys.action_for(e)) {
+                    std::some(a) => this.act(a),
+                    std::none    => {},
+                }
+            }
+            this.events = move events;
+
+            movement m = read_movement(this.main_window.input());
+            if (m.looking != this.looking) {        // mouse look: the cursor is held in the window
+                this.looking = m.looking;
+                this.main_window.set_cursor_mode(if (m.looking) { wnd::cursor_mode::captured } else { wnd::cursor_mode::normal });
+            }
+            if (!this.paused) {
+                wnd::size fb = this.main_window.framebuffer_size();
+                this.box_size = clamp(this.box_size + m.grow, 16.0, 400.0);
+                this.box_x = clamp(this.box_x + m.dx, 0.0, cast<f64>(fb.width) - this.box_size);
+                this.box_y = clamp(this.box_y + m.dy, 0.0, cast<f64>(fb.height) - this.box_size);
+            }
+        }
+
+        void act(action a) mut {
+            match (a) {
+                action::quit       => this.main_window.request_close(),
+                action::pause      => {
+                    this.paused = !this.paused;
+                    std::log::info(if (this.paused) { "paused: the loop waits for events" } else { "running" });
+                },
+                action::fullscreen => match (this.main_window.mode()) {
+                    wnd::window_mode::fullscreen(_) => this.main_window.leave_fullscreen(),
+                    wnd::window_mode::windowed      => this.main_window.enter_fullscreen(this.system.primary_monitor().value_or(0)),
+                },
+                action::open_inspector => this.open_inspector(),
+                action::toggle_sandbox => this.toggle_sandbox(),
+                action::toggle_vulkan  => this.toggle_vulkan(),
+            }
+        }
+
+        // Every other window's events: each window has its own queue. Closed windows are dropped,
+        // and dropping a window closes it.
+        void handle_tool_windows() mut {
+            mut std::darray<wnd::event> events = std::take(mut this.events);
+            for (mut inspector& i : this.inspectors) {
+                i.win.drain_events(mut events);
+                for (wnd::event e : events) {
+                    match (e) {
+                        wnd::event::key(k) => {
+                            if (k.key == wnd::key::escape && k.action == wnd::key_action::pressed) {
+                                i.win.request_close();
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+            this.inspectors.retain([](inspector& i) { return !i.win.should_close(); });
+            bool sandbox_open = match (mut this.sandbox) {
+                std::some(s) => s.update(mut events),
+                std::none    => false,
+            };
+            if (!sandbox_open) {
+                this.sandbox = std::none;
+            }
+            bool vulkan_open = match (mut this.vulkan) {
+                std::some(v) => v.update(mut events),
+                std::none    => false,
+            };
+            if (!vulkan_open) {
+                this.vulkan = std::none;
+            }
+            this.events = move events;
+        }
+
+        void draw_main_window() mut {
+            if (!this.main_window.should_draw()) {
+                return;
+            }
+            mut wnd::opengl::frame frame = this.main_window.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            color background = if (this.paused) { color{ .r = 0.15, .g = 0.15, .b = 0.15 } } else { color{ .r = 0.08, .g = 0.1, .b = 0.16 } };
+            clear(this.gl, fb, background);
+            color box = if (this.looking) { color{ .r = 0.95, .g = 0.75, .b = 0.2 } } else { color{ .r = 0.23, .g = 0.62, .b = 1.0 } };
+            fill(this.gl, fb, cast::saturate<i32>(this.box_x), cast::saturate<i32>(this.box_y),
+                 cast::saturate<i32>(this.box_size), cast::saturate<i32>(this.box_size), box);
+            sharing_marker(this.gl, fb, this.texture);
+            frame.present();
+        }
+
+        void draw_tool_windows() mut {
+            for (mut inspector& i : this.inspectors) {
+                if (!i.win.should_draw()) {                       // on demand: once a second
+                    continue;
+                }
+                mut wnd::opengl::frame frame = i.win.begin_frame();
+                wnd::size fb = frame.framebuffer_size();
+                clear(this.gl, fb, color{ .r = 0.12, .g = 0.12, .b = 0.1 });
+                i32 width = cast::saturate<i32>(fb.width) - 32;
+                f64 fps_part = clamp(cast<f64>(this.fps) / 240.0, 0.0, 1.0);
+                fill(this.gl, fb, 16, 40, cast::saturate<i32>(cast<f64>(width) * fps_part), 12, color{ .r = 0.2, .g = 0.8, .b = 0.5 });
+                fill(this.gl, fb, 16, 60, cast::saturate<i32>(cast<f64>(width) * clamp(this.box_x / 960.0, 0.0, 1.0)), 12, color{ .r = 0.23, .g = 0.62, .b = 1.0 });
+                fill(this.gl, fb, 16, 80, cast::saturate<i32>(cast<f64>(width) * clamp(this.box_y / 600.0, 0.0, 1.0)), 12, color{ .r = 0.23, .g = 0.62, .b = 1.0 });
+                sharing_marker(this.gl, fb, this.texture);    // the renderer's group: green
+                frame.present();
+            }
+            match (mut this.sandbox) {
+                std::some(s) => s.draw(this.texture),
+                std::none    => {},
+            }
+        }
+
+        // Frames per second, in the title once a second; the inspectors are redrawn then.
+        void count_frame() mut {
+            this.frames += 1;
+            if (this.second_started.elapsed() < std::time::duration::seconds(1)) {
+                return;
+            }
+            this.fps = this.frames;
+            this.frames = 0;
+            this.second_started = std::time::instant::now();
+            this.main_window.set_title(std::format(f"Edax windowing - {opengl} - {this.fps} fps").as_str());
+            for (mut inspector& i : this.inspectors) {
+                i.win.request_redraw();
+            }
+        }
+
+        void open_inspector() mut {
+            u32 number = this.next_inspector;
+            std::string title = std::format(f"Inspector {number}");
+            wnd::point at = this.main_window.position();
+            i32 offset = 40 * cast::saturate<i32>(number);
+            match (this.system.create_gl_window(wnd::window::config{
+                .title    = title.as_str(),
+                .size     = wnd::size{ .width = 300, .height = 120 },
+                .position = std::some(wnd::point{ .x = at.x + offset, .y = at.y + offset }),
+                .kind     = wnd::window_kind::tool(this.main_window.id()),   // stays above the main window
+                .redraw   = wnd::redraw::on_demand,                          // drawn only when asked
+            }, wnd::opengl::config{ .api = opengl }, wnd::opengl::sharing::automatic)) {   // the same config: the same group
+                std::ok(w) => {
+                    std::log::info(f"inspector {number} in share group {w.share_group().id()}");
+                    this.inspectors.push(inspector{ .win = move w, .number = number });
+                    this.next_inspector += 1;
+                },
+                std::error(e) => std::log::error(f"can't open an inspector: {e}"),
+            }
+        }
+
+        void toggle_sandbox() mut {
+            if (this.sandbox.is_some()) {
+                this.sandbox = std::none;
+                return;
+            }
+            mut wnd::gl_window w = match (this.system.create_gl_window(wnd::window::config{
+                .title = "Sandbox - OpenGL Compatibility 2.1, independent",
+                .size  = wnd::size{ .width = 360, .height = 200 },
+            }, wnd::opengl::config{ .api = opengl_legacy }, wnd::opengl::sharing::independent)) {
+                std::ok(made) => move made,
+                std::error(e) => {
+                    std::log::error(f"can't open the sandbox: {e}");
+                    return;
+                },
+            };
+            std::result<gl::functions<opengl_legacy>, std::string> loaded = {
+                mut wnd::opengl::frame frame = w.begin_frame();
+                gl::functions<opengl_legacy>::load(frame)
+            };
+            match (loaded) {
+                std::ok(functions) => {
+                    std::log::info(f"sandbox: {opengl_legacy} in share group {w.share_group().id()} (its own)");
+                    this.sandbox = std::some(sandbox_window{ .win = move w, .gl = functions });
+                },
+                std::error(name) => std::log::error(f"sandbox: the driver has no {name}"),
+            }
+        }
+
+        void toggle_vulkan() mut {
+            if (this.vulkan.is_some()) {
+                this.vulkan = std::none;
+                return;
+            }
+            match (vulkan_view::open(mut this.system)) {
+                std::ok(v)    => { this.vulkan = std::some(move v); },
+                std::error(e) => std::log::error(f"{vulkan}: {e}"),
+            }
+        }
+
+        // Declared in the order things are made, so destroyed the other way round: the windows,
+        // then the share group, the window system last.
+        wnd::system                    system;
+        wnd::opengl::share_group       group;
+        gl::functions<opengl>          gl;
+        u32                            texture;
+        wnd::gl_window                 main_window;
+        wnd::bindings<action>          keys;
+        std::darray<inspector>         inspectors = default;
+        std::option<sandbox_window>    sandbox = std::none;
+        std::option<vulkan_view>       vulkan = std::none;
+        std::darray<wnd::event>        events = default;
+        f64                            box_x = 100.0;
+        f64                            box_y = 100.0;
+        f64                            box_size = 80.0;
+        bool                           paused = false;
+        bool                           looking = false;
+        u32                            next_inspector = 1;
+        u32                            frames = 0;
+        u32                            fps = 0;
+        std::time::instant             second_started;
+    }
+}

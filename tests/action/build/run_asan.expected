@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+4000
+--- stderr
+edaxc run: asan, 1 target
+ ✓ build.ed       1 target <t>
+ ✓ app            5 units, 474 B <t>  %t/asan/app
+built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/asan/build.log

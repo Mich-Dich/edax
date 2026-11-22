@@ -1,0 +1,13 @@
+// std::version: three u32s, compared field by field; at_least works at compile time.
+import std;
+
+compile_time std::version vk = std::version{ .major = 1, .minor = 4, .patch = 320 };
+compile_time check (vk.at_least(std::version{ .major = 1, .minor = 3 })) else "1.4.320 is at least 1.3";
+compile_time check (vk.at_least(std::version{ .major = 1, .minor = 5 })) else "not 1.5";   //~ error[E4210]: not 1.5
+
+void f() {
+    std::version gl = std::version{ .major = 3, .minor = 3 };
+    bool older = gl < std::version{ .major = 4 };
+    bool same = gl == std::version{ .major = 3, .minor = 3, .patch = 0 };
+    std::string text = std::format(f"{vk}");
+}

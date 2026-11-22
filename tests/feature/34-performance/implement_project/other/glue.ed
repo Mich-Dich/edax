@@ -1,0 +1,13 @@
+import math::vec3;
+import geometry::point;
+
+namespace other {
+    implement geometry::point for math::vec3 {
+        f64 px() override { return 0.0; }
+        f64 py() override { return 0.0; }
+    }
+}
+
+namespace other {
+    void touch() { }
+}

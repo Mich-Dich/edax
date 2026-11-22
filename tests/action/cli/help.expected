@@ -16,6 +16,8 @@ commands:
   emit-llvm <file>      print the LLVM IR the program compiles to
   insights <file>       list what the compiler does implicitly (stack, heap, drops, moves, ...) as JSON
   expand <file> <type>  print a type with the members its annotations generate written out
+  explain-checks <file> the run-time checks of the file's code and whether the optimizer removes
+                        them (as in a release build)
   simd-report <file> [function]
                         what the vector code of each function becomes on the CPU level: hardware
                         forms, split or emulated operations, masked tails, multiversion copies,
@@ -28,15 +30,26 @@ commands:
                         where the name at that place is declared, as <file>:<line>:<column>
                         (editors' go to definition)
   explain [code|id]     describe a diagnostic code or a warning id, or list all codes
+  registry opengl|vulkan [--source]
+                        print std::graphics::opengl or ::vulkan, the module edaxc makes from the
+                        embedded Khronos registry (gl.xml, vk.xml): the header, or the source
 
 options:
   --diagnostic-format=human|short   diagnostic layout (default: human)
   --color=auto|always|never         colored diagnostics (default: auto)
+  --error-limit=N                   show the first N errors, count the rest (default: 20; 0: all)
+  --progress=automatic|live|lines|quiet
+                                    build.ed builds: live lines on a terminal, a line per finished
+                                    target otherwise (automatic), or only diagnostics and the last line
+  --details=sources,units,commands,packages,toolchain,timings|all|none
+                                    what the console shows under the targets (build.log has it all)
+  --no-log-file                     don't write build/<mode>/build.log
+  --stop-on-error                   don't start other targets after one fails
   --root=DIR                        project root for imports and build.ed (default: the file's
                                     directory; for build.ed the current directory)
   --stop-after=PHASE                lex, parse, resolve, types or ownership
-  --mode=MODE                       debug (default), release, release_with_debug_info, or a mode
-                                    of build.ed
+  --mode=MODE                       debug (default), development, release, release_with_debug_info,
+                                    or a mode of build.ed
   --warn=ID=off|error|on            switch a warning of a check, e.g. --warn=gfx::deprecated=off
   -o FILE, --output=FILE            where 'build' writes the executable
   -DNAME=VALUE                      an option of build.ed

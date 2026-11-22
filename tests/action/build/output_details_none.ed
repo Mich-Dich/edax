@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/output_project --out-dir=%t --details=none --stop-on-error
+// --details=none overrides build.ed; --stop-on-error starts nothing after the failure.

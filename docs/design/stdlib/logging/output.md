@@ -171,6 +171,42 @@ std::log::sink_id console = logs.add(std::log::console::make(), std::log::sink_o
 - One session exists at a time. A second `start` panics.
 - **Full queue:** with `wait` (the default) the caller waits for room. With `drop`, records from `trace` to `warn` are dropped and counted, and the next record that gets through is followed by `"[std::log] 120 messages dropped"`. `error` and `fatal` always wait.
 
+### Live lines: `std::log::status`
+Lines at the bottom of the console that are **rewritten in place** while records keep scrolling above them: a progress line, a checklist (edaxc's build output works this way, see [Build output](../../build/build-output.md)).
+```edax
+mut std::log::status progress = logs.status();
+for (usize i : 0..assets.len()) {
+    progress.set(f"importing [{i + 1}/{assets.len()}] {assets[i].name}");
+    import(assets[i]);                                   // std::log::info(...) inside prints above the line
+}
+progress.finish(f"imported {assets.len()} assets");     // the live line becomes one ordinary record
+```
+```edax
+namespace std::log {
+    class status {
+    public:
+        void set(std::format_args line) mut;                     // the live lines from now on: one line
+        void set_lines(std::span<std::string> lines) mut;        // several lines
+        // Printed once above the live lines, and stays: an `info` record.
+        void print(std::format_args line, implicit compile_time std::call_site where) mut;
+        // Removes the live lines and logs `text` as an `info` record in their place.
+        void finish(std::format_args text, implicit compile_time std::call_site where) move;
+        ~status();                                               // removes the live lines
+    }
+    class session {
+    public:
+        std::log::status status() mut;
+    }
+}
+```
+- **Only a console sink on a terminal shows live lines.** On a pipe, and in file and memory sinks, there are none; `print` and `finish` write ordinary records. A program needs no `if` for CI.
+- **The log thread draws them.** `set` sends the lines through the session's channel like a record, so a record and a redraw never interleave, from any thread: the record is written over the first live line and the live lines are drawn again under it.
+- **No flicker.** The live lines are never erased first and drawn after: each redraw goes back to the first live line, overwrites every line in place and clears what is left of it, then clears the rows left over below, in one write, inside a synchronized update (`ESC[?2026h` ... `ESC[?2026l`, ignored by terminals without it). The cursor is hidden while live lines are shown.
+- **Rate-limited** to one redraw per 50 ms, with the newest lines; removing them (`finish`, the destructor) is immediate.
+- **Cut to the terminal:** each line is shortened to the terminal's width (never wrapped: a wrapped line can't be rewritten), and the lines to its height (the last ones are kept).
+- One status at a time: a second one's lines replace the first one's.
+- A sink shows live lines by overriding `bool shows_status()` and `void draw_status(std::darray<std::string>& lines) mut` (defaults: `false` and nothing). The console does; its facts come from `std::env::is_terminal` and `std::env::output_terminal_size()` (see [Files, filesystem and environment](../io/io.md)).
+
 ### Before the session, after it, and on panics
 - **Before `start`**, records go to a static buffer of 256 records, behind a spin lock. `start` sends them to the log thread first, in order; the number of records that didn't fit is logged as a warning.
 - **The log thread keeps the records that arrive while it has no sink** (at most 256, the early ones included) and writes them to **each sink when it is added**. A session started and given its sinks at once therefore loses nothing.

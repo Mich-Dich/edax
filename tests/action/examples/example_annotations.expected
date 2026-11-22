@@ -11,3 +11,7 @@ tools true
 2 sales
 unknown command 'refund'
 --- stderr
+edaxc run: debug, 1 target
+ ✓ build.ed       19 targets <t>
+ ✓ annotations    5 units, 4.21 KiB <t>  %t/debug/annotations
+built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

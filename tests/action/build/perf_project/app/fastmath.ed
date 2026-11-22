@@ -1,0 +1,15 @@
+import std;
+
+@std::float_mode{ .contract = true, .reassociate = true }
+f64 sum(std::span<f64> values) {
+    mut f64 s = 0.0;
+    for (f64 v : values) {
+        s += v;
+    }
+    return s;
+}
+
+void main() {
+    std::darray<f64> v = std::darray<f64>::from([1.0f64, 2.0, 3.5]);
+    std::println(f"{sum(v.as_span())}");
+}

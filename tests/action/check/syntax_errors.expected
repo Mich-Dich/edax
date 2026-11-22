@@ -7,12 +7,12 @@ error[E2001]: expected ';' after the declaration, found type 'u32'
 5 |     u32 a = 1
   |              ^ expected ';' here
 
-error[E2001]: expected ')', found ';'
- --> tests/action/check/syntax_errors.ed:6:19
+error[E2016]: unclosed '('
+ --> tests/action/check/syntax_errors.ed:6:13
   |
 6 |     u32 b = (2 + 3;
-  |             -     ^ unexpected here
-  = note: to match this '('
+  |             ^     - this '(' is never closed
+  = note: the statement ends here, before its ')'
 
 error[E2005]: expected '{' after 'if': braces are required
  --> tests/action/check/syntax_errors.ed:7:17

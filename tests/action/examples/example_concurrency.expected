@@ -7,3 +7,7 @@ atomic: 100 items seen
 pool: 4 threads, sum 50050000.0
 pool: task gave 332833500
 --- stderr
+edaxc run: debug, 1 target
+ ✓ build.ed       19 targets <t>
+ ✓ concurrency    5 units, 4.90 KiB <t>  %t/debug/concurrency
+built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

@@ -39,6 +39,13 @@ namespace std::derive {
         }
     }
 
+    // For a `distinct type` (spec 34): the compiler gives it the arithmetic of its underlying
+    // type. `meters + meters`, `meters - meters` and `meters % meters` are meters; `meters * f32`,
+    // `f32 * meters` and `meters / f32` are meters; `meters / meters` is an f32; `-meters`,
+    // comparisons and `+= -= *= /=` work too. `meters + seconds` and `meters * meters` are errors.
+    annotation(std::meta::target::type)
+    struct arithmetic { }
+
     // Generates `operator<=>` comparing the fields in declaration order (spec 16): the first
     // field that differs decides.
     annotation(std::meta::target::type)

@@ -39,6 +39,26 @@ employees.retain([](employee& e) { return e.age >= 30; });
 - Lambdas with no captures convert to `std::fn_ptr<R(Args...)>`, a plain function pointer for callbacks and FFI.
 - A `std::function` owns its callable: it is moved, never copied or cloned. A field of a callable type is called like a method: `this.on_click(n)`.
 
+### Changing captured values
+- `[mut count = 0u32]` (or `[mut move state]`, `[mut x]`) declares a captured value that the lambda may change. Such a lambda's call is `mut`: it is called through a `mut` variable or a `mut` parameter (`template<type F> void each(mut F f)`), and moving it keeps its state.
+- A lambda with `mut` captures doesn't convert to `std::function` (whose call isn't `mut`).
+- Library functions that call a callable on one thread, in order, take it as `mut F` (`retain`, `std::thread::spawn`). Comparators (`sort_by`) and parallel callbacks (`for_index_chunks`) stay `F`: a callable that changes itself can't be called from several threads at once.
+```edax
+mut auto counter = [mut count = 0u32]() { count += 1; return count; };
+counter();                                   // 1
+auto frozen = [mut n = 0u32]() { n += 1; };
+frozen();                                    // ERROR: calling 'frozen' changes its 'mut' captures
+```
+
+### Callables with bounds
+- `std::function<R(A...), I...>` stores a callable that implements the interfaces `I...` and implements them itself: `std::function<void(), std::sendable>` can be moved to another thread. Type erasure with bounds is general: `std::any_of<I...>` holds a value of any type implementing `I...`.
+- `std::function` takes an allocator like the containers.
+- `std::inline_function<R(A...), N>` stores captures of up to `N` bytes inline and never allocates. A lambda with bigger captures is a compile error that names its size. `N` is rounded up to whole 8-byte words; the value takes `N + 16` bytes (the code and the drop function). Bounds come after the size: `std::inline_function<void(), 32, std::sendable>`.
+- The bounds are `std::sendable` and `std::shareable`. A lambda converts to a bounded function only when its captures meet the bound; the function then meets it too (it can go to another thread).
+
 ## Rationale
 - **`[mut &x]`:** it uses the same `mut` marker as references and call sites, so a lambda that changes a variable says so in its capture list.
 - **Reference-capturing lambdas are views:** this closes the classic C++ dangling-capture bug (returning `[&]` lambdas) without any lifetime syntax.
+- **`mut` captures:** a handler with its own counter or cache is common; marking the call `mut` keeps "nothing changes behind an immutable reference" true.
+- **Bounds on `std::function`:** an event bus or job queue that moves callables between threads needs them to be sendable, and the type must say so.
+- **`inline_function`:** per-frame callbacks shouldn't allocate. The size limit is in the type, so the cost is visible.

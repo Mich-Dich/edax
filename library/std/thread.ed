@@ -116,13 +116,13 @@ namespace std::thread {
     }
 
     template<type F : std::sendable>
-    deduce spawn(F f) {
+    deduce spawn(mut F f) {
         compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
         return spawn(options{}, move f);
     }
 
     template<type F : std::sendable>
-    deduce spawn(options settings, F f) {
+    deduce spawn(options settings, mut F f) {
         compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
         compile_time run_time check (fits_target(settings.platform))
             else "these thread options are for another operating system than the target's";

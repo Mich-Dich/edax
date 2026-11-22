@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// @std::layout{ .packed = true } (spec 34): fields at byte offsets, read and written in place,
+// stored in containers.
+import std;
+
+@std::layout{ .packed = true }
+struct file_header {
+    u32 magic;
+    u16 version;
+    u64 size;
+}
+
+compile_time check (std::size_of<file_header>() == 14 && std::align_of<file_header>() == 1) else "packed";
+
+void show(u64& n) { std::println(f"{n}"); }
+
+void main() {
+    mut file_header h = file_header{ .magic = 0x45444158, .version = 3, .size = 1234567890123 };
+    h.size += 1;
+    u64 s = h.size;
+    show(s);
+    mut std::darray<file_header> many = default;
+    many.push(h);
+    many.push(h);
+    std::println(f"{many[1].version} {many[1].size} {std::size_of<file_header>()} {h.magic}");
+}

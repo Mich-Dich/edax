@@ -1,0 +1,28 @@
+exit: 1
+--- stdout
+--- stderr
+error[E3045]: 'pt2' does not implement 'point::py()'
+ --> tests/feature/34-performance/implement_project/bad.ed:6:8
+  |
+6 | struct pt2 { f32 x; }
+  |        ^^^ missing implementation
+ ::: tests/feature/34-performance/implement_project/geometry/point.edh:6:13
+  |
+6 |         f64 py();
+  |             --
+  = note: declared here
+
+error[E3022]: 'vec3' is not an interface
+  --> tests/feature/34-performance/implement_project/bad.ed:10:11
+   |
+10 | implement math::vec3 for pt2 {
+   |           ^^^^^^^^^^ not an interface
+
+error[E3022]: 'implement point for vec3' must be written in the module of 'point' or of 'vec3'
+ --> tests/feature/34-performance/implement_project/other/glue.ed:5:15
+  |
+5 |     implement geometry::point for math::vec3 {
+  |               ^^^^^^^^ neither module
+  = note: otherwise two libraries could give the same type competing implementations
+
+3 errors, 0 warnings

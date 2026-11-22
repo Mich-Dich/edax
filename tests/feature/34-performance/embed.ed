@@ -1,0 +1,7 @@
+// feature 34: std::embed needs a readable file and a path known at compile time.
+import std;
+
+void f(std::static_str name) {
+    std::span<u8> a = std::embed("no_such_file.bin");     //~ error[E4201]: cannot read
+    std::static_str b = std::embed_text(name);            //~ error[E4200]: must be known at compile time
+}

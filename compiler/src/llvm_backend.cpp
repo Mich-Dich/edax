@@ -20,6 +20,7 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsAArch64.h"
 #include "llvm/IR/IntrinsicsX86.h"
@@ -33,6 +34,9 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
@@ -42,6 +46,9 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/IPO/ArgumentPromotion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -396,7 +403,7 @@ public:
                            t->is_signed ? llvm::dwarf::DW_ATE_signed : llvm::dwarf::DW_ATE_unsigned);
             break;
         }
-        case Kind::float_: out = di_basic(t->name, t->bits == 32 ? "float" : "double", static_cast<unsigned>(t->bits), llvm::dwarf::DW_ATE_float); break;
+        case Kind::float_: out = di_basic(t->name, t->bits == 16 ? "_Float16" : t->bits == 32 ? "float" : "double", static_cast<unsigned>(t->bits), llvm::dwarf::DW_ATE_float); break;
         case Kind::bool_: out = di_basic("bool", "bool", 8, llvm::dwarf::DW_ATE_boolean); break;
         case Kind::char_: out = di_basic("char", "char32_t", 32, llvm::dwarf::DW_ATE_UTF); break;
         case Kind::reference:
@@ -495,7 +502,8 @@ public:
         } else if (t->is(Kind::user) && t->symbol->kind == SymbolKind::enum_ && layout) {
             const Symbol* e = t->symbol;
             std::vector<llvm::Metadata*> alts;
-            llvm::Type* storage = st->getElementType(1);
+            bool        niche   = tc_.niche_enum(e).has_value();   // no tag field (spec 34)
+            llvm::Type* storage = st->getElementType(niche ? 0 : 1);
             for (const Symbol* a : e->member_order) {
                 if (!carries(a)) continue;
                 llvm::DIType* pt = di_type(payload_of(a));
@@ -507,13 +515,15 @@ public:
             for (const Symbol* a : e->member_order) {
                 if (a->alternative) values.push_back(dib_->createEnumerator(a->name, llvm::APSInt(tag_constant(a)->getValue(), true)));
             }
-            llvm::DIType* tag = dib_->createEnumerationType(scope, name + "::tag", nullptr, 0, dl.getTypeAllocSizeInBits(st->getElementType(0)),
-                                                            8, dib_->getOrCreateArray(values), nullptr);
-            member("tag", 0, tag);
+            if (!niche) {
+                llvm::DIType* tag = dib_->createEnumerationType(scope, name + "::tag", nullptr, 0, dl.getTypeAllocSizeInBits(st->getElementType(0)),
+                                                                8, dib_->getOrCreateArray(values), nullptr);
+                member("tag", 0, tag);
+            }
             llvm::DIType* u = dib_->createUnionType(scope, name + "::payload", nullptr, 0, dl.getTypeAllocSizeInBits(storage),
                                                     static_cast<std::uint32_t>(dl.getABITypeAlign(storage).value() * 8), llvm::DINode::FlagZero,
                                                     dib_->getOrCreateArray(alts));
-            member("payload", 1, u);
+            member("payload", niche ? 0 : 1, u);
         } else if (t->is(Kind::user) && t->symbol->decl) {
             const Symbol* s = t->symbol;
             unsigned index = 0;
@@ -526,6 +536,11 @@ public:
                 index = 1;
             }
             for (const Symbol* f : fields_of(s)) {
+                if (types::is_union(s)) {   // every member at offset 0
+                    llvm::DIType* ft = di_type(field_type(f));
+                    if (ft) members.push_back(dib_->createMemberType(fwd, f->name, nullptr, 0, ft->getSizeInBits(), 0, 0, llvm::DINode::FlagZero, ft));
+                    continue;
+                }
                 member(f->name, field_index(f), di_type(field_type(f)));
             }
             (void)index;
@@ -663,12 +678,18 @@ private:
                 queue_.pop_front();
                 gen_function(s);
             }
+            while (!site_queue_.empty()) {
+                const Symbol* s = site_queue_.front();
+                site_queue_.pop_front();
+                gen_function(s, site_fns_[s]);
+            }
             while (!global_queue_.empty()) {
                 const Symbol* g = global_queue_.front();
                 global_queue_.pop_front();
                 gen_global(g);
             }
         }
+        if (!packed_types_.empty()) unalign_packed_accesses();
         if (program_.is_plugin) {
             // A plugin has no `main`: the library's only entry is edax_plugin_entry.
         } else if (!tests.empty()) {
@@ -818,10 +839,16 @@ private:
             const auto& uses = annotated->decl->annotations;
             if (sema::find_annotation(uses, "std::inline_always")) fn->addFnAttr(llvm::Attribute::AlwaysInline);
             if (sema::find_annotation(uses, "std::inline_never")) fn->addFnAttr(llvm::Attribute::NoInline);
+            if (sema::find_annotation(uses, "std::no_checks_left")) program_.no_checks_left.emplace_back(s->span, fn->getName().str());
             if (sema::find_annotation(uses, "std::cold")) {
                 fn->addFnAttr(llvm::Attribute::Cold);
                 fn->addFnAttr(llvm::Attribute::NoInline);
             }
+        }
+        {   // @std::optimize, or g.optimize_files (spec 34): the build step reads this attribute
+            const Symbol* own = s->version_of ? s->version_of : annotated;
+            std::string   level = own->optimize_level.empty() ? file_optimization(s->span) : own->optimize_level;
+            if (!level.empty()) fn->addFnAttr("edax-optimize", level);
         }
         if (!s->cpu_level.empty()) {   // a multiversion copy: code for its CPU level
             if (const CpuLevel* l = find_cpu_level(s->cpu_level)) {
@@ -829,10 +856,216 @@ private:
                 if (*l->llvm_features) fn->addFnAttr("target-features", l->llvm_features);
             }
         }
+        add_alias_attributes(s, *f, fn);
+        if (borrows_from_this(s, *f)) fn->addFnAttr("edax-borrows-this");
+        if (has_run_time_entry_checks(s)) fn->addFnAttr("edax-name", display_name(s));   // edaxc explain-checks
         fns_[s] = fn;
         queue_.push_back(s);
         if (f->is_extern) export_function(s, *f, fn);   // a Edax function that C can call
         return fn;
+    }
+
+    // Fields of a packed struct may be misaligned (spec 34): every load and store through a
+    // pointer into one is marked as aligned to 1 byte.
+    void unalign_packed_accesses() {
+        auto into_packed = [&](llvm::Value* p) {
+            for (int depth = 0; p && depth < 8; ++depth) {
+                auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(p);
+                if (!gep) return false;
+                if (auto* st = llvm::dyn_cast<llvm::StructType>(gep->getSourceElementType()); st && packed_types_.contains(st)) return true;
+                p = gep->getPointerOperand();
+            }
+            return false;
+        };
+        for (llvm::Function& fn : *mod_) {
+            for (llvm::BasicBlock& bb : fn) {
+                for (llvm::Instruction& in : bb) {
+                    if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in); ld && into_packed(ld->getPointerOperand())) ld->setAlignment(llvm::Align(1));
+                    if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in); st && into_packed(st->getPointerOperand())) st->setAlignment(llvm::Align(1));
+                }
+            }
+        }
+    }
+
+    // The optimization build.ed gave the file of `where` with `g.optimize_files` (spec 34), or "".
+    std::string file_optimization(Span where) {
+        if (program_.file_settings.empty()) return "";
+        if (auto it = file_levels_.find(where.file); it != file_levels_.end()) return it->second;
+        std::error_code ec;
+        std::string     path  = std::filesystem::weakly_canonical(std::filesystem::path(sources_.file(where.file).path()), ec).generic_string();
+        std::string     level;
+        for (const sema::FileSetting& fs : program_.file_settings) {
+            if (fs.name != "std::build::optimization" || !fs.value || !fs.value->symbol) continue;
+            if (std::find(fs.files.begin(), fs.files.end(), path) != fs.files.end()) level = fs.value->symbol->name;
+        }
+        file_levels_[where.file] = level;
+        return level;
+    }
+
+    // What the aliasing rule guarantees (Ownership: aliasing rule), told to LLVM (spec 34 §1.1):
+    // - a `mut T&` (and the `this` of a `mut` method) is the only way to reach its object while the
+    //   call runs: `noalias`;
+    // - a `T&` (and the `this` of a non-`mut` method) sees an object that does not change during the
+    //   call: `noalias readonly`, but only for *frozen* types, whose bytes can't change through an
+    //   immutable reference (synchronized classes such as std::atomic change through `T&`).
+    // Interface references are fat values, not pointers; they get nothing.
+    void add_alias_attributes(const Symbol* s, const FunctionDecl& f, llvm::Function* fn) {
+        if (!alias_attributes_) return;
+        const auto* subst = sema::substitution_of(s);
+        unsigned    index = 0;
+        auto mark = [&](unsigned i, const types::Type* object, bool is_mut) {
+            if (i >= fn->arg_size() || !fn->getArg(i)->getType()->isPointerTy()) return;
+            if (is_mut) {
+                fn->addParamAttr(i, llvm::Attribute::NoAlias);
+            } else if (is_frozen(object)) {
+                fn->addParamAttr(i, llvm::Attribute::NoAlias);
+                fn->addParamAttr(i, llvm::Attribute::ReadOnly);
+            }
+        };
+        if (has_self(s)) {
+            if (!f.is_destructor && !f.is_move && s->parent && is_struct_symbol(s->parent)) {
+                types::Type self{};
+                self.kind   = Kind::user;
+                self.symbol = s->parent;
+                if (f.is_mut || is_frozen_symbol(s->parent)) mark(0, &self, f.is_mut);
+            }
+            index = 1;
+        }
+        for (const Param& p : f.params) {
+            const types::Type* t = tc_.lower(*p.type, subst);
+            if (t && t->is(Kind::reference) && t->inner && !is_interface(t->inner)) mark(index, t->inner, t->is_mut);
+            ++index;
+        }
+    }
+
+    // A method whose result is a reference into `this`: it takes no other reference (spec 34 §1:
+    // `xs[i]` reaches the memory `xs` owns).
+    bool borrows_from_this(const Symbol* s, const FunctionDecl& f) {
+        if (!alias_attributes_ || !has_self(s) || !f.result || f.is_extern) return false;
+        const auto*        subst = sema::substitution_of(s);
+        const types::Type* r     = tc_.lower(*f.result, subst);
+        if (!r || !r->is(Kind::reference) || is_interface(r->inner)) return false;
+        for (const Param& p : f.params) {
+            const types::Type* t = tc_.lower(*p.type, subst);
+            if (!t || t->is(Kind::reference) || t->is(Kind::pointer) || t->is(Kind::closure) || t->is(Kind::fn_ptr)) return false;
+            const Symbol* ts = t->is(Kind::user) ? t->symbol : nullptr;
+            while (ts && !ts->decl && ts->template_of) ts = ts->template_of;
+            if (ts && ts->decl && ts->decl->kind == ast::DeclKind::struct_ && ts->decl->as<TypeDecl>().is_view) return false;   // holds references
+        }
+        return true;
+    }
+
+    // The aliasing rule reaches what a reference owns (spec 34 §1): two `mut T&` parameters are
+    // different objects with different heap buffers, so `a[i]` and `b[j]` never overlap. LLVM's
+    // `noalias` only covers the bytes of the object itself; the loads and stores of the function
+    // whose address comes from one parameter (directly, through a local reference, or as the result
+    // of a method of it that returns a reference into `this`) are put in that parameter's alias
+    // scope and marked as not aliasing the other parameters' scopes. The scopes survive inlining,
+    // which is where they matter: the buffer pointers are loaded from the objects there.
+    void add_alias_scopes(llvm::Function* fn) {
+        if (!alias_attributes_) return;
+        std::vector<llvm::Argument*> args;
+        for (llvm::Argument& a : fn->args()) {
+            if (a.hasNoAliasAttr() && a.getType()->isPointerTy()) args.push_back(&a);
+        }
+        if (args.size() < 2) return;
+        std::map<llvm::Value*, llvm::Argument*> roots;
+        std::function<llvm::Argument*(llvm::Value*, int)> root = [&](llvm::Value* v, int depth) -> llvm::Argument* {
+            if (!v || depth > 12) return nullptr;
+            if (auto it = roots.find(v); it != roots.end()) return it->second;
+            llvm::Argument* out = nullptr;
+            if (auto* a = llvm::dyn_cast<llvm::Argument>(v)) {
+                out = a->hasNoAliasAttr() ? a : nullptr;
+            } else if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(v)) {
+                out = root(g->getPointerOperand(), depth + 1);
+            } else if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
+                // A parameter's or local reference's slot: an alloca stored exactly once.
+                if (auto* slot = llvm::dyn_cast<llvm::AllocaInst>(ld->getPointerOperand()); slot && ld->getType()->isPointerTy()) {
+                    llvm::StoreInst* only = nullptr;
+                    bool             ok   = true;
+                    for (llvm::User* u : slot->users()) {
+                        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                            if (st->getPointerOperand() != slot || only) ok = false;
+                            else only = st;
+                        } else if (!llvm::isa<llvm::LoadInst>(u) && !llvm::isa<llvm::DbgInfoIntrinsic>(u)) {
+                            ok = false;
+                        }
+                    }
+                    if (ok && only) out = root(only->getValueOperand(), depth + 1);
+                }
+            } else if (auto* call = llvm::dyn_cast<llvm::CallInst>(v)) {
+                llvm::Function* callee = call->getCalledFunction();
+                if (callee && callee->hasFnAttribute("edax-borrows-this") && call->arg_size() > 0) out = root(call->getArgOperand(0), depth + 1);
+            }
+            roots[v] = out;
+            return out;
+        };
+        llvm::MDBuilder                       md(ctx_);
+        llvm::MDNode*                         domain = md.createAnonymousAliasScopeDomain(fn->getName());
+        std::map<llvm::Argument*, llvm::MDNode*> scope;
+        for (llvm::Argument* a : args) scope[a] = md.createAnonymousAliasScope(domain, std::format("{}.arg{}", fn->getName().str(), a->getArgNo()));
+        for (llvm::BasicBlock& bb : *fn) {
+            for (llvm::Instruction& in : bb) {
+                llvm::Value* addr = nullptr;
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in)) addr = ld->getPointerOperand();
+                else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in)) addr = st->getPointerOperand();
+                if (!addr || llvm::isa<llvm::AllocaInst>(addr)) continue;
+                llvm::Argument* a = root(addr, 0);
+                if (!a) continue;
+                std::vector<llvm::Metadata*> others;
+                for (llvm::Argument* b : args) {
+                    // Two read-only parameters may be the same object; they only read, so nothing is lost.
+                    if (b != a && !(a->onlyReadsMemory() && b->onlyReadsMemory())) others.push_back(scope[b]);
+                }
+                if (others.empty()) continue;
+                in.setMetadata(llvm::LLVMContext::MD_alias_scope, llvm::MDNode::get(ctx_, {scope[a]}));
+                in.setMetadata(llvm::LLVMContext::MD_noalias, llvm::MDNode::get(ctx_, others));
+            }
+        }
+    }
+
+    // A type whose bytes never change through an immutable reference: numbers, bool, char, raw and
+    // function pointers, SIMD values, and structs, classes, enums, tuples and arrays made only of
+    // these. A type marked @std::interior_mutable (std::atomic, std::mutex, ...) is not frozen, and
+    // neither is anything that contains one.
+    bool is_frozen(const types::Type* t) {
+        if (!t) return false;
+        switch (t->kind) {
+            case Kind::int_: case Kind::float_: case Kind::bool_: case Kind::char_: case Kind::pointer:
+            case Kind::fn_ptr: case Kind::vector: case Kind::mask: case Kind::static_str: return true;
+            case Kind::array: return is_frozen(t->inner);
+            case Kind::tuple:
+                for (const types::Type* e : t->args) {
+                    if (!is_frozen(e)) return false;
+                }
+                return true;
+            case Kind::user: return t->symbol && is_frozen_symbol(t->symbol);
+            default: return false;
+        }
+    }
+
+    bool is_frozen_symbol(const Symbol* s) {
+        if (auto it = frozen_memo_.find(s); it != frozen_memo_.end()) return it->second;
+        frozen_memo_[s] = false;   // guards recursion; a type can't contain itself by value
+        bool result     = false;
+        if (s->kind == SymbolKind::enum_) {
+            result = true;
+            for (const Symbol* a : s->member_order) {
+                if (carries(a) && !is_frozen(payload_of(a))) result = false;
+            }
+        } else if (s->kind == SymbolKind::struct_ || s->kind == SymbolKind::class_) {
+            const Symbol* d = s;
+            while (d && !d->decl && d->template_of) d = d->template_of;
+            bool marked = (d && d->decl && sema::find_annotation(d->decl->annotations, "std::interior_mutable")) ||
+                          (s->template_of && s->template_of->decl && sema::find_annotation(s->template_of->decl->annotations, "std::interior_mutable"));
+            result = !marked;
+            if (const Symbol* base = s->base_class(); base && !is_frozen_symbol(base)) result = false;
+            for (const Symbol* fld : fields_of(s)) {
+                if (!is_frozen(field_type(fld))) result = false;
+            }
+        }
+        frozen_memo_[s] = result;
+        return result;
     }
 
     // The LLVM type of the Edax function `s` (methods take `self` first). Also for abstract and
@@ -1341,7 +1574,7 @@ private:
         if (!t) unsupported(cur_, "values of an unknown type");
         switch (t->kind) {
         case Kind::int_: return llvm::IntegerType::get(ctx_, static_cast<unsigned>(t->bits));
-        case Kind::float_: return t->bits == 32 ? llvm::Type::getFloatTy(ctx_) : llvm::Type::getDoubleTy(ctx_);
+        case Kind::float_: return t->bits == 16 ? llvm::Type::getHalfTy(ctx_) : t->bits == 32 ? llvm::Type::getFloatTy(ctx_) : llvm::Type::getDoubleTy(ctx_);
         case Kind::bool_: return llvm::Type::getInt1Ty(ctx_);
         case Kind::char_: return llvm::Type::getInt32Ty(ctx_);
         case Kind::void_:
@@ -1355,7 +1588,12 @@ private:
         case Kind::user: return user_type(t->symbol);
         case Kind::static_str: return str_type();
         case Kind::closure: return closure_type(t);
-        case Kind::function: return llvm::StructType::get(ctx_, {ptr_type(), ptr_type(), ptr_type()});   // { captures, code, drop }
+        case Kind::function:
+            if (t->bits > 0) {   // std::inline_function (spec 34): { captures inline, code, drop }
+                return llvm::StructType::get(ctx_, {llvm::ArrayType::get(llvm::Type::getInt64Ty(ctx_), static_cast<unsigned>(t->bits / 8)),
+                                                    ptr_type(), ptr_type()});
+            }
+            return llvm::StructType::get(ctx_, {ptr_type(), ptr_type(), ptr_type()});   // { captures, code, drop }
         case Kind::fn_ptr: return ptr_type();
         case Kind::array: return llvm::ArrayType::get(lower_type(t->inner), tc_.array_count(t));
         case Kind::vector: return llvm::FixedVectorType::get(lower_type(t->inner), static_cast<unsigned>(t->bits));
@@ -1420,17 +1658,38 @@ private:
         else b_.CreateRet(r);
     }
 
-    void gen_function(const Symbol* s) {
-        if (!s->versions.empty()) {
+    // `variant`: the copy of a function with run_time entry checks that takes its caller's
+    // location as a last parameter (see site_variant_of).
+    void gen_function(const Symbol* s, llvm::Function* variant = nullptr) {
+        if (!s->versions.empty() && !variant) {
             gen_dispatcher(s);
             return;
         }
         const FunctionDecl* f  = body_decl(s);
-        llvm::Function*     fn = fns_[s];
+        llvm::Function*     fn = variant ? variant : fns_[s];
+        site_arg_              = variant ? variant->getArg(static_cast<unsigned>(variant->arg_size() - 1)) : nullptr;
+        auto* saved_insights   = options_.insights;
+        if (variant) options_.insights = nullptr;   // insights describe each function once
         cur_                   = s->span;
         {   // @std::simd::must_vectorize: its plain loops are tagged and checked after optimizing
             const Symbol* annotated = s->version_of ? s->version_of : (s->template_of && s->template_of->kind == s->kind ? s->template_of : s);
             must_vectorize_ = annotated->decl && sema::find_annotation(annotated->decl->annotations, "std::simd::must_vectorize");
+            // @std::float_mode (spec 34): fast-math flags on the float operations of this body.
+            // Without it: strict IEEE (no contraction, no reordering).
+            llvm::FastMathFlags fmf;
+            unsigned            mode = annotated->float_mode;
+            if (mode & sema::float_mode_contract) fmf.setAllowContract();
+            if (mode & sema::float_mode_reassociate) fmf.setAllowReassoc();
+            if (mode & sema::float_mode_finite_only) {
+                fmf.setNoNaNs();
+                fmf.setNoInfs();
+            }
+            if (mode & sema::float_mode_no_signed_zeros) fmf.setNoSignedZeros();
+            if (mode & sema::float_mode_reciprocal) {
+                fmf.setAllowReciprocal();
+                fmf.setApproxFunc();
+            }
+            b_.setFastMathFlags(fmf);
         }
         try {
             cur_fn_ = fn;
@@ -1485,10 +1744,32 @@ private:
             }
             scopes_.clear();
             record_frame(fn, s, *f->body);
+            add_alias_scopes(fn);
         } catch (const Unsupported&) {
             // Reported. The function keeps a partial body; the module is discarded.
         }
-        inspect_ = false;
+        inspect_          = false;
+        site_arg_         = nullptr;
+        options_.insights = saved_insights;
+    }
+
+    // A function with run_time entry checks reports its caller's line when a check fails (spec 23).
+    // Direct calls go to this copy, which takes the caller's location as a hidden last parameter:
+    // after inlining it is a constant on the failure path, so the hot path has no extra stores
+    // (spec 34). Indirect calls and the library's own calls use the original, which reads the
+    // thread's call site (null: the check's own line).
+    llvm::Function* site_variant_of(const Symbol* s) {
+        if (auto it = site_fns_.find(s); it != site_fns_.end()) return it->second;
+        llvm::Function*          original = function_of(s);
+        llvm::FunctionType*      ft       = original->getFunctionType();
+        std::vector<llvm::Type*> params(ft->param_begin(), ft->param_end());
+        params.push_back(ptr_type());
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(ft->getReturnType(), params, false), llvm::Function::InternalLinkage,
+                                          original->getName() + ".at", mod_.get());
+        fn->copyAttributesFrom(original);
+        site_fns_[s] = fn;
+        site_queue_.push_back(s);
+        return fn;
     }
 
     // An alloca in the entry block, so that loops do not grow the stack.
@@ -1742,6 +2023,7 @@ private:
         }
         llvm::Value*       addr = place(*a.target);
         const types::Type* t    = types::strip_ref(a.target->type);
+        if (a.distinct_underlying) t = a.distinct_underlying;   // the value is at offset 0 (spec 34)
         llvm::Value*       v    = nullptr;
         if (a.op == TokenKind::eq) {
             v = gen_expr(*a.value);
@@ -1810,6 +2092,10 @@ private:
             llvm::Value* v = llvm::UndefValue::get(lower_type(t));
             auto&        te = e.as<TupleExpr>();
             for (std::size_t i = 0; i < te.elements.size(); ++i) {
+                if (i < t->args.size() && t->args[i]->is(Kind::reference)) {   // `(mut this.a, this.b)`: addresses (spec 34)
+                    v = b_.CreateInsertValue(v, reference_to(*te.elements[i]), {static_cast<unsigned>(i)});
+                    continue;
+                }
                 llvm::Value* el = gen_expr(*te.elements[i]);
                 moved_out(*te.elements[i]);
                 v = b_.CreateInsertValue(v, el, {static_cast<unsigned>(i)});
@@ -1850,7 +2136,17 @@ private:
                 return b_.CreateExtractElement(v, i);
             }
             unsupported(e.span, "indexing");
-        case ExprKind::call: return call_value(e.as<CallExpr>());
+        case ExprKind::call: {
+            llvm::Value* v = call_value(e.as<CallExpr>());
+            // A call of a function returning `never` (std::unreachable, an exit helper): nothing
+            // runs after it, like after std::panic.
+            if (e.type && e.type->is(Kind::never) && b_.GetInsertBlock() && !b_.GetInsertBlock()->getTerminator()) {
+                b_.CreateUnreachable();
+                open_dead_block();
+                return nullptr;
+            }
+            return v;
+        }
         case ExprKind::block: return gen_block(e.as<BlockExpr>());
         case ExprKind::if_: {
             bool real = !e.as<IfExpr>().is_compile_time;
@@ -1922,6 +2218,13 @@ private:
     }
 
     llvm::Value* unary_value(UnaryExpr& u, const types::Type* t) {
+        if (const types::Type* d = u.distinct_result) {   // `-d` on a distinct type (spec 34)
+            u.distinct_result = nullptr;
+            const types::Type* under = types::strip_ref(u.operand->type);
+            llvm::Value* v = unary_value(u, under);
+            u.distinct_result = d;
+            return b_.CreateInsertValue(llvm::UndefValue::get(lower_type(d)), v, {0});
+        }
         if (u.op_symbol) {   // a user-defined `-` or `~` (spec 16)
             if (has_self(u.op_symbol)) return call_symbol(u.op_symbol, object_address(*u.operand), {}, u.span);
             return call_symbol(u.op_symbol, nullptr, {u.operand.get()}, u.span);
@@ -1975,6 +2278,15 @@ private:
     }
 
     llvm::Value* binary_value(BinaryExpr& bx) {
+        if (const types::Type* d = bx.distinct_result) {   // distinct-type arithmetic (spec 34): on the underlying values
+            const types::Type* saved = bx.type;
+            bx.distinct_result = nullptr;
+            bx.type            = bx.lhs->type;
+            llvm::Value* v     = binary_value(bx);
+            bx.type            = saved;
+            bx.distinct_result = d;
+            return b_.CreateInsertValue(llvm::UndefValue::get(lower_type(d)), v, {0});
+        }
         if (bx.op == TokenKind::amp_amp || bx.op == TokenKind::pipe_pipe) return short_circuit(bx);
         if (bx.op_symbol) return user_operator(bx);
         const types::Type* lt = types::strip_ref(bx.lhs->type);
@@ -2123,6 +2435,13 @@ private:
                 return b_.CreateCall(function_of(op), {pa, pb});
             }
             llvm::StructType* st  = llvm::cast<llvm::StructType>(user_type(t->symbol));
+            if (types::is_union(t->symbol)) {   // a union: the same bytes (spec 34)
+                std::uint64_t size = tc_.layout(t).size;
+                auto*         i64  = llvm::Type::getInt64Ty(ctx_);
+                llvm::Value*  r    = b_.CreateCall(libc("memcmp", llvm::Type::getInt32Ty(ctx_), {ptr_type(), ptr_type(), i64}),
+                                                   {pa, pb, llvm::ConstantInt::get(i64, size)});
+                return b_.CreateICmpEQ(r, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+            }
             llvm::Value*      all = llvm::ConstantInt::getTrue(ctx_);
             for (const Symbol* f : fields_of(t->symbol)) {
                 unsigned i = field_index(f);
@@ -2133,10 +2452,9 @@ private:
         }
         if (t && t->is_user(SymbolKind::enum_) && has_payloads(t->symbol)) {
             // Equal when the alternatives are the same and so are their payloads (spec 16).
-            llvm::Type*       et    = lower_type(t);
-            llvm::Type*       tt    = et->getStructElementType(0);
-            llvm::Value*      ta    = b_.CreateLoad(tt, b_.CreateStructGEP(et, pa, 0));
-            llvm::Value*      tb    = b_.CreateLoad(tt, b_.CreateStructGEP(et, pb, 0));
+            const Symbol*     es    = t->symbol;
+            llvm::Value*      ta    = load_tag(es, pa);
+            llvm::Value*      tb    = load_tag(es, pb);
             llvm::Function*   fn    = b_.GetInsertBlock()->getParent();
             llvm::BasicBlock* done  = llvm::BasicBlock::Create(ctx_, "enum_eq.done", fn);
             llvm::BasicBlock* check = llvm::BasicBlock::Create(ctx_, "enum_eq.payload", fn);
@@ -2150,7 +2468,7 @@ private:
                 llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx_, "enum_eq.next", fn);
                 b_.CreateCondBr(b_.CreateICmpEQ(ta, tag_constant(alt)), yes, next);
                 b_.SetInsertPoint(yes);
-                llvm::Value* same = values_equal(payload_of(alt), b_.CreateStructGEP(et, pa, 1), b_.CreateStructGEP(et, pb, 1), span);
+                llvm::Value* same = values_equal(payload_of(alt), payload_address(es, pa), payload_address(es, pb), span);
                 incoming.emplace_back(same, b_.GetInsertBlock());
                 b_.CreateBr(done);
                 b_.SetInsertPoint(next);
@@ -2559,6 +2877,28 @@ private:
 
     llvm::Value* raw_call(CallExpr& c, const std::string& name) {
         if (name.starts_with("atomic_") || name.starts_with("futex_") || name == "spin_hint") return thread_raw(c, name);
+        if (name == "assume") {   // spec 34: the optimizer may rely on the condition
+            b_.CreateAssumption(gen_expr(*c.args[0]));
+            return nullptr;
+        }
+        if (name == "unreachable") {
+            b_.CreateUnreachable();
+            open_dead_block();
+            return nullptr;
+        }
+        if (name == "bit_cast") {   // the same bits as another plain type (spec 34)
+            llvm::Value* v  = gen_expr(*c.args[0]);
+            llvm::Type*  to = lower_type(types::strip_ref(c.type));
+            if (v->getType()->isPointerTy() && !to->isPointerTy() && c.args[0]->type && c.args[0]->type->is(Kind::reference)) {
+                return b_.CreateLoad(to, v);
+            }
+            if (v->getType()->isIntOrIntVectorTy() || v->getType()->isFPOrFPVectorTy()) {
+                if (to->isIntOrIntVectorTy() || to->isFPOrFPVectorTy()) return b_.CreateBitCast(v, to);
+            }
+            llvm::AllocaInst* slot = entry_alloca(v->getType(), "bits");
+            b_.CreateStore(v, slot);
+            return b_.CreateLoad(to, slot);
+        }
         auto* ptr = ptr_type();
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         const types::Type* pt = types::strip_ref(c.type);
@@ -2869,6 +3209,84 @@ private:
     }
 
     // Methods of vectors and masks.
+    // The methods of numbers (spec 34). min/max ignore a NaN operand (IEEE minNum/maxNum);
+    // integer abs and a clamp with lo > hi panic.
+    llvm::Value* number_method(CallExpr& c, MemberExpr& me, const types::Type* t, const std::string& name) {
+        llvm::Value* v   = gen_expr(*me.object);
+        if (v->getType()->isPointerTy()) v = b_.CreateLoad(lower_type(t), v);
+        auto arg = [&](std::size_t i) { return gen_expr(*c.args[i]); };
+        llvm::Type* ty = v->getType();
+        if (t->is_integer()) {
+            bool sgn = t->is_signed;
+            if (name == "abs") {
+                if (!sgn) return v;
+                llvm::Value* minimum = llvm::ConstantInt::get(ty, llvm::APInt::getSignedMinValue(static_cast<unsigned>(t->bits)));
+                check(b_.CreateICmpNE(v, minimum), c.span, std::format("integer overflow in 'abs' ({})", t->name));
+                return b_.CreateBinaryIntrinsic(llvm::Intrinsic::abs, v, llvm::ConstantInt::getFalse(ctx_));
+            }
+            if (name == "min") return b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smin : llvm::Intrinsic::umin, v, arg(0));
+            if (name == "max") return b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smax : llvm::Intrinsic::umax, v, arg(0));
+            if (name == "clamp") {
+                llvm::Value* lo = arg(0);
+                llvm::Value* hi = arg(1);
+                check(sgn ? b_.CreateICmpSLE(lo, hi) : b_.CreateICmpULE(lo, hi), c.span, "clamp with lo > hi");
+                llvm::Value* up = b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smax : llvm::Intrinsic::umax, v, lo);
+                return b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smin : llvm::Intrinsic::umin, up, hi);
+            }
+            unsupported(c.span, "this integer method");
+        }
+        bool f32 = t->bits <= 32;
+        auto unary = [&](llvm::Intrinsic::ID id) { return b_.CreateUnaryIntrinsic(id, v); };
+        auto libm  = [&](const char* name64, const char* name32, std::vector<llvm::Value*> args) -> llvm::Value* {
+            if (t->bits == 16) {   // f16: the f32 function, then back
+                auto* f = llvm::Type::getFloatTy(ctx_);
+                for (llvm::Value*& a : args) a = b_.CreateFPExt(a, f);
+                std::vector<llvm::Type*> params(args.size(), f);
+                return b_.CreateFPTrunc(b_.CreateCall(libc(name32, f, params), args), ty);
+            }
+            std::vector<llvm::Type*> params(args.size(), ty);
+            return b_.CreateCall(libc(f32 ? name32 : name64, ty, params), args);
+        };
+        if (name == "sqrt") return unary(llvm::Intrinsic::sqrt);
+        if (name == "abs") return unary(llvm::Intrinsic::fabs);
+        if (name == "floor") return unary(llvm::Intrinsic::floor);
+        if (name == "ceil") return unary(llvm::Intrinsic::ceil);
+        if (name == "round") return unary(llvm::Intrinsic::round);
+        if (name == "trunc") return unary(llvm::Intrinsic::trunc);
+        if (name == "sin") return unary(llvm::Intrinsic::sin);
+        if (name == "cos") return unary(llvm::Intrinsic::cos);
+        if (name == "exp") return unary(llvm::Intrinsic::exp);
+        if (name == "exp2") return unary(llvm::Intrinsic::exp2);
+        if (name == "log") return unary(llvm::Intrinsic::log);
+        if (name == "log2") return unary(llvm::Intrinsic::log2);
+        if (name == "log10") return unary(llvm::Intrinsic::log10);
+        if (name == "tan") return libm("tan", "tanf", {v});
+        if (name == "asin") return libm("asin", "asinf", {v});
+        if (name == "acos") return libm("acos", "acosf", {v});
+        if (name == "atan") return libm("atan", "atanf", {v});
+        if (name == "atan2") return libm("atan2", "atan2f", {v, arg(0)});
+        if (name == "pow") return b_.CreateBinaryIntrinsic(llvm::Intrinsic::pow, v, arg(0));
+        if (name == "copysign") return b_.CreateBinaryIntrinsic(llvm::Intrinsic::copysign, v, arg(0));
+        if (name == "min") return b_.CreateBinaryIntrinsic(llvm::Intrinsic::minnum, v, arg(0));
+        if (name == "max") return b_.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, v, arg(0));
+        if (name == "mul_add") {   // always one fused operation, whatever @std::float_mode says
+            llvm::Value* b = arg(0);
+            llvm::Value* d = arg(1);
+            return b_.CreateIntrinsic(llvm::Intrinsic::fma, {ty}, {v, b, d});
+        }
+        if (name == "clamp") {
+            llvm::Value* lo = arg(0);
+            llvm::Value* hi = arg(1);
+            check(b_.CreateFCmpOLE(lo, hi), c.span, "clamp with lo > hi (or a NaN bound)");
+            return b_.CreateBinaryIntrinsic(llvm::Intrinsic::minnum, b_.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, v, lo), hi);
+        }
+        llvm::Value* inf = llvm::ConstantFP::getInfinity(ty);
+        if (name == "is_nan") return b_.CreateFCmpUNO(v, v);
+        if (name == "is_infinite") return b_.CreateFCmpOEQ(unary(llvm::Intrinsic::fabs), inf);
+        if (name == "is_finite") return b_.CreateFCmpOLT(unary(llvm::Intrinsic::fabs), inf);
+        unsupported(c.span, "this float method");
+    }
+
     llvm::Value* vector_method(CallExpr& c, MemberExpr& me, const types::Type* t, const std::string& name) {
         auto*        i64 = llvm::Type::getInt64Ty(ctx_);
         llvm::Value* v   = gen_expr(*me.object);
@@ -3018,6 +3436,7 @@ private:
             auto&              me = c.callee->as<MemberExpr>();
             const types::Type* ot = types::strip_ref(me.object->type);
             if (ot && (ot->is(Kind::vector) || ot->is(Kind::mask))) return vector_method(c, me, ot, me.name.segments.back().name);
+            if (ot && types::is_number_method(ot, me.name.segments.back().name)) return number_method(c, me, ot, me.name.segments.back().name);
             if (ot && (types::is_std_instance(ot, "span") || types::is_std_instance(ot, "span_mut")) && !c.args.empty() &&
                 (me.name.segments.back().name == "load" || me.name.segments.back().name == "store")) {
                 const types::Type* at = types::strip_ref(c.args[0]->type);
@@ -3139,16 +3558,25 @@ private:
                 llvm::Value* fat    = !me.arrow       ? interface_reference(*me.object, dispatched->symbol)
                                     : me.deref_symbol ? member_object(me)
                                                       : gen_expr(*me.object);
-                if (inspect_) {
+                const Symbol* only  = single_implementation(dispatched->symbol, s);
+                if (inspect_ && only) {
+                    insight(callee_name(c), "dispatch", "devirtualized", "range",
+                            std::format("direct call: {} is the only implementation of {}::{}", display_name(only),
+                                        types::to_string(dispatched), name),
+                            "The whole program is one module, so the compiler sees every type that implements the interface: with one "
+                            "implementation the call goes straight to it and can be inlined (spec 34 §8). A second implementing type "
+                            "makes it a table call again.");
+                } else if (inspect_) {
                     insight(callee_name(c), "dispatch", "interface", "range",
                             std::format("interface call: {}::{} through a table", types::to_string(dispatched), name),
                             "The object is reached through an interface reference (an object pointer and a table, spec 07): the call loads "
                             "the method's address from the table, so it can't be inlined.");
                 }
-                llvm::Value* table  = b_.CreateExtractValue(fat, 1);
-                llvm::Value* target = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, itable_header + static_cast<unsigned>(slot)));
                 std::vector<Expr*> args;
                 for (ExprPtr& a : c.args) args.push_back(a.get());
+                if (only) return call_symbol(only, b_.CreateExtractValue(fat, 0), args, c.span);   // spec 34 §8: one implementing type
+                llvm::Value* table  = b_.CreateExtractValue(fat, 1);
+                llvm::Value* target = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, itable_header + static_cast<unsigned>(slot)));
                 return call_symbol(s, b_.CreateExtractValue(fat, 0), args, c.span, false, target);
             }
             const types::Type* target = me.deref_symbol ? types::strip_ref(tc_.lower(*body_decl(me.deref_symbol)->result,
@@ -3158,7 +3586,13 @@ private:
                 target->is(Kind::user) && has_vtable(target->symbol) && has_self(s)) {
                 int slot = vtable_slot(target->symbol, s);   // a virtual method: the object's own implementation
                 if (slot >= 0) {
-                    if (inspect_) {
+                    const Symbol* only = single_implementation(target->symbol, s);
+                    if (inspect_ && only) {
+                        insight(callee_name(c), "dispatch", "devirtualized", "range",
+                                std::format("direct call: {} is the only implementation in the program", display_name(only)),
+                                "The whole program is one module, so the compiler sees every class derived from this one: no class "
+                                "overrides the method, so the call goes straight to it and can be inlined (spec 34 §8).");
+                    } else if (inspect_) {
                         insight(callee_name(c), "dispatch", "virtual", "range",
                                 std::format("virtual call: {}::{} through the vtable", types::to_string(target), name),
                                 "An `open` class hierarchy (spec 07): the call loads the most derived implementation from the object's "
@@ -3167,6 +3601,7 @@ private:
                     llvm::Value* object = member_object(me);
                     std::vector<Expr*> args;
                     for (ExprPtr& a : c.args) args.push_back(a.get());
+                    if (only) return call_symbol(only, object, args, c.span);   // spec 34 §8: one target
                     return call_symbol(s, object, args, c.span, false, virtual_function(object, slot));
                 }
             }
@@ -3253,11 +3688,19 @@ private:
             }
         }
         bool tracked = !indirect && has_run_time_entry_checks(s);
-        if (tracked) b_.CreateStore(loc_global(span), call_site_global());
-        llvm::Value* call = indirect ? b_.CreateCall(function_type(s), indirect, args)   // a virtual or interface call
-                          : imported ? c_call(function_of(s), args)                       // C's calling convention
-                                     : b_.CreateCall(function_of(s), args);
-        if (tracked) b_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), call_site_global());
+        bool by_arg  = tracked && !imported && !f->is_extern && s->versions.empty() && !s->version_of;
+        if (tracked && !by_arg) b_.CreateStore(loc_global(span), call_site_global());
+        llvm::Value* call = nullptr;
+        if (by_arg) {   // the caller's location as a hidden argument (site_variant_of)
+            std::vector<llvm::Value*> with_site = args;
+            with_site.push_back(loc_global(span));
+            call = b_.CreateCall(site_variant_of(s), with_site);
+        } else {
+            call = indirect ? b_.CreateCall(function_type(s), indirect, args)   // a virtual or interface call
+                 : imported ? c_call(function_of(s), args)                       // C's calling convention
+                            : b_.CreateCall(function_of(s), args);
+        }
+        if (tracked && !by_arg) b_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), call_site_global());
         if (inspect_ && !indirect) record_call(s, fns_.contains(s) ? fns_[s] : nullptr, call_ast, call_ast ? callee_name(*call_ast) : span);
         const types::Type* result = f->result ? tc_.lower(*f->result, sema::substitution_of(s)) : nullptr;
         if (imported && result && result->is(Kind::bool_)) return b_.CreateICmpNE(call, llvm::ConstantInt::get(call->getType(), 0));
@@ -3279,6 +3722,7 @@ private:
         edax_panic_str_ = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr, ptr, i64}, false),
                                                  llvm::Function::ExternalLinkage, "edax_panic_str", mod_.get());
         edax_panic_str_->setDoesNotReturn();
+        edax_panic_str_->addFnAttr(llvm::Attribute::Cold);   // the failure path of every check: kept out of the hot code
         edax_exit_status_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i128, ptr}, false),
                                                    llvm::Function::ExternalLinkage, "edax_exit_status", mod_.get());
     }
@@ -3528,6 +3972,62 @@ private:
         return g;
     }
 
+    // --- devirtualization (spec 34 §8) --------------------------------------------------------
+    // The whole program is one module, so the compiler sees every class and every implementation
+    // of an interface. A call whose possible targets are one function is a direct call (it can be
+    // inlined). Not in a plugin, nor in a program that loads plugins: their classes are unknown.
+
+    std::vector<const Symbol*> all_types_;
+    bool                       types_listed_ = false;
+    bool                       open_world_   = false;
+
+    void list_types() {
+        if (types_listed_) return;
+        types_listed_ = true;
+        open_world_   = program_.is_plugin;
+        for (const auto& [name, m] : program_.modules) {
+            for (const Symbol& sym : m->storage) {
+                if (sym.kind != SymbolKind::class_ && sym.kind != SymbolKind::struct_ && sym.kind != SymbolKind::enum_) continue;
+                if (sym.decl && sym.decl->is_template && !sym.template_of) continue;   // a template, not a type
+                if (sym.template_of && sym.template_of->name == "plugin" && sym.template_of->ns == "std") open_world_ = true;
+                all_types_.push_back(&sym);
+            }
+        }
+    }
+
+    // Whether `t` is `root` or derives from it (classes), or implements it (interfaces).
+    static bool reaches(const Symbol* t, const Symbol* root) {
+        if (t == root) return true;
+        for (const Symbol* b : t->bases) {
+            if (b && reaches(b, root)) return true;
+        }
+        return false;
+    }
+
+    std::map<std::pair<const Symbol*, const Symbol*>, const Symbol*> devirtualized_;
+
+    // The one implementation of `method` that a call through `root` (a class or an interface) can
+    // reach, or null when there are several or the program can't know.
+    const Symbol* single_implementation(const Symbol* root, const Symbol* method) {
+        if (!alias_attributes_) return nullptr;   // without optimization: as written
+        auto key = std::make_pair(root, method);
+        if (auto it = devirtualized_.find(key); it != devirtualized_.end()) return it->second;
+        list_types();
+        const Symbol* only = nullptr;
+        bool          many = open_world_;
+        for (const Symbol* t : all_types_) {
+            if (many) break;
+            if (!reaches(t, root)) continue;
+            const Symbol* impl = implementation(t, method);
+            if (!impl) continue;   // abstract here: no object of this exact class exists
+            if (only && only != impl) many = true;
+            only = impl;
+        }
+        const Symbol* out = many ? nullptr : only;
+        devirtualized_[key] = out;
+        return out;
+    }
+
     // A virtual call: the function in `slot` of the object's vtable.
     llvm::Value* virtual_function(llvm::Value* object, int slot) {
         llvm::Value* vtable = b_.CreateLoad(ptr_type(), object);
@@ -3689,7 +4189,7 @@ private:
             auto& m = e.as<MemberExpr>();
             const Symbol* f = m.symbol;
             if (f && f->kind == SymbolKind::field && !f->is_static) {
-                return b_.CreateLoad(fat, b_.CreateStructGEP(user_type(f->parent), member_object(m), field_index(f)));
+                return b_.CreateLoad(fat, field_address(f, member_object(m)));
             }
             break;
         }
@@ -3731,6 +4231,12 @@ private:
         return tc_.lower(*f->decl->as<VariableDecl>().type, sema::substitution_of(f));
     }
 
+    // The address of field `f` in the object at `object` (a union's members are all at its start).
+    llvm::Value* field_address(const Symbol* f, llvm::Value* object) {
+        if (types::is_union(f->parent)) return object;
+        return b_.CreateStructGEP(user_type(f->parent), object, field_index(f));
+    }
+
     unsigned field_index(const Symbol* f) {
         std::vector<const Symbol*> fields = fields_of(f->parent);
         auto                       it     = std::find(fields.begin(), fields.end(), f);
@@ -3749,6 +4255,14 @@ private:
         if (!is_struct_symbol(s)) unsupported(s->span, "values of this type");
         auto* st       = llvm::StructType::create(ctx_, s->name);
         user_types_[s] = st;
+        if (types::is_union(s)) {   // spec 34: storage for the largest member, aligned for the strictest
+            types::Layout l    = tc_.layout(tc_.user(s));
+            std::uint64_t unit = std::max<std::uint64_t>(l.align, 1);
+            llvm::Type*   elem = unit <= 8 ? static_cast<llvm::Type*>(llvm::IntegerType::get(ctx_, static_cast<unsigned>(unit * 8)))
+                                           : llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx_), static_cast<unsigned>(unit / 4));
+            st->setBody(llvm::ArrayRef<llvm::Type*>{llvm::ArrayType::get(elem, l.size / unit)});
+            return st;
+        }
         std::vector<llvm::Type*> elems;
         if (const Symbol* base = s->base_class()) elems.push_back(user_type(base));   // the base object first (spec 07)
         else if (s->has_vtable_pointer()) elems.push_back(ptr_type());               // the vtable
@@ -3756,7 +4270,16 @@ private:
             cur_ = f->span;
             elems.push_back(lower_type(field_type(f)));
         }
-        st->setBody(elems);   // an empty struct takes no space: `std::global_allocator` in a container costs nothing
+        if (std::uint64_t want = types::requested_alignment(s); want > 1 && !elems.empty()) {
+            // @std::layout{ .align = N } (spec 34): a trailing zero-length array of an N-aligned
+            // type raises the struct's alignment (and rounds its size) without moving any field.
+            llvm::Type* unit = want <= 8 ? static_cast<llvm::Type*>(llvm::IntegerType::get(ctx_, static_cast<unsigned>(want * 8)))
+                                         : llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx_), static_cast<unsigned>(want / 4));
+            elems.push_back(llvm::ArrayType::get(unit, 0));
+        }
+        bool packed = types::is_packed(s);   // @std::layout{ .packed } (spec 34): fields at byte offsets
+        if (packed) packed_types_.insert(st);
+        st->setBody(elems, packed);   // an empty struct takes no space: `std::global_allocator` in a container costs nothing
         return st;
     }
 
@@ -3783,8 +4306,50 @@ private:
         auto* st       = llvm::StructType::create(ctx_, e->name);
         user_types_[e] = st;
         llvm::Type* elem = llvm::IntegerType::get(ctx_, align * 8);
-        st->setBody({tag, llvm::ArrayType::get(elem, (size + align - 1) / align)});
+        if (tc_.niche_enum(e)) st->setBody(llvm::ArrayRef<llvm::Type*>{llvm::ArrayType::get(elem, (size + align - 1) / align)});   // no tag (spec 34)
+        else st->setBody({tag, llvm::ArrayType::get(elem, (size + align - 1) / align)});
         return st;
+    }
+
+    // --- tags and payloads (an enum with a niche has no tag field, spec 34) ---------------
+
+    // The index of the payload storage in the enum's struct.
+    unsigned payload_index(const Symbol* e) { return tc_.niche_enum(e) ? 0 : 1; }
+
+    // The address of the payload of the enum at `addr`.
+    llvm::Value* payload_address(const Symbol* e, llvm::Value* addr) { return b_.CreateStructGEP(user_type(e), addr, payload_index(e)); }
+
+    // The address and type of the niche of the enum at `addr`.
+    std::pair<llvm::Value*, llvm::Type*> niche_address(const types::NicheEnum& n, llvm::Value* addr) {
+        llvm::Value* at = b_.CreateConstInBoundsGEP1_64(llvm::Type::getInt8Ty(ctx_), addr, n.niche.offset);
+        return {at, llvm::IntegerType::get(ctx_, static_cast<unsigned>(n.niche.size * 8))};
+    }
+
+    // The tag of the enum at `addr`.
+    llvm::Value* load_tag(const Symbol* e, llvm::Value* addr) {
+        if (!has_payloads(e)) return b_.CreateLoad(enum_tag_type(e), addr);
+        if (std::optional<types::NicheEnum> n = tc_.niche_enum(e)) {
+            auto [at, it] = niche_address(*n, addr);
+            llvm::Value* set = b_.CreateICmpNE(b_.CreateLoad(it, at), llvm::ConstantInt::get(it, n->niche.value));
+            return b_.CreateSelect(set, tag_constant(n->with), tag_constant(n->without));
+        }
+        return b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(user_type(e), addr, 0));
+    }
+
+    // Stores the tag of the enum at `addr`. With a niche, the payload is stored first: `with`
+    // leaves it as it is, `without` writes the niche's value.
+    void store_tag(const Symbol* e, llvm::Value* addr, llvm::Value* tag) {
+        if (std::optional<types::NicheEnum> n = tc_.niche_enum(e)) {
+            auto [at, it] = niche_address(*n, addr);
+            llvm::Value* zero = llvm::ConstantInt::get(it, n->niche.value);   // the niche's value
+            if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(tag)) {
+                if (c == tag_constant(n->without)) b_.CreateStore(zero, at);
+                return;
+            }
+            b_.CreateStore(b_.CreateSelect(b_.CreateICmpEQ(tag, tag_constant(n->without)), zero, b_.CreateLoad(it, at)), at);
+            return;
+        }
+        b_.CreateStore(tag, b_.CreateStructGEP(user_type(e), addr, 0));
     }
 
     // Tag value of each alternative (explicit values, otherwise previous + 1).
@@ -3827,8 +4392,8 @@ private:
         if (!has_payloads(e)) return tag;
         llvm::Type*       et   = user_type(e);
         llvm::AllocaInst* slot = entry_alloca(et, "alternative");
-        b_.CreateStore(tag, b_.CreateStructGEP(et, slot, 0));
-        if (payload) b_.CreateStore(payload, b_.CreateStructGEP(et, slot, 1));
+        if (payload) b_.CreateStore(payload, payload_address(e, slot));
+        store_tag(e, slot, tag);
         return b_.CreateLoad(et, slot);
     }
 
@@ -3837,6 +4402,7 @@ private:
     llvm::Value* build_struct(const Symbol* s, const std::map<std::string, llvm::Value*>& given) {
         llvm::Type*       st   = user_type(s);
         llvm::AllocaInst* slot = entry_alloca(st, "value");
+        if (types::is_union(s)) b_.CreateStore(llvm::Constant::getNullValue(st), slot);   // the bytes past the member are zero
         for (const Symbol* f : all_fields(s)) {   // the base's fields too: `circle{ .name = ..., .radius = ... }`
             cur_ = f->span;
             llvm::Value* v = nullptr;
@@ -3846,7 +4412,8 @@ private:
                 const auto& d = f->decl->as<VariableDecl>();
                 v             = d.init ? gen_expr(*d.init) : default_value(field_type(f), f->span);
             }
-            b_.CreateStore(v, b_.CreateStructGEP(user_type(f->parent), slot, field_index(f)));   // a base is at offset 0
+            if (types::is_union(s) && !given.contains(f->name)) continue;   // a union: the one member the literal sets
+            b_.CreateStore(v, field_address(f, slot));   // a base is at offset 0
         }
         if (has_vtable(s)) b_.CreateStore(vtable_of(s), slot);   // the vtable pointer is at offset 0
         return b_.CreateLoad(st, slot);
@@ -3942,7 +4509,7 @@ private:
             }
             const Symbol* f = m.symbol;
             if (!f || f->kind != SymbolKind::field || f->is_static) unsupported(e.span, "this member access");
-            llvm::Value* at = b_.CreateStructGEP(user_type(f->parent), member_object(m), field_index(f));
+            llvm::Value* at = field_address(f, member_object(m));
             const types::Type* ft = field_type(f);
             if (ft && ft->is(Kind::reference)) return b_.CreateLoad(ptr_type(), at);   // a reference field holds the address
             return at;
@@ -4067,7 +4634,12 @@ private:
     // A function of the runtime (llvm_runtime.cpp), declared here and defined in the appended IR.
     llvm::Function* runtime(const char* name, llvm::Type* result, std::vector<llvm::Type*> params) {
         if (llvm::Function* f = mod_->getFunction(name)) return f;
-        return llvm::Function::Create(llvm::FunctionType::get(result, params, false), llvm::Function::ExternalLinkage, name, mod_.get());
+        llvm::Function* f = llvm::Function::Create(llvm::FunctionType::get(result, params, false), llvm::Function::ExternalLinkage, name, mod_.get());
+        if (std::string_view(name).starts_with("edax_panic")) {   // panics never return and are rare
+            f->setDoesNotReturn();
+            f->addFnAttr(llvm::Attribute::Cold);
+        }
+        return f;
     }
 
     // The `edax_spec` of a format hole: `{ align, plus, width, precision, radix }` (spec 19).
@@ -4400,7 +4972,7 @@ private:
                 b_.CreateCall(runtime("edax_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
             }
         } else if (t && t->is_float()) {
-            bool single = t->bits == 32;
+            bool single = t->bits <= 32;   // f16 prints through f32
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
             b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
                           {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
@@ -4472,8 +5044,7 @@ private:
         if (t->is_user(SymbolKind::enum_) && has_payloads(t->symbol)) {
             llvm::AllocaInst* inner = entry_alloca(buffer_type(), "enum_text");
             b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), inner);
-            llvm::Type*  et  = lower_type(t);
-            llvm::Value* tag = b_.CreateLoad(et->getStructElementType(0), b_.CreateStructGEP(et, addr, 0));
+            llvm::Value* tag = load_tag(t->symbol, addr);
             llvm::Function* fn   = b_.GetInsertBlock()->getParent();
             llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_, "fmt.done", fn);
             for (const Symbol* a : t->symbol->member_order) {
@@ -4487,7 +5058,7 @@ private:
                     const types::Type* pt = tc_.lower(*a->alternative->payload, sema::substitution_of(a));
                     if (!pt->is(Kind::void_)) {
                         put_text(inner, "(");
-                        format_at(inner, b_.CreateStructGEP(et, addr, 1), pt, plain_spec(), span);
+                        format_at(inner, payload_address(t->symbol, addr), pt, plain_spec(), span);
                         put_text(inner, ")");
                     }
                 }
@@ -4523,7 +5094,7 @@ private:
                 b_.CreateCall(runtime("edax_fmt_i", vd, {p, i128, p}), {buf, b_.CreateSExt(v, i128), spec});
             }
         } else if (t->is_float()) {
-            bool single = t->bits == 32;
+            bool single = t->bits <= 32;   // f16 prints through f32
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
             b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
                           {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
@@ -4602,22 +5173,20 @@ private:
                 require(b_.CreateICmpEQ(b_.CreateLoad(enum_tag_type(e), addr), tag_constant(alt)), fail);
                 return;
             }
-            llvm::Type*  et  = user_type(e);
-            llvm::Value* tag = b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(et, addr, 0));
+            llvm::Value* tag = load_tag(e, addr);
             require(b_.CreateICmpEQ(tag, tag_constant(alt)), fail);
             if (ep.payload && carries(alt)) {
-                match_pattern(*ep.payload, b_.CreateStructGEP(et, addr, 1), payload_of(alt), fail);
+                match_pattern(*ep.payload, payload_address(e, addr), payload_of(alt), fail);
             }
             return;
         }
         case PatternKind::struct_: {
             auto& sp = p.as<StructPattern>();
             if (!t->is(Kind::user) || !is_struct_symbol(t->symbol)) unsupported(p.span, "this pattern");
-            llvm::Type* st = user_type(t->symbol);
             for (FieldPattern& fp : sp.fields) {
                 const Symbol* f = field_symbol(t->symbol, fp.name);
                 if (!f || !fp.pattern) continue;
-                match_pattern(*fp.pattern, b_.CreateStructGEP(st, addr, field_index(f)), field_type(f), fail);
+                match_pattern(*fp.pattern, field_address(f, addr), field_type(f), fail);
             }
             return;
         }
@@ -4924,11 +5493,10 @@ private:
             element = b_.CreateCall(function_of(f.index_symbol), {obj, b_.CreateLoad(i64, iv)});
         } else {
             b_.CreateStore(b_.CreateCall(function_of(f.next_symbol), {obj}), opt);
-            llvm::Type*  ot  = opt->getAllocatedType();
-            llvm::Value* tag = b_.CreateLoad(enum_tag_type(some->parent), b_.CreateStructGEP(ot, opt, 0));
+            llvm::Value* tag = load_tag(some->parent, opt);
             b_.CreateCondBr(b_.CreateICmpEQ(tag, tag_constant(some)), body_bb, exit_bb);
             b_.SetInsertPoint(body_bb);
-            element = b_.CreateStructGEP(ot, opt, 1);
+            element = payload_address(some->parent, opt);
         }
         loops_.push_back(Loop{exit_bb, cont_bb});
         trips_.push_back(std::nullopt);
@@ -5027,6 +5595,11 @@ private:
         unsupported(cur_, std::format("converting to '{}'", types::to_string(to)));
     }
 
+    static bool is_distinct(const types::Type* t) {
+        return t && t->is(Kind::user) && t->symbol && t->symbol->decl && t->symbol->kind == SymbolKind::struct_ &&
+               t->symbol->decl->as<TypeDecl>().is_distinct;
+    }
+
     llvm::Value* cast_value(CastExpr& c) {
         const types::Type* to   = types::strip_ref(c.type);
         const types::Type* from = types::strip_ref(c.operand->type);
@@ -5035,6 +5608,12 @@ private:
         if (variant == "dynamic") return dynamic_cast_value(c, types::strip_ref(to->symbol->template_args[0]), to);
         if (variant == "checked" || variant == "dynamic") {
             unsupported(c.span, std::format("'cast::{}' (it returns std::option)", variant));
+        }
+        if (variant.empty() && (is_distinct(to) || is_distinct(from))) {   // a distinct type and its underlying type (spec 34)
+            llvm::Value* v = gen_expr(*c.operand);
+            if (v->getType()->isPointerTy() && !lower_type(from)->isPointerTy()) v = b_.CreateLoad(lower_type(from), v);
+            if (is_distinct(to)) return b_.CreateInsertValue(llvm::UndefValue::get(lower_type(to)), v, {0});
+            return b_.CreateExtractValue(v, {0});
         }
         llvm::Value* v = gen_expr(*c.operand);
         if (from->is(Kind::vector) && to->is(Kind::vector)) {   // lane by lane
@@ -5073,7 +5652,7 @@ private:
         b_.CreateCondBr(ok, pass, fail);
         b_.SetInsertPoint(fail);
         if (c.is_entry) {   // an entry check names the caller's line, then the check (spec 23)
-            llvm::Value* site  = b_.CreateLoad(ptr_type(), call_site_global());
+            llvm::Value* site  = site_arg_ ? site_arg_ : static_cast<llvm::Value*>(b_.CreateLoad(ptr_type(), call_site_global()));
             llvm::Value* check = loc_global(c.condition->span);
             llvm::Value* at    = b_.CreateSelect(b_.CreateIsNotNull(site), site, check);
             const SourceFile& file = sources_.file(c.condition->span.file);
@@ -5103,7 +5682,14 @@ private:
         case ct::Value::Kind::boolean: return llvm::ConstantInt::getBool(ctx_, v.boolean);
         case ct::Value::Kind::character:
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), static_cast<std::uint64_t>(v.character));
-        case ct::Value::Kind::string: return str_constant(v.string);
+        case ct::Value::Kind::string:
+            if (t && types::is_std_instance(t, "span")) {   // std::embed (spec 34): the bytes in static memory
+                llvm::Constant* bytes = llvm::ConstantDataArray::getString(ctx_, v.string, false);
+                auto* g = new llvm::GlobalVariable(*mod_, bytes->getType(), true, llvm::GlobalValue::PrivateLinkage, bytes, "embed");
+                g->setAlignment(llvm::Align(16));
+                return build_struct(t->symbol, {{"data", g}, {"count", llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), v.string.size())}});
+            }
+            return str_constant(v.string);
         case ct::Value::Kind::enumeration: {
             const Symbol* alt = alternative(t->symbol, v.symbol->name);
             llvm::Value*  payload = nullptr;
@@ -5174,7 +5760,7 @@ private:
     // The address of the field a reflected `std::meta::field` names, in `object` (spec 26).
     llvm::Value* field_address(const ct::Value& field, Expr& object) {
         const Symbol* f = field.symbol;
-        return b_.CreateStructGEP(user_type(f->parent), object_address(object), field_index(f));
+        return field_address(f, object_address(object));
     }
 
     // `f.get(value)`, `a.is(value)`, `a.get(value)`, `a.make(...)`.
@@ -5191,12 +5777,11 @@ private:
             return alternative_value(alt, payload);
         }
         llvm::Value* addr = object_address(*c.args.at(0));
-        llvm::Value* tag  = has_payloads(e) ? b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(user_type(e), addr, 0))
-                                            : b_.CreateLoad(enum_tag_type(e), addr);
+        llvm::Value* tag  = load_tag(e, addr);
         llvm::Value* is   = b_.CreateICmpEQ(tag, tag_constant(alt));
         if (name == "is") return is;
         const Symbol* option = types::strip_ref(static_cast<Expr&>(c).type)->symbol;   // a.get(value): std::option<P&>
-        llvm::Value*  some   = alternative_value(alternative(option, "some"), b_.CreateStructGEP(user_type(e), addr, 1));
+        llvm::Value*  some   = alternative_value(alternative(option, "some"), payload_address(e, addr));
         llvm::Value*  none   = alternative_value(alternative(option, "none"), nullptr);
         return b_.CreateSelect(is, some, none);
     }
@@ -5220,14 +5805,14 @@ private:
         llvm::AllocaInst* slot = entry_alloca(et, "unpacked");
         b_.CreateStore(gen_expr(operand), slot);
         moved_out(operand);
-        llvm::Value* tag = b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(et, slot, 0));
+        llvm::Value* tag = load_tag(e, slot);
         return {slot, b_.CreateICmpEQ(tag, tag_constant(good_alternative(e)))};
     }
 
     // The payload of alternative `alt`, read from the enum at `slot`.
     llvm::Value* payload_at(llvm::AllocaInst* slot, const Symbol* alt) {
         if (!carries(alt)) return nullptr;   // a `void` payload
-        return b_.CreateLoad(lower_type(payload_of(alt)), b_.CreateStructGEP(user_type(alt->parent), slot, 1));
+        return b_.CreateLoad(lower_type(payload_of(alt)), payload_address(alt->parent, slot));
     }
 
     // Destroys the object at `addr` if its type needs it (a value that is thrown away).
@@ -5280,7 +5865,7 @@ private:
         const Symbol*      e     = t->symbol;
         if (types::is_std_query_method(name)) {   // the tag, read in place
             llvm::Value* addr = object_address(*me.object);
-            llvm::Value* tag  = b_.CreateLoad(enum_tag_type(e), b_.CreateStructGEP(user_type(e), addr, 0));
+            llvm::Value* tag  = load_tag(e, addr);
             llvm::Value* good = b_.CreateICmpEQ(tag, tag_constant(good_alternative(e)));
             return name == "is_some" || name == "is_ok" ? good : b_.CreateNot(good);
         }
@@ -5296,7 +5881,7 @@ private:
             return branch_value(good, rt, [&] {
                 return alternative_value(alternative(rt->symbol, "ok"), payload_at(slot, ok));
             }, [&] {
-                llvm::Value* arg = ft->args[0]->is(Kind::reference) ? b_.CreateStructGEP(user_type(e), slot, 1)
+                llvm::Value* arg = ft->args[0]->is(Kind::reference) ? payload_address(e, slot)
                                                                     : payload_at(slot, err);
                 llvm::Value* e2  = b_.CreateCall(lambda_function(*tc_.lambda_of(ft)), {fslot, arg});
                 return alternative_value(alternative(rt->symbol, "error"), e2);
@@ -5307,7 +5892,7 @@ private:
         const types::Type* value = payload_of(ok);
         const Symbol*      error = e->members.count("error") ? alternative(e, "error") : nullptr;
         auto drop_error = [&] {
-            if (error) drop_value(payload_of(error), b_.CreateStructGEP(user_type(e), slot, 1));
+            if (error) drop_value(payload_of(error), payload_address(e, slot));
         };
         Expr& arg = *c.args[0];
         if (name == "expect") {
@@ -5509,9 +6094,8 @@ private:
         llvm::Type*       et   = user_type(e);
         llvm::AllocaInst* slot = entry_alloca(et, "option");
         b_.CreateStore(llvm::Constant::getNullValue(et), slot);
-        b_.CreateStore(b_.CreateSelect(present, tag_constant(alternative(e, "some")), tag_constant(alternative(e, "none"))),
-                       b_.CreateStructGEP(et, slot, 0));
-        b_.CreateStore(value, b_.CreateStructGEP(et, slot, 1));
+        b_.CreateStore(value, payload_address(e, slot));
+        store_tag(e, slot, b_.CreateSelect(present, tag_constant(alternative(e, "some")), tag_constant(alternative(e, "none"))));
         return b_.CreateLoad(et, slot);
     }
 
@@ -5626,6 +6210,13 @@ private:
     std::vector<DropScope>                       scopes_;
     std::map<const Symbol*, OwnedLocal>          owned_;
     std::map<const Symbol*, bool>                needs_drop_memo_;
+    std::map<const Symbol*, bool>                frozen_memo_;
+    std::map<const Symbol*, llvm::Function*>     site_fns_;
+    std::deque<const Symbol*>                    site_queue_;
+    llvm::Value*                                 site_arg_ = nullptr;
+    std::map<std::uint32_t, std::string>         file_levels_;
+    std::set<llvm::StructType*>                  packed_types_;   // @std::layout{ .packed } structs
+    bool                                         alias_attributes_ = true;
     std::map<const Symbol*, llvm::Function*>     drop_fns_;
     std::map<llvm::Function*, CSignature>        c_sigs_;   // extern functions: how C passes their structs
     std::deque<const Symbol*>                    drop_queue_;
@@ -5681,7 +6272,7 @@ private:
 
     // The function that destroys a value of user type `t`; it is generated later.
     llvm::Function* drop_function(const types::Type* t) {
-        if (t->is(Kind::function)) return function_drop();
+        if (t->is(Kind::function)) return t->bits > 0 ? inline_function_drop(t) : function_drop();
         if (t->is(Kind::closure)) return closure_drop(t);
         if (t->is(Kind::array)) return array_function(t, false);
         if (t->is(Kind::tuple)) return tuple_function(t, false);
@@ -5694,6 +6285,27 @@ private:
                                           llvm::Function::InternalLinkage, "rd_" + mangle_parts(parts), mod_.get());
         drop_fns_[s] = fn;
         drop_queue_.push_back(s);
+        return fn;
+    }
+
+    // Destroys a `std::inline_function`: destroys its captures in place (spec 34).
+    llvm::Function* inline_function_drop(const types::Type* t) {
+        std::string name = "edax_inline_function_drop." + std::to_string(t->bits);
+        if (llvm::Function* f = mod_->getFunction(name)) return f;
+        auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
+                                          llvm::Function::InternalLinkage, name, mod_.get());
+        auto*             entry = llvm::BasicBlock::Create(ctx_, "entry", fn);
+        auto*             call  = llvm::BasicBlock::Create(ctx_, "drop", fn);
+        auto*             done  = llvm::BasicBlock::Create(ctx_, "done", fn);
+        llvm::IRBuilder<> b(entry);
+        auto*             st   = llvm::cast<llvm::StructType>(lower_type(t));
+        llvm::Value*      drop = b.CreateLoad(ptr_type(), b.CreateStructGEP(st, fn->getArg(0), 2));
+        b.CreateCondBr(b.CreateICmpNE(drop, llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))), call, done);
+        b.SetInsertPoint(call);
+        b.CreateCall(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false), drop, {b.CreateStructGEP(st, fn->getArg(0), 0)});
+        b.CreateBr(done);
+        b.SetInsertPoint(done);
+        b.CreateRetVoid();
         return fn;
     }
 
@@ -5826,6 +6438,17 @@ private:
         const ast::LambdaExpr* l  = tc_.lambda_of(ct);
         llvm::Value*           v  = gen_expr(e);
         llvm::Function*        fn = lambda_function(*l);
+        if (to->is(Kind::function) && to->bits > 0) {   // std::inline_function: the captures in place (spec 34)
+            llvm::Type*       ft   = lower_type(to);
+            llvm::AllocaInst* slot = entry_alloca(ft, "inline_function");
+            b_.CreateStore(llvm::Constant::getNullValue(ft), slot);
+            b_.CreateStore(v, b_.CreateStructGEP(ft, slot, 0));
+            b_.CreateStore(fn, b_.CreateStructGEP(ft, slot, 1));
+            llvm::Value* drop = needs_drop(ct) ? static_cast<llvm::Value*>(closure_drop(ct))
+                                               : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+            b_.CreateStore(drop, b_.CreateStructGEP(ft, slot, 2));
+            return b_.CreateLoad(ft, slot);
+        }
         if (to->is(Kind::function)) {
             std::uint64_t size = std::max<std::uint64_t>(mod_->getDataLayout().getTypeAllocSize(v->getType()), 1);
             llvm::Value*  env  = b_.CreateCall(libc("malloc", ptr_type(), {llvm::Type::getInt64Ty(ctx_)}),
@@ -5859,7 +6482,13 @@ private:
         std::vector<llvm::Value*> values;
         std::vector<llvm::Type*>  params;
         llvm::Value* target = v;
-        if (t->is(Kind::function)) {
+        if (t->is(Kind::function) && t->bits > 0) {   // the captures are in the value: call with their address
+            llvm::AllocaInst* slot = entry_alloca(v->getType(), "inline_function.call");
+            b_.CreateStore(v, slot);
+            values.push_back(b_.CreateStructGEP(v->getType(), slot, 0));
+            params.push_back(ptr_type());
+            target = b_.CreateExtractValue(v, 1);
+        } else if (t->is(Kind::function)) {
             values.push_back(b_.CreateExtractValue(v, 0));
             params.push_back(ptr_type());
             target = b_.CreateExtractValue(v, 1);
@@ -5935,7 +6564,7 @@ private:
         llvm::Type* lt = user_type(s);
         if (s->kind == SymbolKind::enum_) {
             b_.CreateStore(b_.CreateLoad(lt, src), dst);   // the tag and plain payloads
-            llvm::Value*      tag  = b_.CreateLoad(enum_tag_type(s), b_.CreateStructGEP(lt, src, 0));
+            llvm::Value*      tag  = load_tag(s, src);
             llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_, "clone.done", fn);
             llvm::SwitchInst* sw   = b_.CreateSwitch(tag, done);
             for (const Symbol* a : s->member_order) {
@@ -5945,7 +6574,7 @@ private:
                 llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx_, "clone.case", fn);
                 sw->addCase(tag_constant(a), bb);
                 b_.SetInsertPoint(bb);
-                b_.CreateStore(clone_value(p, b_.CreateStructGEP(lt, src, 1)), b_.CreateStructGEP(lt, dst, 1));
+                b_.CreateStore(clone_value(p, payload_address(s, src)), payload_address(s, dst));
                 b_.CreateBr(done);
             }
             b_.SetInsertPoint(done);
@@ -5979,8 +6608,7 @@ private:
         llvm::Value* self = fn->getArg(0);
         b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", fn));
         if (s->kind == SymbolKind::enum_) {
-            llvm::Type*  et  = user_type(s);
-            llvm::Value* tag = b_.CreateLoad(enum_tag_type(s), b_.CreateStructGEP(et, self, 0));
+            llvm::Value* tag = load_tag(s, self);
             llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx_, "drop.done", fn);
             llvm::SwitchInst* sw   = b_.CreateSwitch(tag, done);
             for (const Symbol* a : s->member_order) {
@@ -5990,7 +6618,7 @@ private:
                 llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx_, "drop.case", fn);
                 sw->addCase(tag_constant(a), bb);
                 b_.SetInsertPoint(bb);
-                b_.CreateCall(drop_function(p), {b_.CreateStructGEP(et, self, 1)});
+                b_.CreateCall(drop_function(p), {payload_address(s, self)});
                 b_.CreateBr(done);
             }
             b_.SetInsertPoint(done);
@@ -6664,6 +7292,120 @@ private:
 
 } // namespace
 
+// Conditional stores to an address the same iteration already stored to become unconditional
+// stores of a select (spec 34): `if (py[i] < 0.0) { py[i] = -py[i]; vy[i] = -vy[i] * 0.8; }` after
+// `py[i] += ...; vy[i] *= ...;`. The earlier store shows that the address is valid and written by
+// this thread, so storing again can't fault or race; the loop then has no branch and vectorizes
+// without masked stores (LLVM itself speculates at most one such store). Runs where the
+// vectorizer starts.
+struct ConditionalStoreSelect : llvm::PassInfoMixin<ConditionalStoreSelect> {
+    static bool same_address(llvm::Value* a, llvm::Value* b) {
+        if (a == b) return true;
+        auto* ga = llvm::dyn_cast<llvm::GetElementPtrInst>(a);
+        auto* gb = llvm::dyn_cast<llvm::GetElementPtrInst>(b);
+        return ga && gb && ga->isIdenticalTo(gb);
+    }
+
+    // A store of a `type` to `addr` in `p`, with nothing after it that could free memory.
+    static bool stored_before(llvm::BasicBlock* p, llvm::Value* addr, llvm::Type* type) {
+        bool found = false;
+        for (llvm::Instruction& in : *p) {
+            if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in)) {
+                if (!st->isVolatile() && !st->isAtomic() && st->getValueOperand()->getType() == type && same_address(st->getPointerOperand(), addr)) {
+                    found = true;
+                }
+            } else if (auto* call = llvm::dyn_cast<llvm::CallBase>(&in)) {
+                if (!llvm::isa<llvm::DbgInfoIntrinsic>(call) && !call->onlyReadsMemory()) found = false;
+            }
+        }
+        return found;
+    }
+
+    static bool convert(llvm::BasicBlock* b) {
+        llvm::BasicBlock* p = b->getSinglePredecessor();
+        if (!p || p == b) return false;
+        auto* branch = llvm::dyn_cast<llvm::BranchInst>(p->getTerminator());
+        auto* out    = llvm::dyn_cast<llvm::BranchInst>(b->getTerminator());
+        if (!branch || !branch->isConditional() || !out || out->isConditional()) return false;
+        llvm::BasicBlock* join    = out->getSuccessor(0);
+        bool              on_true = branch->getSuccessor(0) == b;
+        if ((on_true ? branch->getSuccessor(1) : branch->getSuccessor(0)) != join || join == b) return false;
+        std::vector<llvm::StoreInst*>   stores;
+        std::vector<llvm::Instruction*> moved;
+        unsigned                        cost = 0;
+        for (llvm::Instruction& in : *b) {
+            if (&in == out || llvm::isa<llvm::DbgInfoIntrinsic>(&in)) continue;
+            if (++cost > 16) return false;
+            if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in)) {
+                if (st->isVolatile() || st->isAtomic()) return false;
+                auto* ptr = llvm::dyn_cast<llvm::Instruction>(st->getPointerOperand());
+                if (ptr && ptr->getParent() == b) return false;   // the address must exist before the branch
+                if (!stored_before(p, st->getPointerOperand(), st->getValueOperand()->getType())) return false;
+                stores.push_back(st);
+                continue;
+            }
+            if (llvm::isa<llvm::PHINode>(&in) || in.mayReadOrWriteMemory() || !llvm::isSafeToSpeculativelyExecute(&in)) return false;
+            moved.push_back(&in);
+        }
+        if (stores.empty()) return false;
+        for (llvm::PHINode& phi : join->phis()) {
+            if (phi.getBasicBlockIndex(p) < 0 || phi.getBasicBlockIndex(b) < 0) return false;
+        }
+        llvm::Value*      taken = branch->getCondition();
+        llvm::IRBuilder<> ir(branch);
+        if (!on_true) taken = ir.CreateNot(taken);
+        for (llvm::Instruction* in : moved) in->moveBefore(*p, branch->getIterator());
+        // The stores keep their order; each reads the value it replaces just before it.
+        for (llvm::StoreInst* st : stores) {
+            llvm::Value*    addr = st->getPointerOperand();
+            llvm::LoadInst* old  = ir.CreateAlignedLoad(st->getValueOperand()->getType(), addr, st->getAlign());
+            old->copyMetadata(*st, {llvm::LLVMContext::MD_alias_scope, llvm::LLVMContext::MD_noalias, llvm::LLVMContext::MD_tbaa});
+            llvm::StoreInst* now = ir.CreateAlignedStore(ir.CreateSelect(taken, st->getValueOperand(), old), addr, st->getAlign());
+            now->copyMetadata(*st);
+            st->eraseFromParent();
+        }
+        for (llvm::PHINode& phi : join->phis()) {
+            llvm::Value* sel = ir.CreateSelect(taken, phi.getIncomingValueForBlock(b), phi.getIncomingValueForBlock(p));
+            phi.setIncomingValueForBlock(p, sel);
+            phi.removeIncomingValue(b, false);
+        }
+        ir.CreateBr(join);
+        branch->eraseFromParent();
+        b->dropAllReferences();
+        b->eraseFromParent();
+        return true;
+    }
+
+    llvm::PreservedAnalyses run(llvm::Function& fn, llvm::FunctionAnalysisManager&) {
+        if (fn.hasOptNone()) return llvm::PreservedAnalyses::all();
+        bool changed = false;
+        for (bool again = true; again;) {
+            again = false;
+            for (llvm::BasicBlock& b : fn) {
+                if (convert(&b)) {
+                    changed = again = true;
+                    break;
+                }
+            }
+        }
+        return changed ? llvm::PreservedAnalyses::none() : llvm::PreservedAnalyses::all();
+    }
+};
+
+// The passes Edax adds to LLVM's pipeline (in every pipeline that optimizes, so the vectorizer
+// reports match the build).
+void register_edax_passes(llvm::PassBuilder& pb) {
+    // Spec 34 §2: a `T&` of a small frozen type is passed as its value (all Edax functions are
+    // internal, so every caller changes with it). LLVM runs this only at -O3.
+    pb.registerCGSCCOptimizerLateEPCallback([](llvm::CGSCCPassManager& cgpm, llvm::OptimizationLevel) {
+        cgpm.addPass(llvm::ArgumentPromotionPass(4));   // up to 4 scalars: a 16-byte vec4
+    });
+    pb.registerVectorizerStartEPCallback([](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) {
+        fpm.addPass(ConditionalStoreSelect());
+        fpm.addPass(llvm::InstCombinePass());
+    });
+}
+
 // The loop vectorizer's remarks: which loops it vectorized and why the others stayed scalar.
 class VectorizerRemarks : public llvm::DiagnosticHandler {
 public:
@@ -6730,6 +7472,7 @@ bool check_vectorized(llvm::Module& original, const sema::Program& program, cons
         pb.registerFunctionAnalyses(fam);
         pb.registerLoopAnalyses(lam);
         pb.crossRegisterProxies(lam, fam, cgam, mam);
+        register_edax_passes(pb);
         llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
         mpm.run(*mod, mam);
     }
@@ -6748,6 +7491,7 @@ bool check_vectorized(llvm::Module& original, const sema::Program& program, cons
             if (r.passed || !r.text.starts_with("loop not vectorized")) continue;
             missed = true;
             std::string reason = r.text.size() > 21 && r.text.starts_with("loop not vectorized: ") ? r.text.substr(21) : "";
+            if (!reason.empty()) reason[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(reason[0])));   // LLVM 20 capitalizes
             if (!reason.empty() && std::find(why.begin(), why.end(), reason) == why.end()) why.push_back(reason);
         }
         if (passed || !missed) continue;
@@ -6757,6 +7501,98 @@ bool check_vectorized(llvm::Module& original, const sema::Program& program, cons
                                      "not vectorized");
         for (const std::string& w : why) d.notes.push_back(Note{"the vectorizer: " + w, std::nullopt});
         d.notes.push_back(Note{"write it with vector types and std::simd::blocks, or remove what keeps it scalar", std::nullopt});
+    }
+    return ok;
+}
+
+// `@std::no_checks_left` (spec 34): optimizes a copy of the module as a release build would, with
+// the annotated functions kept out of line, and reports every panic path left in them: a bounds,
+// overflow or other check the optimizer could not prove away. Each note is the check's place.
+bool check_no_checks_left(llvm::Module& original, const sema::Program& program, DiagnosticEngine& diags) {
+    std::unique_ptr<llvm::Module> mod = llvm::CloneModule(original);
+    std::string triple_name = target_triple();
+    std::string lookup_error;
+    const llvm::Target* target = lookup_target(triple_name, lookup_error);
+    if (!target) return true;
+    std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(target, triple_name, llvm::TargetOptions(), llvm::CodeGenOptLevel::Aggressive));
+    set_target_triple(*mod, triple_name);
+    mod->setDataLayout(machine->createDataLayout());
+    std::map<std::string, Span> wanted;
+    for (const auto& [span, fn] : program.no_checks_left) {
+        wanted[fn]         = span;
+        wanted[fn + ".at"] = span;   // the copy direct calls use (caller's location as an argument)
+    }
+    for (llvm::Function& fn : *mod) {
+        if (!wanted.contains(fn.getName().str())) continue;
+        fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+        fn.addFnAttr(llvm::Attribute::NoInline);
+    }
+    {
+        llvm::LoopAnalysisManager     lam;
+        llvm::FunctionAnalysisManager fam;
+        llvm::CGSCCAnalysisManager    cgam;
+        llvm::ModuleAnalysisManager   mam;
+        llvm::PassBuilder             pb(machine.get());
+        pb.registerModuleAnalyses(mam);
+        pb.registerCGSCCAnalyses(cgam);
+        pb.registerFunctionAnalyses(fam);
+        pb.registerLoopAnalyses(lam);
+        pb.crossRegisterProxies(lam, fam, cgam, mam);
+        register_edax_passes(pb);
+        llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+        mpm.run(*mod, mam);
+    }
+    // A panic's first argument is its location: { file, line, column }.
+    auto where = [](llvm::Value* v) -> std::string {
+        auto* g = llvm::dyn_cast<llvm::GlobalVariable>(v->stripPointerCasts());
+        auto* c = g && g->hasInitializer() ? llvm::dyn_cast<llvm::ConstantStruct>(g->getInitializer()) : nullptr;
+        if (!c || c->getNumOperands() < 3) return "";
+        std::string file;
+        if (auto* fg = llvm::dyn_cast<llvm::GlobalVariable>(c->getOperand(0)->stripPointerCasts()); fg && fg->hasInitializer()) {
+            if (auto* data = llvm::dyn_cast<llvm::ConstantDataSequential>(fg->getInitializer()); data && data->isString()) {
+                file = data->getAsString().str();
+                while (!file.empty() && file.back() == '\0') file.pop_back();
+            }
+        }
+        auto* line = llvm::dyn_cast<llvm::ConstantInt>(c->getOperand(1));
+        auto* col  = llvm::dyn_cast<llvm::ConstantInt>(c->getOperand(2));
+        if (!line || !col) return file;
+        return std::format("{}:{}:{}", file, line->getZExtValue(), col->getZExtValue());
+    };
+    bool ok = true;
+    std::set<std::string> reported;
+    for (llvm::Function& fn : *mod) {
+        auto it = wanted.find(fn.getName().str());
+        if (it == wanted.end() || fn.isDeclaration()) continue;
+        std::vector<std::string> places;
+        for (llvm::BasicBlock& bb : fn) {
+            for (llvm::Instruction& in : bb) {
+                auto* call = llvm::dyn_cast<llvm::CallInst>(&in);
+                llvm::Function* callee = call ? call->getCalledFunction() : nullptr;
+                if (!callee || !callee->getName().starts_with("edax_panic") || call->arg_size() == 0) continue;
+                if (call->arg_size() > 1) {   // std::assume and std::unreachable are checks the program asked for
+                    auto* mg = llvm::dyn_cast<llvm::GlobalVariable>(call->getArgOperand(1)->stripPointerCasts());
+                    auto* md = mg && mg->hasInitializer() ? llvm::dyn_cast<llvm::ConstantDataSequential>(mg->getInitializer()) : nullptr;
+                    if (md && md->isString() && (md->getAsString().starts_with("assumption failed (std::assume)") ||
+                                                 md->getAsString().starts_with("reached code marked unreachable"))) {
+                        continue;
+                    }
+                }
+                std::string p = where(call->getArgOperand(0));
+                if (std::find(places.begin(), places.end(), p) == places.end()) places.push_back(p);
+            }
+        }
+        std::string key = std::format("{}:{}", it->second.file, it->second.begin);
+        if (places.empty() || reported.contains(key)) continue;
+        reported.insert(key);
+        ok = false;
+        Diagnostic& d = diags.report(DiagCode::E6004, it->second,
+                                     std::format("{} run-time check{} left in a '@std::no_checks_left' function", places.size(),
+                                                 places.size() == 1 ? " is" : "s are"),
+                                     "checks left");
+        for (const std::string& p : places) d.notes.push_back(Note{p.empty() ? "a check" : "a check at " + p, std::nullopt});
+        d.notes.push_back(Note{"state what the optimizer can't see (std::assume), iterate instead of indexing, or use the unchecked forms in unsafe code",
+                               std::nullopt});
     }
     return ok;
 }
@@ -6866,6 +7702,7 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
     std::unique_ptr<llvm::Module> mod = gen.run();
     if (!mod) return {};
     if (!program.must_vectorize_loops.empty() && !check_vectorized(*mod, program, sources, diags)) return {};
+    if (!program.no_checks_left.empty() && !check_no_checks_left(*mod, program, diags)) return {};
     std::string           printed;
     llvm::raw_string_ostream module_out(printed);
     mod->print(module_out, nullptr);
@@ -6908,6 +7745,124 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
     return text + "\n" + runtime_text;
 }
 
+namespace {
+// The location a panic or a site variant was given: "file:line:column", or "".
+std::string location_text(llvm::Value* v) {
+    auto* g = llvm::dyn_cast<llvm::GlobalVariable>(v->stripPointerCasts());
+    auto* c = g && g->hasInitializer() ? llvm::dyn_cast<llvm::ConstantStruct>(g->getInitializer()) : nullptr;
+    if (!c || c->getNumOperands() < 3) return "";
+    std::string file;
+    if (auto* fg = llvm::dyn_cast<llvm::GlobalVariable>(c->getOperand(0)->stripPointerCasts()); fg && fg->hasInitializer()) {
+        if (auto* data = llvm::dyn_cast<llvm::ConstantDataSequential>(fg->getInitializer()); data && data->isString()) {
+            file = data->getAsString().str();
+            while (!file.empty() && file.back() == '\0') file.pop_back();
+        }
+    }
+    auto* line = llvm::dyn_cast<llvm::ConstantInt>(c->getOperand(1));
+    auto* col  = llvm::dyn_cast<llvm::ConstantInt>(c->getOperand(2));
+    if (!line || !col || file.empty()) return "";
+    return std::format("{}:{}:{}", file, line->getZExtValue(), col->getZExtValue());
+}
+
+std::string message_text(llvm::CallInst* call) {
+    if (call->arg_size() < 2) return "";
+    auto* mg = llvm::dyn_cast<llvm::GlobalVariable>(call->getArgOperand(1)->stripPointerCasts());
+    auto* md = mg && mg->hasInitializer() ? llvm::dyn_cast<llvm::ConstantDataSequential>(mg->getInitializer()) : nullptr;
+    if (!md || !md->isString()) return "";
+    std::string text = md->getAsString().str();
+    if (call->arg_size() > 2) {
+        if (auto* n = llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(2)); n && n->getZExtValue() <= text.size()) text.resize(n->getZExtValue());
+    }
+    while (!text.empty() && text.back() == '\0') text.pop_back();
+    return text;
+}
+
+// Every check of the module by the location it reports: panics with a constant location, and
+// calls of functions with entry checks that take the caller's location (`.at` copies).
+std::map<std::string, std::set<std::string>> check_sites(llvm::Module& mod) {
+    std::map<std::string, std::set<std::string>> out;
+    for (llvm::Function& fn : mod) {
+        for (llvm::BasicBlock& bb : fn) {
+            for (llvm::Instruction& in : bb) {
+                auto* call = llvm::dyn_cast<llvm::CallInst>(&in);
+                llvm::Function* callee = call ? call->getCalledFunction() : nullptr;
+                if (!callee || call->arg_size() == 0) continue;
+                if (callee->getName().starts_with("edax_panic")) {
+                    std::string where = location_text(call->getArgOperand(0));
+                    if (!where.empty()) out[where].insert(message_text(call));
+                } else if (callee->getName().ends_with(".at") && callee->hasFnAttribute("edax-name")) {
+                    std::string where = location_text(call->getArgOperand(call->arg_size() - 1));
+                    if (!where.empty()) out[where].insert("the checks of " + callee->getFnAttribute("edax-name").getValueAsString().str());
+                }
+            }
+        }
+    }
+    return out;
+}
+} // namespace
+
+std::vector<CheckSite> explain_checks(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
+                                      const std::string& file, LlvmOptions options) {
+    initialize_targets();
+    options.debug_info = true;   // which functions are the file's
+    llvm::LLVMContext ctx;
+    Gen               gen(program, sources, diags, options, ctx);
+    std::unique_ptr<llvm::Module> mod = gen.run();
+    if (!mod) return {};
+    // The file's own functions are looked at on their own, for any arguments: they are not
+    // inlined into each other (what they call is, as in a build).
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string     wanted = fs::weakly_canonical(fs::path(file), ec).generic_string();
+    for (llvm::Function& fn : *mod) {
+        llvm::DISubprogram* sp = fn.getSubprogram();
+        if (!sp || fn.isDeclaration()) continue;
+        fs::path p = fs::path(sp->getDirectory().str()) / sp->getFilename().str();
+        if (fs::weakly_canonical(p, ec).generic_string() != wanted) continue;
+        fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+        fn.addFnAttr(llvm::Attribute::NoInline);
+        if (fn.getName() != "main") fn.setLinkage(llvm::GlobalValue::ExternalLinkage);   // callers unknown: no constants propagated in
+    }
+    std::map<std::string, std::set<std::string>> before = check_sites(*mod);
+    std::string triple_name = target_triple();
+    std::string lookup_error;
+    const llvm::Target* target = lookup_target(triple_name, lookup_error);
+    if (!target) return {};
+    std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(target, triple_name, llvm::TargetOptions(), llvm::CodeGenOptLevel::Aggressive));
+    set_target_triple(*mod, triple_name);
+    mod->setDataLayout(machine->createDataLayout());
+    {
+        llvm::LoopAnalysisManager     lam;
+        llvm::FunctionAnalysisManager fam;
+        llvm::CGSCCAnalysisManager    cgam;
+        llvm::ModuleAnalysisManager   mam;
+        llvm::PassBuilder             pb(machine.get());
+        pb.registerModuleAnalyses(mam);
+        pb.registerCGSCCAnalyses(cgam);
+        pb.registerFunctionAnalyses(fam);
+        pb.registerLoopAnalyses(lam);
+        pb.crossRegisterProxies(lam, fam, cgam, mam);
+        register_edax_passes(pb);
+        llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+        mpm.run(*mod, mam);
+    }
+    std::map<std::string, std::set<std::string>> after = check_sites(*mod);
+    std::vector<CheckSite> out;
+    for (const auto& [where, what] : before) {
+        CheckSite site;
+        site.where = where;
+        auto kept  = after.find(where);
+        site.kept  = kept != after.end();
+        for (const std::string& w : site.kept ? kept->second : what) {
+            if (!w.empty()) site.what.push_back(w);
+        }
+        out.push_back(std::move(site));
+    }
+    return out;
+}
+
+std::string llvm_version() { return LLVM_VERSION_STRING; }
+
 bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
                       const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
     initialize_targets();
@@ -6935,24 +7890,87 @@ bool build_executable(std::string_view ir, const std::string& out_path, const st
         return false;
     }
     llvm::TargetOptions options;
-    bool optimize = codegen.optimization != "none";
+    // Per-function optimization (spec 34): `@std::optimize` and g.optimize_files mark functions
+    // with "edax-optimize". The module runs the pipeline of the highest level asked for; functions
+    // that asked for `none` (or, in an unoptimized build, didn't ask) are kept as written.
+    std::string level = codegen.optimization;
+    {
+        auto rank = [](const std::string& l) { return l == "basic" ? 1 : l == "size" ? 2 : l == "speed" ? 3 : 0; };
+        std::string highest = level;
+        bool        any     = false;
+        for (llvm::Function& fn : *mod) {
+            if (!fn.hasFnAttribute("edax-optimize")) continue;
+            any = true;
+            std::string l = fn.getFnAttribute("edax-optimize").getValueAsString().str();
+            if (rank(l) > rank(highest)) highest = l;
+        }
+        if (any) {
+            for (llvm::Function& fn : *mod) {
+                if (fn.isDeclaration()) continue;
+                std::string own = fn.hasFnAttribute("edax-optimize") ? fn.getFnAttribute("edax-optimize").getValueAsString().str() : level;
+                if (rank(own) == 0 && rank(highest) > 0) {
+                    fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+                    fn.addFnAttr(llvm::Attribute::OptimizeNone);
+                    fn.addFnAttr(llvm::Attribute::NoInline);
+                } else if (own == "size") {
+                    fn.addFnAttr(llvm::Attribute::OptimizeForSize);
+                }
+            }
+            level = highest;
+        }
+    }
+    bool optimize = level != "none";
+    bool asan     = codegen.sanitize == "address";
+    bool tsan     = codegen.sanitize == "thread";
+    if (asan || tsan) {   // the mode's sanitize() (spec 34): every Edax function is instrumented
+        for (llvm::Function& fn : *mod) {
+            if (fn.isDeclaration()) continue;
+            fn.addFnAttr(asan ? llvm::Attribute::SanitizeAddress : llvm::Attribute::SanitizeThread);
+        }
+    }
     std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(
-        target, triple_name, options, optimize ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::None));
+        target, triple_name, options,
+        !optimize ? llvm::CodeGenOptLevel::None : level == "basic" ? llvm::CodeGenOptLevel::Less : llvm::CodeGenOptLevel::Aggressive));
     set_target_triple(*mod, triple_name);
     mod->setDataLayout(machine->createDataLayout());
-    if (optimize) {   // the mode's optimization() (spec 24): LLVM's standard pipeline
+    if (optimize || asan || tsan) {   // the mode's optimization() (spec 24), plus sanitizer passes (spec 34)
         llvm::LoopAnalysisManager     lam;
         llvm::FunctionAnalysisManager fam;
         llvm::CGSCCAnalysisManager    cgam;
         llvm::ModuleAnalysisManager   mam;
-        llvm::PassBuilder             pb(machine.get());
+        // The standard instrumentations make the passes skip `optnone` functions (@std::optimize).
+        llvm::PassInstrumentationCallbacks pic;
+        llvm::StandardInstrumentations     si(ctx, false);
+        si.registerCallbacks(pic, &mam);
+        llvm::PassBuilder             pb(machine.get(), llvm::PipelineTuningOptions(), std::nullopt, &pic);
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
         pb.registerLoopAnalyses(lam);
         pb.crossRegisterProxies(lam, fam, cgam, mam);
-        llvm::OptimizationLevel level = codegen.optimization == "size" ? llvm::OptimizationLevel::Os : llvm::OptimizationLevel::O2;
-        llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(level);
+        // speed: O2 (O3 measured slower on bench/: it stops inlining std::string::push); basic: O1,
+        // the `development` mode; size: Os.
+        llvm::OptimizationLevel pipeline = level == "size"    ? llvm::OptimizationLevel::Os
+                                         : level == "basic"   ? llvm::OptimizationLevel::O1
+                                                              : llvm::OptimizationLevel::O2;
+        register_edax_passes(pb);
+        if (asan || tsan) {
+            auto add_sanitizer = [asan](llvm::ModulePassManager& mpm) {
+                if (asan) {
+                    mpm.addPass(llvm::AddressSanitizerPass(llvm::AddressSanitizerOptions{}));
+                } else {
+                    mpm.addPass(llvm::ModuleThreadSanitizerPass());
+                    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ThreadSanitizerPass()));
+                }
+            };
+#if LLVM_VERSION_MAJOR >= 20   // the callback also gets the LTO phase
+            pb.registerOptimizerLastEPCallback(
+                [add_sanitizer](llvm::ModulePassManager& mpm, llvm::OptimizationLevel, llvm::ThinOrFullLTOPhase) { add_sanitizer(mpm); });
+#else
+            pb.registerOptimizerLastEPCallback([add_sanitizer](llvm::ModulePassManager& mpm, llvm::OptimizationLevel) { add_sanitizer(mpm); });
+#endif
+        }
+        llvm::ModulePassManager mpm = optimize ? pb.buildPerModuleDefaultPipeline(pipeline) : pb.buildO0DefaultPipeline(llvm::OptimizationLevel::O0);
         mpm.run(*mod, mam);
     }
 
@@ -7074,6 +8092,8 @@ bool set_build_cpu(const std::string& level, std::string& error) {
     g_cpu_level = level;
     return true;
 }
+
+const std::string& build_cpu() { return g_cpu_level; }
 
 std::vector<std::string> cpu_levels() {
     llvm::Triple             t(target_triple());

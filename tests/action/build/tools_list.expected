@@ -6,5 +6,5 @@ targets:
   geo                  target of a dependency
   csrc                 C library
 modes:
-  debug, release, release_with_debug_info
+  debug, development, release, release_with_debug_info
 --- stderr

@@ -1,0 +1,16 @@
+import std;
+import math::sum;
+
+// Kept unoptimized whatever the mode: easy to step through in a debugger.
+@std::optimize{ .level = std::build::optimization::none }
+u64 slow_path(u64 x) {
+    return x + 1;
+}
+
+void main() {
+    std::println(f"mix: {math::mix(1000)}");
+    std::println(f"slow path: {slow_path(41)}");
+    std::println(f"debug-like: {std::build::mode_is(std::build::mode::debug)}");
+    std::println(f"development: {std::build::mode_is(std::build::mode::development)}");
+    std::println(f"optimization: {std::build::current_mode().optimization() == std::build::optimization::basic}");
+}

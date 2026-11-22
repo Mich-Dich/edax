@@ -1,0 +1,38 @@
+// RUN: edaxc run %s
+// `if (v is p)` and `while (v is p)` (spec 34): one match arm, with an optional `&&` guard.
+import std;
+
+enum shape : u8 {
+    circle(f32),
+    square(f32),
+    empty,
+}
+
+std::option<u32> find(std::darray<u32>& xs, u32 wanted) {
+    for (usize i : 0..xs.len()) {
+        if (xs[i] == wanted) { return std::some(cast::truncate<u32>(i)); }
+    }
+    return std::none;
+}
+
+void main() {
+    std::darray<u32> xs = std::darray<u32>::from([5u32, 7, 9]);
+    if (find(xs, 7) is std::some(at)) {
+        std::println(f"found at {at}");
+    } else {
+        std::println("not found");
+    }
+    if (find(xs, 3) is std::some(at)) {
+        std::println(f"found at {at}");
+    } else if (find(xs, 9) is std::some(at) && at > 1) {
+        std::println(f"9 found late, at {at}");
+    }
+    shape s = shape::circle(2.0);
+    u32 kind = if (s is shape::circle(r)) { 1 } else { 0 };
+    std::println(f"kind {kind}");
+    mut usize i = 0;
+    while (find(xs, xs[i]) is std::some(at) && at < 2) {
+        std::println(f"step {at}");
+        i += 1;
+    }
+}

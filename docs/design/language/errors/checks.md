@@ -85,6 +85,9 @@ Entry-check rules:
 - Virtual, `override` and `abstract` methods may only have `run_time` entry checks, because the target of a dynamic call isn't known at compile time.
 - **Order:** entry checks run before the compiler checks the call's constraints or instantiates the body. If a check fails, the compiler's own errors for that call (unsatisfied constraint, errors inside the instantiated body) are **suppressed**, so the author's message is the only one.
 
+### Every check is evaluated
+A `compile_time check` either passes, fails, or is a compile error saying why it can't be evaluated (a run-time value, a function or operator that isn't `compile_time`). It never passes without being evaluated. Inside a template, the check waits for the instance: it is evaluated once the template arguments are known.
+
 ### Compile-time values
 These count as compile-time values: literals, `compile_time` constants, template value parameters, results of `compile_time` functions, and `T{...}` or implicit conversions built only from those. An ordinary immutable variable (`u32 x = 5;`) is a run-time value.
 

@@ -6,7 +6,6 @@ error[E6003]: this loop does not become vector code, but its function is '@std::
    |
 16 |     for (usize i : 0..values.len()) {
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not vectorized
-   = note: the vectorizer: control flow cannot be substituted for a select
    = note: the vectorizer: value that could not be identified as reduction is used outside the loop
    = note: write it with vector types and std::simd::blocks, or remove what keeps it scalar
 

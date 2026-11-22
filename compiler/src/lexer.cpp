@@ -38,7 +38,7 @@ bool is_integer_type_name(std::string_view s) {
     return false;
 }
 
-bool is_float_type_name(std::string_view s) { return s == "f32" || s == "f64"; }
+bool is_float_type_name(std::string_view s) { return s == "f16" || s == "f32" || s == "f64"; }
 
 struct Punct {
     std::string_view spelling;
@@ -126,7 +126,19 @@ bool Lexer::skip_trivia(Token& doc_comment) {
             ++pos_;
         } else if (c == '/' && peek(1) == '/') {
             std::size_t begin = pos_;
-            bool is_doc = peek(2) == '/' && peek(3) != '/';
+            // A `//` comment on its own line describes the declaration below it (Lexical structure,
+            // "Comments"): it becomes a doc_comment token. Comments after code on the same line,
+            // `///...` comments and comments followed by a blank line stay ordinary comments.
+            bool own_line = true;
+            for (std::size_t i = begin; i > 0; --i) {
+                char before = text_[i - 1];
+                if (before == '\n') break;
+                if (before != ' ' && before != '\t' && before != '\r') {
+                    own_line = false;
+                    break;
+                }
+            }
+            bool is_doc = own_line && peek(2) != '/';
             while (!at_end() && peek() != '\n') {
                 if (static_cast<unsigned char>(peek()) >= 0x80) {
                     check_utf8_at_cursor();
@@ -134,9 +146,14 @@ bool Lexer::skip_trivia(Token& doc_comment) {
                     ++pos_;
                 }
             }
+            if (is_doc) {   // not when a blank line separates it from what follows
+                std::size_t k = pos_ + 1;
+                while (k < text_.size() && (text_[k] == ' ' || text_[k] == '\t' || text_[k] == '\r')) ++k;
+                if (k < text_.size() && text_[k] == '\n') is_doc = false;
+            }
             if (is_doc) {
                 doc_comment = make(TokenKind::doc_comment, begin);
-                std::string_view body = doc_comment.text.substr(3);
+                std::string_view body = doc_comment.text.substr(2);
                 if (body.ends_with('\r')) {
                     body.remove_suffix(1);
                 }
@@ -325,7 +342,7 @@ Token Lexer::lex_number(std::size_t begin) {
             if (!is_float_type_name(suffix)) {
                 diags_.report(DiagCode::E1011, suffix_span,
                               std::format("invalid suffix '{}' on float literal", suffix),
-                              "expected 'f32' or 'f64'");
+                              "expected 'f16', 'f32' or 'f64'");
             }
         } else if (is_float_type_name(suffix)) {
             std::string_view digits = text_.substr(begin, suffix_begin - begin);

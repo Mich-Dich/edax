@@ -8,11 +8,13 @@ A **build mode** is a named set of settings that applies to a whole build: optim
 | Mode (`std::build::mode::...`) | Base class | Optimization | Debug info | Overflow, shifts, `bit(n)` | Bounds | `run_time` checks |
 |---|---|---|---|---|---|---|
 | `debug` | - | none | full | panic | panic | ungated + `debug` |
+| `development` | `debug` | basic | full | panic | panic | ungated + `debug` |
 | `release` | - | speed | none | panic | panic | ungated + `release` |
 | `release_with_debug_info` | `release` | speed | full | panic | panic | ungated + `release` |
 
 ```
 edaxc build                                 # debug (the default)
+edaxc build --mode=development              # debug with light optimization: playable, still debuggable
 edaxc build --mode=release
 edaxc build --mode=profile                  # a mode defined in build.ed
 ```
@@ -33,6 +35,7 @@ interface settings {
     compile_time std::build::panic_behavior  panic();
     compile_time bool                        link_time_optimization();
     compile_time bool                        allow_undefined_behavior();
+    compile_time std::build::float_determinism float_determinism();
 }
 
 open class debug : settings { ... }            // every method returns the debug value
@@ -49,7 +52,7 @@ public:
 
 | Setting (method) | Values | `debug` | `release` |
 |---|---|---|---|
-| `optimization()` | `none`, `size`, `speed` | `none` | `speed` |
+| `optimization()` | `none`, `basic`, `size`, `speed` | `none` | `speed` |
 | `debug_info()` | `none`, `line_tables`, `full` | `full` | `none` |
 | `overflow()` | `panic`, `wrap` | `panic` | `panic` |
 | `shifts()` | `panic`, `mask` (count `& (width - 1)`) | `panic` | `panic` |
@@ -81,7 +84,16 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
 `+`, `-`, `*`, `a[i]`, `<<` and `bit(n)` follow the mode.
 
 ### How edaxc uses the settings
-- `optimization()`: LLVM's standard pipeline at `-O2` (`speed`) or `-Os` (`size`); none for `none`.
+- `optimization()`: LLVM's standard pipeline at `-O2` (`speed`; `-O3` was measured slower on `bench/`), `-O1` (`basic`) or `-Os` (`size`); none for `none`. Files and functions can have their own level (`g.optimize_files`, `@std::optimize`, see [Performance](../language/performance/performance.md)): the build runs the pipeline of the highest level asked for, and functions at `none` are compiled as written.
+- `float_determinism()`: `relaxed` (the default) or `strict`; `strict` makes every `@std::float_mode` an error, so float results are identical on every machine.
+- `sanitize()`: `none` (the default), `address` or `thread`. Every Edax function is instrumented (AddressSanitizer: out-of-bounds and use-after-free in `unsafe` code; ThreadSanitizer: data races), the program is linked with the sanitizer runtime, and the C and C++ targets of the build are compiled with the same `-fsanitize=`. Safe Edax code can't have these bugs; the setting finds them in `unsafe` code and in C/C++ dependencies.
+  ```edax
+  class asan : std::build::mode::debug {
+  public:
+      compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::address; }
+  }
+  ```
+- `profile_guided()`: `std::none`, or the path of a profile recorded with `edaxc build --profile-generate`; the profile is a recorded input of the build.
 - `debug_info()`: `line_tables` gives DWARF 5 line tables (statement by statement) for every Edax function, including the standard library's, enough for a debugger's breakpoints, stepping and backtraces. `full` also describes locals, parameters, `this`, loop variables and `match` bindings with their types, so that a debugger shows variables:
   - Built-in types are typedefs with their Edax names (`u32`, `f64`) of the matching C type; structs and classes are described from the backend's layout (base class first, then the vtable pointer or fields); simple enums are DWARF enumerations; an enum with payloads is `struct { tag; union { <alternative> ... } payload; }`.
   - Namespaces are DWARF namespaces (`std::darray<u32>`, `geometry::point`). A function is named by its full path, `namespace::type::name` (`std::darray<u32>::push`), and that is also its DWARF linkage name, so debuggers show it as written.

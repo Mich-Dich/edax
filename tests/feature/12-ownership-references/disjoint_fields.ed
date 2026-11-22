@@ -1,0 +1,23 @@
+// feature 12/34: different fields of one value are different places; a call may borrow one
+// mutably and another immutably. Elements of a container are one place.
+import std;
+
+struct world {
+    std::darray<f32> positions;
+    std::darray<f32> velocities;
+}
+
+void integrate(mut std::darray<f32>& p, std::darray<f32>& v) { }
+
+void step(mut world& w) {
+    integrate(mut w.positions, w.velocities);
+    w.positions.push(w.velocities[0]);
+    integrate(mut w.positions, w.positions);     //~ error[E5020]: 'w.positions' is passed as a mutable reference
+    w.positions.push(w.positions[0]);            //~ error[E5020]: 'w.positions'
+}
+
+void whole(mut world& w, world& other) { }
+
+void outer(mut world& w) {
+    whole(mut w, w);                             //~ error[E5020]: 'w' is passed as a mutable reference
+}

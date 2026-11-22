@@ -323,6 +323,7 @@ namespace std::windowing::x11 {
     compile_time i32 glx_context_profile_mask     = 0x9126;
     compile_time i32 glx_context_core_profile_bit          = 0x1;
     compile_time i32 glx_context_compatibility_profile_bit = 0x2;
+    compile_time i32 glx_context_es2_profile_bit           = 0x4;   // GLX_EXT_create_context_es2_profile
     compile_time i32 glx_context_debug_bit                 = 0x1;
     compile_time i32 glx_context_forward_compatible_bit    = 0x2;
 

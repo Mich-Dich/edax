@@ -71,8 +71,12 @@ namespace std::windowing {
         library_missing,
         // OpenGL isn't available, or no framebuffer format fits the request.
         opengl_unavailable,
-        // The driver can't make a context of that OpenGL version and profile.
+        // The driver can't make a context of that OpenGL version and profile, or the Vulkan loader
+        // doesn't have that Vulkan version.
         version_unavailable,
+        // The API asked for doesn't fit the kind of window: Vulkan for an OpenGL window, OpenGL
+        // for a Vulkan window.
+        wrong_api,
         // sharing::join with a group whose OpenGL config differs from the window's.
         share_incompatible,
         // The Vulkan loader or its window-system extensions aren't available.
@@ -85,15 +89,6 @@ namespace std::windowing {
     enum platform : u8 {
         x11,
         // wayland, win32, cocoa: later
-    }
-
-    // The graphics APIs a window can be made for. A window is made for one of them, and its type
-    // says which: std::windowing::window (none), gl_window (opengl), vulkan_window (vulkan).
-    enum graphics_api : u8 {
-        none,
-        opengl,
-        vulkan,
-        // metal: later, as metal_window
     }
 
     // ---- keys, buttons, modifiers ----------------------------------------------------------------

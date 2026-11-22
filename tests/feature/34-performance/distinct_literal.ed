@@ -1,0 +1,6 @@
+// feature 34: a distinct type is built with cast, not with a struct literal.
+distinct type meters = f32;
+
+void f() {
+    meters c = meters{ };                 //~ error[E3035]: is a distinct type
+}

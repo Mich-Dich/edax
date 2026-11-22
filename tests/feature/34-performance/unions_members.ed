@@ -1,0 +1,12 @@
+// feature 34: union members are plain data without defaults.
+import std;
+
+union bad_member {
+    u32 word;
+    std::string text;              //~ error[E5001]: not a copy type
+}
+
+union bad_default {
+    u32 word = 1;                  //~ error[E5001]: has a default
+    f32 number;
+}

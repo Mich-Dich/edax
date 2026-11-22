@@ -1,0 +1,44 @@
+// RUN: edaxc run %s
+// Associated types (spec 34): C::element in a template, for a struct and a template struct.
+import std;
+
+interface source {
+    type element;
+    std::option<element> next() mut;
+}
+
+struct counter : source {
+    type element = u32;
+    u32 at = 0;
+    u32 end;
+    std::option<u32> next() mut override {
+        if (this.at >= this.end) { return std::none; }
+        this.at += 1;
+        return std::some(this.at);
+    }
+}
+
+template<type T>
+struct repeat : source {
+    type element = T;
+    T value;
+    u32 left;
+    std::option<T> next() mut override {
+        if (this.left == 0) { return std::none; }
+        this.left -= 1;
+        return std::some(this.value);
+    }
+}
+
+template<type C : source>
+C::element last(mut C& items, C::element fallback) {
+    mut C::element out = fallback;
+    while (items.next() is std::some(v)) { out = v; }
+    return out;
+}
+
+void main() {
+    mut counter c = counter{ .end = 5 };
+    mut repeat<f64> r = repeat<f64>{ .value = 2.5, .left = 3 };
+    std::println(f"{last(mut c, 0)} {last(mut r, 0.0)} {std::size_of<repeat<f64>::element>()}");
+}

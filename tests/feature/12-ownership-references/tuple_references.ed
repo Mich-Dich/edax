@@ -1,0 +1,27 @@
+// feature 34: a method returns a tuple of references into distinct fields of `this`.
+import std;
+
+class world {
+public:
+    static world make() { return world{ .bodies = default, .contacts = default }; }
+    (mut std::darray<u32>&, std::darray<u32>&) both() mut {
+        return (mut this.bodies, this.contacts);
+    }
+    (mut std::darray<u32>&, std::darray<u32>&) same() mut {
+        return (mut this.bodies, this.bodies);          //~ error[E5020]: must be distinct fields
+    }
+    (mut std::darray<u32>&, std::darray<u32>&) dangling() mut {
+        std::darray<u32> tmp = default;
+        return (mut this.bodies, tmp);                  //~ error[E5013]: local 'tmp'
+    }
+private:
+    std::darray<u32> bodies;
+    std::darray<u32> contacts;
+}
+
+void use() {
+    mut world w = world::make();
+    (mut std::darray<u32>& bodies, std::darray<u32>& contacts) = w.both();
+    (mut std::darray<u32>& again, std::darray<u32>& other) = w.both();   //~ error[E5023]: already borrowed mutably
+    bodies.push(1);
+}

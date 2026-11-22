@@ -8,4 +8,4 @@
 u32 main() {
     return 0; // trailing comment
 }
-/// four slashes is an ordinary comment
+//// four slashes is an ordinary comment

@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=tests/feature/34-performance/implement_project tests/feature/34-performance/implement_project/main.ed
+// `implement I for T` (spec 34): geometry's interface for math's vec3, written in geometry; static
+// (template constraint) and dynamic (interface reference) use.

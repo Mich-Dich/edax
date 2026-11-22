@@ -1,0 +1,19 @@
+// feature 34: std::bit_cast is safe between plain-bit types of the same size.
+import std;
+
+struct rgba { u8 r; u8 g; u8 b; u8 a; }
+struct padded { u8 a; u32 b; }
+struct flags { bool on; u8 a; u8 b; u8 c; }
+
+compile_time u32 one = std::bit_cast<u32>(1.0f32);
+compile_time check (one == 0x3f800000) else "the bits of 1.0";
+compile_time check (std::bit_cast<f64>(std::bit_cast<u64>(2.5f64)) == 2.5) else "round trip";
+
+void f(u32 x, padded p, flags g) {
+    rgba     c = std::bit_cast<rgba>(x);
+    i32x4    v = std::bit_cast<i32x4>(f32x4::splat(1.0));
+    u64      a = std::bit_cast<u64>(x);              //~ error[E4010]: different sizes
+    u64      b = std::bit_cast<u64>(p);              //~ error[E4010]: has padding
+    u32      d = std::bit_cast<u32>(g);              //~ error[E4010]: a bool has invalid bit patterns
+    char     e = std::bit_cast<char>(x);             //~ error[E4010]: a char has invalid bit patterns
+}

@@ -1,0 +1,25 @@
+// feature 34: std::addable<R> and friends are implemented by writing the operator.
+import std;
+
+struct vec2 {
+    f32 x;
+    f32 y;
+    vec2 operator+(vec2& o) { return vec2{ .x = this.x + o.x, .y = this.y + o.y }; }
+}
+
+struct tag { u32 id; }
+
+template<type V : std::addable<V>>
+V twice(V v) { return v + v; }
+
+template<type V : std::negatable>
+V flip(V v) { return -v; }
+
+void f() {
+    vec2 a = twice(vec2{ .x = 1.0, .y = 2.0 });
+    f64 b = twice(1.5f64);
+    i32 c = flip(3i32);
+    tag d = twice(tag{ .id = 1 });     //~ error[E4161]: has no 'operator+'
+    bool e = twice(true);              //~ error[E4161]: has no 'operator+'
+    u32 g = flip(3u32);                //~ error[E4161]: has no unary 'operator-'
+}

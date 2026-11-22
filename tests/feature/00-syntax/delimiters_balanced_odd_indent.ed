@@ -1,0 +1,7 @@
+// Balanced delimiters are never second-guessed, however they are indented.
+u32 f(u32 x) {
+    if (x > 3) {
+        return 1;
+  }
+        return 2;
+}

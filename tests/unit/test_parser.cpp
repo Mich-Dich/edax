@@ -247,14 +247,14 @@ TEST_CASE("parser: one error per broken statement, no cascades") {
 }
 
 TEST_CASE("parser: a missing ';' at line end does not swallow the next line") {
-    CHECK_EQ(body_codes("u32 a = 1\nu32 b = (2;"), std::string("E2001 E2001"));
+    CHECK_EQ(body_codes("u32 a = 1\nu32 b = (2;"), std::string("E2016 E2001"));   // delimiters are checked first
 }
 
-TEST_CASE("parser: recovers at the next declaration") {
+TEST_CASE("parser: an unclosed '(' before a block is closed there, and the rest parses") {
     Parsed p("void f( { }\nvoid g() { }\n");
-    CHECK_EQ(p.codes(), std::string("E2003"));
-    CHECK_EQ(p.file.decls.size(), 1u);
-    CHECK_EQ(p.file.decls[0]->name, std::string("g"));
+    CHECK_EQ(p.codes(), std::string("E2016"));
+    REQUIRE_EQ(p.file.decls.size(), 2u);
+    CHECK_EQ(p.file.decls[1]->name, std::string("g"));
 }
 
 TEST_CASE("parser: unclosed braces point at the opener") {

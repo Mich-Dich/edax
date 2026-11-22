@@ -1,6 +1,6 @@
 // RUN: edaxc build -o %t/must_vectorize %s
 // @std::simd::must_vectorize: the loop of scale() becomes vector code; the loop of chain() can't
-// (an early exit and a dependency between iterations), so the build fails with the reasons.
+// (a dependency between iterations), so the build fails with the reasons.
 import std;
 
 @std::simd::must_vectorize
@@ -14,8 +14,7 @@ void scale(std::span<mut f32> values, f32 factor) {
 u64 chain(std::span<u64> values) {
     mut u64 x = 1;
     for (usize i : 0..values.len()) {
-        x = x * 31 + values[i];
-        if (x == 7) { std::println("seven"); }
+        x = x *% 31 +% values[i];
     }
     return x;
 }

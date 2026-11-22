@@ -1,0 +1,28 @@
+// RUN: edaxc build --mode=release -o %t/vectorize_owned_aliasing %s
+// Spec 34 §1: the elements of two `mut std::darray<f32>&` parameters never overlap, so the loop
+// becomes vector code without run-time overlap checks, and the stores inside the `if` (to
+// elements already written in the same iteration) become selects, so no masked stores are needed.
+import std;
+
+@std::simd::must_vectorize
+@std::no_checks_left
+void bounce(mut std::darray<f32>& py, mut std::darray<f32>& vy, f32 dt) {
+    usize n = py.len();
+    std::assume(vy.len() == n);
+    for (usize i : 0..n) {
+        vy[i] -= 9.81 * dt;
+        py[i] += vy[i] * dt;
+        if (py[i] < 0.0) {
+            py[i] = -py[i];
+            vy[i] = -vy[i] * 0.8;
+        }
+    }
+}
+
+i32 main() {
+    mut std::darray<f32> py = std::darray<f32>::from([1.0, 0.0, 2.0]);
+    mut std::darray<f32> vy = std::darray<f32>::from([0.0, -1.0, 0.0]);
+    bounce(mut py, mut vy, 0.1);
+    std::println(f"{py[1]}");
+    return 0;
+}

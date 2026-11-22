@@ -1,51 +1,35 @@
-// windowing: several windows with std::windowing, organized like a small engine.
+// windowing: several windows with std::windowing, OpenGL and Vulkan.
 //
-//   edaxc run --root=example windowing [project-dir]      (from the repository root)
+//   edaxc run --root=example windowing          (from the repository root)
 //
-// main sets up the core systems (logging), makes the application from a project directory (where
-// `config/` is: the window's attributes and the key bindings), pushes the layers and runs it:
+// The program has three parts:
 //
-//   engine/      the engine: application (the loop), layer (the layer stack and what layers see),
-//                renderer (the OpenGL share group, GL functions, the asset loader), settings (the
-//                window attributes in config/app_settings.cfg), timing (frame stats, fps cap),
-//                gl and vk (OpenGL functions and a Vulkan window)
-//   game/        the program on top: game_layer (the world, movement, key bindings), tools_layer
-//                (inspector, sandbox and Vulkan windows), debug_overlay (an overlay layer), actions
-//                (the action enums, rebinding, saving bindings)
+//   main.ed           the entry point: starts the log, makes the application, runs it
+//   application       the program: its windows, their input and what they draw (application.edh)
+//   std::windowing    the windows themselves, and std::graphics for OpenGL's and Vulkan's functions
 //
-// Keys: WASD (arrows after Tab) move, right mouse button looks, P pauses, F2 rebinds pause, Ctrl+S
-// saves the bindings, F1 opens the debug overlay, F11 fullscreen, Ctrl+N an inspector,
-// Ctrl+Shift+N the sandbox, Ctrl+K the Vulkan window, Esc quits.
+// Keys (main window): W A S D or the arrows move the box, the right mouse button held moves it with
+// the mouse (the cursor is captured), the wheel resizes it, P pauses, F11 fullscreen, Ctrl+N an
+// inspector, Ctrl+Shift+N the OpenGL 2.1 sandbox, Ctrl+K the Vulkan window, Esc quits (in an
+// inspector: closes it).
 
 import std;
-import windowing::engine::application;
-import windowing::engine::layer;
-import windowing::engine::settings;
-import windowing::game::debug_overlay;
-import windowing::game::game_layer;
-import windowing::game::tools_layer;
+import windowing::application;
 
 @std::log::level_override{ .level = std::log::level::debug };
 
-std::exit_code main(std::span<std::str> args) {
-
-    // Core systems first: the log, before anything can report.
+std::exit_code main() {
     std::thread::set_current_name("main");
     mut std::log::session logs = std::log::start(std::log::options{});
     _ = logs.add(std::log::console::make(), std::log::sink_options{ .pattern = std::log::patterns::detailed });
 
-    mut engine::application app = match (engine::application::make(project.clone(), engine::window_attributes{
-        .title = std::string::from("Edax windowing demo"),
-    })) {
+    mut demo::application app = match (demo::application::make()) {
         std::ok(a)    => move a,
         std::error(e) => {
             std::log::fatal(f"windowing: {e}");
             return std::exit_code::failure;
         },
     };
-    app.push_layer(std::unique_ptr<game::game_layer>::make(game::game_layer::make()));
-    app.push_layer(std::unique_ptr<game::tools_layer>::make(game::tools_layer::make()));
-    app.push_overlay(std::unique_ptr<game::debug_overlay>::make(game::debug_overlay{}));
     app.run();
     return std::exit_code::success;
 }

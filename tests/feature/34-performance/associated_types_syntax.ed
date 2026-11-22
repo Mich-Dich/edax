@@ -1,0 +1,5 @@
+// feature 34: outside an interface an associated type needs its type.
+struct plain {
+    type nothing;                  //~ error[E2001]: needs its type
+    type unit = f32;
+}

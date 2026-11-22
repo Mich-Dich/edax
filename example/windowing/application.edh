@@ -1,0 +1,48 @@
+// windowing/application: the program on top of std::windowing.
+//
+// The application owns the window system and every window, reacts to their input and draws them.
+// The windows show what std::windowing can do:
+//
+//   main window   OpenGL Core 3.3, redrawn every frame: a box moved with the keyboard and mouse
+//   inspectors    tool windows of the main window (Ctrl+N), drawn only when something changed
+//   sandbox       OpenGL Compatibility 2.1 in a share group of its own (Ctrl+Shift+N)
+//   Vulkan        a Vulkan 1.3 window: instance, surface, a device that presents to it (Ctrl+K)
+//
+// The graphics APIs are std::graphics::api values: a name and a version. The same value makes the
+// window and picks the API's functions (std::graphics::opengl::functions<A>,
+// std::graphics::vulkan::functions<A>), which edaxc makes from the Khronos registries.
+
+import std;
+
+namespace demo {
+    namespace wnd = std::windowing;
+
+    // The three graphics APIs of the program.
+    compile_time std::graphics::api opengl = std::graphics::api{
+        .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+    compile_time std::graphics::api opengl_legacy = std::graphics::api{
+        .name = std::graphics::api_name::opengl_compatibility, .version = std::version{ .major = 2, .minor = 1 } };
+    compile_time std::graphics::api vulkan = std::graphics::api{
+        .name = std::graphics::api_name::vulkan, .version = std::version{ .major = 1, .minor = 3 } };
+
+    // What the keys do. The annotations are the default keys: std::windowing::bindings reads them,
+    // and two actions on the same key would be a compile error.
+    @std::derive::formattable
+    enum action : u8 {
+        @wnd::default_key{ .key = wnd::key::escape }    quit,
+        @wnd::default_key{ .key = wnd::key::p }         pause,
+        @wnd::default_key{ .key = wnd::key::f11 }       fullscreen,
+        @wnd::default_key{ .key = wnd::key::n, .modifiers = wnd::modifiers{ .control = true } }                 open_inspector,
+        @wnd::default_key{ .key = wnd::key::n, .modifiers = wnd::modifiers{ .control = true, .shift = true } }  toggle_sandbox,
+        @wnd::default_key{ .key = wnd::key::k, .modifiers = wnd::modifiers{ .control = true } }                 toggle_vulkan,
+    }
+
+    class application {
+    public:
+        // Connects to the window system, makes the OpenGL share group and the main window.
+        static std::result<application, std::string> make();
+
+        // Until the main window closes, or Esc: poll, react, draw.
+        void run() mut;
+    }
+}

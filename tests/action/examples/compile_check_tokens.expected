@@ -1,5 +1,7 @@
 exit: 0
 --- stdout
+1:1     doc_comment             // RUN: edaxc check %s  value=" RUN: edaxc check %s"
+2:1     doc_comment             // The first example program (milestone 1-6): also lexed and run by compile_check_tokens / compile_check_run.  value=" The first example program (milestone 1-6): also lexed and run by compile_check_tokens / compile_check_run."
 5:1     kw_u32                  u32
 5:5     identifier              main
 5:9     l_paren                 (

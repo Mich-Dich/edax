@@ -1,0 +1,39 @@
+// Template value parameters of struct and enum types: compared by value, readable at compile time,
+// deduced from argument types (spec 14).
+import std;
+
+enum family : u8 { small, large }
+
+struct shape {
+    family       kind = family::small;
+    std::version version = default;
+}
+
+template<shape S>
+class tool {
+public:
+    static tool<S> make() { return tool<S>{}; }
+    u32 major() { return S.version.major; }
+    void needs_two() {
+        compile_time check (S.version.at_least(std::version{ .major = 2 })) else f"needs 2.0, have {S.version.major}.{S.version.minor}";
+    }
+private:
+    u32 unused = 0;
+}
+
+template<shape S>
+u32 major_of(tool<S>& t) { return t.major(); }
+
+template<shape S>
+u32 twice(tool<S>& t) { return major_of(t) * 2; }
+
+compile_time shape one = shape{ .version = std::version{ .major = 1, .minor = 5 } };
+compile_time shape two = shape{ .kind = family::large, .version = std::version{ .major = 2 } };
+
+void f() {
+    tool<one> a = tool<one>::make();
+    tool<two> b = tool<two>::make();
+    u32 m = major_of(a) + twice(b);
+    b.needs_two();
+    a.needs_two();          //~ error[E4210]: needs 2.0, have 1.5
+}

@@ -1,0 +1,50 @@
+// Particles in structure-of-arrays form (spec 34): 200k particles, 1000 steps of gravity, drag and
+// a floor bounce, then a checksum. The kernel takes its columns as separate references, so the
+// compiler knows the columns don't overlap. std::assume states that the columns have the same
+// length (one fact per call), so the optimizer drops the per-access bounds checks (spec 34 §5).
+import std;
+
+@std::no_checks_left
+void step(mut std::darray<f32>& px, mut std::darray<f32>& py, mut std::darray<f32>& vx, mut std::darray<f32>& vy, f32 dt) {
+    usize n = px.len();
+    std::assume(py.len() == n);
+    std::assume(vx.len() == n);
+    std::assume(vy.len() == n);
+    for (usize i : 0..n) {
+        vy[i] -= 9.81 * dt;
+        vx[i] *= 0.999;
+        vy[i] *= 0.999;
+        px[i] += vx[i] * dt;
+        py[i] += vy[i] * dt;
+        if (py[i] < 0.0) {
+            py[i] = -py[i];
+            vy[i] = -vy[i] * 0.8;
+        }
+    }
+}
+
+i32 main() {
+    usize n = 200000;
+    mut std::darray<f32> px = default;
+    mut std::darray<f32> py = default;
+    mut std::darray<f32> vx = default;
+    mut std::darray<f32> vy = default;
+    mut u32 seed = 12345;
+    for (usize i : 0..n) {
+        seed = seed *% 1664525 +% 1013904223;
+        f32 r = cast::round<f32>(seed >> 8) / 16777216.0;
+        px.push(r * 100.0);
+        py.push(r * 50.0 + 1.0);
+        vx.push(r - 0.5);
+        vy.push(0.0);
+    }
+    for (u32 s : 0..1000) {
+        step(mut px, mut py, mut vx, mut vy, 0.01);
+    }
+    mut f64 sum = 0.0;
+    for (usize i : 0..n) {
+        sum += cast<f64>(px[i]) + cast<f64>(py[i]);
+    }
+    std::println(f"{cast::saturate<u64>(sum.round())}");
+    return 0;
+}

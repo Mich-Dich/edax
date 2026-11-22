@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/sanitize_project --out-dir=%t --mode=asan app
+// A mode with sanitize() address (spec 34): the program runs instrumented; four threads and a mutex.

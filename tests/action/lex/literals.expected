@@ -1,5 +1,7 @@
 exit: 0
 --- stdout
+1:1     doc_comment             // RUN: edaxc lex %s  value=" RUN: edaxc lex %s"
+2:1     doc_comment             // Token dump shows decoded literal values and suffixes.  value=" Token dump shows decoded literal values and suffixes."
 3:1     int_literal             0xFFu8  value=255  suffix=u8
 3:8     int_literal             1_000  value=1000
 3:14    float_literal           1.5e3f64  suffix=f64

@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+size 32, align 32
+stack aligned: true, boxed b = 2.0, 5 in a darray
+light: 16 bytes, range 10.0
+--- stderr

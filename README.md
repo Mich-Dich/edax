@@ -15,9 +15,12 @@ compile-time code, `compile_time` and `implicit` parameters, checks, reflection 
 (`f32x8`, masks, blocks). The standard library (`library/std`) is written in Edax on the `std::raw`
 intrinsics: `option`/`result`, `darray`, `array`, `span`, `bitset`, `hash_map`, `tree_map`,
 `string` and the `str` methods, smart pointers, threads, synchronization, channels, the thread pool
-and `std::parallel`, `std::time`, `std::log`, `file`, `filesystem`, `env`, `std::windowing`
+and `std::parallel`, `std::time`, `std::log`, `file`, `filesystem`, `env`, `std::version`, `std::windowing`
 (several windows with OpenGL share groups and Vulkan surfaces, input layers and key bindings, on
-X11; see `example/windowing/`), and `std::build` for build scripts.
+X11; see `example/windowing/`), `std::graphics` (a graphics API is a name and a version; OpenGL and
+Vulkan's functions, constants and structs are made by edaxc from the Khronos registries, with a
+compile error for a command the program's API version doesn't have), and `std::build` for build
+scripts.
 
 **Projects** are built by a `build.ed`: everything in it is declared in `namespace build` and
 every target imports it. It describes targets (Edax programs, libraries and tests, C/C++ libraries,

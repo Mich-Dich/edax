@@ -1,0 +1,24 @@
+// The Edax standard library: bodies of module std::graphics (see graphics.edh).
+
+namespace std::graphics {
+    struct api {
+        bool operator==(api& other) = default;
+
+        void format(mut std::formatter& out) {
+            out.write(std::format(f"{name_text(this.name)} {this.version}"));
+        }
+    }
+
+    compile_time run_time std::static_str name_text(api_name name) {
+        return match (name) {
+            api_name::opengl_core          => "OpenGL Core",
+            api_name::opengl_compatibility => "OpenGL Compatibility",
+            api_name::opengl_es            => "OpenGL ES",
+            api_name::vulkan               => "Vulkan",
+        };
+    }
+
+    compile_time run_time bool is_opengl(api_name name) {
+        return name != api_name::vulkan;
+    }
+}

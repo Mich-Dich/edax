@@ -22,10 +22,6 @@ compile_time u32 deep      = forever(0);
 compile_time u32 endless   = spin();
 compile_time u32 not_ct    = run_time_only(1);              //~ error[E4120]: 'run_time_only'
 
-struct holder {
-    type kind;                                              //~ error[E4202]: 'kind' is a field
-}
-
 void uses(bool flag, point p) {
     u32 v = point;                                          //~ error[E3022]: expected 'u32', found a type
     point q = point();                                      //~ error[E3022]: 'point' is a struct, not a function

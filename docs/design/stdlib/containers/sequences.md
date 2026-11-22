@@ -9,6 +9,8 @@
     elements, heapsort past a depth budget), so never worse than O(n log n). Not stable.
   - `sort_by(less) mut`: the same with a `bool(T&, T&)` callable.
   - `sort_by_key(order, key) mut`: **stable** merge sort (runs of 16, one buffer of `n` elements).
+  - Integers (`sort()`) and integer keys (`sort_by_key`) of at least 256 elements use an LSD radix
+    sort instead: one pass per byte that differs, stable, O(n) per byte, one buffer of `n` elements.
 - `std::array<T, N>` keeps its `N` elements inline (no heap); it is a copy type when `T` is. It
   has `len()`, `a[i]`, `get(i)` and `as_span()`, and `for` walks it. `default` gives every element
   its default.

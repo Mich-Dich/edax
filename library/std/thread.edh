@@ -111,11 +111,11 @@ namespace std::thread {
     // Starts a thread running `f` (spec 27). `f` and its result must be std::sendable. Returns a
     // `handle<R>` when `f` owns all its captures, a `scoped_handle<R>` when it borrows.
     template<type F : std::sendable>
-    deduce spawn(F f);
+    deduce spawn(mut F f);
 
     // The same with a name and a stack size.
     template<type F : std::sendable>
-    deduce spawn(options settings, F f);
+    deduce spawn(options settings, mut F f);
 
     // How many threads can run at the same time (the online CPUs).
     usize available_parallelism();

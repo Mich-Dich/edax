@@ -32,7 +32,7 @@ edaxc build --root=example --list                 # targets, modes and options
 | `concurrency` | threads that borrow or own, channels, a mutex and an atomic, the thread pool's parallel loop and deterministic reduction, a pool task | 27, 28 |
 | `annotations` | namespaces and an alias, `@std::derive::formattable/hashable/ordered`, annotations with checks, a table printer driven by `@column`, a command table from annotated methods (`std::meta::methods`, `m.call`), `std::meta::name_of`/`from_name` | 26, 29, 30 |
 | `build_info` | reading the build mode and settings from `build.ed`, mode-gated checks, a user mode | 24, 25 |
-| `windowing` | several windows with `std::windowing`, organized like a game engine (its own folder: `engine/` with an application, a layer stack, a renderer, settings saved in `config/`; `game/` with game, tools and debug-overlay layers): OpenGL windows in one share group and an independent one, a Vulkan window, key bindings changed at run time and saved, a texture made on a worker thread (needs an X server) | windowing, 26, 27, 29 |
+| `windowing` | several windows with `std::windowing` (its own folder: `main.ed` the entry point, `application` the program): OpenGL Core 3.3 windows in one share group, an independent OpenGL 2.1 window, a Vulkan 1.3 window, tool windows drawn on demand, key bindings, mouse capture; the APIs are `std::graphics::api` values and their functions come from `std::graphics` (needs an X server) | windowing, graphics, 14, 26, 29 |
 
 `compile_time_demo` prints a compiler warning on purpose: it shows a declared warning id
 (`edaxc explain legacy`, run in this directory). Several files contain lines that are commented out

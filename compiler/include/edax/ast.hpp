@@ -234,6 +234,9 @@ struct UnaryExpr : Expr {
     UnaryOp   op;
     ExprPtr   operand;
     SymbolRef op_symbol = nullptr;   // a user-defined `-` or `~` (spec 16), set by the checker
+    // Arithmetic of a distinct type (spec 34): the operand is cast to the underlying type, and
+    // the result is wrapped back into this type.
+    const types::Type* distinct_result = nullptr;
     UnaryExpr(Span s, UnaryOp o, ExprPtr e) : Expr(ExprKind::unary, s), op(o), operand(std::move(e)) {}
 };
 
@@ -242,6 +245,9 @@ struct BinaryExpr : Expr {
     ExprPtr   lhs;
     ExprPtr   rhs;
     SymbolRef op_symbol = nullptr;   // a user-defined operator (spec 16), set by the checker
+    // Arithmetic of a distinct type (spec 34): the operands are casts to the underlying type,
+    // the operation is the underlying type's, and the result is wrapped back into this type.
+    const types::Type* distinct_result = nullptr;
     BinaryExpr(Span s, TokenKind o, ExprPtr l, ExprPtr r)
         : Expr(ExprKind::binary, s), op(o), lhs(std::move(l)), rhs(std::move(r)) {}
 };
@@ -344,6 +350,7 @@ struct Capture {
     std::string name;
     Span        span;
     ExprPtr     init;   // CaptureKind::init only
+    bool        is_mut = false;     // `[mut x]`, `[mut move x]`, `[mut x = e]`: the lambda may change its own copy (spec 34)
     SymbolRef   symbol = nullptr;   // the local the capture introduces inside the lambda
     SymbolRef   captured = nullptr; // the enclosing function's local it captures (not for init-captures)
 };
@@ -494,6 +501,8 @@ struct AssignStmt : Stmt {
     ExprPtr   target;
     ExprPtr   value;
     SymbolRef op_symbol = nullptr;   // `a += b` with a user-defined `operator+=` or `operator+`
+    // `d += x` on a distinct type (spec 34): the target is changed as its underlying type.
+    const types::Type* distinct_underlying = nullptr;
     AssignStmt(Span s, TokenKind o, ExprPtr t, ExprPtr v)
         : Stmt(StmtKind::assign, s), op(o), target(std::move(t)), value(std::move(v)) {}
 };
@@ -656,6 +665,13 @@ struct GenerateBlock {
 struct TypeDecl : Decl {
     bool                 is_open = false;
     bool                 is_view = false;
+    // `distinct type meters = f32;` (spec 34): a struct with one hidden field `$value` of the
+    // underlying type; only `cast` converts between the two.
+    bool                 is_distinct = false;
+    bool                 is_union    = false;   // `union u { u32 a; f32 b; }` (spec 34): fields share memory
+    // `implement I for T { ... }` (spec 34): the type T; `bases` holds I. Not a type of its own:
+    // name resolution adds I and the methods to T.
+    TypePtr              implement_target;
     // `annotation(std::meta::target::field, ...) struct` (spec 29): the targets as written.
     bool                 is_annotation = false;
     std::vector<Path>    annotation_targets;

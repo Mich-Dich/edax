@@ -16,7 +16,8 @@ Three suites:
            A file without error annotations must compile (exit 0).
   action   End-to-end runs of edaxc: tests/action/**/*.ed whose first lines hold
            `// RUN: edaxc <args>` (%s = this file, relative to the repo root; %t = a fresh
-           temporary directory, spelled `%t` again in the recorded output).
+           temporary directory, spelled `%t` again in the recorded output). Durations in
+           the output (`12.4 s`, from the build checklist) are recorded as `<t>`.
            `edaxc run` tests record the compiled program's own output and exit status.
            stdout, stderr and the exit code are compared with the golden file
            <name>.expected next to the test. `--update` (re)writes the golden files.
@@ -54,6 +55,14 @@ SHORT_DIAG = re.compile(
 ANNOTATION = re.compile(
     r"//~(?P<dir>\^+|v+)?\s*(?P<sev>error|warning)(?:\[(?P<code>[EW]\d{4})\])?(?::\s*(?P<msg>.*?))?\s*$"
 )
+# Durations in build output ("  12.4 s") differ from run to run: recorded as " <t>".
+DURATION = re.compile(r"[ \t]+\d+\.\d+ s\b")
+
+
+def normalize_times(text: str) -> str:
+    return DURATION.sub(" <t>", text)
+
+
 RUN_LINE = re.compile(r"^\s*//\s*RUN:\s*(?P<cmd>.+?)\s*$")
 XFAIL_LINE = re.compile(r"^\s*//\s*XFAIL:\s*(?P<reason>.*)$", re.MULTILINE)
 STOP_AFTER_LINE = re.compile(r"^\s*//\s*STOP-AFTER:\s*(?P<phase>lex|parse|resolve|types|ownership)\b", re.MULTILINE)
@@ -271,7 +280,8 @@ def run_action(path: Path, edaxc: Path, update: bool) -> Result:
             return Result("action", name, "FAIL", ["RUN line must start with 'edaxc'"])
         args = argv[1:]
         proc = run([str(edaxc)] + args)
-        actual = format_golden(proc.returncode, proc.stdout.replace(tmp, "%t"), proc.stderr.replace(tmp, "%t"))
+        actual = format_golden(proc.returncode, normalize_times(proc.stdout.replace(tmp, "%t")),
+                               normalize_times(proc.stderr.replace(tmp, "%t")))
 
     golden = golden_path(path)
     if update:

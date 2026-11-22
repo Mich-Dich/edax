@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+found at 1
+9 found late, at 2
+kind 1
+step 0
+step 1
+--- stderr

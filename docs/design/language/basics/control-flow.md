@@ -43,6 +43,27 @@ while (file.has_more()) {
 ```
 `break` and `continue` work in `while` and `for`.
 
+### `is`: a pattern as a condition
+`if` and `while` conditions can test a value against a pattern and bind its parts (spec 34):
+```edax
+if (find(items, key) is std::some(index)) {
+    use(index);                                   // `index` exists in this branch only
+} else {
+    std::println("not found");
+}
+
+if (event is input::key_event{ .key = k, .state = input::key_state::pressed } && k == input::key::escape) {
+    quit();
+}
+
+while (queue.pop() is std::some(job)) {
+    job.run();
+}
+```
+- `value is pattern` is a `match` with one arm: the pattern syntax is the same (see `match` below). `&& condition` after the pattern is the arm's guard and may use the bound names.
+- `if (v is p) { a } else { b }` means `match (v) { p => { a }, _ => { b } }`, and `while (v is p) { body }` loops until the value no longer matches. `break` and `continue` work as in any `while`.
+- The names bound by the pattern exist only in the branch (or loop body). `is` is not an operator: it is written only as the whole condition of `if` and `while`, and not after `if compile_time`.
+
 ### `for`: range-based only
 ```edax
 for (employee& e : employees) { ... }         // immutable reference
@@ -95,3 +116,4 @@ std::darray<employee> list = match (load(path)) {
 - **One range syntax:** loops and patterns use the same `a..b` / `a..=b`; there is no library range type.
 - **`,` after every arm:** one rule instead of "comma unless the arm is a block".
 - **`else` after a call, only where it's meant:** checks that log or report a failure (`std::log::validate`, see [Logging: `std::log`](../../stdlib/logging/logging.md)) read as one statement, and the recovery is ordinary code in a block instead of an argument to a macro. Limiting it to `@std::check_result` functions keeps `if (!f())` the one way for every other call.
+- **`is` in conditions:** most `match` expressions on `std::option` and `std::result` have one interesting arm. `is` writes that arm without a second pattern system: it is the same pattern and the same guard as in `match`.

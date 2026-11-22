@@ -14,6 +14,8 @@
 
 #include <deque>
 #include <map>
+#include <unordered_map>
+#include <string_view>
 #include <memory>
 #include <optional>
 #include <set>
@@ -84,6 +86,11 @@ struct Symbol {
     // CPU level, the last one the build's own; a copy's level ("" for the build's own).
     std::vector<Symbol*>                        versions;
     std::string                                 cpu_level;
+    // `@std::optimize{ .level = ... }` (spec 34): the function's own optimization ("" = the mode's).
+    std::string                                 optimize_level;
+    // `@std::float_mode{ ... }` (spec 34): fast-math flags for the function's float operations,
+    // a set of `float_mode_*` bits; 0 = strict IEEE.
+    unsigned                                    float_mode     = 0;
     const Symbol*                               version_of     = nullptr;
     // A field of a template instance whose `= default` doesn't work for the argument
     // (`A alloc = default;` with an arena allocator): the instance has no default then.
@@ -178,11 +185,30 @@ struct Module {
 
     // The first item called `key` ("std::string"), or null.
     [[nodiscard]] Symbol* item(const std::string& key) const {
-        auto it = items.find(key);
-        return it == items.end() || it->second.empty() ? nullptr : it->second.front();
+        const std::vector<Symbol*>* found = find_item(key);
+        return !found || found->empty() ? nullptr : found->front();
     }
 
     std::deque<Symbol> storage;
+
+    // The modules whose items this module's header ([1]) and source ([0]) see, computed once by
+    // the resolver (imports don't change after loading): name lookup is the resolver's hot path.
+    mutable std::vector<Module*> visible_cache[2];
+
+    // `items` by hash (rebuilt when items were added): the keys share long prefixes
+    // (`std::graphics::opengl::...`), which makes the ordered map's comparisons the hot spot.
+    const std::vector<Symbol*>* find_item(const std::string& key) const {
+        if (item_index_size_ != items.size()) {
+            item_index_.clear();
+            item_index_.reserve(items.size());
+            for (const auto& [k, v] : items) item_index_.emplace(std::string_view(k), &v);
+            item_index_size_ = items.size();
+        }
+        auto it = item_index_.find(std::string_view(key));
+        return it == item_index_.end() ? nullptr : it->second;
+    }
+    mutable std::unordered_map<std::string_view, const std::vector<Symbol*>*> item_index_;
+    mutable std::size_t                                                       item_index_size_ = static_cast<std::size_t>(-1);
 
     Symbol* make(SymbolKind kind, std::string symbol_name, Span span) {
         Symbol& s = storage.emplace_back();
@@ -218,6 +244,13 @@ struct AnnotationCheck {
     std::size_t               param_index = 0;
     bool                      done = false;
 };
+
+// `@std::float_mode` bits (spec 34).
+inline constexpr unsigned float_mode_contract        = 1u << 0;   // a*b+c may become one fused instruction
+inline constexpr unsigned float_mode_reassociate     = 1u << 1;   // (a+b)+c may become a+(b+c): vectorized sums
+inline constexpr unsigned float_mode_finite_only     = 1u << 2;   // no NaN or infinity reaches the operations
+inline constexpr unsigned float_mode_no_signed_zeros = 1u << 3;   // -0.0 and 0.0 may be treated alike
+inline constexpr unsigned float_mode_reciprocal      = 1u << 4;   // a/b may become a*(1/b)
 
 // The use of the annotation `key` ("std::deprecated") in `uses`, or null.
 inline const ast::AnnotationUse* find_annotation(const std::vector<ast::AnnotationUse>& uses, std::string_view key) {
@@ -269,6 +302,8 @@ struct Program {
     // The plain loops of `@std::simd::must_vectorize` functions, by their number in the loop
     // metadata (the backend fills it; SIMD, "Requiring vectorized code").
     std::vector<std::pair<Span, std::string>>      must_vectorize_loops;   // the loop and its LLVM function
+    std::vector<std::string>                       embedded_files;         // `std::embed` (spec 34): inputs of the build
+    std::vector<std::pair<Span, std::string>>      no_checks_left;         // `@std::no_checks_left` functions (spec 34) and their LLVM names
     // The tokens of each loaded file, kept for re-parsing templates (see check.cpp).
     std::map<FileId, std::vector<Token>>           file_tokens;
     // Errors in methods of class template instances, kept until the method is used: like

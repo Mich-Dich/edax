@@ -40,6 +40,7 @@ edaxc simd-report <file> [<function>]   # how vector types and operations map to
 - A mode that relaxes a rule prints its note first (see [Build Modes](build-modes.md)). `edaxc test` prints `PASS`/`FAIL` per test and fails when one fails.
 - Without `build.ed`, `edaxc build main.ed` builds that one file as a program in `debug` mode.
 - Build output goes to `build/<mode>/` (`build/<mode>/<platform>/` when cross-compiling).
+- What a build prints (the checklist of targets, details, `build.log`, `--progress`, `--details`, `--stop-on-error`) is described in [Build output and diagnostics](build-output.md).
 
 ### Targets
 | Method | Builds |
@@ -116,6 +117,8 @@ namespace build {
   compile_time bool validation = build::vulkan_validation.value();
   ```
   `value()` is a compile error when the build didn't `set` the setting for this target, so there are no silently missing `#define`s.
+- **Per-file optimization:** `g.optimize_files(t, "engine/math/**/*.ed", std::build::optimization::speed)` optimizes the files of `t` that match (relative to the project root, or a package's root, so imported modules match too) at that level, whatever the mode. A debug build stays playable; one file can be kept at `none` in a release build (see [Performance](../language/performance/performance.md)).
+- **Target CPU:** `g.target_cpu(t, std::build::cpu::x86_64_v3)` checks and compiles the Edax code of `t` for a CPU level instead of the platform's baseline: `std::build::target_has_cpu_feature` answers for that level, and the program needs such a CPU to run. A level of another architecture is an error when `t` is built.
 - **Per-file values:** `g.set_for_files(t, "net/*.ed", setting, value)` passes a value to the files of `t` matching a glob (relative to the directory of the target's root file; a glob that matches nothing is an error). `setting.value_at(where)`, where `where` is a `std::call_site`, gives the file's value, else the target's, else `std::none`.
 - Settings may be declared in any module both sides import; the standard library declares its own (e.g. the logger's levels, see [Logging](../stdlib/logging/logging.md)).
 

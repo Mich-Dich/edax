@@ -1,0 +1,19 @@
+// build.ed of a test project (spec 34): the development mode, per-file optimization and a mode
+// with deterministic floating point.
+import std;
+
+namespace build {
+    // Lockstep multiplayer: float results must be the same on every machine.
+    class lockstep : std::build::mode::release {
+    public:
+        compile_time std::build::float_determinism float_determinism() override { return std::build::float_determinism::strict; }
+    }
+
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(lockstep);
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        // The math is optimized even in debug builds: a debug build stays playable.
+        g.optimize_files(app, "math/*.ed", std::build::optimization::speed);
+        g.add_executable(std::build::edax_target{ .name = "fastmath", .root = "app/fastmath.ed" });
+    }
+}

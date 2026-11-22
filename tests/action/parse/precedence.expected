@@ -1,6 +1,7 @@
 exit: 0
 --- stdout
 (fn f -> void
+  (doc " RUN: edaxc parse %s\n Operator precedence and associativity (spec 16). Bit operators bind tighter than comparisons.")
   (block
     (discard (- (+ (path a) (* (path b) (path c))) (path d)))
     (discard (- (- (path a) (path b)) (path c)))

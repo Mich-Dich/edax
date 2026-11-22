@@ -5,6 +5,7 @@
 #include "edax/types.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <format>
 #include <functional>
 #include <set>
@@ -58,6 +59,7 @@ struct LoopContext {
     State         continues = State::unreachable();
     const Symbol* borrowed  = nullptr;   // container the loop iterates by reference
     bool          borrow_mut = false;
+    std::vector<std::string> path;       // the fields from `borrowed` to the container (`w.b`: b), spec 34
     Span          span;
     std::string   var;
 };
@@ -339,6 +341,20 @@ private:
                     if (f->kind != SymbolKind::field || view) continue;
                     const auto& v  = f->decl->as<VariableDecl>();
                     const Type* ft = lower(*v.type);
+                    if (s->decl->as<TypeDecl>().is_union) {   // spec 34: nothing to destroy, since nobody knows the member
+                        if (copy_kind(ft) == Copy::no || ft->is(Kind::reference)) {
+                            note(error(DiagCode::E5001, v.type->span,
+                                       std::format("member '{}::{}' has type {}, which is not a copy type", s->name, f->name, quoted(ft)),
+                                       "not plain data"),
+                                 "a union doesn't know which member it holds, so it can't destroy or copy one: store plain data, "
+                                 "or use an enum with payloads");
+                        }
+                        if (v.init) {
+                            error(DiagCode::E5001, v.init->span, std::format("member '{}::{}' of a union has a default", s->name, f->name),
+                                  "a literal sets one member");
+                        }
+                        continue;
+                    }
                     if (ft->is(Kind::reference)) {
                         Diagnostic& d = error(DiagCode::E5010, v.type->span,
                                               std::format("field '{}::{}' is a reference", s->name, f->name),
@@ -611,7 +627,7 @@ private:
             if (v.root == s && v.exclusive && view_active(v, span)) view_conflict(v, span, "use");
         }
         for (const LoopContext& l : frame_.loops) {
-            if (l.borrowed == s && l.borrow_mut) {
+            if (l.borrowed == s && l.borrow_mut && reaches_loop(l, place_)) {
                 Diagnostic& d = error(DiagCode::E5021, span,
                                       std::format("'{}' is used while the loop borrows it mutably through '{}'", s->name, l.var),
                                       "conflicting use");
@@ -620,13 +636,13 @@ private:
         }
     }
 
-    void mutation(const Symbol* root, Span span, std::string_view action) {
+    void mutation(const Symbol* root, Span span, std::string_view action, const Expr* place = nullptr) {
         if (!root) return;
         for (const ViewBorrow& v : frame_.views) {
             if (v.root == root && !v.exclusive && view_active(v, span)) view_conflict(v, span, action);
         }
         for (const LoopContext& l : frame_.loops) {
-            if (l.borrowed == root) {
+            if (l.borrowed == root && reaches_loop(l, place)) {
                 Diagnostic& d = error(DiagCode::E5021, span,
                                       std::format("cannot {} '{}' while the loop borrows it", action, root->name),
                                       "the loop holds a reference");
@@ -893,7 +909,7 @@ private:
                 frame_.state.moved.erase(target_local);   // a moved-from variable is alive again
             } else {
                 walk(*a.target);
-                mutation(root_of(*a.target), a.target->span, "change");
+                mutation(root_of(*a.target), a.target->span, "change", a.target.get());
             }
             if (a.op == TokenKind::eq) consume(*a.value, a.target->type);
             return;
@@ -1047,6 +1063,11 @@ private:
             if (by_ref) borrowed = root_of(*f.iterable);
             if (borrowed == &this_root_) borrowed = nullptr;
             bool is_mut = by_ref && f.type->as<ReferenceType>().is_mut;
+            loop_path_.clear();
+            if (borrowed) {   // `for (f32& v : w.b)` borrows w.b, not w.a (spec 34)
+                bool ended = false;
+                field_path(*f.iterable, loop_path_, ended);
+            }
             walk_loop(nullptr, *f.body, f.symbol, borrowed, is_mut, e.span, f.name, false);
             return;
         }
@@ -1068,8 +1089,33 @@ private:
             if (!frame_.loops.empty()) frame_.loops.back().continues = merge(frame_.loops.back().continues, frame_.state);
             frame_.state = State::unreachable();
             return;
-        default: for_each_child(e, [&](Expr& c) { walk(c); }); return;
+        case ExprKind::member:
+        case ExprKind::index: {   // `w.a`, `w.a[i]`: the place used, for loops that borrow another field (spec 34)
+            const Expr* saved = place_;
+            if (!place_) place_ = &e;
+            for_each_child(e, [&](Expr& c) { walk(c); });
+            place_ = saved;
+            return;
         }
+        default: {
+            const Expr* saved = std::exchange(place_, nullptr);   // arguments, operands: places of their own
+            for_each_child(e, [&](Expr& c) { walk(c); });
+            place_ = saved;
+            return;
+        }
+        }
+    }
+
+    const Expr* place_ = nullptr;   // the member or index expression whose root is being walked
+    std::vector<std::string> loop_path_;   // the place the next loop borrows
+
+    // Whether `place` (null: the whole variable) can reach what the loop `l` borrows.
+    bool reaches_loop(const LoopContext& l, const Expr* place) {
+        if (!place || l.path.empty()) return true;
+        std::vector<std::string> path;
+        bool                     ended = false;
+        field_path(*place, path, ended);
+        return overlaps(path, l.path);
     }
 
     void forget_bindings(const Pattern& p) {
@@ -1111,6 +1157,8 @@ private:
         LoopContext ctx;
         ctx.borrowed   = borrowed;
         ctx.borrow_mut = borrow_mut;
+        ctx.path       = std::move(loop_path_);
+        loop_path_.clear();
         ctx.span       = span;
         ctx.var        = std::move(var);
         frame_.loops.push_back(ctx);
@@ -1144,12 +1192,12 @@ private:
             if (!me.symbol && types::is_mutating_library_method(types::strip_ref(me.object->type), me.name.segments.back().name)) {
                 receiver     = root_of(*me.object);
                 mut_receiver = true;
-                mutation(receiver, me.object->span, std::format("call '{}' on", me.name.segments.back().name));
+                mutation(receiver, me.object->span, std::format("call '{}' on", me.name.segments.back().name), me.object.get());
             }
             if (fn && fn->is_mut) {
                 receiver     = root_of(*me.object);
                 mut_receiver = true;
-                mutation(receiver, me.object->span, std::format("call mut method '{}' on", fn->name));
+                mutation(receiver, me.object->span, std::format("call mut method '{}' on", fn->name), me.object.get());
                 // A view passed to a mut method of a view (`running.push(handle)`) borrows as long
                 // as that object is alive (spec 12).
                 if (const Symbol* holder = local_of(*me.object); holder && is_view(types::strip_ref(holder->type))) {
@@ -1205,7 +1253,7 @@ private:
             Expr& arg = *c.args[i];
             walk(arg);
             bool marked = arg.kind == ExprKind::unary && arg.as<UnaryExpr>().op == UnaryOp::mut_marker;
-            if (marked) mutation(root_of(arg), arg.span, "pass as a mutable reference");
+            if (marked) mutation(root_of(arg), arg.span, "pass as a mutable reference", &arg);
             const Type* param = nullptr;
             if (fn && i < fn->params.size() && (!fn->is_template || (owner_sym && owner_sym->template_of))) {
                 param = lower(*fn->params[i].type, owner_sym);
@@ -1221,27 +1269,80 @@ private:
         check_aliasing(c, receiver, mut_receiver);
     }
 
-    // One mutable reference at a time: `f(mut a, a)`, `f(mut a, mut a)`, `a.push(mut a)`.
+    // The fields from the root to a place (spec 34, disjoint borrows): `w.a.b` -> a, b. An index
+    // ends the path with "[]": the elements of a container are one place (`xs[i]` and `xs[j]` may
+    // be the same element), and so is everything inside them.
+    void field_path(const Expr& e, std::vector<std::string>& out, bool& ended) {
+        switch (e.kind) {
+        case ExprKind::member: {
+            const auto& me = e.as<MemberExpr>();
+            field_path(*me.object, out, ended);
+            if (!ended) out.push_back(me.name.segments.back().name);
+            return;
+        }
+        case ExprKind::index:
+            field_path(*e.as<IndexExpr>().object, out, ended);
+            if (!ended) out.push_back("[]");
+            ended = true;
+            return;
+        case ExprKind::unary: {
+            UnaryOp op = e.as<UnaryExpr>().op;
+            if (op == UnaryOp::move || op == UnaryOp::mut_marker) field_path(*e.as<UnaryExpr>().operand, out, ended);
+            return;
+        }
+        default: return;
+        }
+    }
+
+    // Two places of one root overlap unless their paths part ways at some field: `w.a` and
+    // `w.b` are disjoint, `w` and `w.a` are not.
+    static bool overlaps(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+        for (std::size_t i = 0; i < a.size() && i < b.size(); ++i) {
+            if (a[i] != b[i]) return false;
+        }
+        return true;
+    }
+
+    // One mutable reference at a time: `f(mut a, a)`, `f(mut a, mut a)`, `a.push(mut a)`. Different
+    // fields of one value are different places: `f(mut w.positions, w.velocities)` (spec 34).
     void check_aliasing(CallExpr& c, const Symbol* receiver, bool mut_receiver) {
         struct Arg {
-            const Symbol* root;
-            bool          is_mut;
-            Span          span;
+            const Symbol*            root;
+            bool                     is_mut;
+            Span                     span;
+            std::vector<std::string> path;
         };
         std::vector<Arg> args;
-        if (receiver) args.push_back(Arg{receiver, mut_receiver, c.callee->span});
+        if (receiver) {
+            Arg r{receiver, mut_receiver, c.callee->span, {}};
+            if (c.callee->kind == ExprKind::member) {
+                bool ended = false;
+                field_path(*c.callee->as<MemberExpr>().object, r.path, ended);
+            }
+            args.push_back(std::move(r));
+        }
         for (ExprPtr& a : c.args) {
             bool marked = a->kind == ExprKind::unary && a->as<UnaryExpr>().op == UnaryOp::mut_marker;
             const Symbol* root = root_of(*a);
             if (a->kind == ExprKind::unary && a->as<UnaryExpr>().op == UnaryOp::move) root = nullptr;
-            if (root) args.push_back(Arg{root, marked, a->span});
+            if (!root) continue;
+            Arg  arg{root, marked, a->span, {}};
+            bool ended = false;
+            field_path(*a, arg.path, ended);
+            args.push_back(std::move(arg));
         }
         for (std::size_t i = 0; i < args.size(); ++i) {
             for (std::size_t j = i + 1; j < args.size(); ++j) {
                 if (args[i].root != args[j].root || !(args[i].is_mut || args[j].is_mut)) continue;
+                if (!overlaps(args[i].path, args[j].path)) continue;
                 const Arg& m = args[i].is_mut ? args[i] : args[j];
                 const Arg& o = args[i].is_mut ? args[j] : args[i];
                 std::string name = args[i].root == &this_root_ ? "this" : args[i].root->name;
+                const std::vector<std::string>& shorter = args[i].path.size() <= args[j].path.size() ? args[i].path : args[j].path;
+                for (const std::string& part : shorter) {
+                    if (part == "[]") break;
+                    name += "." + part;
+                }
                 Diagnostic& d = error(DiagCode::E5020, o.span,
                                       std::format("'{}' is passed as a mutable reference and also as another argument", name),
                                       "second reference");
@@ -1295,6 +1396,38 @@ private:
 
     // A returned reference must point into `this` or into a reference parameter.
     void check_returned_reference(Expr& value) {
+        if (value.kind == ExprKind::tuple) {   // `(mut this.a, this.b)` (spec 34): each element, and distinct places
+            const Type* t = types::strip_ref(value.type);
+            auto&       elements = value.as<TupleExpr>().elements;
+            struct Ref {
+                const Symbol*            root;
+                bool                     is_mut;
+                Span                     span;
+                std::vector<std::string> path;
+            };
+            std::vector<Ref> refs;
+            for (std::size_t i = 0; i < elements.size(); ++i) {
+                Expr& el = *elements[i];
+                if (!t || !t->is(Kind::tuple) || i >= t->args.size() || !(t->args[i]->is(Kind::reference) || is_view(t->args[i]))) continue;
+                check_returned_reference(el);
+                Ref r{root_of(el), t->args[i]->is(Kind::reference) && t->args[i]->is_mut, el.span, {}};
+                bool ended = false;
+                field_path(el, r.path, ended);
+                if (r.root) refs.push_back(std::move(r));
+            }
+            for (std::size_t i = 0; i < refs.size(); ++i) {
+                for (std::size_t j = i + 1; j < refs.size(); ++j) {
+                    if (refs[i].root != refs[j].root || !(refs[i].is_mut || refs[j].is_mut) || !overlaps(refs[i].path, refs[j].path)) continue;
+                    const Ref& m = refs[i].is_mut ? refs[i] : refs[j];
+                    const Ref& o = refs[i].is_mut ? refs[j] : refs[i];
+                    note(error(DiagCode::E5020, o.span, "the references of a returned tuple must be distinct fields",
+                               "overlaps a mutable reference"),
+                         "the mutable reference is here; while it exists it must be the only way to reach the value", m.span);
+                    return;
+                }
+            }
+            return;
+        }
         if (value.kind == ExprKind::lambda) {   // what a returned lambda refers to must outlive the call
             for (Capture& c : value.as<LambdaExpr>().captures) {
                 if ((c.kind != CaptureKind::ref && c.kind != CaptureKind::mut_ref) || !c.captured) continue;

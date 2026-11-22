@@ -51,6 +51,8 @@ namespace std::log {
         set_pattern(std::log::sink_pattern),
         set_palette(std::log::sink_palette),
         flush(std::channel_sender<u32>),
+        // The live lines of std::log::status (empty: none).
+        status(std::darray<std::string>),
     }
 
     // The running session, as log calls on any thread see it.
@@ -76,6 +78,7 @@ namespace std::log {
         i32 isatty(i32 fd);
         i32 raise(i32 signal);
         i32 fflush(std::raw_ptr<mut u8> stream);
+        isize write(i32 fd, std::raw_ptr<u8> data, usize size);
     }
 
     private compile_time usize early_capacity = 256;
@@ -782,16 +785,26 @@ namespace std::log {
                 std::log::colors::off => false,
                 std::log::colors::automatic => out_tty && err_tty,
             };
-            return std::unique_ptr<std::log::console>::make(std::log::console{ .use_colors = colored });
+            return std::unique_ptr<std::log::console>::make(std::log::console{ .use_colors = colored, .tty = out_tty });
         }
 
         bool colored() override { return this.use_colors; }
 
         void write(std::log::record& r, std::str line) mut override {
+            bool to_err = cast<u8>(r.level) >= cast<u8>(std::log::level::error);
             if (r.from_panic) {
+                this.live.clear();                // the panic is the last thing on screen
+                if (this.drawn > 0 || this.cursor_hidden) {
+                    this.paint("", false, false);
+                }
+                unsafe { _ = fflush(nullptr); }
                 return;   // the runtime prints the panic on stderr after the hook
             }
-            if (cast<u8>(r.level) >= cast<u8>(std::log::level::error)) {
+            if (this.drawn > 0) {
+                this.paint(line, true, to_err);   // records go above the live lines
+                return;
+            }
+            if (to_err) {
                 unsafe { _ = fflush(nullptr); }   // keep the order with the lines on stdout
                 std::eprintln(line);
             } else {
@@ -803,8 +816,108 @@ namespace std::log {
             unsafe { _ = fflush(nullptr); }   // every C stream: stdout and stderr
         }
 
+        bool shows_status() override { return this.tty; }
+
+        void draw_status(std::darray<std::string>& lines) mut override {
+            this.live = lines.clone();
+            this.paint("", false, false);
+        }
+
     private:
-        bool use_colors = false;
+        // One frame, without flicker: the live lines are never erased and drawn again in two
+        // steps. The cursor goes back to the first live line, `above` (a record, if any) and the
+        // live lines overwrite the old ones in place, each cleared to its end (ESC[K), the lines
+        // left over are cleared last (ESC[J), all in ONE write inside a synchronized update
+        // (ESC[?2026h ... l; terminals without it ignore it). The cursor is hidden meanwhile.
+        void paint(std::str above, bool has_above, bool to_err) mut {
+            unsafe { _ = fflush(nullptr); }
+            std::env::terminal_size size = std::env::output_terminal_size().value_or(std::env::terminal_size{});
+            usize rows  = if (size.rows > 1) { cast<usize>(size.rows) - 1 } else { 1 };
+            usize first = if (this.live.len() > rows) { this.live.len() - rows } else { 0 };
+            mut std::string text = std::string::from("\u{1b}[?2026h");
+            if (!this.live.is_empty() && !this.cursor_hidden) {
+                text.push_str("\u{1b}[?25l");
+                this.cursor_hidden = true;
+            }
+            if (this.drawn > 1) {
+                u32 up = this.drawn - 1;
+                text.push_str("\r\u{1b}[");
+                text.push_str(std::format(f"{up}"));
+                text.push('A');
+            } else if (this.drawn == 1) {
+                text.push('\r');
+            }
+            if (has_above && to_err) {           // another stream: clear, write it, then the lines
+                text.push_str("\u{1b}[J");
+                this.put(text);
+                std::eprintln(above);
+                text = default;
+            } else if (has_above) {
+                text.push_str(above);
+                text.push_str("\u{1b}[K\n");
+            }
+            for (usize i : first..this.live.len()) {
+                if (i > first) {
+                    text.push_str("\u{1b}[K\n");
+                }
+                text.push_str(std::log::cut_to_width(this.live[i], cast<usize>(size.columns)));
+            }
+            if (!this.live.is_empty()) {
+                text.push_str("\u{1b}[K");
+            }
+            text.push_str("\u{1b}[J");
+            if (this.live.is_empty() && this.cursor_hidden) {
+                text.push_str("\u{1b}[?25h");
+                this.cursor_hidden = false;
+            }
+            text.push_str("\u{1b}[?2026l");
+            this.put(text);
+            this.drawn = cast::truncate<u32>(this.live.len() - first);
+        }
+
+        // All of `text` with write(2) on stdout: one frame is one write.
+        void put(std::str text) {
+            mut usize done = 0;
+            while (done < text.len()) {
+                isize n = unsafe { write(1, text.as_ptr().offset(done), text.len() - done) };
+                if (n <= 0) {
+                    return;
+                }
+                done = done + cast::truncate<usize>(n);   // n > 0 here
+            }
+        }
+
+        bool                     use_colors = false;
+        bool                     tty = false;
+        std::darray<std::string> live = default;
+        u32                      drawn = 0;
+        bool                     cursor_hidden = false;
+    }
+
+    // `line` shortened to `columns` - 1 visible characters (escape sequences don't count), so
+    // a live line never wraps: a wrapped line couldn't be erased.
+    private std::str cut_to_width(std::str line, usize columns) {
+        usize    limit = if (columns > 1) { columns - 1 } else { 1 };
+        mut usize visible = 0;
+        mut usize i = 0;
+        mut bool  escape = false;
+        while (i < line.len()) {
+            u8 b = unsafe { std::raw::read(line.as_ptr().offset(i)) };
+            if (escape) {
+                if ((b >= 0x40 && b <= 0x7E) && b != 0x5B) {   // the final byte of `ESC [ ... m`
+                    escape = false;
+                }
+            } else if (b == 0x1B) {
+                escape = true;
+            } else if ((b & 0xC0) != 0x80) {                  // the first byte of a character
+                if (visible == limit) {
+                    return line.slice(0, i);
+                }
+                visible += 1;
+            }
+            i += 1;
+        }
+        return line;
     }
 
     private extern(std::build::language::c) {
@@ -1166,9 +1279,46 @@ namespace std::log {
         mut std::darray<std::log::slot>  sinks = default;
         mut std::darray<std::log::entry> backlog = default;   // what arrived while there was no sink
         mut std::string                  line = default;
-        for (std::log::command c : input) {
+        // The live lines (std::log::status) wait at most this long between two redraws.
+        std::time::duration              redraw_interval = std::time::duration::milliseconds(50);
+        mut std::option<std::darray<std::string>> pending = std::none;   // lines not drawn yet
+        mut std::time::instant           last_draw = std::time::instant::now();
+        mut bool                         open = true;
+        while (open) {
+            // With lines waiting to be drawn, wait only until they are due.
+            std::option<std::log::command> next = match (pending.is_some()) {
+                true => {
+                    std::time::duration since = last_draw.elapsed();
+                    if (since >= redraw_interval) {
+                        std::log::draw_status(mut sinks, mut pending, mut last_draw);
+                        continue;
+                    }
+                    match (input.receive_for(redraw_interval - since)) {
+                        std::ok(c)    => std::some(move c),
+                        std::error(e) => {
+                            if (e == std::receive_error::closed) {
+                                open = false;
+                            }
+                            std::none
+                        },
+                    }
+                },
+                false => input.receive(),
+            };
+            std::log::command c = match (move next) {
+                std::some(command) => move command,
+                std::none          => {
+                    if (pending.is_none()) {
+                        open = false;
+                    }
+                    continue;
+                },
+            };
             match (move c) {
                 std::log::command::write(e) => {
+                    if (pending.is_some()) {   // the newest live lines go under the record
+                        std::log::draw_status(mut sinks, mut pending, mut last_draw);
+                    }
                     if (sinks.is_empty()) {
                         if (backlog.len() < early_capacity) {
                             backlog.push(move e);
@@ -1211,17 +1361,92 @@ namespace std::log {
                     }
                 },
                 std::log::command::flush(reply) => {
+                    if (pending.is_some()) {
+                        std::log::draw_status(mut sinks, mut pending, mut last_draw);
+                    }
                     for (mut std::log::slot& s : sinks) {
                         s.sink->flush();
                     }
                     _ = reply.send(0);
                 },
+                std::log::command::status(lines) => {
+                    bool removing = lines.is_empty();
+                    pending = std::some(move lines);
+                    if (removing || last_draw.elapsed() >= redraw_interval) {   // removal is never delayed
+                        std::log::draw_status(mut sinks, mut pending, mut last_draw);
+                    }
+                },
             }
         }
+        mut std::darray<std::string> none = default;
         for (mut std::log::slot& s : sinks) {
+            if (s.sink->shows_status()) {
+                s.sink->draw_status(none);      // the live lines go with the session
+            }
             s.sink->flush();
         }
         log_thread_id.store(0, std::memory_order::sequentially_consistent);
+    }
+
+    // Draws the pending live lines on the sinks that show them.
+    private void draw_status(mut std::darray<std::log::slot>& sinks, mut std::option<std::darray<std::string>>& pending,
+                             mut std::time::instant& last_draw) {
+        std::darray<std::string> lines = std::take(mut pending).value_or(std::darray<std::string>{});
+        for (mut std::log::slot& s : sinks) {
+            if (s.sink->shows_status()) {
+                s.sink->draw_status(lines);
+            }
+        }
+        last_draw = std::time::instant::now();
+    }
+
+    // --- live lines -----------------------------------------------------------------------------
+
+    class status {
+    public:
+        void set(std::format_args line) mut {
+            mut std::darray<std::string> lines = default;
+            lines.push(std::format(move line));
+            this.send_lines(move lines);
+        }
+
+        void set_lines(std::span<std::string> lines) mut {
+            mut std::darray<std::string> copy = default;
+            for (std::string& l : lines) {
+                copy.push(l.clone());
+            }
+            this.send_lines(move copy);
+        }
+
+        void print(std::format_args line, implicit compile_time std::call_site where) mut {
+            this.log_info(std::format(move line), where);
+        }
+
+        void finish(std::format_args text, implicit compile_time std::call_site where) move {
+            this.send_lines(std::darray<std::string>{});
+            this.log_info(std::format(move text), where);
+            this.done = true;
+        }
+
+        ~status() {
+            if (!this.done) {
+                this.send_lines(std::darray<std::string>{});
+            }
+        }
+
+    private:
+        void send_lines(std::darray<std::string> lines) {
+            _ = this.sender.send(std::log::command::status(move lines));
+        }
+
+        void log_info(std::string text, std::call_site where) {
+            mut std::log::entry e = std::log::note(std::log::level::info, move text);
+            e.where = where;
+            _ = this.sender.send(std::log::command::write(move e));
+        }
+
+        std::channel_sender<std::log::command> sender;
+        bool                                   done = false;
     }
 
     // --- panics ---------------------------------------------------------------------------------
@@ -1373,6 +1598,10 @@ namespace std::log {
             std::channel<u32> reply = std::channel<u32>::bounded(1);
             this.send(std::log::command::flush(reply.sender()));
             _ = reply.receiver().receive();
+        }
+
+        std::log::status status() mut {
+            unsafe { return std::log::status{ .sender = (*this.state).sender.clone() }; }
         }
 
         ~session() {

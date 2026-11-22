@@ -1,0 +1,29 @@
+// feature 34: a loop over one field borrows that field, not the whole object.
+import std;
+
+struct world {
+    std::darray<f32> a = default;
+    std::darray<f32> b = default;
+}
+
+void ok(mut world w) {
+    for (f32& v : w.b) {
+        w.a.push(v);
+    }
+    for (mut f32& v : w.b) {
+        v += w.a[0];
+        w.a[0] = v;
+    }
+}
+
+void bad(mut world w) {
+    for (f32& v : w.b) {
+        w.b.push(v);                   //~ error[E5021]: while the loop borrows it
+    }
+    for (mut f32& v : w.b) {
+        f32 x = w.b[0];                //~ error[E5021]: borrows it mutably
+    }
+    for (f32& v : w.b) {
+        w = world{};                   //~ error[E5021]: while the loop borrows it
+    }
+}

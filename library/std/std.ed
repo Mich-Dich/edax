@@ -9,6 +9,28 @@ namespace std {
         return std::build::current_mode().bounds() == std::build::bounds::panic;
     }
 
+    // --- versions --------------------------------------------------------------------------------
+
+    struct version {
+        bool operator==(version& other) = default;
+
+        compile_time run_time std::ordering operator<=>(version& other) {
+            if (this.major != other.major) { return this.major <=> other.major; }
+            if (this.minor != other.minor) { return this.minor <=> other.minor; }
+            return this.patch <=> other.patch;
+        }
+
+        compile_time run_time bool at_least(version other) {
+            if (this.major != other.major) { return this.major > other.major; }
+            if (this.minor != other.minor) { return this.minor > other.minor; }
+            return this.patch >= other.patch;
+        }
+
+        void format(mut std::formatter& out) {
+            out.write(std::format(f"{this.major}.{this.minor}.{this.patch}"));
+        }
+    }
+
     // --- allocators ------------------------------------------------------------------------------
 
     // `n` values of T from `a`; panics when it is out of memory.
@@ -297,7 +319,7 @@ namespace std {
         }
 
         template<type F>
-        void retain(F keep) mut {
+        void retain(mut F keep) mut {
             mut usize kept = 0;
             mut usize i = 0;
             while (i < this.count) {
@@ -317,6 +339,14 @@ namespace std {
 
         template<type F>
         void sort_by_key(std::sort_order order, F key) mut {
+            compile_time type K = std::meta::result_of<F>();
+            if compile_time (radix_key<K>()) {   // integer keys: a stable radix sort (spec 34)
+                if (this.count >= radix_threshold) {
+                    u64 flip = if (order == std::sort_order::ascending) { 0 } else { radix_mask<K>() };
+                    unsafe { radix_sort(this.data, this.count, [&key, flip](T& a) { return radix_bits<K>(key(a)) ^ flip; }, std::size_of<K>()); }
+                    return;
+                }
+            }
             if (order == std::sort_order::ascending) {
                 unsafe { merge_sort(this.data, this.count, [&key](T& a, T& b) { return key(a) < key(b); }); }
             } else {
@@ -325,6 +355,12 @@ namespace std {
         }
 
         void sort() mut {
+            if compile_time (radix_key<T>()) {   // integers: a radix sort (spec 34)
+                if (this.count >= radix_threshold) {
+                    unsafe { radix_sort(this.data, this.count, [](T& a) { return radix_bits<T>(a); }, std::size_of<T>()); }
+                    return;
+                }
+            }
             unsafe { intro_sort(this.data, this.count, [](T& a, T& b) { return a < b; }); }
         }
 
@@ -591,6 +627,87 @@ namespace std {
         insertion_sort(p, 0, n, less);
     }
 
+    // --- radix sort (spec 34) -----------------------------------------------------------------------
+    // Integers and integer keys are sorted by their bytes, lowest first: a counting pass for all
+    // bytes, then one stable scatter per byte that differs between the elements. O(n) per byte,
+    // no comparisons; it needs a buffer of n elements. Below `radix_threshold` elements the
+    // comparison sorts are faster.
+
+    private compile_time usize radix_threshold = 256;
+
+    // Whether K is an integer type of at most 64 bits.
+    private template<type K>
+    compile_time bool radix_key() {
+        return std::is_same<K, u8>() || std::is_same<K, u16>() || std::is_same<K, u32>() || std::is_same<K, u64>() ||
+               std::is_same<K, usize>() || std::is_same<K, i8>() || std::is_same<K, i16>() || std::is_same<K, i32>() ||
+               std::is_same<K, i64>() || std::is_same<K, isize>();
+    }
+
+    private template<type K>
+    compile_time bool radix_signed() {
+        return std::is_same<K, i8>() || std::is_same<K, i16>() || std::is_same<K, i32>() || std::is_same<K, i64>() ||
+               std::is_same<K, isize>();
+    }
+
+    // The bits of a K: all ones in its size.
+    private template<type K>
+    u64 radix_mask() {
+        if compile_time (std::size_of<K>() == 8) { return 0xFFFFFFFFFFFFFFFFu64; }
+        return (1u64 << cast<u64>(8 * std::size_of<K>())) - 1;
+    }
+
+    // `k` as unsigned bits that order like `k`: a signed value has its sign bit flipped.
+    private template<type K>
+    u64 radix_bits(K k) {
+        u64 bits = cast::truncate<u64>(k) & radix_mask<K>();
+        if compile_time (radix_signed<K>()) {
+            return bits ^ (1u64 << cast<u64>(8 * std::size_of<K>() - 1));
+        }
+        return bits;
+    }
+
+    private unsafe template<type T, type F>
+    void radix_sort(std::raw_ptr<mut T> p, usize n, F bits, usize bytes) {
+        std::raw_ptr<mut usize> counts = std::raw::allocate<usize>(bytes * 256);
+        for (usize i : 0..bytes * 256) { std::raw::write(counts.offset(i), 0); }
+        for (usize i : 0..n) {
+            mut u64 b = bits(*p.offset(i));
+            for (usize d : 0..bytes) {
+                usize at = d * 256 + cast::truncate<usize>(b & 255);
+                std::raw::write(counts.offset(at), *counts.offset(at) + 1);
+                b >>= 8;
+            }
+        }
+        std::raw_ptr<mut T> buffer = std::raw::allocate<T>(n);
+        mut std::raw_ptr<mut T> from = p;
+        mut std::raw_ptr<mut T> to = buffer;
+        u64 first = bits(*p.offset(0));
+        for (usize d : 0..bytes) {
+            std::raw_ptr<mut usize> c = counts.offset(d * 256);
+            u64 shift = cast<u64>(8 * d);
+            // All elements share this byte: nothing to do.
+            if (*c.offset(cast::truncate<usize>((first >> shift) & 255)) == n) { continue; }
+            mut usize sum = 0;
+            for (usize v : 0..256) {
+                usize k = *c.offset(v);
+                std::raw::write(c.offset(v), sum);
+                sum += k;
+            }
+            for (usize i : 0..n) {
+                usize v = cast::truncate<usize>((bits(*from.offset(i)) >> shift) & 255);
+                usize at = *c.offset(v);
+                std::raw::write(c.offset(v), at + 1);
+                std::raw::write(to.offset(at), std::raw::read(from.offset(i)));
+            }
+            std::raw_ptr<mut T> swap = from;
+            from = to;
+            to = swap;
+        }
+        if (from != p) { std::raw::copy(p, from, n); }
+        std::raw::free(buffer);
+        std::raw::free(counts);
+    }
+
     // Merges the sorted runs `from[lo..mid)` and `from[mid..hi)` into `to[lo..hi)`; on equal
     // elements the left run goes first (stable).
     private unsafe template<type T, type F>
@@ -710,6 +827,12 @@ namespace std {
         }
 
         void sort() {
+            if compile_time (radix_key<T>()) {
+                if (this.count >= radix_threshold) {
+                    unsafe { radix_sort(this.data, this.count, [](T& a) { return radix_bits<T>(a); }, std::size_of<T>()); }
+                    return;
+                }
+            }
             unsafe { intro_sort(this.data, this.count, [](T& a, T& b) { return a < b; }); }
         }
 
@@ -720,6 +843,14 @@ namespace std {
 
         template<type F>
         void sort_by_key(std::sort_order order, F key) {
+            compile_time type K = std::meta::result_of<F>();
+            if compile_time (radix_key<K>()) {
+                if (this.count >= radix_threshold) {
+                    u64 flip = if (order == std::sort_order::ascending) { 0 } else { radix_mask<K>() };
+                    unsafe { radix_sort(this.data, this.count, [&key, flip](T& a) { return radix_bits<K>(key(a)) ^ flip; }, std::size_of<K>()); }
+                    return;
+                }
+            }
             if (order == std::sort_order::ascending) {
                 unsafe { merge_sort(this.data, this.count, [&key](T& a, T& b) { return key(a) < key(b); }); }
             } else {
@@ -1466,6 +1597,30 @@ namespace std {
         std::raw_ptr<mut u8> handle;
     }
 
+    template<type T>
+    class nonzero {
+    public:
+        static nonzero<T> make(T value) {
+            run_time check (value != 0) else "std::nonzero::make: the value is 0";
+            return nonzero<T>{ .value = value };
+        }
+
+        static std::option<nonzero<T>> of(T value) {
+            if (value == 0) {
+                return std::none;
+            }
+            return std::some(nonzero<T>{ .value = value });
+        }
+
+        T get() {
+            return this.value;
+        }
+
+    private:
+        @std::never_zero
+        T value;
+    }
+
     template<type T, type A>
     class unique_ptr {
     public:
@@ -1506,6 +1661,7 @@ namespace std {
         }
 
     private:
+        @std::never_zero
         std::raw_ptr<mut T> target;
         A alloc = default;
     }
@@ -1559,6 +1715,7 @@ namespace std {
         }
 
     private:
+        @std::never_zero
         std::raw_ptr<mut T> target;
         std::raw_ptr<mut shared_counts> counts;
     }
@@ -4076,3 +4233,17 @@ namespace std {
     }
 }
 
+
+namespace std {
+    // Facts for the optimizer (spec 34). The checks are entry checks: a failure names the
+    // caller's line. Modes that allow undefined behaviour compile them away.
+    void assume(bool condition) {
+        run_time check (condition || std::build::current_mode().allow_undefined_behavior()) else "assumption failed (std::assume)";
+        unsafe { std::raw::assume(condition); }
+    }
+
+    never unreachable() {
+        run_time check (std::build::current_mode().allow_undefined_behavior()) else "reached code marked unreachable (std::unreachable)";
+        unsafe { std::raw::unreachable(); }
+    }
+}

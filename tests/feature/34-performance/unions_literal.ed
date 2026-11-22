@@ -1,0 +1,13 @@
+// feature 34: a union literal sets exactly one member.
+import std;
+
+union bits {
+    u32 word;
+    f32 number;
+}
+
+void f() {
+    bits two = bits{ .word = 1, .number = 2.0 };   //~ error[E3035]: exactly one member
+    bits none = bits{};            //~ error[E3035]: exactly one member
+    bits one = bits{ .number = 2.0 };
+}

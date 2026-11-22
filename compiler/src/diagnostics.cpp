@@ -1,5 +1,7 @@
 #include "edax/diagnostics.hpp"
 
+#include <format>
+
 #include <algorithm>
 #include <array>
 #include <ostream>
@@ -261,19 +263,36 @@ void render(std::ostream& out, const Diagnostic& diag, const SourceManager& sour
 
 void render_all(std::ostream& out, const DiagnosticEngine& diags, const SourceManager& sources,
                 const RenderOptions& options) {
-    bool first = true;
+    bool        first          = true;
+    bool        human          = options.format == DiagnosticFormat::human;
+    std::size_t shown_errors   = 0;
+    std::size_t hidden_errors  = 0;
+    std::size_t hidden_warnings = 0;
     for (const Diagnostic& diag : diags.all()) {
-        if (options.format == DiagnosticFormat::human && !first) {
+        if (human && options.error_limit && shown_errors >= options.error_limit) {
+            if (diag.severity == Severity::error) ++hidden_errors;
+            if (diag.severity == Severity::warning) ++hidden_warnings;
+            continue;
+        }
+        if (human && !first) {
             out << '\n';
         }
         render(out, diag, sources, options);
+        if (diag.severity == Severity::error) ++shown_errors;
         first = false;
     }
-    if (options.format == DiagnosticFormat::human && !diags.all().empty()) {
+    if (human && !diags.all().empty()) {
         std::size_t errors   = diags.error_count();
         std::size_t warnings = diags.warning_count();
-        out << '\n' << errors << (errors == 1 ? " error" : " errors") << ", " << warnings
-            << (warnings == 1 ? " warning" : " warnings") << '\n';
+        if (hidden_errors || hidden_warnings) {
+            out << std::format("\n... and {} more error{}{} not shown: {}\n", hidden_errors, hidden_errors == 1 ? "" : "s",
+                               hidden_warnings ? std::format(" and {} more warning{}", hidden_warnings, hidden_warnings == 1 ? "" : "s") : "",
+                               options.full_log.empty() ? "--error-limit=0 shows them all" : "all of them are in " + options.full_log);
+        }
+        if (options.summary_line) {
+            out << '\n' << errors << (errors == 1 ? " error" : " errors") << ", " << warnings
+                << (warnings == 1 ? " warning" : " warnings") << '\n';
+        }
     }
 }
 

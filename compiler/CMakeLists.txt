@@ -20,6 +20,8 @@ add_library(edax STATIC
     src/cpp_wrap.cpp
     src/cmake_reader.cpp
     src/definition.cpp
+    src/graphics_registry.cpp
+    src/build_report.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp
 )
 target_include_directories(edax PUBLIC include)
@@ -28,7 +30,7 @@ target_include_directories(edax PUBLIC include)
 # Each module is a .edh and a .ed in library/std: `std` is std.*, `std::filesystem` is
 # filesystem.*. The first one is the core module.
 set(EDAX_STD_MODULES std filesystem env build build/mode thread time meta derive log parallel
-    windowing/core windowing/bindings windowing/x11 windowing)
+    graphics windowing/core windowing/bindings windowing/x11 windowing)
 set(EDAX_STD_ENTRIES "")
 set(EDAX_STD_TEXTS "")
 # A text becomes a function that joins pieces of at most 60000 characters at startup: C++ only
@@ -63,6 +65,16 @@ foreach(module ${EDAX_STD_MODULES})
     string(APPEND EDAX_STD_ENTRIES "    {\"${name}\", \"<std>/${module}.edh\", ${header_call},\n"
                                    "     \"<std>/${module}.ed\", ${source_call}},\n")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${header} ${source})
+endforeach()
+# The Khronos registries std::graphics::opengl and std::graphics::vulkan are made from
+# (compiler/src/graphics_registry.cpp), embedded like the library's text.
+set(EDAX_STD_REGISTRIES "")
+foreach(registry gl.xml vk.xml)
+    set(file ${PROJECT_SOURCE_DIR}/library/std/graphics/registry/${registry})
+    file(READ ${file} registry_text)
+    edax_std_text("${registry_text}" registry_call)
+    string(APPEND EDAX_STD_REGISTRIES "    if (file == \"${registry}\") return ${registry_call};\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
 endforeach()
 configure_file(src/std_library.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp @ONLY)
 target_compile_definitions(edax PRIVATE EDAX_VERSION="${PROJECT_VERSION}" EDAX_STD_DIR="${PROJECT_SOURCE_DIR}/library/std")

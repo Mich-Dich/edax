@@ -1,0 +1,10 @@
+// A block missing its '}': the next line that isn't indented inside it shows where it ended.
+u32 first(u32 x) {
+    if (x > 3) {                                  //~ error[E2016]: unclosed '{'
+        return 1;
+    return 2;
+}
+
+u32 second(u32 y) {
+    return y + 1;
+}

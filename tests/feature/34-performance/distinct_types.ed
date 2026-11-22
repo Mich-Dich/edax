@@ -1,0 +1,25 @@
+// feature 34: a distinct type has its underlying type's layout and converts only with cast.
+import std;
+
+@std::derive::arithmetic
+distinct type meters = f32;
+distinct type seconds = f32;
+
+compile_time meters lap = cast<meters>(400.0);
+compile_time check (cast<f32>(lap + lap) == 800.0) else "arithmetic at compile time";
+compile_time check (cast<f32>(lap * 3.0) == 1200.0 && lap / lap == 1.0) else "scaling at compile time";
+compile_time check (std::size_of<meters>() == 4) else "the layout of f32";
+
+void walk(meters d) { }
+
+void f(f32 x, seconds t) {
+    meters a = cast<meters>(x);
+    walk(a);
+    walk(x);                              //~ error[E4010]
+    meters b = a + cast<seconds>(1.0);    //~ error[E4013]: operator '+' is not defined for 'meters' and 'seconds'
+    meters scaled = a * 2.0 / x;
+    f32 ratio = a / a;
+    meters area = a * a;                  //~ error[E4013]: operator '*' is not defined
+    seconds u = t + t;                    //~ error[E4013]
+    f64 wide = cast<f64>(a);              //~ error[E4091]: cast cannot convert 'meters' to 'f64'
+}

@@ -4,6 +4,7 @@
 #include "edax/ast_printer.hpp"
 #include "edax/source.hpp"
 
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -33,6 +34,11 @@ i128 signed_max(int bits) { return bits >= 128 ? static_cast<i128>(~u128{0} >> 1
 u128 unsigned_max(int bits) { return bits >= 128 ? ~u128{0} : (u128{1} << bits) - 1; }
 
 double round_f32(double v) { return static_cast<double>(static_cast<float>(v)); }
+// f16 and f32 values are kept as doubles, rounded to their width after each operation (spec 34).
+double round_float(double v, int bits) {
+    if (bits == 16) return static_cast<double>(static_cast<_Float16>(v));
+    return bits == 32 ? round_f32(v) : v;
+}
 
 std::string signed_text(i128 v) {
     if (v >= 0) return edax::to_string(static_cast<u128>(v));
@@ -184,7 +190,7 @@ std::string builtin_name(const CallExpr& c) {
         const std::string& n = segs[1].name;
         if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "implements" || n == "size_of" || n == "align_of" || n == "type_name" ||
             n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of" ||
-            n == "literal_text") {
+            n == "literal_text" || n == "embed" || n == "embed_text") {
             return n;
         }
     }
@@ -193,7 +199,7 @@ std::string builtin_name(const CallExpr& c) {
         if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum" || n == "result_of" ||
             n == "is_view" || n == "methods" || n == "interfaces" || n == "template_args" || n == "annotation" || n == "has_annotation" ||
             n == "function_annotation" || n == "type_annotation" || n == "file_annotation" || n == "functions_with" ||
-            n == "types_with" || n == "interface_hash" || n == "compiler_version") {
+            n == "types_with" || n == "interface_hash" || n == "compiler_version" || n == "type_id") {
             return "meta::" + n;
         }
     }
@@ -206,8 +212,10 @@ std::string raw_intrinsic(const CallExpr& c) {
     const auto& pe = callee.as<PathExpr>();
     if (pe.symbol) return {};
     const auto& segs = pe.path.segments;
+    if (segs.size() == 2 && segs[0].name == "std" && segs[1].name == "bit_cast") return "bit_cast";   // spec 34, safe
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "raw") {
         const std::string& n = segs[2].name;
+        if (n == "assume" || n == "unreachable") return n;   // spec 34
         if (n == "allocate" || n == "reallocate" || n == "free" || n == "read" || n == "write" || n == "drop" || n == "copy" ||
             n == "str_from" || n == "static_str_from" || n.starts_with("atomic_") || n == "futex_wait" || n == "futex_wait_for" || n == "futex_wake" || n == "spin_hint") {
             return n;
@@ -369,7 +377,7 @@ struct Evaluator::Impl {
             v.kind     = Value::Kind::floating;
             v.type     = t;
             v.floating = std::stod(digits);
-            if (t->bits == 32) v.floating = round_f32(v.floating);
+            if (t->bits <= 32) v.floating = round_float(v.floating, t->bits);
             return v;
         }
         case ExprKind::bool_literal: return Value::of_bool(e.as<LiteralExpr>().bool_value, tc.bool_());
@@ -575,6 +583,7 @@ struct Evaluator::Impl {
                 arg = hooks.substitute(s);
             }
             if (!arg || !arg->is(Kind::value_arg)) unknown();
+            if (std::shared_ptr<const void> rich = tc.value_payload(arg)) return *std::static_pointer_cast<const Value>(rich);
             if (arg->inner->is(Kind::bool_)) return Value::of_bool(tc.value_bits(arg) != 0, arg->inner);
             return integer(tc.value_bits(arg), arg->inner);
         }
@@ -584,6 +593,17 @@ struct Evaluator::Impl {
     }
 
     Value unary(const UnaryExpr& u) {
+        if (u.distinct_result) {   // `-d` on a distinct type (spec 34)
+            Value v = eval(*u.operand);
+            if (v.kind == Value::Kind::floating) v.floating = -v.floating;
+            else if (v.kind == Value::Kind::integer) v = integer(u128{0} - v.integer, v.type);
+            else unknown();
+            Value out;
+            out.kind = Value::Kind::aggregate;
+            out.type = u.distinct_result;
+            out.elements.push_back(std::move(v));
+            return out;
+        }
         switch (u.op) {
         case UnaryOp::move:
         case UnaryOp::mut_marker: return eval(*u.operand);
@@ -621,14 +641,88 @@ struct Evaluator::Impl {
             if (op == TokenKind::amp_amp ? !l : l) return Value::of_bool(l, tc.bool_());
             return Value::of_bool(truth(eval(*b.rhs)), tc.bool_());
         }
+        if (b.op_symbol) return user_operator(b);
         Value l = eval(*b.lhs);
         Value r = eval(*b.rhs);
-        return apply(op, l, r, b.span, b.rhs->span);
+        Value v = apply(op, l, r, b.span, b.rhs->span);
+        if (b.distinct_result) {   // distinct-type arithmetic (spec 34): wrap the underlying result
+            Value out;
+            out.kind = Value::Kind::aggregate;
+            out.type = b.distinct_result;
+            out.elements.push_back(std::move(v));
+            return out;
+        }
+        return v;
+    }
+
+    // `a < b`, `a == b`, `a + b` with a user-defined operator (spec 16): its body runs, like
+    // any compile_time function. `<`, `<=`, `>`, `>=` compare the result of `operator<=>` with
+    // `equal`; `!=` negates `operator==`; a defaulted `==` compares field by field.
+    Value user_operator(const BinaryExpr& b) {
+        const Symbol*       s = b.op_symbol;
+        const FunctionDecl* f = body_decl(s);
+        Value               l = eval(*b.lhs);
+        Value               r = eval(*b.rhs);
+        Value               result;
+        if (f && f->is_defaulted) {
+            result = Value::of_bool(equal(l, r), tc.bool_());
+        } else {
+            if (!f || !f->is_compile_time) {
+                std::string owner = s->parent ? s->parent->name : std::string("its type");
+                not_constant(b.span, std::format("'operator{}' of '{}' is not a compile_time function", s->name, owner),
+                             "mark it 'compile_time run_time' to use it in compile-time code (checks, compile_time constants)");
+            }
+            bool method = s->kind == SymbolKind::method && !f->is_static;
+            result = method ? run_values(s, l, {r}, b.span) : run_values(s, std::nullopt, {l, r}, b.span);
+        }
+        switch (b.op) {
+        case TokenKind::bang_eq: return Value::of_bool(!truth(result), tc.bool_());
+        case TokenKind::less: return Value::of_bool(ordering_sign(result, b.span) < 0, tc.bool_());
+        case TokenKind::less_eq: return Value::of_bool(ordering_sign(result, b.span) <= 0, tc.bool_());
+        case TokenKind::greater: return Value::of_bool(ordering_sign(result, b.span) > 0, tc.bool_());
+        case TokenKind::greater_eq: return Value::of_bool(ordering_sign(result, b.span) >= 0, tc.bool_());
+        default: return result;
+        }
+    }
+
+    // -1, 0 or 1 for a std::ordering value.
+    int ordering_sign(const Value& v, Span span) {
+        if (v.kind == Value::Kind::enumeration && v.symbol) {
+            if (v.symbol->name == "less") return -1;
+            if (v.symbol->name == "equal") return 0;
+            if (v.symbol->name == "greater") return 1;
+        }
+        if (v.kind == Value::Kind::integer) return v.as_signed() < 0 ? -1 : v.as_signed() > 0 ? 1 : 0;
+        not_constant(span, "'operator<=>' must return a std::ordering");
+    }
+
+    // The std::ordering alternative for `sign`.
+    Value ordering_of(int sign, Span span) {
+        const Symbol* ordering = program.std_module ? program.std_module->item("std::ordering") : nullptr;
+        if (!ordering) not_constant(span, "std::ordering is not available");
+        std::string_view name = sign < 0 ? "less" : sign > 0 ? "greater" : "equal";
+        auto it = ordering->members.find(std::string(name));
+        if (it == ordering->members.end() || it->second.empty()) not_constant(span, "std::ordering is not available");
+        Value v;
+        v.kind   = Value::Kind::enumeration;
+        v.type   = tc.user(ordering);
+        v.symbol = it->second.front();
+        return v;
     }
 
     Value apply(TokenKind op, const Value& l, const Value& r, Span span, Span rhs_span) {
         if (op == TokenKind::eq_eq) return Value::of_bool(equal(l, r), tc.bool_());
         if (op == TokenKind::bang_eq) return Value::of_bool(!equal(l, r), tc.bool_());
+        if (op == TokenKind::spaceship) {   // numbers, chars and text (byte order)
+            int sign = 0;
+            if (l.kind == Value::Kind::floating) sign = l.floating < r.floating ? -1 : l.floating > r.floating ? 1 : 0;
+            else if (l.kind == Value::Kind::character) sign = l.character < r.character ? -1 : l.character > r.character ? 1 : 0;
+            else if (l.kind == Value::Kind::string) sign = l.string < r.string ? -1 : l.string > r.string ? 1 : 0;
+            else if (l.kind == Value::Kind::integer && l.type && l.type->is_signed) sign = l.as_signed() < r.as_signed() ? -1 : l.as_signed() > r.as_signed() ? 1 : 0;
+            else if (l.kind == Value::Kind::integer) sign = l.integer < r.integer ? -1 : l.integer > r.integer ? 1 : 0;
+            else unknown();
+            return ordering_of(sign, span);
+        }
         if (l.kind == Value::Kind::floating) {
             double a = l.floating, c = r.floating, x = 0;
             switch (op) {
@@ -644,7 +738,7 @@ struct Evaluator::Impl {
             default: unknown();
             }
             Value v = l;
-            v.floating = l.type && l.type->bits == 32 ? round_f32(x) : x;
+            v.floating = l.type && l.type->bits <= 32 ? round_float(x, l.type->bits) : x;
             return v;
         }
         if (l.kind == Value::Kind::character) {
@@ -733,6 +827,18 @@ struct Evaluator::Impl {
     Value cast(const CastExpr& c) {
         const Type* to = type_of(c);
         Value       v  = eval(*c.operand);
+        auto distinct = [](const Type* t) {
+            return t && t->is(Kind::user) && t->symbol && t->symbol->decl && t->symbol->kind == SymbolKind::struct_ &&
+                   t->symbol->decl->as<ast::TypeDecl>().is_distinct;
+        };
+        if (c.variant.empty() && distinct(to)) {   // spec 34: the value in its distinct type
+            Value out;
+            out.kind = Value::Kind::aggregate;
+            out.type = to;
+            out.elements.push_back(std::move(v));
+            return out;
+        }
+        if (c.variant.empty() && v.kind == Value::Kind::aggregate && distinct(v.type) && !v.elements.empty()) return v.elements[0];
         if (c.variant == "reinterpret" || c.variant == "dynamic") not_constant(c.span, std::format("'cast::{}' cannot run at compile time", c.variant));
         if (c.variant == "checked") {
             const Type* inner = to->symbol->template_args.at(0);
@@ -785,7 +891,7 @@ struct Evaluator::Impl {
             r.kind     = Value::Kind::floating;
             r.type     = to;
             r.floating = v.type->is_signed ? static_cast<double>(v.as_signed()) : static_cast<double>(v.integer);
-            if (to->bits == 32) r.floating = round_f32(r.floating);
+            if (to->bits <= 32) r.floating = round_float(r.floating, to->bits);
             if (exact) {
                 std::optional<Value> back = convert(r, v.type, true);
                 if (!back || !equal(*back, v)) return std::nullopt;
@@ -804,7 +910,7 @@ struct Evaluator::Impl {
         if (v.kind == Value::Kind::floating && to->is_float()) {
             Value r = v;
             r.type  = to;
-            if (to->bits == 32) r.floating = round_f32(v.floating);
+            if (to->bits <= 32) r.floating = round_float(v.floating, to->bits);
             if (exact && !std::isnan(v.floating) && r.floating != v.floating) return std::nullopt;
             return r;
         }
@@ -914,6 +1020,10 @@ struct Evaluator::Impl {
     Value struct_literal(const StructLiteralExpr& sl) {
         const Type* t = type_of(sl);
         if (!t->is(Kind::user)) unknown();
+        if (types::is_union(t->symbol)) {   // spec 34: its bytes depend on the target's layout
+            not_constant(sl.span, std::format("a union ({}) is not a compile-time value", types::to_string(t)),
+                         "build it at run time");
+        }
         std::map<std::string, Value> given;
         for (const FieldInit& f : sl.fields) given[f.name] = eval(*f.value);
         return build_aggregate(t, given, sl.span);
@@ -1041,6 +1151,7 @@ struct Evaluator::Impl {
 
     Value call(const CallExpr& c) {
         if (std::string b = builtin_name(c); !b.empty()) return builtin(c, b);
+        if (std::string r = raw_intrinsic(c); r == "bit_cast") return bit_cast(c);
         const Expr& callee = *c.callee;
         if (callee.kind == ExprKind::path) {
             const auto& pe = callee.as<PathExpr>();
@@ -1070,7 +1181,98 @@ struct Evaluator::Impl {
         not_constant(c.span, "this call cannot run at compile time");
     }
 
+    // `std::bit_cast<T>(x)` at compile time (spec 34): between numbers of the same width.
+    Value bit_cast(const CallExpr& c) {
+        Value       x  = eval(*c.args.at(0));
+        const Type* to = type_of(c);
+        if (!to || !(to->is_integer() || to->is_float()) || !(x.kind == Value::Kind::integer || x.kind == Value::Kind::floating)) {
+            not_constant(c.span, "std::bit_cast runs at compile time between numbers only", "not a number");
+        }
+        std::uint64_t bits = 0;
+        if (x.kind == Value::Kind::floating) {
+            if (x.type->bits == 16) bits = std::bit_cast<std::uint16_t>(static_cast<_Float16>(x.floating));
+            else if (x.type->bits == 32) bits = std::bit_cast<std::uint32_t>(static_cast<float>(x.floating));
+            else bits = std::bit_cast<std::uint64_t>(x.floating);
+        } else {
+            bits = static_cast<std::uint64_t>(x.integer);
+        }
+        if (to->is_integer()) return integer(static_cast<u128>(bits), to);
+        Value v;
+        v.kind     = Value::Kind::floating;
+        v.type     = to;
+        v.floating = to->bits == 16   ? static_cast<double>(std::bit_cast<_Float16>(static_cast<std::uint16_t>(bits)))
+                   : to->bits == 32 ? static_cast<double>(std::bit_cast<float>(static_cast<std::uint32_t>(bits)))
+                                    : std::bit_cast<double>(bits);
+        return v;
+    }
+
+    // The methods of numbers (spec 34), at compile time.
+    Value number_method(const Value& o, const std::string& name, const CallExpr& c) {
+        std::vector<Value> a;
+        for (const ExprPtr& e : c.args) a.push_back(eval(*e));
+        if (o.kind == Value::Kind::integer) {
+            bool sgn = o.type && o.type->is_signed;
+            auto less = [&](const Value& x, const Value& y) { return sgn ? x.as_signed() < y.as_signed() : x.integer < y.integer; };
+            if (name == "abs") {
+                if (!sgn || o.as_signed() >= 0) return o;
+                if (o.integer == (u128(1) << (o.type->bits - 1))) failed(c.span, std::format("integer overflow in 'abs' ({})", o.type->name), "overflow");
+                return integer(static_cast<u128>(-o.as_signed()), o.type);
+            }
+            if (name == "min") return less(a.at(0), o) ? a[0] : o;
+            if (name == "max") return less(o, a.at(0)) ? a[0] : o;
+            if (name == "clamp") {
+                if (less(a.at(1), a.at(0))) failed(c.span, "clamp with lo > hi", "lo > hi");
+                return less(o, a[0]) ? a[0] : less(a[1], o) ? a[1] : o;
+            }
+            unknown();
+        }
+        if (o.kind != Value::Kind::floating) unknown();
+        bool   f32 = o.type && o.type->bits <= 32;
+        double x   = o.floating;
+        auto   num = [&](double r) {
+            Value v    = o;
+            v.floating = f32 ? round_float(r, o.type->bits) : r;
+            return v;
+        };
+        auto arg = [&](std::size_t i) { return a.at(i).floating; };
+        if (name == "sqrt") return num(std::sqrt(x));
+        if (name == "abs") return num(std::fabs(x));
+        if (name == "floor") return num(std::floor(x));
+        if (name == "ceil") return num(std::ceil(x));
+        if (name == "round") return num(std::round(x));
+        if (name == "trunc") return num(std::trunc(x));
+        if (name == "sin") return num(std::sin(x));
+        if (name == "cos") return num(std::cos(x));
+        if (name == "tan") return num(std::tan(x));
+        if (name == "asin") return num(std::asin(x));
+        if (name == "acos") return num(std::acos(x));
+        if (name == "atan") return num(std::atan(x));
+        if (name == "atan2") return num(std::atan2(x, arg(0)));
+        if (name == "exp") return num(std::exp(x));
+        if (name == "exp2") return num(std::exp2(x));
+        if (name == "log") return num(std::log(x));
+        if (name == "log2") return num(std::log2(x));
+        if (name == "log10") return num(std::log10(x));
+        if (name == "pow") return num(std::pow(x, arg(0)));
+        if (name == "copysign") return num(std::copysign(x, arg(0)));
+        if (name == "min") return num(std::fmin(x, arg(0)));
+        if (name == "max") return num(std::fmax(x, arg(0)));
+        if (name == "mul_add") return num(f32 ? static_cast<double>(std::fma(static_cast<float>(x), static_cast<float>(arg(0)), static_cast<float>(arg(1))))
+                                              : std::fma(x, arg(0), arg(1)));
+        if (name == "clamp") {
+            if (!(arg(0) <= arg(1))) failed(c.span, "clamp with lo > hi (or a NaN bound)", "lo > hi");
+            return num(std::fmin(std::fmax(x, arg(0)), arg(1)));
+        }
+        if (name == "is_nan") return Value::of_bool(std::isnan(x), tc.bool_());
+        if (name == "is_infinite") return Value::of_bool(std::isinf(x), tc.bool_());
+        if (name == "is_finite") return Value::of_bool(std::isfinite(x), tc.bool_());
+        unknown();
+    }
+
     Value method(const Value& o, const std::string& name, const CallExpr& c) {
+        if ((o.kind == Value::Kind::integer || o.kind == Value::Kind::floating) && types::is_number_method(o.type, name)) {
+            return number_method(o, name, c);
+        }
         if ((o.kind == Value::Kind::list || o.kind == Value::Kind::string) && c.args.empty()) {
             std::size_t n = o.kind == Value::Kind::list ? o.elements.size() : o.string.size();
             if (name == "len") return integer(n, usize());
@@ -1353,6 +1555,12 @@ struct Evaluator::Impl {
             return Value::of_bool(hooks.implements && hooks.implements(t, i), tc.bool_());
         }
         if (name == "type_name") return string_value(types::to_string(t));
+        if (name == "meta::type_id") {   // spec 34: a hash of the fully qualified type, the same in every module
+            std::string   text = types::qualified_name(t);
+            std::uint64_t h    = 1469598103934665603ull;   // FNV-1a
+            for (char ch : text) h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+            return integer(h, tc.builtin("u64"));
+        }
         if (name == "meta::interface_hash") {   // a plugin's interface (dynamic libraries): its name and methods
             if (!t->is(Kind::user) || t->symbol->kind != SymbolKind::interface) {
                 failed(c.span, std::format("std::meta::interface_hash needs an interface, not {}", types::to_string(t)), "not an interface");
@@ -1916,6 +2124,51 @@ struct Evaluator::Impl {
             g->options.push_back(BuildOption{setting_short, static_text(args.at(2)), types::to_string(t), to_string(v)});
             return v;
         }
+        if (n == "output" || n == "details") {   // how the build reports itself (build-output.md)
+            auto member = [&](const Value& v, std::string_view wanted) -> const Value* {
+                if (!v.type || !v.type->is(Kind::user)) return nullptr;
+                std::size_t i = 0;
+                for (const Symbol* m : v.type->symbol->member_order) {
+                    if (m->kind != SymbolKind::field || m->is_static) continue;
+                    if (m->name == wanted) return i < v.elements.size() ? &v.elements[i] : nullptr;
+                    ++i;
+                }
+                return nullptr;
+            };
+            auto names = [](const Value* list) {
+                std::vector<std::string> out;
+                if (!list) return out;
+                for (const Value& e : list->elements) {
+                    if (e.symbol) out.push_back(e.symbol->name);
+                }
+                return out;
+            };
+            if (n == "details") {
+                BuildTarget& t = target_of(0);
+                t.details      = names(&args.at(1));
+                t.has_details  = true;
+                return Value{};
+            }
+            const Value& o   = args.at(0);
+            BuildOutput& out = g->output;
+            out.set          = true;
+            if (const Value* p = member(o, "progress"); p && p->symbol) out.progress = p->symbol->name;
+            out.details = names(member(o, "details"));
+            if (const Value* l = member(o, "log_file"); l && l->kind == Value::Kind::boolean) out.log_file = l->boolean;
+            if (const Value* k = member(o, "keep_logs"); k && k->kind == Value::Kind::integer) out.keep_logs = static_cast<unsigned>(k->integer);
+            if (const Value* x = member(o, "target_line")) out.target_line = static_text(*x);
+            if (const Value* x = member(o, "done_line")) out.done_line = static_text(*x);
+            if (const Value* x = member(o, "source_row")) out.source_row = static_text(*x);
+            if (const Value* x = member(o, "last_line")) out.last_line = static_text(*x);
+            if (const Value* x = member(o, "failed_line")) out.failed_line = static_text(*x);
+            return Value{};
+        }
+        if (n == "target_cpu") {   // g.target_cpu(t, level): the driver compiles t for the level (spec 34)
+            const Value& level = args.at(1);
+            if (!level.symbol) failed(c.args[1]->span, "'target_cpu' takes a 'std::build::cpu' level", "not a CPU level");
+            target_of(0).settings["std::build::cpu"] = std::make_shared<const Value>(level);
+            return Value{};
+        }
         if (n == "set_global_allocator") {
             const Value& a = args.at(1);
             if (a.kind == Value::Kind::string) {   // a type of the program, by name
@@ -1944,7 +2197,7 @@ struct Evaluator::Impl {
             t.settings[static_text(args.at(1))] = std::make_shared<const Value>(args.at(2));
             return Value{};
         }
-        if (n == "set_for_files") {   // a setting for the files of `t` matching a pattern (spec 31)
+        if (n == "set_for_files" || n == "optimize_files") {   // a setting for the files of `t` matching a pattern (spec 31, 34)
             namespace fs = std::filesystem;
             BuildTarget&    t       = target_of(0);
             std::string     pattern = static_text(args.at(1));
@@ -1952,9 +2205,17 @@ struct Evaluator::Impl {
             std::error_code ec;
             fs::path base = fs::path(t.base.empty() ? g->root : t.base) / t.root;
             if (!fs::is_directory(base, ec)) base = base.parent_path();
+            // optimize_files reaches every module the target compiles, so it is relative to the
+            // project (the target's package root), not to the target's own directory.
+            if (n == "optimize_files") base = fs::path(t.base.empty() ? g->root : t.base);
             sema::FileSetting fsetting;
-            fsetting.name  = setting_key.empty() ? static_text(args.at(2)) : setting_key;
-            fsetting.value = std::make_shared<const Value>(args.at(3));
+            if (n == "optimize_files") {   // g.optimize_files(t, pattern, level): the backend reads it
+                fsetting.name  = "std::build::optimization";
+                fsetting.value = std::make_shared<const Value>(args.at(2));
+            } else {
+                fsetting.name  = setting_key.empty() ? static_text(args.at(2)) : setting_key;
+                fsetting.value = std::make_shared<const Value>(args.at(3));
+            }
             for (auto it = fs::recursive_directory_iterator(base, fs::directory_options::skip_permission_denied, ec);
                  it != fs::recursive_directory_iterator(); it.increment(ec)) {
                 if (ec) break;
@@ -2397,7 +2658,11 @@ struct Evaluator::Impl {
                 case TokenKind::star_percent_eq: op = TokenKind::star_percent; break;
                 default: unknown();
                 }
-                target = apply(op, target, value, a.span, a.value->span);
+                if (a.distinct_underlying && target.kind == Value::Kind::aggregate && !target.elements.empty()) {   // spec 34
+                    target.elements[0] = apply(op, target.elements[0], value, a.span, a.value->span);
+                } else {
+                    target = apply(op, target, value, a.span, a.value->span);
+                }
             }
             return;
         }

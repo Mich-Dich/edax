@@ -1,0 +1,17 @@
+// feature 18/34: `mut` captures make calling the lambda a change of the lambda.
+import std;
+
+template<type F>
+void call_once(F f) {
+    f();                                                   //~ error[E4022]: changes its 'mut' captures
+}
+
+void f() {
+    auto frozen = [mut n = 1u32]() { n *= 2; };
+    frozen();                                              //~ error[E4022]: 'frozen' is not mutable
+    mut auto counter = [mut n = 1u32]() { n *= 2; };
+    counter();
+    auto plain = [count = 0u32]() { count += 1; };         //~ error[E4020]: cannot assign to 'count'
+    std::function<void()> g = [mut z = 0u32]() { z += 1; };   //~ error[E4010]
+    call_once([mut k = 0u32]() { k += 1; });
+}

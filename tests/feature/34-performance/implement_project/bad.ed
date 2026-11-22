@@ -1,0 +1,13 @@
+import std;
+import math::vec3;
+import geometry::point;
+import other::glue;
+
+struct pt2 { f32 x; }
+implement geometry::point for pt2 {
+    f64 px() override { return cast<f64>(this.x); }
+}
+implement math::vec3 for pt2 {
+    f64 qq() { return 0.0; }
+}
+void main() { }

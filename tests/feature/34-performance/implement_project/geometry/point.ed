@@ -1,0 +1,13 @@
+namespace geometry {
+    implement geometry::point for math::vec3 {
+        f64 px() override { return cast<f64>(this.x); }
+        f64 py() override { return cast<f64>(this.y); }
+    }
+
+    template<type P : geometry::point>
+    f64 distance_sq(P& a, P& b) {
+        f64 dx = a.px() - b.px();
+        f64 dy = a.py() - b.py();
+        return dx * dx + dy * dy;
+    }
+}

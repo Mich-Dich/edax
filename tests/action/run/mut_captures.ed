@@ -1,0 +1,22 @@
+// RUN: edaxc run %s
+// `[mut x = ...]` captures (spec 34): the lambda changes its own copy; calling it needs a mutable
+// lambda, and moving it keeps its state.
+import std;
+
+template<type F>
+void call_three(mut F f) {
+    f();
+    f();
+    f();
+}
+
+
+void main() {
+    mut auto counter = [mut count = 0u32]() {
+        count += 1;
+        std::println(f"called {count} times");
+    };
+    counter();
+    counter();
+    call_three(move counter);
+}

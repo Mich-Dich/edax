@@ -1,0 +1,15 @@
+import std;
+import math::vec3;
+import geometry::point;
+
+void show(geometry::point& p) {
+    std::println(f"({p.px()}, {p.py()})");
+}
+
+void main() {
+    math::vec3 a = math::vec3{ .x = 1.0, .y = 2.0, .z = 0.0 };
+    math::vec3 b = math::vec3{ .x = 4.0, .y = 6.0, .z = 0.0 };
+    std::println(f"{geometry::distance_sq(a, b)} {a.px()}");
+    show(b);
+    std::println(f"{std::implements<math::vec3, geometry::point>()}");
+}

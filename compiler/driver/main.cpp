@@ -12,7 +12,7 @@
 int main(int argc, char** argv) {
     std::vector<std::string_view> args(argv + 1, argv + argc);
     try {
-        edax::DriverStreams streams{std::cout, std::cerr, isatty(STDERR_FILENO) == 1};
+        edax::DriverStreams streams{std::cout, std::cerr, isatty(STDERR_FILENO) == 1, isatty(STDOUT_FILENO) == 1};
         return static_cast<int>(edax::run_driver(args, streams));
     } catch (const std::exception& e) {
         std::cerr << "edaxc: internal compiler error: " << e.what() << '\n';

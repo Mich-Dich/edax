@@ -2,11 +2,13 @@
 // (spec 24, 25). Everything here runs at compile time.
 
 namespace std::build {
-    // How much the optimizer works (spec 24).
+    // How much the optimizer works (spec 24): `basic` is the light optimization of the
+    // `development` mode (fast to compile, playable to run, still easy to debug).
     enum optimization : u8 {
         none,
         size,
         speed,
+        basic,
     }
 
     // How much debug information goes into the program.
@@ -39,6 +41,21 @@ namespace std::build {
         all,
         gated_only,
         none,
+    }
+
+    // Whether `@std::float_mode` may relax floating point (spec 34): `strict` keeps every float
+    // result identical on every machine (lockstep games, replays).
+    enum float_determinism : u8 {
+        relaxed,
+        strict,
+    }
+
+    // Run-time instrumentation for finding memory and thread bugs in unsafe and C/C++ code
+    // (spec 34). The C and C++ targets of the build are instrumented the same way.
+    enum sanitizer : u8 {
+        none,
+        address,
+        thread,
     }
 
     // What a panic does: print and abort, or a CPU trap instruction without a message.
@@ -224,6 +241,50 @@ namespace std::build {
         compile_time std::option<T> value_at(std::call_site where);
     }
 
+    // How the build reports itself on the console (build-output.md).
+    enum progress : u8 {
+        // Live lines on a terminal, a line per finished target otherwise.
+        automatic,
+        live,
+        // Each target once, when it is finished.
+        lines,
+        // Diagnostics and the last line only.
+        quiet,
+    }
+
+    // What the console shows under a target's line; build.log always has all of them.
+    enum detail : u8 {
+        // Each source file with lines, size, its mark and time.
+        sources,
+        // The steps after the source files (check, code, link) with their times.
+        units,
+        // The compiler command of each C/C++ file.
+        commands,
+        // Each package: where it comes from and where it is.
+        packages,
+        // edaxc's version, the C/C++ compiler and the linker.
+        toolchain,
+        // The slowest units of the build, under the last line.
+        timings,
+    }
+
+    // `g.output(...)`: the project's defaults; the command line (--progress, --details,
+    // --no-log-file) overrides them. The lines are patterns: the std::log syntax with the
+    // build's placeholders ({mark}, {target}, {bar:40}, {done}, {total}, {running}, {elapsed},
+    // {summary}, {output}, {lines}, {size}, {file:<*}, {time}, {targets}, {errors}, {warnings},
+    // {log}); "" keeps the default.
+    view struct output {
+        std::build::progress          progress = std::build::progress::automatic;
+        std::span<std::build::detail> details  = [];
+        bool                          log_file  = true;
+        u32                           keep_logs = 5;
+        std::static_str               target_line = "";
+        std::static_str               done_line   = "";
+        std::static_str               source_row  = "";
+        std::static_str               last_line   = "";
+        std::static_str               failed_line = "";
+    }
+
     class graph {
     public:
         // The option `-D<name>=<value>` for a setting (its name without the namespace).
@@ -235,6 +296,15 @@ namespace std::build {
         // Gives the files of `t` matching `pattern` (relative to its root file's directory) a value.
         template<type T>
         compile_time void set_for_files(std::build::target t, std::static_str pattern, std::build::setting<T> s, T value) mut;
+        // Optimizes the files `t` compiles that match `pattern` (relative to the project root, or a
+        // package's root) at `level`, whatever the mode (spec 34):
+        // the math and the standard library at `speed` in a debug build, one file at `none` to
+        // debug it in a release build.
+        compile_time void optimize_files(std::build::target t, std::static_str pattern, std::build::optimization level) mut;
+        // Compiles the Edax code of `t` for a CPU level instead of the build's (spec 34): its vector
+        // code may use that level's instructions, and `target_has_cpu_feature` answers for it.
+        // The program then needs a CPU of that level to run.
+        compile_time void target_cpu(std::build::target t, std::build::cpu level) mut;
         // Include directories for C/C++ code: `visibility::shared` also for what links `t`,
         // `own` for `t` only, `users` only for what links it.
         compile_time void add_include_dirs(std::build::target t, std::span<std::static_str> dirs, std::build::visibility v) mut;
@@ -333,6 +403,10 @@ namespace std::build {
         // The same with an allocator type of the program, which build.ed can't see:
         // `g.set_global_allocator(app, "engine::frame_heap")`.
         compile_time void set_global_allocator(std::build::target t, std::static_str allocator) mut;
+        // How the build reports itself (build-output.md).
+        compile_time void output(std::build::output o) mut;
+        // The details shown under one target's line, instead of the project's.
+        compile_time void details(std::build::target t, std::span<std::build::detail> d) mut;
         // The platform edaxc runs on and the one it builds for.
         compile_time std::build::platform host();
         compile_time std::build::platform target_platform();

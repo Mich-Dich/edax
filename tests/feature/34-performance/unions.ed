@@ -1,0 +1,23 @@
+// feature 34: unions share memory; writing a member is safe, reading one needs unsafe.
+import std;
+
+union bits {
+    u32 word;
+    f32 number;
+}
+compile_time check (std::size_of<bits>() == 4) else "the largest member";
+
+union wide {
+    u8 small;
+    f64 big;
+}
+compile_time check (std::size_of<wide>() == 8 && std::align_of<wide>() == 8) else "the strictest alignment";
+
+compile_time bits constant = bits{ .word = 5 };   //~ error[E4200]: not a compile-time value
+
+void f(mut bits b) {
+    b.word = 3;
+    u32 read = b.word;             //~ error[E4100]: requires 'unsafe'
+    b.word += 1;                   //~ error[E4100]: requires 'unsafe'
+    u32 ok = unsafe { b.word };
+}

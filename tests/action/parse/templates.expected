@@ -1,6 +1,7 @@
 exit: 1
 --- stdout
 (fn f -> void
+  (doc " RUN: edaxc parse %s\n '<' is a template argument list only when it is followed by '(', '::' or '{'.")
   (block
     (discard (< (path a) (path b)))
     (discard (call (path larger<u32>) (int 3) (int 4)))

@@ -1,0 +1,7 @@
+exit: 134
+--- stdout
+bytes 1 2 3 4, bits of 1.5: 1069547520
+type ids differ: true
+tier 1 costs 25
+--- stderr
+tests/action/run/assume_unreachable.ed:9:5: panic: assumption failed (std::assume)

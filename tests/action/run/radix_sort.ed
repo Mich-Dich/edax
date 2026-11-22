@@ -1,0 +1,66 @@
+// RUN: edaxc run %s
+// Integer sorts use a radix sort from 256 elements on (spec 34): signed values, every integer
+// size, keys in both orders, stability, and the same order as the comparison sort.
+import std;
+
+struct record { i32 key = 0; u32 id = 0; }
+
+template<type T>
+bool sorted(std::darray<T>& v) {
+    for (usize i : 1..v.len()) {
+        if (v[i] < v[i - 1]) { return false; }
+    }
+    return true;
+}
+
+void main() {
+    mut u64 x = 88172645463325252;
+    mut std::darray<i32> a = default;
+    mut std::darray<i64> b = default;
+    mut std::darray<u8> c = default;
+    mut std::darray<i16> d = default;
+    mut std::darray<u64> e = default;
+    mut std::darray<record> r = default;
+    mut i64 total = 0;
+    for (u32 i : 0..5000) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        i32 v = cast::truncate<i32>(x);
+        a.push(v);
+        b.push(cast::truncate<i64>(x));
+        c.push(cast::truncate<u8>(x));
+        d.push(cast::truncate<i16>(x >> 3));
+        e.push(x);
+        r.push(record{ .key = v % 50, .id = i });
+        total += cast<i64>(v);
+    }
+    mut std::darray<i32> small = default;
+    for (i32 i : 0..10) { small.push(5 - i); }
+    a.sort();
+    b.sort();
+    c.sort();
+    d.sort();
+    e.sort();
+    small.sort();
+    mut i64 after = 0;
+    for (usize i : 0..a.len()) { after += cast<i64>(a[i]); }
+    std::println(f"sorted: {sorted(a)} {sorted(b)} {sorted(c)} {sorted(d)} {sorted(e)} {sorted(small)}, same values: {after == total}");
+    std::println(f"ends: {a[0] < 0} {a[a.len() - 1] > 0} {small[0]} {small[9]}");
+    r.sort_by_key(std::sort_order::ascending, [](record& q) { return q.key; });
+    mut bool stable = true;
+    for (usize i : 1..r.len()) {
+        if (r[i - 1].key > r[i].key || (r[i - 1].key == r[i].key && r[i - 1].id > r[i].id)) { stable = false; }
+    }
+    std::println(f"ascending stable: {stable}, from {r[0].key} to {r[r.len() - 1].key}");
+    r.sort_by_key(std::sort_order::descending, [](record& q) { return q.key; });
+    stable = true;
+    for (usize i : 1..r.len()) {
+        if (r[i - 1].key < r[i].key || (r[i - 1].key == r[i].key && r[i - 1].id > r[i].id)) { stable = false; }
+    }
+    mut std::darray<u32> through_span = default;
+    for (u32 i : 0..1000) { through_span.push((i * 7919) % 1000); }
+    through_span.as_mut_span().sort();
+    std::println(f"span: {through_span[0]} {through_span[999]} {sorted(through_span)}");
+    std::println(f"descending stable: {stable}, from {r[0].key} to {r[r.len() - 1].key}");
+}

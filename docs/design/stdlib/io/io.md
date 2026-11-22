@@ -45,6 +45,8 @@ std::file in = std::file::open(user_path)?;                           // OK: run
 - The program's arguments come to `main` as `std::span<std::str>` (see [Functions](../../language/functions/functions.md)).
 - `std::env::raw_args()` returns copies of the arguments as bytes (`std::darray<std::darray<u8>>`), for arguments that aren't UTF-8.
 - `std::env::variable(name) → std::option<std::string>` reads an environment variable.
+- `std::env::is_terminal(std::env::stream::output)` says whether a standard stream (`input`, `output`, `error`) is a terminal rather than a file or a pipe: whether escape codes and redrawn lines make sense there.
+- `std::env::output_terminal_size() → std::option<std::env::terminal_size>` gives the output terminal's `columns` and `rows` (none when the output isn't a terminal).
 
 ## Rationale
 - **Files are values:** closing is destruction, so a file can't be used after it is closed or forgotten open.

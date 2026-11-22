@@ -1,0 +1,10 @@
+// build.ed of a test project (spec 34): one target compiled for a higher CPU level.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target base = g.add_executable(std::build::edax_target{ .name = "base", .root = "app.ed" });
+        std::build::target fast = g.add_executable(std::build::edax_target{ .name = "fast", .root = "app.ed" });
+        g.target_cpu(fast, std::build::cpu::x86_64_v2);
+    }
+}

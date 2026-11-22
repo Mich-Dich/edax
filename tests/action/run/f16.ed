@@ -1,0 +1,19 @@
+// RUN: edaxc run %s
+// f16 (spec 34): arithmetic, conversions, compile-time values, layout, bits, methods.
+import std;
+
+compile_time f16 third = cast::round<f16>(1.0f64 / 3.0);
+compile_time check (std::size_of<f16>() == 2) else "two bytes";
+
+struct gpu_vertex { f16 u; f16 v; }
+
+void main() {
+    f16 a = 1.5;
+    f16 b = 0.25f16;
+    f16 c = a * b + a;
+    f32 wide = cast<f32>(c);
+    f16 back = cast::round<f16>(wide * 1000.0);
+    u8 small = 200;
+    f16 from_int = cast<f16>(small);
+    std::println(f"{c} {wide} {back} {third} {from_int} {std::size_of<gpu_vertex>()} {f16::max} {(2.0f16).sqrt()} {std::bit_cast<u16>(a)}");
+}

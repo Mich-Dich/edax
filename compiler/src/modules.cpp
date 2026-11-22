@@ -1,6 +1,7 @@
 #include "edax/modules.hpp"
 
 #include "edax/ast_printer.hpp"
+#include "edax/graphics_registry.hpp"
 #include "edax/lexer.hpp"
 #include "edax/parser.hpp"
 #include "edax/std_library.hpp"
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <format>
 #include <map>
+#include <mutex>
 #include <system_error>
 
 namespace edax {
@@ -144,28 +146,79 @@ private:
     // std::log). Returns the name a program's text must contain, or an empty view for the
     // modules every `import std;` loads. `std::windowing` and its parts (std::windowing::x11, ...)
     // all load together when a file names `std::windowing`.
-    static std::string_view on_demand_trigger(std::string_view name) {
-        if (name == "std::log") return name;
-        if (name == "std::windowing" || name.starts_with("std::windowing::")) return "std::windowing";
+    // std::graphics comes with std::windowing, which uses it (std modules' own text doesn't count
+    // as naming a module).
+    static std::vector<std::string_view> on_demand_triggers(std::string_view name) {
+        if (name == "std::log") return {name};
+        if (name == "std::windowing" || name.starts_with("std::windowing::")) return {"std::windowing"};
+        if (name == "std::graphics") return {"std::graphics", "std::windowing"};
+        if (name == "std::graphics::opengl" || name == "std::graphics::vulkan") return {name};
         return {};
     }
-    static bool on_demand(std::string_view name) { return !on_demand_trigger(name).empty(); }
+    static bool on_demand(std::string_view name) { return !on_demand_triggers(name).empty(); }
+
+    // Whether a file of the program (not of std) contains one of `triggers`.
+    bool program_names(const std::vector<std::string_view>& triggers) const {
+        for (const auto& [mname, mod] : program_.modules) {
+            if (mod->project == "std") continue;
+            for (const auto* f : {&mod->header, &mod->source}) {
+                if (!*f) continue;
+                std::string_view text = sources_.file((*f)->id).text();
+                for (std::string_view t : triggers) {
+                    if (text.find(t) != std::string_view::npos) return true;
+                }
+            }
+        }
+        return false;
+    }
 
     // Loads the on-demand std modules that some loaded file names.
     void load_named_std() {
         if (!program_.std_module) return;
         for (const StdModule& m : std_modules()) {
             if (!on_demand(m.name) || program_.modules.count(std::string(m.name))) continue;
-            std::string_view trigger = on_demand_trigger(m.name);
-            bool named = false;
-            for (const auto& [mname, mod] : program_.modules) {
-                if (mod->project == "std") continue;
-                for (const auto* f : {&mod->header, &mod->source}) {
-                    if (*f && sources_.file((*f)->id).text().find(trigger) != std::string_view::npos) named = true;
-                }
-            }
-            if (named) add_std_module(m);
+            if (program_names(on_demand_triggers(m.name))) add_std_module(m);
         }
+        // The modules made from the Khronos registries (graphics_registry.cpp), made the first time
+        // a program names them.
+        for (std::string_view name : {std::string_view("std::graphics::opengl"), std::string_view("std::graphics::vulkan")}) {
+            if (program_.modules.count(std::string(name)) || !program_names(on_demand_triggers(name))) continue;
+            if (const StdModule* m = generated_std_module(name)) add_std_module(*m);
+        }
+    }
+
+    // std::graphics::opengl or ::vulkan, made from its registry once per process. Null (and an
+    // error) when the registry can't be read.
+    const StdModule* generated_std_module(std::string_view name) {
+        struct Made {
+            GeneratedStdModule text;
+            StdModule          module;
+            std::string        error;
+        };
+        static std::map<std::string, Made, std::less<>> made;
+        static std::mutex                                 lock;
+        std::lock_guard<std::mutex>                       guard(lock);
+        auto it = made.find(name);
+        if (it == made.end()) {
+            Made m;
+            bool vulkan = name == "std::graphics::vulkan";
+            try {
+                m.text = vulkan ? generate_vulkan_module(std_registry("vk.xml")) : generate_opengl_module(std_registry("gl.xml"));
+            } catch (const std::exception& e) {
+                m.error = e.what();
+            }
+            it = made.emplace(std::string(name), std::move(m)).first;
+            Made& stored = it->second;
+            stored.module = StdModule{vulkan ? "std::graphics::vulkan" : "std::graphics::opengl",
+                                      vulkan ? "<std>/graphics/vulkan.edh" : "<std>/graphics/opengl.edh", stored.text.header,
+                                      vulkan ? "<std>/graphics/vulkan.ed" : "<std>/graphics/opengl.ed", stored.text.source};
+        }
+        if (!it->second.error.empty()) {
+            diags_.report(DiagCode::E3001, Span{}, std::format("cannot make module '{}': {}", name, it->second.error),
+                          "the embedded Khronos registry could not be read");
+            return nullptr;
+        }
+        return &it->second.module;
     }
 
     void add_std_module(const StdModule& m) {

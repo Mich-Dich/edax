@@ -1,0 +1,18 @@
+// feature 34: the methods of numbers, at compile time and with wrong arguments.
+import std;
+
+compile_time check ((2.0f64).sqrt() * (2.0f64).sqrt() > 1.99) else "sqrt";
+compile_time check ((-7i32).clamp(-3, 3) == -3) else "clamp";
+compile_time check ((-7i32).abs() == 7) else "abs";
+compile_time check ((3u8).max(9) == 9) else "max";
+compile_time check ((2.0f32).mul_add(3.0, 1.0) == 7.0) else "fused multiply-add";
+compile_time check ((0.0f64).cos() == 1.0) else "cos";
+compile_time check ((1.0f64 / 0.0).is_infinite()) else "infinity";
+compile_time check ((5i32).clamp(9, 1) == 5) else "unused";   //~ error[E4201]: clamp with lo > hi
+
+void f(f32 x, u32 n, f64 y) {
+    f32 a = x.sqrt(1.0);        //~ error[E4030]: takes 0 arguments
+    f32 b = x.min(y);           //~ error[E4010]
+    u32 c = n.sqrt();           //~ error[E4070]
+    bool d = x.is_nan();
+}

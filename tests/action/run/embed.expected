@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+hello from a file
+4 bytes, sum 261
+--- stderr

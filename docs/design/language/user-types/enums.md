@@ -61,6 +61,9 @@ std::result<u32, parse_error> r = std::error(parse_error::bad_line);   // T, E f
 auto bad = std::ok(5u32);                                              // ERROR: E is unknown
 ```
 
+### Layout and niches
+`enum e : u8 { ... }` fixes the tag type. `std::option<T>` takes no extra space when `T` has never-valid bit patterns (pointers, `bool`, `char`, `std::nonzero<u64>`, ...): see [Memory Layout](layout.md).
+
 ## Rationale
 - **Mandatory tag type:** layout and ABI are visible and can be controlled. This matters for serialization and for hardware registers.
 - **Payload enums replace `std::variant`:** one way to write a sum type. Named alternatives also read better than `std::variant<circle, square>` with type patterns.

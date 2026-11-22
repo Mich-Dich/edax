@@ -76,7 +76,7 @@ namespace std::windowing {
         u32                  id = 0;
         u64                  handle = 0;              // the X window
         u64                  colormap = 0;
-        graphics_api         api = graphics_api::none;
+        std::option<std::graphics::api> graphics = std::none;
         std::darray<event>   queue = default;
         input_state          input = default;
         bool                 close_requested = false;
@@ -312,6 +312,28 @@ namespace std::windowing {
         }
     }
 
+    // vkGetInstanceProcAddr of the loaded Vulkan loader.
+    private unsafe std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> vulkan_get(std::raw_ptr<mut platform_state> p) {
+        return match ((*p).vk) {
+            std::some(vk) => vk.f.vkGetInstanceProcAddr,
+            std::none     => std::panic("std::windowing: the Vulkan loader is gone"),
+        };
+    }
+
+    // The newest Vulkan version the loader makes instances of: vkEnumerateInstanceVersion, which
+    // a Vulkan 1.0 loader doesn't have.
+    private unsafe std::version vulkan_instance_version(std::raw_ptr<mut platform_state> p) {
+        std::raw_ptr<u8> enumerate = vulkan_get(p)(0, c"vkEnumerateInstanceVersion");
+        if (!enumerate) {
+            return std::version{ .major = 1 };
+        }
+        mut u32 packed = 0;
+        if (cast::reinterpret<std::fn_ptr<i32(std::raw_ptr<mut u32>)>>(enumerate)(mut &packed) != 0) {
+            return std::version{ .major = 1 };
+        }
+        return std::version{ .major = (packed >> 22) & 0x7F, .minor = (packed >> 12) & 0x3FF, .patch = packed & 0xFFF };
+    }
+
     // ---- share groups -------------------------------------------------------------------------------
 
     // A framebuffer config for `c` and a share group around it, with its own 1x1 context.
@@ -383,14 +405,16 @@ namespace std::windowing {
     }
 
     private std::array<i32, 9> context_attributes_of(opengl::config c) {
-        i32 profile = match (c.profile) {
-            opengl::profile::core          => x11::glx_context_core_profile_bit,
-            opengl::profile::compatibility => x11::glx_context_compatibility_profile_bit,
+        i32 profile = match (c.api.name) {
+            std::graphics::api_name::opengl_core          => x11::glx_context_core_profile_bit,
+            std::graphics::api_name::opengl_compatibility => x11::glx_context_compatibility_profile_bit,
+            std::graphics::api_name::opengl_es            => x11::glx_context_es2_profile_bit,
+            std::graphics::api_name::vulkan               => 0,   // refused before (error::wrong_api)
         };
         i32 flags = if (c.debug) { x11::glx_context_debug_bit } else { 0 };
         return [
-            x11::glx_context_major_version, cast<i32>(c.major),
-            x11::glx_context_minor_version, cast<i32>(c.minor),
+            x11::glx_context_major_version, cast::saturate<i32>(c.api.version.major),
+            x11::glx_context_minor_version, cast::saturate<i32>(c.api.version.minor),
             x11::glx_context_profile_mask, profile,
             x11::glx_context_flags, flags,
             0,
@@ -476,7 +500,7 @@ namespace std::windowing {
         public:
             std::windowing::window& window() { return this.owner; }
             std::windowing::size framebuffer_size() { return this.owner.framebuffer_size(); }
-            std::option<std::raw_ptr<u8>> proc_address(std::str name) {
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override {
                 unsafe { return gl_proc_address((*this.state).platform, name); }
             }
             void present() move {
@@ -500,7 +524,7 @@ namespace std::windowing {
 
         view class current {
         public:
-            std::option<std::raw_ptr<u8>> proc_address(std::str name) {
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override {
                 unsafe { return gl_proc_address(this.platform, name); }
             }
             ~current() {
@@ -517,13 +541,22 @@ namespace std::windowing {
     namespace vulkan {
         class loader {
         public:
-            std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> instance_proc_address() {
+            std::option<std::raw_ptr<u8>> proc_address(std::str name) override {
                 unsafe {
-                    return match ((*this.platform).vk) {
-                        std::some(vk) => vk.f.vkGetInstanceProcAddr,
-                        std::none     => std::panic("std::windowing: the Vulkan loader is gone"),
-                    };
+                    std::fn_ptr<std::raw_ptr<u8>(u64, std::raw_ptr<u8>)> get = vulkan_get(this.platform);
+                    if (name == "vkGetInstanceProcAddr") {
+                        return std::some(cast::reinterpret<std::raw_ptr<u8>>(get));   // older loaders don't return themselves
+                    }
+                    std::string c_name = c_text(name);
+                    std::raw_ptr<u8> address = get(0, c_name.as_str().as_ptr());
+                    if (!address) {
+                        return std::none;
+                    }
+                    return std::some(address);
                 }
+            }
+            std::version version() {
+                unsafe { return vulkan_instance_version(this.platform); }
             }
             std::array<std::raw_ptr<u8>, 2> required_extensions() {
                 return [c"VK_KHR_surface", c"VK_KHR_xlib_surface"];
@@ -546,7 +579,7 @@ namespace std::windowing {
     open class window {
     public:
         u32 id() { unsafe { return (*this.state).id; } }
-        graphics_api graphics() { unsafe { return (*this.state).api; } }
+        std::option<std::graphics::api> graphics() { unsafe { return (*this.state).graphics; } }
 
         void drain_events(mut std::darray<event>& out) mut {
             unsafe {
@@ -1019,7 +1052,7 @@ namespace std::windowing {
     // The X window of a new window: decorations, hints, protocols and owner as `config` says.
     // `visual` / `depth` are the GL framebuffer config's for an OpenGL window, else the defaults.
     private unsafe std::result<std::raw_ptr<mut window_state>, error> make_window(
-            std::raw_ptr<mut platform_state> p, window::config config, graphics_api api,
+            std::raw_ptr<mut platform_state> p, window::config config, std::option<std::graphics::api> graphics,
             std::raw_ptr<mut u8> visual, i32 depth) {
         std::raw_ptr<mut u8> display = (*p).display;
         bool popup = match (config.kind) {
@@ -1028,7 +1061,11 @@ namespace std::windowing {
         };
         mut u64 colormap = 0;
         mut u64 value_mask = x11::cw_border_pixel | x11::cw_event_mask;
-        if (api == graphics_api::opengl) {
+        bool opengl = match (graphics) {
+            std::some(a) => std::graphics::is_opengl(a.name),
+            std::none    => false,
+        };
+        if (opengl) {
             colormap = (*p).x.XCreateColormap(display, (*p).root, visual, 0);
             value_mask |= x11::cw_colormap;
         }
@@ -1096,7 +1133,7 @@ namespace std::windowing {
             .id       = (*p).next_window_id,
             .handle   = handle,
             .colormap = colormap,
-            .api      = api,
+            .graphics = graphics,
             .redraw   = config.redraw,
             .extent   = config.size,
             .origin   = at,
@@ -1458,7 +1495,7 @@ namespace std::windowing {
         std::result<window, error> create_window(window::config config) mut {
             unsafe {
                 std::raw_ptr<mut platform_state> p = this.connection;
-                std::raw_ptr<mut window_state> s = make_window(p, config, graphics_api::none, default_visual(p),
+                std::raw_ptr<mut window_state> s = make_window(p, config, std::none, default_visual(p),
                                                                (*p).x.XDefaultDepth((*p).display, (*p).screen))?;
                 return std::ok(window{ .state = s });
             }
@@ -1466,6 +1503,9 @@ namespace std::windowing {
 
         std::result<gl_window, error> create_gl_window(window::config config, opengl::config gl,
                                                        opengl::sharing sharing) mut {
+            if (!std::graphics::is_opengl(gl.api.name)) {
+                return std::error(error::wrong_api);
+            }
             unsafe {
                 std::raw_ptr<mut platform_state> p = this.connection;
                 load_gl(p)?;
@@ -1499,7 +1539,7 @@ namespace std::windowing {
                 std::raw_ptr<mut u8> info = (*group).visual_info;
                 std::raw_ptr<mut u8> visual = *cast::reinterpret<std::raw_ptr<std::raw_ptr<mut u8>>>(info);
                 i32 depth = *cast::reinterpret<std::raw_ptr<i32>>(info.offset(20));
-                std::raw_ptr<mut window_state> s = match (make_window(p, config, graphics_api::opengl, visual, depth)) {
+                std::raw_ptr<mut window_state> s = match (make_window(p, config, std::some(gl.api), visual, depth)) {
                     std::ok(made) => made,
                     std::error(e) => {
                         release_group(group);
@@ -1522,17 +1562,27 @@ namespace std::windowing {
             }
         }
 
-        std::result<vulkan_window, error> create_vulkan_window(window::config config) mut {
+        std::result<vulkan_window, error> create_vulkan_window(window::config config, std::graphics::api api) mut {
+            if (api.name != std::graphics::api_name::vulkan) {
+                return std::error(error::wrong_api);
+            }
             unsafe {
                 std::raw_ptr<mut platform_state> p = this.connection;
                 load_vulkan(p)?;
-                std::raw_ptr<mut window_state> s = make_window(p, config, graphics_api::vulkan, default_visual(p),
+                std::version available = vulkan_instance_version(p);
+                if (!available.at_least(std::version{ .major = api.version.major, .minor = api.version.minor })) {
+                    return std::error(error::version_unavailable);
+                }
+                std::raw_ptr<mut window_state> s = make_window(p, config, std::some(api), default_visual(p),
                                                                (*p).x.XDefaultDepth((*p).display, (*p).screen))?;
                 return std::ok(vulkan_window{ .state = s });
             }
         }
 
         std::result<opengl::share_group, error> create_share_group(opengl::config gl) mut {
+            if (!std::graphics::is_opengl(gl.api.name)) {
+                return std::error(error::wrong_api);
+            }
             unsafe {
                 std::raw_ptr<mut group_state> g = make_group(this.connection, gl, true)?;
                 return std::ok(opengl::share_group{ .group = g });

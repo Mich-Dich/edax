@@ -1,0 +1,10 @@
+exit: 134
+--- stdout
+sqrt 1.4142135623730951, pow 1024.0, mul_add 7.0
+floor 2.0, ceil 3.0, round 3.0, trunc -2.0
+sin 0.47942555, cos 0.87758255, atan2 0.4636476
+min 1.5, max 3.0, clamp 1.0
+nan true, finite true, infinite true
+abs 5, max 3, clamp -2
+--- stderr
+tests/action/run/number_methods.ed:17:21: panic: integer overflow in 'abs' (i32)

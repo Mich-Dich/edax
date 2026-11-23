@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/std_optimization_project --out-dir=%t app --mode=debug_std
+// The standard library's own optimization (spec 34): a mode that keeps the library unoptimized.

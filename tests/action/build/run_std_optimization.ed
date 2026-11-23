@@ -1,0 +1,2 @@
+// RUN: edaxc run --root=%S/std_optimization_project --out-dir=%t app
+// The standard library's own optimization (spec 34): debug (std at speed by default).

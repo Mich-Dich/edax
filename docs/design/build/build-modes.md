@@ -86,6 +86,14 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
 ### How edaxc uses the settings
 - `optimization()`: LLVM's standard pipeline at `-O2` (`speed`; `-O3` was measured slower on `bench/`), `-O1` (`basic`) or `-Os` (`size`); none for `none`. Files and functions can have their own level (`g.optimize_files`, `@std::optimize`, see [Performance](../language/performance/performance.md)): the build runs the pipeline of the highest level asked for, and functions at `none` are compiled as written.
 - `float_determinism()`: `relaxed` (the default) or `strict`; `strict` makes every `@std::float_mode` an error, so float results are identical on every machine.
+- `std_optimization()`: how the standard library's own code is optimized, whatever `optimization()` says for the program's code. `speed` in every built-in mode, `debug` included: the containers, sorts, hashing and formatting a game leans on run at full speed in a debug build, while the program's own code stays unoptimized and steppable. Calls from unoptimized code into the library are calls (they aren't inlined into it); the library inlines into itself. A mode returns `none` to step through the library in a debugger:
+  ```edax
+  class debug_std : std::build::mode::debug {
+  public:
+      compile_time std::build::optimization std_optimization() override { return std::build::optimization::none; }
+  }
+  ```
+  Measured on `bench/` in a debug build: `sort` 0.129 s → 0.036 s; a loop of `vec3` math whose functions are the program's own, 0.29 s → 0.20 s (only its `darray` accesses got faster). Building costs about 0.1 s more for small programs.
 - `sanitize()`: `none` (the default), `address` or `thread`. Every Edax function is instrumented (AddressSanitizer: out-of-bounds and use-after-free in `unsafe` code; ThreadSanitizer: data races), the program is linked with the sanitizer runtime, and the C and C++ targets of the build are compiled with the same `-fsanitize=`. Safe Edax code can't have these bugs; the setting finds them in `unsafe` code and in C/C++ dependencies.
   ```edax
   class asan : std::build::mode::debug {

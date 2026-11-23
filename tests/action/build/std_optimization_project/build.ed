@@ -1,0 +1,18 @@
+// build.ed of a test project (spec 34): how the standard library's code is optimized.
+import std;
+
+namespace build {
+    // Debug with the standard library unoptimized too: to step through it in a debugger.
+    class debug_std : std::build::mode::debug {
+    public:
+        compile_time std::build::optimization std_optimization() override { return std::build::optimization::none; }
+    }
+
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(debug_std);
+        g.add_executable(std::build::edax_target{ .name = "app", .root = "app.ed" });
+        std::build::target small = g.add_executable(std::build::edax_target{ .name = "small", .root = "app.ed" });
+        // One part of the library for size, the rest as the mode says.
+        g.optimize_files(small, "<std>/std.ed", std::build::optimization::size);
+    }
+}

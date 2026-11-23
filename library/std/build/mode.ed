@@ -14,6 +14,7 @@ namespace std::build::mode {
         compile_time bool allow_undefined_behavior() override { return false; }
         compile_time std::build::float_determinism float_determinism() override { return std::build::float_determinism::relaxed; }
         compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::none; }
+        compile_time std::build::optimization std_optimization() override { return std::build::optimization::speed; }
     }
 
     open class release : settings {
@@ -29,6 +30,7 @@ namespace std::build::mode {
         compile_time bool allow_undefined_behavior() override { return false; }
         compile_time std::build::float_determinism float_determinism() override { return std::build::float_determinism::relaxed; }
         compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::none; }
+        compile_time std::build::optimization std_optimization() override { return std::build::optimization::speed; }
     }
 
     open class development : debug {

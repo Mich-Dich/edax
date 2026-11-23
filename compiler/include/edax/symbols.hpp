@@ -224,6 +224,7 @@ struct Module {
 // files matching a pattern. `files` are absolute, normalized paths.
 struct FileSetting {
     std::vector<std::string>         files;
+    std::string                      std_regex;   // `<std>/graphics/**`: the standard library's files it names (spec 34)
     std::string                      name;
     std::shared_ptr<const ct::Value> value;
 };

@@ -2212,6 +2212,11 @@ struct Evaluator::Impl {
             if (n == "optimize_files") {   // g.optimize_files(t, pattern, level): the backend reads it
                 fsetting.name  = "std::build::optimization";
                 fsetting.value = std::make_shared<const Value>(args.at(2));
+                if (pattern.starts_with("<std>/")) {   // the standard library's files, wherever it is installed (spec 34)
+                    fsetting.std_regex = glob_regex(pattern.substr(6));
+                    t.file_settings.push_back(std::move(fsetting));
+                    return Value{};
+                }
             } else {
                 fsetting.name  = setting_key.empty() ? static_text(args.at(2)) : setting_key;
                 fsetting.value = std::make_shared<const Value>(args.at(3));

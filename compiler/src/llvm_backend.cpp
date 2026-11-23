@@ -7,6 +7,7 @@
 #include "edax/types.hpp"
 
 #include <functional>
+#include <regex>
 
 #include <filesystem>
 #include "llvm/ADT/APSInt.h"
@@ -848,6 +849,9 @@ private:
         {   // @std::optimize, or g.optimize_files (spec 34): the build step reads this attribute
             const Symbol* own = s->version_of ? s->version_of : annotated;
             std::string   level = own->optimize_level.empty() ? file_optimization(s->span) : own->optimize_level;
+            // The standard library's code (spec 34): the mode's std_optimization(), unless build.ed
+            // or an annotation says otherwise.
+            if (level.empty() && is_std_function(s)) level = mode_setting("std_optimization");
             if (!level.empty()) fn->addFnAttr("edax-optimize", level);
         }
         if (!s->cpu_level.empty()) {   // a multiversion copy: code for its CPU level
@@ -887,6 +891,15 @@ private:
         }
     }
 
+    // Whether `s` is the standard library's code (its module, or an instance of one of its templates).
+    static bool is_std_function(const Symbol* s) {
+        const Symbol* parent = s->parent;
+        for (const Symbol* o : std::initializer_list<const Symbol*>{s, s->template_of, s->version_of, parent, parent ? parent->template_of : nullptr}) {
+            if (o && o->module && o->module->project == "std") return true;
+        }
+        return false;
+    }
+
     // The optimization build.ed gave the file of `where` with `g.optimize_files` (spec 34), or "".
     std::string file_optimization(Span where) {
         if (program_.file_settings.empty()) return "";
@@ -894,8 +907,13 @@ private:
         std::error_code ec;
         std::string     path  = std::filesystem::weakly_canonical(std::filesystem::path(sources_.file(where.file).path()), ec).generic_string();
         std::string     level;
+        std::string text = sources_.file(where.file).path();
         for (const sema::FileSetting& fs : program_.file_settings) {
             if (fs.name != "std::build::optimization" || !fs.value || !fs.value->symbol) continue;
+            if (!fs.std_regex.empty()) {   // `<std>/graphics/**`
+                if (text.starts_with("<std>/") && std::regex_match(text.substr(6), std::regex(fs.std_regex))) level = fs.value->symbol->name;
+                continue;
+            }
             if (std::find(fs.files.begin(), fs.files.end(), path) != fs.files.end()) level = fs.value->symbol->name;
         }
         file_levels_[where.file] = level;
@@ -1503,6 +1521,12 @@ private:
         llvm::Type* ret = is_void(t->args.back()) ? llvm::Type::getVoidTy(ctx_) : lower_type(t->args.back());
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::InternalLinkage,
                                           "rl_" + std::to_string(lambda_fns_.size()), mod_.get());
+        fn->addFnAttr(llvm::Attribute::NoUnwind);
+        {   // a lambda is optimized like the code around it: its file's level, the library's own level (spec 34)
+            std::string level = file_optimization(l.span);
+            if (level.empty() && sources_.file(l.span.file).path().starts_with("<std>")) level = mode_setting("std_optimization");
+            if (!level.empty()) fn->addFnAttr("edax-optimize", level);
+        }
         lambda_fns_[&l] = fn;
         lambda_queue_.push_back(&l);
         return fn;
@@ -6283,6 +6307,9 @@ private:
         if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {llvm::PointerType::get(ctx_, 0)}, false),
                                           llvm::Function::InternalLinkage, "rd_" + mangle_parts(parts), mod_.get());
+        if (is_std_function(s)) {   // a library type's destructor: optimized like the library (spec 34)
+            if (std::string level = mode_setting("std_optimization"); !level.empty()) fn->addFnAttr("edax-optimize", level);
+        }
         drop_fns_[s] = fn;
         drop_queue_.push_back(s);
         return fn;
@@ -6547,6 +6574,9 @@ private:
         auto* ptr = llvm::PointerType::get(ctx_, 0);
         auto* fn  = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr, ptr}, false),
                                            llvm::Function::InternalLinkage, "rc_" + mangle_parts(parts), mod_.get());
+        if (is_std_function(s)) {   // optimized like the library (spec 34)
+            if (std::string level = mode_setting("std_optimization"); !level.empty()) fn->addFnAttr("edax-optimize", level);
+        }
         clone_fns_[s] = fn;
         clone_queue_.push_back(s);
         return fn;

@@ -15,6 +15,10 @@ namespace std::build::mode {
         compile_time bool allow_undefined_behavior();
         compile_time std::build::float_determinism float_determinism();
         compile_time std::build::sanitizer sanitize();
+        // How the standard library's own code is optimized, whatever `optimization()` says for the
+        // program's code (spec 34): `speed` in every built-in mode, so a debug build of a game
+        // stays fast where the library does the work. `none` to step through the library.
+        compile_time std::build::optimization std_optimization();
     }
 
     // No optimization, full debug info, every check (the default mode).
@@ -31,6 +35,7 @@ namespace std::build::mode {
         compile_time bool allow_undefined_behavior() override;
         compile_time std::build::float_determinism float_determinism() override;
         compile_time std::build::sanitizer sanitize() override;
+        compile_time std::build::optimization std_optimization() override;
     }
 
     // Optimized for speed, no debug info, every check.
@@ -47,6 +52,7 @@ namespace std::build::mode {
         compile_time bool allow_undefined_behavior() override;
         compile_time std::build::float_determinism float_determinism() override;
         compile_time std::build::sanitizer sanitize() override;
+        compile_time std::build::optimization std_optimization() override;
     }
 
     // `debug` with light optimization: every check of `debug` and full debug info, but code that

@@ -68,6 +68,7 @@ error[E6004]: 1 run-time check is left in a '@std::no_checks_left' function
 |---|---|---|
 | The mode's `optimization()` (see [Build Modes](../../build/build-modes.md)) | The build | `none`, `basic` (the `development` mode), `size`, `speed` |
 | `g.optimize_files(t, "math/**/*.ed", level)` (see [Build System](../../build/build-system.md)) | Files of a target | The math and the hot code at `speed` in a debug build, or one file at `none` to debug it in a release build |
+| The mode's `std_optimization()` (see [Build Modes](../../build/build-modes.md)) | The standard library | `speed` in every built-in mode: the library is fast in debug builds too |
 | `@std::optimize{ .level = ... }` | One function | The same for a single function |
 
 - Functions at `none` are compiled as written (no inlining into or out of them), whatever the rest of the build does.

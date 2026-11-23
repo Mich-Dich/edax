@@ -593,7 +593,7 @@ public:
         const Symbol* mode = program_.build_mode_class;
         if (!mode) return;
         for (const char* name : {"optimization", "debug_info", "overflow", "shifts", "bounds", "run_time_checks", "panic",
-                                 "link_time_optimization", "allow_undefined_behavior", "float_determinism", "sanitize"}) {
+                                 "link_time_optimization", "allow_undefined_behavior", "float_determinism", "sanitize", "std_optimization"}) {
             std::shared_ptr<const ct::Value> v = evaluator().mode_setting(mode, name);
             if (!v) continue;
             program_.mode_settings[name] = v->kind == ct::Value::Kind::boolean ? (v->boolean ? "true" : "false")

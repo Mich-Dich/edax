@@ -75,11 +75,16 @@ struct BuildTarget {
     std::map<std::string, std::shared_ptr<const Value>> settings;
     std::vector<sema::FileSetting>           file_settings;     // `g.set_for_files(t, pattern, name, value)`
     const sema::Symbol*                      mode = nullptr;    // `g.set_mode(t, ...)`
+    std::shared_ptr<const Value>             mode_optimization;   // that mode's optimization() (a std::build::optimization)
     Span                                     span;              // the call that added it
     std::vector<std::size_t>                 steps;             // `g.depends_on(t, s)`
     std::vector<std::string>                 details;           // `g.details(t, [...])`
     bool                                     has_details = false;
     std::string                              library_root;      // system libraries: `-L<root>/lib`
+    std::vector<std::string>                 prebuilt;          // C libraries: files linked as they are (cmake_external)
+    // Edax targets: the directories of the shared Edax libraries it links (their modules are
+    // compiled there, not here); set by the driver.
+    std::vector<std::string>                 shared_library_dirs;
     std::size_t                              dependency = 0;    // foreign: 1 + the dependency's index
     std::string                              base;              // the root its paths are relative to ("" = the project's)
     struct CImport {
@@ -118,8 +123,11 @@ struct BuildDependency {
     std::string                                      path;
     std::string                                      tag;
     std::string                                      sha256;
-    std::string                                      build = "automatic";   // automatic, edax, cmake, headers_only
-    std::string                                      build_arg;             // headers_only: the include directory
+    std::string                                      build = "automatic";   // automatic, edax, cmake, headers_only, script, cmake_external
+    std::string                                      build_arg;             // headers_only: the include directory; script: its file
+    std::vector<std::string>                         external_outputs;      // cmake_external: libraries, relative to the install dir
+    std::vector<std::string>                         external_include_dirs; // cmake_external: include directories, likewise
+    std::map<std::string, std::size_t>               exports;               // script: `p.export_target(t, name)`
     std::vector<std::pair<std::string, std::string>> options;
     std::vector<std::pair<std::string, std::size_t>> uses;      // find_package name → target index
     std::vector<std::string>                         patches;

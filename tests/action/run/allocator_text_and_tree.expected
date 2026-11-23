@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+hello world ✓ hello world ✓ 15
+100 49 0
+global true
+--- stderr

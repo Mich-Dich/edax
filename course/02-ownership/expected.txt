@@ -1,0 +1,6 @@
+heaviest: lamp (5)
+ada carries 10
+bob carries 23, ada carries 0
+ada
+bag of bob destroyed with 3 items
+bag of ada destroyed with 0 items

@@ -1,0 +1,21 @@
+// Lesson 3: uses the module `geometry` (geometry.edh / geometry.ed next to this file).
+import std;
+import geometry;
+
+i32 main() {
+    mut geo::polygon square = geo::polygon::named("square");
+    std::array<geo::vec2, 4> corners = [geo::vec2{}, geo::vec2{ .x = 2.0 }, geo::vec2{ .x = 2.0, .y = 2.0 }, geo::vec2{ .y = 2.0 }];
+    for (geo::vec2 p : corners) {
+        square.add(p);
+    }
+    mut geo::polygon triangle = geo::polygon::named("triangle");
+    triangle.add(geo::vec2{});
+    triangle.add(geo::vec2{ .x = 3.0 });
+    triangle.add(geo::vec2{ .y = 4.0 });
+    std::println(geo::describe(square));
+    std::println(geo::describe(triangle));
+    geo::vec2 a = geo::vec2{ .x = 1.0, .y = 2.0 };
+    geo::vec2 b = a;                                   // a copy type: copied
+    std::println(f"a == b: {a == b}, a + b = ({(a + b).x}, {(a + b).y})");
+    return 0;
+}

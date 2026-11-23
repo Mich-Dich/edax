@@ -267,6 +267,9 @@ struct CallExpr : Expr {
     // `std::meta::wrapped_body()` in a function an annotation wraps (annotations, section 8): the
     // function's own body. It runs like a lambda's body; its `return` gives the call its value.
     std::unique_ptr<BlockExpr> wrapped;
+    // `@std::dispatch_hint<T> call` (performance §8): the class the call is expected to reach.
+    TypePtr   dispatch_hint;
+    SymbolRef hint_symbol = nullptr;   // that class (the checker)
     CallExpr(Span s, ExprPtr c) : Expr(ExprKind::call, s), callee(std::move(c)) {}
 };
 

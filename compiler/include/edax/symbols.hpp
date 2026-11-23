@@ -12,6 +12,7 @@
 #include "edax/ast.hpp"
 #include "edax/diagnostics.hpp"
 
+#include <cstdlib>
 #include <deque>
 #include <map>
 #include <unordered_map>
@@ -126,6 +127,12 @@ struct Symbol {
     [[nodiscard]] const ast::FunctionDecl* function() const {
         return decl && decl->kind == ast::DeclKind::function ? &decl->as<ast::FunctionDecl>() : nullptr;
     }
+    // For a symbol known to be a function or method: its declaration.
+    [[nodiscard]] const ast::FunctionDecl& function_decl() const {
+        const ast::FunctionDecl* f = function();
+        if (!f) std::abort();   // a function symbol always keeps its declaration
+        return *f;
+    }
     [[nodiscard]] bool is_open() const {
         return decl && (decl->kind == ast::DeclKind::class_) && decl->as<ast::TypeDecl>().is_open;
     }
@@ -194,6 +201,9 @@ struct Module {
     // The modules whose items this module's header ([1]) and source ([0]) see, computed once by
     // the resolver (imports don't change after loading): name lookup is the resolver's hot path.
     mutable std::vector<Module*> visible_cache[2];
+    // Position of each module (by `index_id`) in `visible_cache`, -1 when not visible.
+    mutable std::vector<int> visible_position[2];
+    mutable int              index_id = -1;   // set by the program-wide item index
 
     // `items` by hash (rebuilt when items were added): the keys share long prefixes
     // (`std::graphics::opengl::...`), which makes the ordered map's comparisons the hot spot.
@@ -263,6 +273,35 @@ inline const ast::AnnotationUse* find_annotation(const std::vector<ast::Annotati
 
 struct Program {
     std::map<std::string, std::unique_ptr<Module>> modules;   // by module name
+
+    // Every module's items and namespaces by key, one hash per lookup instead of one per visible
+    // module (name lookup is the resolver's hot path). Rebuilt when items were added.
+    struct IndexedItems {
+        Module*                     module;
+        const std::vector<Symbol*>* symbols;
+    };
+    mutable std::unordered_map<std::string_view, std::vector<IndexedItems>> item_index;
+    mutable std::unordered_map<std::string_view, std::vector<Module*>>      namespace_index;
+    mutable std::size_t                                                     indexed_count = static_cast<std::size_t>(-1);
+    mutable std::size_t                                                     module_ids    = 0;   // index_id < module_ids
+    std::size_t                                                             items_generation = 0;   // bumped when a module's items or namespaces change
+    void refresh_index() const {
+        std::size_t count = modules.size() + (items_generation << 16);
+        if (count == indexed_count) return;
+        indexed_count = count;
+        item_index.clear();
+        namespace_index.clear();
+        int id = 0;
+        for (const auto& [n, m] : modules) {
+            if (m->index_id < 0) m->index_id = id;
+            id = std::max(id, m->index_id) + 1;
+        }
+        module_ids = static_cast<std::size_t>(id);
+        for (const auto& [n, m] : modules) {
+            for (const auto& [k, v] : m->items) item_index[std::string_view(k)].push_back(IndexedItems{m.get(), &v});
+            for (const std::string& ns : m->namespaces) namespace_index[std::string_view(ns)].push_back(m.get());
+        }
+    }
     Module*                                        entry = nullptr;
     // The standard library module (library/std, built into edaxc), loaded on the first
     // `import std`; null if nothing imports it. Also in `modules` as "std".
@@ -296,6 +335,13 @@ struct Program {
     // A plugin is being built (`g.add_plugin`): its @std::plugin_entry class, the interface the
     // program uses it through, its make() and the hash of the interface (dynamic libraries).
     bool                                           is_plugin = false;
+    // Shared Edax libraries (g.add_shared_library(std::build::edax_target{...})). Building one:
+    // the code of `library_modules` is exported (every non-generic function, global, vtable and
+    // type id). Building a program that links some: `shared_modules` are compiled in them, so the
+    // program only declares what it uses of them (generic instances are still made here).
+    bool                                           is_shared_library = false;
+    std::set<const Module*>                        library_modules;
+    std::set<const Module*>                        shared_modules;
     const Symbol*                                  plugin_class = nullptr;       // the @std::plugin_entry class
     const Symbol*                                  plugin_interface = nullptr;   // the interface it is used through
     const Symbol*                                  plugin_make = nullptr;        // its static make()

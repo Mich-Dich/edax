@@ -1,2 +1,4 @@
-// RUN: edaxc run --root=%S/shared_project --out-dir=%t app
-// g.add_shared_library: a C library built as a .so, linked by the program and found at run time.
+// RUN: edaxc run --root=%S/shared_library_project --out-dir=%t app
+// A shared Edax library (g.add_shared_library of an edax_target): its functions, methods, globals,
+// vtables and type ids are in libcore.so; the program declares them and makes generic instances
+// (core::biggest<u32>) itself. Its global is initialized when the library is loaded.

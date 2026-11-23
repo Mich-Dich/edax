@@ -7,4 +7,4 @@ boxed (7, 8)
 100 values, sum 99
 allocations > 0: true, every block given back: true
 --- stderr
-<std>/std.ed:54:25: panic: out of memory
+<std>/std.ed:60:25: panic: out of memory

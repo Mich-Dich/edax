@@ -1,0 +1,59 @@
+// Lesson 10: workers, channels, a pool. Fill in the three parts of main until
+// `python3 course/check.py 10` says done.
+import std;
+
+// How many primes lie in [from, to).
+u32 count_primes(u32 from, u32 to) {
+    mut u32 count = 0;
+    for (u32 n : from..to) {
+        if (n < 2) { continue; }
+        mut bool prime = true;
+        mut u32 d = 2;
+        while (d * d <= n) {
+            if (n % d == 0) {
+                prime = false;
+                break;
+            }
+            d += 1;
+        }
+        if (prime) { count += 1; }
+    }
+    return count;
+}
+
+struct range_job {
+    u32 id;
+    u32 from;
+    u32 to;
+}
+
+struct range_result {
+    u32 id;
+    u32 primes;
+}
+
+i32 main() {
+    // TODO 1: three worker threads take range_jobs from a bounded channel (capacity 4) and send
+    // range_results back on an unbounded one; an std::atomic<u32> counts the jobs done. Submit the
+    // ten jobs [0, 1000), [1000, 2000), ... [9000, 10000) with ids 0..9, close the job channel,
+    // collect the ten results, join the workers, and print the two lines below in id order.
+    mut u32 total = 0;
+    std::println(f"primes below 10000: {total}, first block 0, last block 0");
+    std::println(f"jobs done: 0");
+
+    // TODO 2: an std::mutex<std::darray<u32>>; two scoped threads push the even numbers 0..8 and
+    // the odd numbers 1..9 into it. Then lock it, sort the values and print how many there are and
+    // their sum (sum_of below).
+    std::println(f"logged 0 values, sum 0");
+
+    // TODO 3: a thread pool of 4 threads sums 100000 samples (sample i is (i % 100) * 0.5) with
+    // reduce_chunks, in chunks of 8192.
+    std::println(f"pool sum 0.0");
+    return 0;
+}
+
+u32 sum_of(std::darray<u32>& values) {
+    mut u32 s = 0;
+    for (u32 v : values) { s += v; }
+    return s;
+}

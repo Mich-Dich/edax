@@ -315,7 +315,7 @@ private:
             if (!*f) continue;
             for (const ast::NamespaceBlock& b : (*f)->ast.namespaces) {
                 for (const std::string& level : enclosing_levels(b.path)) {
-                    if (!level.empty()) m.namespaces.insert(level);
+                    if (!level.empty() && m.namespaces.insert(level).second) ++program_.items_generation;
                 }
             }
         }
@@ -445,6 +445,7 @@ private:
         sym->in_header  = from_header;
         sym->is_private = d.is_private || (!from_header && m.header.has_value());
         m.items[item_key(d)].push_back(sym);
+        ++program_.items_generation;
         m.item_order.push_back(sym);
         symbol_of_[&d] = sym;
         return sym;
@@ -535,7 +536,7 @@ private:
             std::vector<Symbol*> cands = header_items(m, item_key(d));
             std::erase_if(cands, [](Symbol* s) { return s->kind != SymbolKind::function; });
             auto match = std::find_if(cands.begin(), cands.end(), [&](Symbol* s) {
-                return params_sig(*s->function()) == params_sig(fn);
+                return params_sig(s->function_decl()) == params_sig(fn);
             });
             if (match != cands.end()) {
                 Symbol* s = *match;
@@ -544,7 +545,7 @@ private:
                          "first definition here", s->definition->name_span);
                     return;
                 }
-                check_signature(*s->function(), fn);
+                check_signature(s->function_decl(), fn);
                 s->definition  = &d;
                 symbol_of_[&d] = s;
                 return;
@@ -647,7 +648,7 @@ private:
                 const auto& fn = mem->as<FunctionDecl>();
                 std::erase_if(cands, [](Symbol* s) { return s->kind != SymbolKind::method; });
                 auto match = std::find_if(cands.begin(), cands.end(), [&](Symbol* s) {
-                    return params_sig(*s->function()) == params_sig(fn);
+                    return params_sig(s->function_decl()) == params_sig(fn);
                 });
                 if (match != cands.end()) {
                     Symbol* s = *match;
@@ -664,7 +665,7 @@ private:
                                    "different access"),
                              "declared in the header here", s->span);
                     }
-                    check_signature(*s->function(), fn);
+                    check_signature(s->function_decl(), fn);
                     s->definition    = mem.get();
                     symbol_of_[mem.get()] = s;
                 } else if (!is_struct && access == Access::private_) {
@@ -744,7 +745,7 @@ private:
                     const Symbol* b = syms[i];
                     bool overloadable = (a->kind == SymbolKind::function || a->kind == SymbolKind::method) &&
                                         a->kind == b->kind;
-                    if (overloadable && params_sig(*a->function()) != params_sig(*b->function())) {
+                    if (overloadable && params_sig(a->function_decl()) != params_sig(b->function_decl())) {
                         continue;
                     }
                     std::string display = owner ? owner->name + "::" + name : name;
@@ -852,13 +853,36 @@ private:
         bool                 hidden = false;   // a private one of another module exists
     };
 
+    // Position of `m` in visible_modules(), or -1.
+    int visible_position(const Module* m) const {
+        program_.refresh_index();
+        std::vector<int>& pos = module_->visible_position[in_header_ ? 1 : 0];
+        const std::vector<Module*>& visible = visible_modules();
+        std::size_t needed = program_.module_ids;
+        if (pos.size() != needed) {
+            pos.assign(needed, -1);
+            for (std::size_t i = 0; i < visible.size(); ++i) {
+                if (visible[i]->index_id >= 0 && static_cast<std::size_t>(visible[i]->index_id) < needed) pos[static_cast<std::size_t>(visible[i]->index_id)] = static_cast<int>(i);
+            }
+        }
+        return m->index_id < 0 || static_cast<std::size_t>(m->index_id) >= pos.size() ? -1 : pos[static_cast<std::size_t>(m->index_id)];
+    }
+
     Found find_items(const std::string& key) const {
         Found f;
-        for (Module* m : visible_modules()) {
-            const std::vector<Symbol*>* found = m->find_item(key);
-            if (!found) continue;
-            for (Symbol* s : *found) {
-                if (m != module_ && s->is_private) f.hidden = true;
+        program_.refresh_index();
+        auto it = program_.item_index.find(std::string_view(key));
+        if (it == program_.item_index.end()) return f;
+        // In the order of visible_modules(): this module first, then its imports.
+        std::vector<std::pair<int, const sema::Program::IndexedItems*>> hits;
+        for (const sema::Program::IndexedItems& e : it->second) {
+            int at = visible_position(e.module);
+            if (at >= 0) hits.emplace_back(at, &e);
+        }
+        std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [at, e] : hits) {
+            for (Symbol* s : *e->symbols) {
+                if (e->module != module_ && s->is_private) f.hidden = true;
                 else f.symbols.push_back(s);
             }
         }
@@ -886,8 +910,11 @@ private:
 
     bool namespace_visible(const std::string& ns) const {
         if (ns.empty()) return true;
-        for (Module* m : visible_modules()) {
-            if (m->namespaces.count(ns)) return true;
+        program_.refresh_index();
+        auto it = program_.namespace_index.find(std::string_view(ns));
+        if (it == program_.namespace_index.end()) return false;
+        for (const Module* m : it->second) {
+            if (visible_position(m) >= 0) return true;
         }
         return false;
     }
@@ -1676,12 +1703,12 @@ private:
 
     bool same_signature(const Symbol* a, const Symbol* b) {
         if (a->name != b->name) return false;
-        if (params_sig(*a->function()) == params_sig(*b->function())) return true;
-        if (a->function()->params.size() != b->function()->params.size()) return false;
+        if (params_sig(a->function_decl()) == params_sig(b->function_decl())) return true;
+        if (a->function_decl().params.size() != b->function_decl().params.size()) return false;
         resolve_signature_early(a);
         resolve_signature_early(b);
-        const FunctionDecl& fa = *a->function();
-        const FunctionDecl& fb = *b->function();
+        const FunctionDecl& fa = a->function_decl();
+        const FunctionDecl& fb = b->function_decl();
         if (fa.params.size() != fb.params.size() || fa.is_mut != fb.is_mut || fa.is_move != fb.is_move) return false;
         for (std::size_t i = 0; i < fa.params.size(); ++i) {
             const Param& pa = fa.params[i];
@@ -1754,7 +1781,7 @@ private:
     static const FunctionDecl* default_body(const Symbol* req) {
         if (req->parent->kind != SymbolKind::interface) return nullptr;
         if (req->definition && req->definition->as<FunctionDecl>().body) return &req->definition->as<FunctionDecl>();
-        if (req->function() && req->function()->body) return req->function();
+        if (req->function() && req->function_decl().body) return req->function();
         return nullptr;
     }
 
@@ -1778,16 +1805,16 @@ private:
             bool implemented = false;
             for (Symbol* c : chain) {
                 for (Symbol* mem : c->member_order) {
-                    if (mem->kind == SymbolKind::method && same_signature(mem, req) && !mem->function()->is_abstract) implemented = true;
+                    if (mem->kind == SymbolKind::method && same_signature(mem, req) && !mem->function_decl().is_abstract) implemented = true;
                 }
             }
             if (implemented) continue;
-            std::string key = req->name + params_sig(*req->function());
+            std::string key = req->name + params_sig(req->function_decl());
             if (auto it = chosen.find(key); it != chosen.end()) {
                 if (it->second->parent == req->parent) continue;
                 Diagnostic& e = error(DiagCode::E3045, t->span,
                                       std::format("'{}' gets two defaults for '{}{}', from '{}' and '{}'", t->name,
-                                                  req->name, params_sig(*req->function()), it->second->parent->name, req->parent->name),
+                                                  req->name, params_sig(req->function_decl()), it->second->parent->name, req->parent->name),
                                       "override it");
                 note(e, "one default here", it->second->span);
                 note(e, "the other here", req->span);
@@ -1823,7 +1850,7 @@ private:
 
         for (Symbol* mem : t->member_order) {
             if (mem->kind != SymbolKind::method) continue;
-            const FunctionDecl& f = *mem->function();
+            const FunctionDecl& f = mem->function_decl();
             if (f.is_destructor && f.name != "~" + t->name) {
                 error(DiagCode::E3049, mem->span, std::format("destructor '{}' in class '{}'", f.name, t->name),
                       std::format("write '~{}'", t->name));
@@ -1857,11 +1884,11 @@ private:
                                       [&](Symbol* b) { return is_dynamic(b) && same_signature(b, mem); });
                 for (Symbol* b : same_name) {
                     if (!is_dynamic(b) || !same_signature(b, mem)) continue;
-                    if (b->function()->is_compile_time != f.is_compile_time) {
+                    if (b->function_decl().is_compile_time != f.is_compile_time) {
                         Diagnostic& e = error(DiagCode::E3051, mem->span,
                                               std::format("'{}' must {}be 'compile_time', like the method it implements",
-                                                          describe_fn(*mem), b->function()->is_compile_time ? "" : "not "),
-                                              b->function()->is_compile_time ? "add 'compile_time'" : "remove 'compile_time'");
+                                                          describe_fn(*mem), b->function_decl().is_compile_time ? "" : "not "),
+                                              b->function_decl().is_compile_time ? "add 'compile_time'" : "remove 'compile_time'");
                         note(e, "implemented method here", b->span);
                     }
                     break;
@@ -1896,18 +1923,18 @@ private:
         }
         std::set<std::string> reported;
         for (Symbol* req : inh.methods) {
-            bool required = req->parent->kind == SymbolKind::interface || req->function()->is_abstract;
+            bool required = req->parent->kind == SymbolKind::interface || req->function_decl().is_abstract;
             if (!required) continue;
             bool implemented = false;
             for (Symbol* c : chain) {
                 for (Symbol* mem : c->member_order) {
-                    if (mem->kind == SymbolKind::method && same_signature(mem, req) && !mem->function()->is_abstract) {
+                    if (mem->kind == SymbolKind::method && same_signature(mem, req) && !mem->function_decl().is_abstract) {
                         implemented = true;
                     }
                 }
             }
             std::string key = describe_fn(*req);
-            if (!implemented && reported.insert(req->name + params_sig(*req->function())).second) {
+            if (!implemented && reported.insert(req->name + params_sig(req->function_decl())).second) {
                 Diagnostic& e = error(DiagCode::E3045, t->span,
                                       std::format("'{}' does not implement '{}'", t->name, key),
                                       "missing implementation");
@@ -2931,6 +2958,7 @@ private:
         }
         case ExprKind::call: {
             auto& c = e.as<CallExpr>();
+            if (c.dispatch_hint) resolve_type(*c.dispatch_hint);
             resolve_expr(*c.callee, ExprFlags{false, true});
             for (ExprPtr& arg : c.args) resolve_expr(*arg, ExprFlags{true, false});
             return;

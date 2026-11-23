@@ -1,0 +1,20 @@
+// build.ed with a described package (packages/tiny.ed) and one built by real CMake.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::package tiny = g.package(std::build::package_spec{
+            .source = std::build::local{ .path = "vendor/tiny" },   // no build files: packages/tiny.ed describes it
+        });
+        std::build::package ext = g.package(std::build::package_spec{
+            .source  = std::build::local{ .path = "vendor/ext" },
+            .build   = std::build::package_build::cmake_external(std::build::cmake_outputs{
+                .outputs = ["lib/libext.a"], .include_dirs = ["include"],
+            }),
+            .options = [("EXT_BASE", "100")],
+        });
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        g.link(app, tiny.target("tiny"));
+        g.link(app, ext.target("ext"));
+    }
+}

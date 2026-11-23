@@ -1,0 +1,20 @@
+// RUN: edaxc run %s
+// A template may return a reference or view borrowed from its one parameter whose type depends on
+// the template's parameters (`std::span<T>`): the ownership rules check the instance's signature.
+import std;
+
+template<type T : std::comparable>
+std::option<T&> largest(std::span<T> values) {
+    mut std::option<T&> best = std::none;
+    for (T& v : values) {
+        if (best is std::some(b) && !(v > b)) { continue; }
+        best = std::some(v);
+    }
+    return best;
+}
+
+i32 main() {
+    std::array<u32, 3> a = [4, 9, 2];
+    if (largest(a.as_span()) is std::some(m)) { std::println(f"{m}"); }
+    return 0;
+}

@@ -1,0 +1,27 @@
+exit: 0
+--- stdout
+--- tests/action/build/packages_convert_project/packages/plat.ed
++++ converted from plat/CMakeLists.txt
+@@ -1,16 +1,19 @@
+ // packages/plat.ed: the package 'plat', described for edaxc's build (packages, section 3).
+-// Written by `edaxc package convert plat` from its CMakeLists.txt; finished by hand.
++// Written by `edaxc package convert plat` from its CMakeLists.txt; finish the TODO(convert)s, then it is yours.
+ import std;
+ 
+ namespace build::packages::plat {
+     compile_time void describe(mut std::build::graph& g, std::build::package& p) {
+         std::build::os os = g.target_platform().os;
+ 
++        // TODO(convert): CMakeLists.txt:3: the command 'execute_process' isn't understood by the CMake reader
++        //     execute_process(COMMAND git rev-list --count HEAD OUTPUT_VARIABLE PLAT_VERSION)
++
+         // CMakeLists.txt:4
+         std::build::target t_plat = g.add_c_library(std::build::c_target{ .name = "plat", .language = std::build::language::c });
+         g.add_sources(t_plat, p.files(["plat.c"]));
+         g.add_include_dir(t_plat, p.at("include"), std::build::visibility::shared);
+-        g.define(t_plat, "PLAT_VERSION", "7");   // was `git rev-list --count HEAD`
++        g.define(t_plat, "PLAT_VERSION", "");
+         if (os == std::build::os::linux || os == std::build::os::macos) {
+             g.add_sources(t_plat, p.files(["plat_posix.c"]));
+         }
+--- stderr

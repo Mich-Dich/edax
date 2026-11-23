@@ -500,8 +500,40 @@ private:
                 returning_ = true;
                 return;
             }
-            command(c);
+            if (!in_.lenient) {
+                command(c);
+                continue;
+            }
+            try {
+                command(c);
+            } catch (const Stop& stopped) {
+                std::string message = stopped.message;
+                std::string prefix  = std::format("{}:{}: ", c.file, c.line);
+                if (message.starts_with(prefix)) message = message.substr(prefix.size());
+                bool known = false;
+                for (const CMakeTodo& t : result_.todos) known = known || (t.file == c.file && t.line == c.line);
+                if (!known) result_.todos.push_back(CMakeTodo{c.file, c.line, c.name, message, command_text(c)});
+            }
         }
+    }
+
+    // The command as written in its file (for a TODO).
+    static std::string command_text(const Command& c) {
+        std::ifstream in(c.file);
+        std::string   text, line;
+        int           at = 0, depth = 0;
+        bool          started = false;
+        while (std::getline(in, line)) {
+            if (++at < c.line) continue;
+            text += (text.empty() ? "" : "\n") + line;
+            for (char ch : line) {
+                if (ch == '(') ++depth, started = true;
+                if (ch == ')') --depth;
+            }
+            if (started && depth <= 0) break;
+            if (at > c.line + 40) break;
+        }
+        return text;
     }
 
     void foreach_loop(const std::vector<Command>& cmds, std::size_t at, std::size_t end) {

@@ -1,0 +1,12 @@
+import std;
+u64 work(u64 n) {
+    mut u64 s = 0;
+    for (u64 i : 0..n) {
+        if (i % 7 == 3) { s +%= i * 3; } else { s +%= i; }
+    }
+    return s;
+}
+u32 main() {
+    std::println(f"{work(1000000)}");
+    return 0;
+}

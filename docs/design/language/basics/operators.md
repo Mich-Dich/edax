@@ -27,7 +27,7 @@ Assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, `
 |---|---|---|
 | Overflow | **panic** | wraps around (two's complement) |
 
-- The default is **the same in all built-in build modes** (`debug`, `release`, `release_with_debug_info`). A user-defined mode may switch `+ - *` to wrapping, explicitly in `build.ed` (see [Build Modes](../../build/build-modes.md)). `+%` and `checked_*` never change with the mode.
+- The default is **the same in all built-in build modes** (`debug`, `development`, `release`, `release_with_debug_info`). A user-defined mode may switch `+ - *` to wrapping, explicitly in `build.ed` (see [Build Modes](../../build/build-modes.md)). `+%` and `checked_*` never change with the mode.
 - Division or `%` by zero panics. So does `i32::min / -1` (limits: see [Built-in Types and Conversions](types.md)).
 - More explicit variants: `std::checked_add(a, b)` returns `std::option`; `std::saturating_add(a, b)` clamps (and the same for sub/mul).
 - Integer division truncates toward zero. The sign of `%` follows the left operand.

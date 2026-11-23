@@ -114,4 +114,139 @@ namespace std::filesystem {
         unsafe { std::raw::free(buffer); }
         return dir;
     }
+
+    // --- watch: inotify -------------------------------------------------------------------------
+
+    private extern(std::build::language::c) {
+        i32 inotify_init1(i32 flags);
+        i32 inotify_add_watch(i32 fd, std::raw_ptr<u8> name, u32 mask);
+        isize read(i32 fd, std::raw_ptr<mut u8> buffer, usize size);
+        i32 close(i32 fd);
+        i32 poll(std::raw_ptr<mut u8> fds, u64 count, i32 timeout);
+        std::raw_ptr<mut u8> opendir(std::raw_ptr<u8> name);
+        std::raw_ptr<u8> readdir(std::raw_ptr<mut u8> dir);
+        i32 closedir(std::raw_ptr<mut u8> dir);
+    }
+
+    // IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE
+    private compile_time u32 watch_mask = 0x2 | 0x4 | 0x8 | 0x40 | 0x80 | 0x100 | 0x200;
+    private compile_time u32 watch_is_dir = 0x40000000u32;   // IN_ISDIR
+
+    class watcher {
+    public:
+        std::darray<path> changes() mut { return this.wait(0); }
+
+        std::darray<path> wait(i32 milliseconds) mut {
+            mut std::darray<path> out = default;
+            mut i32 timeout = milliseconds;
+            while (true) {
+                mut std::raw::array<u8, 8> poll_fd = default;   // struct pollfd { int fd; short events; short revents; }
+                mut i32 ready = 0;
+                unsafe {
+                    std::raw::write(cast::reinterpret<std::raw_ptr<mut i32>>(mut &poll_fd), this.fd);
+                    std::raw::write(cast::reinterpret<std::raw_ptr<mut u16>>(mut &poll_fd).offset(2), 1u16);   // POLLIN
+                    ready = poll(cast::reinterpret<std::raw_ptr<mut u8>>(mut &poll_fd), 1, timeout);
+                }
+                if (ready <= 0) { return out; }
+                this.read_events(mut out);
+                timeout = 0;   // collect what is already there, then return
+            }
+            return out;
+        }
+
+        ~watcher() {
+            if (this.fd >= 0) {
+                unsafe { _ = close(this.fd); }
+            }
+        }
+
+    private:
+        i32 fd = -1;
+        std::darray<i32> handles = default;   // watch descriptors, in step with `dirs`
+        std::darray<path> dirs = default;
+
+        void add(path& dir) mut {
+            mut std::string name = std::string::from(dir.as_str());
+            name.push('\0');
+            std::str c_name = name;
+            mut i32 handle = -1;
+            unsafe { handle = inotify_add_watch(this.fd, c_name.as_ptr(), watch_mask); }
+            if (handle < 0) { return; }
+            this.handles.push(handle);
+            this.dirs.push(dir.clone());
+            // Every directory below it too: inotify watches one directory.
+            mut std::raw_ptr<mut u8> d = nullptr;
+            unsafe { d = opendir(c_name.as_ptr()); }
+            if (d == nullptr) { return; }
+            while (true) {
+                mut std::raw_ptr<u8> entry = nullptr;
+                unsafe { entry = readdir(d); }
+                if (entry == nullptr) { break; }
+                // struct dirent (glibc, x86-64/AArch64): d_ino 8, d_off 8, d_reclen 2, d_type 1, d_name
+                mut u8 kind = 0;
+                mut std::str child = "";
+                unsafe {
+                    kind = *entry.offset(18);
+                    std::raw_ptr<u8> name_at = entry.offset(19);
+                    mut usize n = 0;
+                    while (*name_at.offset(n) != 0) { n += 1; }
+                    child = std::raw::str_from(name_at, n);
+                }
+                if (kind == 4 && child != "." && child != "..") {   // DT_DIR
+                    path sub = dir / child;
+                    this.add(sub);
+                }
+            }
+            unsafe { _ = closedir(d); }
+        }
+
+        // Reads the queued events; adds each changed file to `out` once. A new directory is watched too.
+        void read_events(mut std::darray<path>& out) mut {
+            mut std::raw::array<u8, 4096> buffer = default;
+            mut isize n = 0;
+            unsafe { n = read(this.fd, cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer), 4096); }
+            if (n <= 0) { return; }
+            mut usize at = 0;
+            usize end = cast::saturate<usize>(n);
+            while (at + 16 <= end) {
+                // struct inotify_event { int wd; uint32_t mask; uint32_t cookie; uint32_t len; char name[]; }
+                mut i32 handle = 0;
+                mut u32 mask = 0;
+                mut u32 len = 0;
+                mut std::str name = "";
+                unsafe {
+                    std::raw_ptr<u8> base = cast::reinterpret<std::raw_ptr<u8>>(mut &buffer).offset(at);
+                    handle = std::raw::read(cast::reinterpret<std::raw_ptr<i32>>(base));
+                    mask = std::raw::read(cast::reinterpret<std::raw_ptr<u32>>(base.offset(4)));
+                    len = std::raw::read(cast::reinterpret<std::raw_ptr<u32>>(base.offset(12)));
+                    mut usize k = 0;
+                    while (k < cast<usize>(len) && *base.offset(16 + k) != 0) { k += 1; }
+                    name = std::raw::str_from(base.offset(16), k);
+                }
+                at += 16 + cast<usize>(len);
+                mut usize i = 0;
+                while (i < this.handles.len() && this.handles[i] != handle) { i += 1; }
+                if (i == this.handles.len() || name.is_empty()) { continue; }
+                path changed = this.dirs[i] / name;
+                if ((mask & watch_is_dir) != 0 && (mask & (0x100 | 0x80)) != 0) {   // a new directory: watch it too
+                    this.add(changed);
+                    continue;
+                }
+                mut bool seen = false;
+                for (path& p : out) { seen = seen || p.as_str() == changed.as_str(); }
+                if (!seen) { out.push(move changed); }
+            }
+        }
+    }
+
+    std::result<watcher, std::io_error> watch(path& directory) {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
+        mut i32 fd = -1;
+        unsafe { fd = inotify_init1(0x800 | 0x80000); }   // IN_NONBLOCK | IN_CLOEXEC
+        if (fd < 0) { return std::error(std::io_error::other); }
+        mut watcher w = watcher{ .fd = fd };
+        w.add(directory);
+        if (w.handles.is_empty()) { return std::error(std::io_error::not_found); }
+        return std::ok(move w);
+    }
 }

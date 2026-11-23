@@ -44,7 +44,7 @@ while (file.has_more()) {
 `break` and `continue` work in `while` and `for`.
 
 ### `is`: a pattern as a condition
-`if` and `while` conditions can test a value against a pattern and bind its parts (spec 34):
+`if` and `while` conditions can test a value against a pattern and bind its parts:
 ```edax
 if (find(items, key) is std::some(index)) {
     use(index);                                   // `index` exists in this branch only

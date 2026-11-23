@@ -1,0 +1,27 @@
+// RUN: edaxc run %s
+// `mut p` for a `mut T&` parameter passes the pointer's place, not the pointer (std::swap of raw
+// pointers and of pointer fields).
+import std;
+
+class box {
+public:
+    void flip(mut box& other) mut {
+        std::swap(mut this.n, mut other.n);
+        std::swap(mut this.p, mut other.p);
+    }
+    i32 n = 0;
+    std::raw_ptr<i32> p = nullptr;
+}
+
+i32 main() {
+    i32 one = 1;
+    i32 two = 2;
+    mut box a = box{ .n = 1, .p = &one };
+    mut box b = box{ .n = 2, .p = &two };
+    a.flip(mut b);
+    mut std::raw_ptr<i32> x = &one;
+    mut std::raw_ptr<i32> y = &two;
+    std::swap(mut x, mut y);
+    unsafe { std::println(f"{a.n} {b.n} {*a.p} {*b.p} {*x} {*y}"); }
+    return 0;
+}

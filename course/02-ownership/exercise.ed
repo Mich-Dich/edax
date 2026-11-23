@@ -1,0 +1,78 @@
+// Lesson 2: a bag of items. This program doesn't compile: it is written the way the same program
+// would be written in C++. Fix the errors one by one, keeping what the program does, until
+//     python3 course/check.py 2
+// says done. Each fix should be the smallest change that says what you mean (does this line copy,
+// move or borrow?).
+import std;
+
+struct item {
+    std::string name;
+    u32         weight = 0;
+}
+
+class bag {
+public:
+    static bag make(std::str owner) {
+        return bag{ .who = std::string::from(owner), .items = default };
+    }
+
+    void add(item it) mut { this.items.push(move it); }
+
+    // The heaviest item, borrowed from the bag.
+    std::option<item&> heaviest() {
+        mut std::option<item&> best = std::none;
+        for (item& it : this.items) {
+            if (best is std::some(b) && b.weight >= it.weight) { continue; }
+            best = std::some(it);
+        }
+        return best;
+    }
+
+    // Hands every item over to the caller; the bag is empty afterwards.
+    std::darray<item> empty_out() mut { return this.items; }
+
+    u32 total() {
+        mut u32 sum = 0;
+        for (item& it : this.items) { sum += it.weight; }
+        return sum;
+    }
+
+    std::str owner() { return this.who; }
+
+    ~bag() { std::println(f"bag of {this.who} destroyed with {this.items.len()} items"); }
+
+private:
+    std::string       who;
+    std::darray<item> items;
+}
+
+// The longer of two names (the first one when they are as long).
+std::str longer(std::str a, std::str b) {
+    if (a.len() >= b.len()) { return a; }
+    return b;
+}
+
+i32 main() {
+    mut bag mine = bag::make("ada");
+    std::string rope = std::string::from("rope");
+    mine.add(item{ .name = rope, .weight = 3 });
+    mine.add(item{ .name = std::string::from("lamp"), .weight = 5 });
+    mine.add(item{ .name = rope, .weight = 2 });
+    if (mine.heaviest() is std::some(h)) {
+        std::println(f"heaviest: {h.name} ({h.weight})");
+    }
+    std::println(f"{mine.owner()} carries {mine.total()}");
+
+    // Double every weight into a second darray.
+    std::darray<item> taken = mine.empty_out();
+    mut std::darray<item> doubled = default;
+    for (item& it : taken) {
+        doubled.push(item{ .name = it.name, .weight = it.weight * 2 });
+    }
+    bag yours = bag::make("bob");
+    for (item& it : doubled) { it.weight += 1; }
+    while (doubled.pop() is std::some(it)) { yours.add(it); }
+    std::println(f"{yours.owner()} carries {yours.total()}, {mine.owner()} carries {mine.total()}");
+    std::println(longer(mine.owner(), yours.owner()));
+    return 0;
+}

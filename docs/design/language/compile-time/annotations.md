@@ -45,7 +45,7 @@ annotation(std::meta::target::field) struct range {
 
 ### 2. Writing an annotation
 ```edax
-@range{ .min = 0, .max = 100 }       // with values: the T{...} form of 03
+@range{ .min = 0, .max = 100 }       // with values: the T{...} form of structs
 @json::skip                          // all fields have defaults: just the name
 ```
 - An annotation stands directly before what it annotates: before the declaration (type, function, method), before the field's type, before the parameter's type, or before the alternative's name.
@@ -121,7 +121,7 @@ annotation(std::meta::target::type) struct hashable {
 - **Generic types:** on a template type, the block is generated per instance, and `annotated` is the instance.
 - **Errors in generated code** are reported at the `@` that caused it, with a note into the `generate` block.
 - **You can see the result:** `edaxc expand <file> <type>` prints the type with every generated member written out.
-- **Headers and modules:** the generated members are part of the type's interface. They're in the compiled module interface (see [Headers, Sources and Modules](../organization/modules.md)) because the annotation is on the declaration. Importers see them without seeing the annotation's code.
+- **Headers and modules:** the generated members are part of the type's interface. Importers see them (see [Headers, Sources and Modules](../organization/modules.md)) because the annotation is on the declaration. Importers see them without seeing the annotation's code.
 
 ### 6. Annotations in the standard library
 | Annotation | On | Effect |
@@ -143,8 +143,10 @@ annotation(std::meta::target::type) struct hashable {
 | `@std::no_checks_left` | function | A run-time check the optimizer couldn't remove is a compile error |
 | `@std::interior_mutable` | type | The type changes through immutable references (atomics, locks); the optimizer is not told that a `T&` of it is read-only |
 | `@std::layout{ .align, .packed, .no_implicit_padding }` | type | The memory layout of a struct or class (see [Memory Layout](../user-types/layout.md)) |
-| `@std::reflect` | type, field, function | Run-time type information is emitted for it (see [Metaprogramming](metaprogramming.md)) |
-| `@std::hot_reload_state` | type | Migrated field by field when a plugin is reloaded (see [Dynamic Libraries](../../stdlib/system/dynamic-libraries.md)) |
+| `@std::diagnostic_frame{ .hide }` | function, type | Its instances leave the instantiation chains of errors (see [Templates](templates.md)) |
+| `@std::dispatch_hint<T>` | a call (the one annotation on an expression) | A guarded direct call to `T`'s implementation (see [Performance](../performance/performance.md)) |
+| `@std::reflect` | type, field, function | Run-time type information is emitted for it (see [Metaprogramming](metaprogramming.md)); **planned** |
+| `@std::hot_reload_state` | `@std::plugin_entry` class | Its fields are carried over by name when the plugin is reloaded (see [Dynamic Libraries](../../stdlib/system/dynamic-libraries.md)) |
 | `@std::test` | function | A test: `edaxc test` finds and runs every `@std::test` function of the test targets (see [Edax as a Build System](../../build/build-system.md)). The function takes no parameters and returns `void` |
 
 The `derive` annotations are ordinary annotations with `generate` blocks, written in Edax. They're in `std` because they're needed often, not because they're special.

@@ -1,0 +1,3 @@
+// RUN: edaxc build --root=%S/pgo_project --out-dir=%t --mode=pgo app
+// profile_guided() (build modes): a mode that names a profile that doesn't exist is an error that
+// says how to record one.

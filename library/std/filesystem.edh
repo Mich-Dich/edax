@@ -35,6 +35,24 @@ namespace std::filesystem {
     // The directory that contains the running executable.
     path executable_dir();
 
+    // Reports the files that change under a directory and its subdirectories (created, written,
+    // removed, renamed), so a program can rebuild or reload when a source changes (dynamic
+    // libraries, "Hot reload"). Linux: inotify. Closing happens when it is destroyed.
+    class watcher : unsafe std::sendable {
+    public:
+        // The files changed since the last call, each once, without waiting.
+        std::darray<path> changes() mut;
+
+        // Waits up to `milliseconds` for a change (0: don't wait, -1: wait forever), then returns
+        // the files changed so far, each once.
+        std::darray<path> wait(i32 milliseconds) mut;
+
+        ~watcher();
+    }
+
+    // Starts watching `directory` and every directory below it (new ones too).
+    std::result<watcher, std::io_error> watch(path& directory);
+
     // Creates `dir` and every missing directory above it. A directory that already exists is
     // fine; anything else in the way is `std::io_error::already_exists`.
     std::result<void, std::io_error> create_directories(path& dir);

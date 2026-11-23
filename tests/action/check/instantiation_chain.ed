@@ -1,0 +1,10 @@
+// RUN: edaxc check %s
+// An error in an instance shows the chain of instances that led to it, innermost first
+// (templates: unconstrained templates are checked when they are instantiated).
+template<type T>
+u32 inner(T x) { return x.size(); }
+
+template<type T>
+u32 outer(T x) { return inner(x); }
+
+u32 main() { return outer(5u32); }

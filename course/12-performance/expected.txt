@@ -1,0 +1,3 @@
+energy before: 827.35
+energy after:  1958.76
+first particle at (2.000, 0.002)

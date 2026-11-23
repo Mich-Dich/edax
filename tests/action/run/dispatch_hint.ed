@@ -1,0 +1,51 @@
+// RUN: edaxc run --mode=release %s
+// @std::dispatch_hint<T> (performance §8): a guarded direct call to T's implementation, the
+// dynamic call for every other type. The results don't depend on which path a call takes.
+import std;
+
+interface shape {
+    f32 area();
+}
+
+struct square : shape {
+    f32 side;
+    f32 area() override { return this.side * this.side; }
+}
+
+struct rect : shape {
+    f32 w;
+    f32 h;
+    f32 area() override { return this.w * this.h; }
+}
+
+open class animal {
+public:
+    virtual std::str sound() { return "..."; }
+}
+
+class dog : animal {
+public:
+    std::str sound() override { return "woof"; }
+}
+
+class cat : animal {
+public:
+    std::str sound() override { return "meow"; }
+}
+
+f32 area_of(shape& s) { return @std::dispatch_hint<square> s.area(); }
+
+std::str speak(animal& a) { return @std::dispatch_hint<dog> a.sound(); }
+
+void main() {
+    std::println(f"{area_of(square{ .side = 2.0 })} {area_of(rect{ .w = 2.0, .h = 3.0 })}");
+    dog d = dog{};
+    cat c = cat{};
+    animal a = animal{};
+    std::println(f"{speak(d)} {speak(c)} {speak(a)}");
+    mut f32 total = 0.0;
+    for (u32 i : 0..4u32) {
+        total += @std::dispatch_hint<square> square{ .side = 1.0 }.area();
+    }
+    std::println(f"{total}");
+}

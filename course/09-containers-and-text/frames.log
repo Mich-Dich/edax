@@ -1,0 +1,13 @@
+info render 4
+warn physics 9
+info render 5
+error audio 12
+info physics 3
+warn render 7
+
+info ui 1
+info audio 2
+broken line
+warn ui 6
+info render x
+info render 4

@@ -1,0 +1,18 @@
+// The program. Everything named build:: comes from build.ed.
+import std;
+import stats::stats;
+
+extern(std::build::language::c) f64 scale(f64 x);
+
+compile_time std::static_str greeting = build::greeting.value();
+compile_time bool verbose = build::verbose.value();
+
+i32 main() {
+    std::println(greeting);
+    std::array<f64, 4> values = [1.0, 2.0, 3.0, 4.0];
+    f64 m = stats::mean(values.as_span());
+    unsafe { std::println(f"mean {m}, scaled {scale(m)}"); }
+    if compile_time (verbose) { std::println("verbose: on"); }
+    std::println(f"fast mode: {std::build::mode_is(build::fast)}");
+    return 0;
+}

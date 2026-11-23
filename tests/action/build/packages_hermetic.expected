@@ -1,0 +1,4 @@
+exit: 1
+--- stdout
+--- stderr
+edaxc: error: the package 'z': its target 'z' links 'dl', which no '.uses' of the package answers (--hermetic: a build uses only what the project declares)

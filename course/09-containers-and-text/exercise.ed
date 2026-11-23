@@ -1,0 +1,34 @@
+// Lesson 9: a log report over frames.log. Fill in main until `python3 course/check.py 9` says
+// done.
+import std;
+
+// The frame log, read into the program when it is compiled. One line per sample:
+// "<level> <system> <milliseconds>".
+compile_time std::static_str log = std::embed_text("frames.log");
+
+view struct sample {
+    std::str system;     // a view into `log`: the darray of samples borrows the text
+    u32      ms = 0;
+}
+
+i32 main() {
+    mut std::hash_map<std::str, u32> per_level = default;
+    mut std::tree_map<std::str, u64> per_system = default;    // sorted by name
+    mut std::darray<sample> samples = default;
+    mut u32 skipped = 0;
+
+    // TODO 1: go through the lines of `log`. Skip empty lines (after trim). A line that isn't three
+    // words, or whose third word isn't a u32, counts as skipped. For the others: count the level in
+    // per_level, add the milliseconds to the system in per_system, and push a sample.
+    // (map.get_or_insert(key, 0) is a place you can `+=` on.)
+
+    // TODO 2: "levels: info <n>, warn <n>, error <n>": a hash_map has no order, so walk a fixed list
+    // of the three levels and build the line in an std::string.
+
+    // TODO 3: one line per system in name order: the name left-aligned in 8 columns, the total
+    // right-aligned in 3, then " ms" (format specs: {x:<8} and {x:>3}).
+
+    // TODO 4: "slowest:" and the three slowest samples as " <system>=<ms>", slowest first
+    // (darray::sort_by_key with std::sort_order::descending), then "skipped <n> lines".
+    return 0;
+}

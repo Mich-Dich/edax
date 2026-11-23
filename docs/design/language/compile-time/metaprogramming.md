@@ -39,6 +39,7 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::alternatives<T>()` | `std::span<std::meta::alternative>`: the alternatives of an enum, in declaration order |
 | `std::meta::is_struct<T>()`, `is_class<T>()`, `is_enum<T>()` | `bool` |
 | `std::meta::result_of<F>()` | `type`: what calling the lambda or callable type `F` returns (`std::thread::spawn` uses it to name `handle<R>`) |
+| `std::returns<F, R>()` | `bool`: whether calling `F` gives an `R`. For entry checks of functions taking callables (`darray::sort_by` uses it), where `std::meta::result_of<F>()` can't be written as a template argument |
 | `std::meta::is_view<T>()` | `bool`: whether `T` borrows (a reference, a view, a lambda with reference captures, see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)) |
 | `std::meta::methods<T>()` | `std::span<std::meta::function>`: the methods of a type (visible ones, see privacy below), including generated ones (see [Annotations](annotations.md)) |
 | `std::meta::interfaces<T>()` | `std::span<type>`: the interfaces `T` implements, directly or through its bases |
@@ -126,11 +127,15 @@ for compile_time (std::meta::field f : std::meta::fields<T>()) {
 `std::meta::type_id<T>()` is a `u64` that identifies `T`: a hash of its fully qualified name with template arguments, the same in every module and every plugin built from the same interfaces. It is a compile-time value usable at run time. Two types with the same id are a link error naming both.
 
 ### Run-time type information, when asked for
+> **Planned:** `@std::reflect`, `std::meta::runtime_info` and compile-time values as static data are not implemented yet.
+
 `@std::reflect` on a type (or a call of `std::meta::runtime_info<T>()`) makes the compiler emit a **static, read-only table**: name, size, alignment, type id, fields (name, offset, type id, annotations that are `@std::reflect` themselves), methods marked `@std::reflect` (callable through it), enum alternatives. Editors, property grids, serializers, undo and network replication read it. Types that don't ask cost nothing.
 
 Compile-time values that hold texts, function pointers and lists become static data the same way, so lookup tables and baked curves are written as compile-time code.
 
 ### Types whose fields come from another type
+> **Planned:** field-generating templates are not implemented yet.
+
 A struct template may declare fields with `for compile_time` over the fields of another type. Every field it makes takes its name from a written declaration (the other type's field), optionally with a written prefix or suffix:
 ```edax
 template<type T, type A = std::global_allocator>

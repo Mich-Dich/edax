@@ -27,6 +27,7 @@ namespace std::build {
         compile_time std::build::target add_test(std::build::edax_target t) mut { return std::build::target{}; }
         compile_time std::build::target add_c_library(std::build::c_target t) mut { return std::build::target{}; }
         compile_time std::build::target add_shared_library(std::build::c_target spec) mut { return std::build::target{}; }
+        compile_time std::build::target add_shared_library(std::build::edax_target spec) mut { return std::build::target{}; }
         compile_time std::build::target add_plugin(std::build::edax_target spec) mut { return std::build::target{}; }
         compile_time void import_c_headers(std::build::target t, std::build::c_import spec) mut { }
         compile_time void wrap_cpp(std::build::target t, std::build::cpp_wrap spec) mut { }
@@ -74,6 +75,10 @@ namespace std::build {
     struct package {
         compile_time std::build::target target(std::static_str name) { return std::build::target{}; }
         compile_time std::span<std::build::path> glob(std::static_str pattern) { std::compile_error("provided by edaxc"); }
+        compile_time std::span<std::build::path> files(std::span<std::static_str> relative) { std::compile_error("provided by edaxc"); }
+        compile_time std::static_str at(std::static_str relative) { return ""; }
+        compile_time void export_target(std::build::target t) { }
+        compile_time void export_target(std::build::target t, std::static_str name) { }
     }
 
     struct path {

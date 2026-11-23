@@ -1,0 +1,30 @@
+import std;
+
+namespace core {
+    interface shape {
+        f64 area();
+        std::string name() { return std::string::from("a shape"); }
+    }
+
+    class circle : shape {
+    public:
+        static circle make(f64 r);
+        f64 area() override;
+    }
+
+    class counter {
+    public:
+        static counter make(std::str label);
+        u32 bump() mut;
+        std::str label();
+        ~counter();
+    }
+
+    template<type T>
+    T biggest(T a, T b);
+
+    bool is_circle(shape& s);
+    u32 twice(u32 x);
+    u32 created();
+    std::darray<u32> squares(u32 n);
+}

@@ -387,7 +387,10 @@ private:
         if (f->is_compile_time && !f->is_run_time) return;
         std::vector<const Param*> sources;
         for (const Param& p : f->params) {
-            if (is_view(lower(*p.type, &s))) sources.push_back(&p);
+            // In a template, a parameter whose type depends on the template's parameters
+            // (`std::span<T>`) is known only per instance: it may be the place to borrow from.
+            const Type* t = lower(*p.type, &s);
+            if (is_view(t) || (f->is_template && t && t->kind == Kind::error)) sources.push_back(&p);
         }
         if (sources.size() == 1) return;
         if (sources.empty()) {

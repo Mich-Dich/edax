@@ -1,0 +1,8 @@
+// @std::dispatch_hint<T> names a class or struct.
+interface shape { f32 area(); }
+struct square : shape {
+    f32 side;
+    f32 area() override { return this.side * this.side; }
+}
+f32 a(shape& s) { return @std::dispatch_hint<u32> s.area(); }   //~ error[E4210]: @std::dispatch_hint names a class or struct, not 'u32'
+f32 b(shape& s) { return @std::dispatch_hint<square> s.area(); }

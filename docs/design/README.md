@@ -4,6 +4,7 @@ Edax (Latin for "devouring") is a C++-inspired systems language: explicit, simpl
 
 - Source files are `.ed`, header files `.edh`.
 - Undecided points are collected in [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md), not in the pages.
+- Decided but not implemented yet: such parts carry a **Planned** note (`> **Planned:** ...`) where they are described, so that every page without one describes what edaxc does today. [`../compiler/spec-34-status.md`](../compiler/spec-34-status.md) lists them all.
 - Example programs: [`example/`](../../example/README.md).
 
 ## Design principles

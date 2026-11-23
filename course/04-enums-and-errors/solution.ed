@@ -1,0 +1,78 @@
+// Lesson 4: a reverse-Polish calculator (solution).
+import std;
+
+enum op : u8 { add, sub, mul, div }
+
+enum token : u8 {
+    number(i64),
+    apply(op),
+}
+
+enum calc_error : u8 {
+    bad_token(usize),          // the position of the word, counting from 0
+    missing_operand,
+    division_by_zero,
+    leftover(usize),           // how many values were left on the stack
+}
+
+// One word: a number, or one of + - * /.
+std::result<token, calc_error> read_token(std::str word, usize position) {
+    std::option<op> o = match (word) {
+        "+" => std::some(op::add),
+        "-" => std::some(op::sub),
+        "*" => std::some(op::mul),
+        "/" => std::some(op::div),
+        _ => std::none,
+    };
+    if (o is std::some(which)) { return std::ok(token::apply(which)); }
+    i64 n = word.parse<i64>().or_error(calc_error::bad_token(position))?;
+    return std::ok(token::number(n));
+}
+
+std::result<i64, calc_error> apply(op o, i64 a, i64 b) {
+    return match (o) {
+        op::add => std::ok(a + b),
+        op::sub => std::ok(a - b),
+        op::mul => std::ok(a * b),
+        op::div => if (b == 0) { std::error(calc_error::division_by_zero) } else { std::ok(a / b) },
+    };
+}
+
+std::result<i64, calc_error> evaluate(std::str text) {
+    mut std::darray<i64> stack = default;
+    mut usize position = 0;
+    for (std::str word : text.split(' ')) {
+        match (read_token(word, position)?) {
+            token::number(n) => stack.push(n),
+            token::apply(o) => {
+                i64 b = stack.pop().or_error(calc_error::missing_operand)?;
+                i64 a = stack.pop().or_error(calc_error::missing_operand)?;
+                stack.push(apply(o, a, b)?);
+            },
+        }
+        position += 1;
+    }
+    if (stack.len() != 1) { return std::error(calc_error::leftover(stack.len())); }
+    return std::ok(stack[0]);
+}
+
+std::string describe(calc_error& e) {
+    return match (e) {
+        calc_error::bad_token(at) => std::format(f"word {at} is not a number or an operator"),
+        calc_error::missing_operand => std::string::from("an operator is missing an operand"),
+        calc_error::division_by_zero => std::string::from("division by zero"),
+        calc_error::leftover(n) if n == 0 => std::string::from("nothing to compute"),
+        calc_error::leftover(n) => std::format(f"{n} values left over"),
+    };
+}
+
+i32 main() {
+    std::array<std::static_str, 6> inputs = ["3 4 + 2 *", "10 2 8 * + 3 -", "1 +", "4 0 /", "2 x *", "1 2 3"];
+    for (std::static_str input : inputs) {
+        match (evaluate(input)) {
+            std::ok(v) => std::println(f"{input} = {v}"),
+            std::error(e) => std::println(f"{input}: {describe(e)}"),
+        }
+    }
+    return 0;
+}

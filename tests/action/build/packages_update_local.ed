@@ -1,0 +1,2 @@
+// RUN: edaxc package update hdr --tag 2.0 --root=%S/packages_project --out-dir=%t
+// `edaxc package update` changes a git package's version; a local package has none.

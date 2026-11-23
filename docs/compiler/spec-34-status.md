@@ -44,10 +44,25 @@ what `edaxc` does today. Legend: **done** (implemented and tested), **partial**,
 | `edaxc explain-checks <file>`: every check of the file's functions, kept or removed at -O2 (functions on their own, for any arguments) | performance §5 | `explain_checks`, driver `run_explain_checks` | `action/cli/explain_checks` |
 | Whole-program devirtualization: one implementation of a virtual method / one implementing type of an interface → direct call (off with plugins) | performance §8 | `single_implementation` | `action/run/devirtualize`, `action/insights/devirtualize` |
 | `sort()` of integers, `sort_by_key` with integer keys: LSD radix sort from 256 elements (buffer of n) | stdlib | `std.ed radix_sort` | `action/run/radix_sort`, `bench/sort*` (0.19x, 0.16x) |
+| Large values in memory (`lower_aggregates.cpp`): structs and arrays of 128 bytes or more are passed and returned through pointers (sret) and copied with `memcpy`, never as SSA aggregates; windowing example release 22.4 s → 3.5 s, debug cold 12.5 s → 3.3 s | performance §2 | `lower_large_aggregates` | `action/run/large_values*`, whole suite |
+| The generated module goes to the backend directly (no IR text round trip); the runtime is linked with `llvm::Linker` | - (compiler internal) | `generate_llvm_program`, `link_runtime`, `spell_calls_like_text` | whole suite |
+| `@std::dispatch_hint<T>` before a call: guarded direct call (interface table / vtable compared with `T`'s), `speculative` in insights | performance §8 | parser `parse_hinted_call`, checker `infer_call`, backend `Speculation` in `call_symbol` | `action/run/dispatch_hint`, `feature/34-performance/dispatch_hint_*` |
+| `profile_guided()` mode setting and `--profile-generate` (LLVM IR PGO; the profile is a build input) | build-modes | `emit_object` (`PGOOptions`), driver `set_profile_options` | `action/build/pgo_missing_profile` |
+| Instantiation chains in errors; `@std::diagnostic_frame{ .hide = true }` | templates | `Instantiator::add_frame` | `action/check/instantiation_chain`, `action/check/hidden_frame` |
+| `g.set_mode` on C targets (their own optimization) and Edax libraries (their files' optimization) | build-modes "Scope of a mode" | driver `own_optimization`, `with_modes` | `action/build/run_library_mode` |
+| `std::string_with<A>` (text from an allocator; converts to `std::str` and formats like `std::string`), `std::tree_map<K, V, A>` | allocators | `std.ed` `string_with`, B-tree helpers with `A`; checker `is_std_text`, backend `is_string` | `action/run/allocator_text_and_tree` |
+| Object cache for unoptimized builds: units (per program module; a few per library module, a type's methods together), each unit's object code cached under a BLAKE3 hash of its IR and the codegen settings; names in the IR come from content (instance arguments, lambda places, constant contents), not generation order; small optimized callees copied into library units (`available_externally`) so they still inline; misses compiled in parallel. Windowing example, debug: 12.5 s → 8.2 s cold, 2.0 s with nothing changed, ~3 s after an edit to `main.ed` | build-modes "The object cache" | `Gen::unit_of`, `instance_tag`, `name_constants_by_content`, `compile_units`, `unit_module` | `unit` (codegen: names, object cache), whole suite with the cache on |
 | Compile speed: the default build of edaxc is optimized (`RelWithDebInfo` without `CMAKE_BUILD_TYPE`: 4-5x faster than the unoptimized default); module visibility is computed once, module items are found by hash. `opengl_versions.ed` checks in 0.6 s (was 3.8 s unoptimized, 0.85 s optimized) | - (compiler internal) | `CMakeLists.txt`, `Module::find_item`, `visible_modules` | whole suite |
 | Doc comments: `//` lines directly above a declaration (the 4 old doc-comment test failures) | lexical | `Lexer::skip_trivia` | `unit`, `action/lex/*`, `action/parse/*` |
 | `@std::no_checks_left` (E6004 names each check left) | performance §5 | `check_no_checks_left` | `action/build/no_checks_left`, `bench/particles` |
 | Entry checks take the caller's location as a hidden argument (no thread-local stores around `operator[]`) | performance §5 | `site_variant_of` | whole suite |
+| Plugin hot reload: `std::plugin<I>::reload`, the `@std::hot_reload_state` entry class's fields carried over by name (layout table in the descriptor, `state_changed` for a changed type); `std::filesystem::watch` (inotify, recursive) | dynamic-libraries "Hot reload" | backend `emit_plugin_entry`, `std.ed` `plugin<I>::reload`, `filesystem.ed` `watcher` | `action/build/plugin_reload`, `action/run/filesystem_watch` |
+| Package descriptions (`packages/<name>.ed`, `package_build::script`, `p.files`/`p.at`/`p.export_target`), `package_build::cmake_external`, `edaxc package convert [--compare]` (lenient CMake reading per platform, TODOs), `edaxc package update --tag/--commit` | packages §3, §4, §8 | interpreter `g.package`, driver `add_package_targets`, `convert_cmake_package`, `run_package`; reader `CMakeInput::lenient` | `action/build/packages_described`, `packages_converted`, `packages_convert*`, `packages_update_local` |
+| C objects are rebuilt when their command (defines, flags, mode) or an included header changes (`-MMD` dependency files) | build-system | driver `build_c_target` | `action/build/packages_converted`, manual |
+| Name lookup through one program-wide index (one hash per name instead of one per visible module); the parser decides `T name` declarations and `compile_time check` without speculative parsing. Windowing example's check: 0.95 s → 0.74 s (instructions −30%) | - (compiler internal) | `Program::item_index`, `Resolver::find_items`, `Parser::looks_like_declaration` | whole suite |
+| `development` (`basic`) builds through the cache with LLVM's ThinLTO: per-unit bitcode with summaries, imports up to 300 instructions, objects cached per unit and imports; Edax's passes run in the post-link pipeline. Windowing `development`: 4.4 s → 2.1-2.4 s after an edit; `bench/` up to 1.5x slower than one module, so `release` stays one module (`EDAX_THINLTO=on` to opt in) | build-modes "The object cache" | `compile_thin`, `thin_lto.cpp` | `action/run/development_units`, whole suite with `EDAX_THINLTO=on` |
+| Shared Edax libraries: `g.add_shared_library(edax_target)` → `lib<name>.so`; non-generic functions, globals, vtables and type ids exported once, programs declare them; generic instances in the program; globals initialized at load | dynamic-libraries "Shared Edax libraries" | `Gen::from_shared_library`, `exported_by_library`, driver `shared_library_dirs` | `action/build/shared_library` |
+| Generated graphics modules (OpenGL/Vulkan from the XML registries) cached on disk (`~/.cache/edax/modules`), keyed by the registry and the generator | - (compiler internal) | `cached_generated_module` | whole suite |
 
 Already present before spec 34 (the roadmap listed them as missing): the whole program is one LLVM
 module (cross-module inlining needs no interface bodies), `bench/` compares against C++/Abseil/Boost,
@@ -56,23 +71,21 @@ module (cross-module inlining needs no interface bodies), `bench/` compares agai
 ## Designed, not implemented
 | Item | Design page | Notes |
 |---|---|---|
-| Mid-level IR (EIR) | - (compiler internal) | Prerequisite for check removal, generators, devirtualization, field-precise borrows beyond calls |
+| Mid-level IR (EIR) | - (compiler internal) | Prerequisite for check removal, generators, field-precise borrows beyond calls (devirtualization shipped without it) |
 | Byte-copy moves as a guarantee; in-place construction guarantee | performance §3–4 | Mostly true today; needs EIR to guarantee |
 | Check removal beyond LLVM (range analysis, hoisting) | performance §5 | LLVM already removes the checks of `xs[i]` for `i in 0..xs.len()`, and others after `std::assume` |
-| `@std::dispatch_hint` (speculative devirtualization) | performance §8 | needs annotations on expressions |
-| `profile_guided()` | build-modes | |
 | `std::any_of<I...>`; bounds other than sendable/shareable; `std::function` with an allocator | lambdas | |
 | Generators, resumable functions, `std::raw::stack_switch` | generators | needs EIR |
-| `@std::diagnostic_frame` | templates | |
 | Field-generating templates, `@std::reflect` run-time info, compile-time values as static data | metaprogramming | |
-| Fast compile-time evaluator (bytecode), cached std/generated modules; template instances without re-parsing | - (compiler internal) | instantiating the graphics templates is now most of a 0.6 s check: re-parsing each template (23%) and resolving the copy (25%) |
+| Fast compile-time evaluator (bytecode), cached std module; template instances without re-parsing | - (compiler internal) | instantiating the graphics templates is now most of a 0.6 s check: re-parsing each template (23%) and resolving the copy (25%). The generated graphics modules are cached (above) |
 | C++ interop extensions (virtual interfaces, instantiations, `@cpp::value`, exceptions) | c-interop | |
-| Plugin hot reload, `std::filesystem::watch` | dynamic-libraries | |
+| Compiled module interfaces on disk | modules | the front end is ~0.75 s for the windowing example; template instances re-parse their template (22%) |
+| `release` builds through the cache without a run-time cost | build-modes | ThinLTO costs up to 1.5x on `bench/` (functions called across units stay external) |
 | Windows (COFF, PDB, MSVC ABI), macOS, custom platform classes; generated debugger pretty-printers; `edaxc lsp` | - (tooling) | |
 
 ## Order of the remaining work
 1. EIR, then check removal beyond LLVM.
-2. `type_id`-based run-time info, static data, `embed`, field-generating templates.
+2. `type_id`-based run-time info, static data, field-generating templates.
 3. Generators and resumables; fibers.
 4. Template features for large libraries; lambda/`function` features.
-5. Windows + PDB, C++ interop extensions, hot reload, language server.
+5. Windows + PDB, C++ interop extensions, language server.

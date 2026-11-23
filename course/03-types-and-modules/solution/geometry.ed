@@ -1,0 +1,56 @@
+// The module `geometry`: the bodies, and what only this module sees.
+import std;
+
+namespace geo {
+    struct vec2 {
+        vec2 operator+(vec2& other) { return vec2{ .x = this.x + other.x, .y = this.y + other.y }; }
+        vec2 operator-(vec2& other) { return vec2{ .x = this.x - other.x, .y = this.y - other.y }; }
+        f32  cross(vec2& other) { return this.x * other.y - this.y * other.x; }
+        f32  length() { return (this.x * this.x + this.y * this.y).sqrt(); }
+    }
+
+    class polygon {
+    public:
+        static polygon named(std::str name) {
+            return polygon{ .label = std::string::from(name) };   // points: its default (empty)
+        }
+
+        void add(vec2 p) mut { this.points.push(p); }
+
+        usize corners() { return this.points.len(); }
+
+        f32 area() {
+            mut f32 twice = 0.0;
+            for (usize i : 0..this.points.len()) {
+                twice += this.points[i].cross(this.points[next(i, this.points.len())]);
+            }
+            return twice.abs() / 2.0;
+        }
+
+        f32 perimeter() {
+            mut f32 sum = 0.0;
+            for (usize i : 0..this.points.len()) {
+                sum += (this.points[next(i, this.points.len())] - this.points[i]).length();
+            }
+            return sum;
+        }
+
+        std::str name() { return this.label; }
+
+        ~polygon() { std::println(f"{this.label} is gone"); }
+
+    private:
+        std::string       label;
+        std::darray<vec2> points = default;
+    }
+
+    // Only this module can call it.
+    private usize next(usize i, usize count) {
+        if (i + 1 == count) { return 0; }
+        return i + 1;
+    }
+
+    std::string describe(polygon& p) {
+        return std::format(f"{p.name()}: {p.corners()} corners, area {p.area():.2}, perimeter {p.perimeter():.2}");
+    }
+}

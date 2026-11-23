@@ -19,27 +19,32 @@ The aliasing rule (see [Ownership](../memory/ownership-and-references.md)) is a 
 - `unsafe` code that changes a frozen value through a `T&`, or reaches a `mut T&`'s object another way, has undefined behaviour (see [Raw Pointers and `unsafe`](../memory/raw-pointers-and-unsafe.md)).
 
 ### 2. Parameter passing is the compiler's choice
-- An immutable `T&` of a **copy type of at most 16 bytes** may be passed in registers instead of by address. A `T&` guarantees that the object doesn't change during the call, so the two are indistinguishable.
-- Implemented by LLVM's argument promotion on `noalias readonly` references (up to four scalars, a `vec4`); every Edax function is internal, so all callers change with it.
+- An immutable `T&` of a **small frozen type** (at most four scalar fields, a `vec4`) may be passed in registers instead of by address. A `T&` guarantees that the object doesn't change during the call, so the two are indistinguishable.
+- Implemented by LLVM's argument promotion on `noalias readonly` references; in a `release` build the program is one module and every Edax function is internal, so all callers change with it (in a `development` build, compiled in units, only for functions no other unit calls).
+- The other way round, a **large value** (128 bytes or more: a struct holding arrays, a table of function pointers) is never passed, returned or copied as one register value: it is passed and returned through a pointer to the caller's memory and copied with `memcpy`. Code generation stays fast however large a struct is.
 - So the guideline for inputs is always `T&`, never "by value for small types". `extern` functions keep the C ABI.
 
 ### 2b. Branches that only choose a value are removed
 - In a loop, `if (c) { a[i] = x; b[i] = y; }` after `a[i]` and `b[i]` were already written in the same iteration becomes `a[i] = c ? x : a[i]; b[i] = c ? y : b[i];`. The earlier stores show the addresses are valid and written by this thread, so the stores can't fault or race. The loop then has no branch and vectorizes on every CPU level, without masked stores.
 
 ### 3. Every value can be moved by copying its bytes
+> **Status:** true of the code edaxc generates today; it becomes a guarantee the optimizer is told about with the mid-level IR (planned).
+
 - References can't be stored and views can't outlive their source, so **no Edax value points into itself**. Moving a value is a copy of its bytes; the moved-from value is not destroyed.
 - Growing a `std::darray`, rehashing a map, `std::swap` and sorting are `memcpy`/`memmove` for every element type. There is no "is it nothrow-movable" question as in C++.
 - C++ objects that must not move stay behind a pointer in their wrappers (see [C and C++ Interop](../interop/c-interop.md)).
 
 ### 4. In-place construction
+> **Status:** values are built in place in most cases today (large results go straight into the caller's memory); the guarantee for every case comes with the mid-level IR (planned).
+
 - A `T{...}` or a call returning `T` that initializes a variable, a field, a container slot or a return value is **built in place**: no temporary is made and moved.
 - Library functions that build into a slot (`darray::push_with(make)`) get the same guarantee for `make()`'s result.
 
 ### 5. Checks that can't fail are removed
 Bounds, overflow and shift checks stay in every safe mode. The compiler removes the ones it can prove never fire:
 - the index of `for (usize i : 0..xs.len())` into `xs`, when `xs` isn't resized in the loop (the borrow rules prove that it isn't);
-- a run of indexes `xs[i]`, `xs[i + 1]`, `xs[i + 2]` becomes one check;
-- overflow of `i + 1` when `i < len` and `len <= isize::max`.
+- a run of indexes `xs[i]`, `xs[i + 1]`, `xs[i + 2]` becomes one check (**planned**: needs the mid-level IR; today LLVM removes such checks only when it can prove them itself);
+- overflow of `i + 1` when `i < len` and `len <= isize::max` (**planned**, as above).
 
 A program can add facts:
 
@@ -90,9 +95,16 @@ error[E6004]: 1 run-time check is left in a '@std::no_checks_left' function
 - A mode whose `float_determinism()` returns `strict` (lockstep multiplayer, replays) makes every `@std::float_mode` a compile error, including in packages.
 
 ### 8. Dynamic dispatch
-- A call through a reference whose exact class is known (a final class, a value just created) is a direct call.
-- **Whole-program devirtualization:** the program is one module, so the compiler sees every class and every type implementing an interface. A virtual call that no derived class overrides, and an interface call with one implementing type in the program, are direct calls (and can be inlined); `edaxc insights` shows them as `devirtualized`. Not in plugins, nor in a program that loads plugins (`std::plugin<I>`): there the types aren't all known.
-- `@std::dispatch_hint<circle>` on a call through an interface makes a guarded direct call for the expected class and the dynamic call for the others: speculative devirtualization, written where it's wanted.
+- A call through a reference whose exact class is known (a class that isn't `open`, a value just created) is a direct call.
+- **Whole-program devirtualization:** the compiler sees the whole program, so it knows every class and every type implementing an interface. A virtual call that no derived class overrides, and an interface call with one implementing type in the program, are direct calls (and can be inlined); `edaxc insights` shows them as `devirtualized`. Not in plugins, nor in a program that loads plugins (`std::plugin<I>`), nor across shared Edax libraries: there the types aren't all known.
+- `@std::dispatch_hint<circle>` written directly before a call through an interface or a virtual method makes a guarded direct call: the object's table is compared with `circle`'s, a match calls `circle`'s implementation directly (where it can be inlined), any other class takes the dynamic call. Speculative devirtualization, written where it's wanted; `edaxc insights` shows such calls as `speculative`. On a call that is already direct the hint does nothing.
+  ```edax
+  f32 total_area(std::span<std::unique_ptr<shape>> shapes) {
+      mut f32 sum = 0.0;
+      for (std::unique_ptr<shape>& s : shapes) { sum += @std::dispatch_hint<circle> s->area(); }   // most shapes are circles
+      return sum;
+  }
+  ```
 
 ### 9. Measured, not claimed
 `bench/` runs each workload in Edax and in C++ (`clang`/`gcc -O2`, libstdc++, Abseil, Boost) and fails when the checksums differ. Every optimization of this page lands with a benchmark that shows it.
@@ -101,7 +113,7 @@ error[E6004]: 1 run-time check is left in a '@std::no_checks_left' function
 
 ### A kernel that a C++ compiler can't optimize as well
 ```edax
-void integrate(mut std::span<f32> positions, std::span<f32> velocities, f32 dt) {
+void integrate(std::span<mut f32> positions, std::span<f32> velocities, f32 dt) {
     for (usize i : 0..positions.len()) {
         positions[i] += velocities[i] * dt;   // positions and velocities don't overlap: vectorized without a runtime overlap check
     }

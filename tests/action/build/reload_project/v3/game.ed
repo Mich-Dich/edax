@@ -1,0 +1,16 @@
+import std;
+import api::greeter;
+
+namespace v3 {
+    @std::plugin_entry
+    @std::hot_reload_state
+    class game : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"v3 greets {who}"); }
+        u32 calls() mut override { return 0; }
+        static game make() { return game{}; }
+
+    private:
+        u64 count = 0;   // was u32
+    }
+}

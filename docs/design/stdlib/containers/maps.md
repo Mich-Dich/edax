@@ -4,7 +4,7 @@
 
 - `std::hash_map<K, V>`: keys in no particular order, found by `std::hash(key)`.
   Keys implement `std::hashable` (integers, `char`, `bool`, `std::string`, `std::str`, and any type with a `u64 hash()` method, see [Core Utilities](../core/utilities.md)) and are compared with `==`.
-- `std::tree_map<K, V>`: keys in ascending order, compared with `<`.
+- `std::tree_map<K, V>`: keys in ascending order, compared with `<`. Both maps take an allocator as their last parameter (`std::hash_map<K, V, A>`, `std::tree_map<K, V, A>`, see [Allocators](../memory/allocators.md)).
 - Both have `insert(key, value) mut → std::option<V>` (the replaced value), `contains(key&)`,
   `get(key&) → std::option<V&>`, `get_mut(key&) mut → std::option<mut V&>`,
   `get_or_insert(key, value) mut → mut V&` (`m.get_or_insert(k, 0) += 1` counts),

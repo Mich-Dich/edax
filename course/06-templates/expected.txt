@@ -1,0 +1,8 @@
+dropped one
+dropped two
+kept three
+kept four
+kept five
+best 9.0
+last zoe
+integer 7, float 2.2, something else: x, integer -3

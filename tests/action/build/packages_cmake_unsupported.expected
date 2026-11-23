@@ -2,4 +2,4 @@ exit: 1
 --- stdout
 --- stderr
 edaxc: error: the package 'odd': vendor/odd/CMakeLists.txt:3: the command 'execute_process' isn't understood by the CMake reader
-note: the CMake reader stops at what it can't translate, never guessing; give the package a build.ed of its own (.build = std::build::package_build::edax)
+note: the CMake reader stops at what it can't translate, never guessing; describe the package in packages/odd.ed (`edaxc package convert odd` writes one to start from)

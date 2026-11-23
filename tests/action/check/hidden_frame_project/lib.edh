@@ -1,0 +1,9 @@
+import std;
+namespace lib {
+    @std::diagnostic_frame{ .hide = true }
+    template<type T>
+    u32 outer(T x);
+    @std::diagnostic_frame{ .hide = true }
+    template<type T>
+    u32 inner(T x);
+}

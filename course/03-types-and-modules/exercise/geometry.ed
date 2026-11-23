@@ -1,0 +1,15 @@
+// The module `geometry`: the bodies of what geometry.edh declares, and what only this module sees.
+// geometry.edh and main.ed are complete: write this file until
+//     python3 course/check.py 3
+// says done.
+import std;
+
+namespace geo {
+    // TODO: a `struct vec2 { ... }` block holding the bodies of vec2's methods. It may not add fields.
+
+    // TODO: the `class polygon { ... }` block: the bodies of its public methods, then `private:`
+    // with its fields (a name and the points). The destructor prints "<name> is gone".
+    // Area: half the absolute sum of cross(p[i], p[i + 1]) around the polygon (the shoelace formula).
+
+    // TODO: describe(...). std::format(f"...") makes an std::string; the numbers have 2 decimals.
+}

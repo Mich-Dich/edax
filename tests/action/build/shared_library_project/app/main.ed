@@ -1,0 +1,19 @@
+import std;
+import core::core;
+
+i32 main() {
+    mut core::counter c = core::counter::make("clicks");
+    _ = c.bump();
+    _ = c.bump();
+    std::println(f"{c.label()}: {c.bump()}, twice 21 = {core::twice(21)}, made {core::created()}");
+    std::darray<u32> sq = core::squares(5);
+    std::println(f"squares: {sq[4]}, biggest: {core::biggest<u32>(3, 9)}");
+    std::unique_ptr<core::shape> s = std::unique_ptr<core::circle>::make(core::circle::make(2.0));
+    std::println(f"{s->name()} of area {s->area()}");
+    bool here = match (cast::dynamic<core::circle&>(*s)) {
+        std::some(_) => true,
+        std::none => false,
+    };
+    std::println(f"a circle, says the library: {core::is_circle(*s)}; says the program: {here}");
+    return 0;
+}

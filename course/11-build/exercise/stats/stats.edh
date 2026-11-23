@@ -1,0 +1,6 @@
+// The Edax library `stats`.
+import std;
+
+namespace stats {
+    f64 mean(std::span<f64> values);
+}

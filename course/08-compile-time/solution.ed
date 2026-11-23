@@ -1,0 +1,70 @@
+// Lesson 8: compile-time code and checks (solution).
+import std;
+
+// The CRC-8 table (polynomial 0x07), computed by the compiler: no code for it runs at startup.
+compile_time std::array<u8, 256> crc8_table() {
+    mut std::array<u8, 256> table = default;
+    for (usize i : 0..256) {
+        mut u8 c = cast::truncate<u8>(i);
+        for (u32 bit_index : 0..8) {
+            if (c & 0x80) { c = (c << 1) ^ 0x07; } else { c = c << 1; }
+        }
+        table[i] = c;
+    }
+    return table;
+}
+compile_time std::array<u8, 256> crc8 = crc8_table();
+
+compile_time run_time u8 checksum(std::span<u8> bytes) {
+    mut u8 crc = 0;
+    for (u8 b : bytes) { crc = crc8[cast<usize>(crc ^ b)]; }
+    return crc;
+}
+
+// The protocol's header, checked when the type is compiled.
+@std::derive::formattable
+struct header {
+    u16 id = 0;
+    u8  kind = 0;
+    u8  flags = 0;
+    u32 length = 0;
+
+    compile_time check (std::size_of<header>() == 8) else f"a header must be 8 bytes, it is {std::size_of<header>()}";
+}
+
+// A precondition, checked at every call: by the compiler when the argument is known, else when
+// the program runs.
+u8 percent_to_byte(u32 percent) {
+    compile_time run_time check (percent <= 100) else f"{percent}% is more than 100%";
+    return cast::truncate<u8>(percent * 255 / 100);
+}
+
+// A compile_time parameter: one instance per value; `bits` is a constant in the body.
+u32 mask(compile_time u32 bits) {
+    compile_time check (bits >= 1 && bits <= 32) else f"mask({bits}): bits must be 1 to 32";
+    if compile_time (bits == 32) {
+        return u32::max;
+    } else {
+        return bit<u32>(bits) - 1;
+    }
+}
+
+i32 main() {
+    std::array<u8, 9> message = [49, 50, 51, 52, 53, 54, 55, 56, 57];   // "123456789"
+    std::println(f"crc8 of 123456789: {checksum(message.as_span())}");
+    compile_time u8 known = checksum([1, 2, 3]);                         // evaluated by the compiler
+    std::println(f"crc8 of [1, 2, 3]: {known}");
+
+    header h = header{ .id = 7, .kind = 2, .length = 512 };
+    std::println(f"{h}");
+
+    std::println(f"{percent_to_byte(50)} {percent_to_byte(100)}");
+    std::println(f"masks {mask(4)} {mask(12)} {mask(32)}");
+
+    std::static_str mode = if compile_time (std::build::mode_is(std::build::mode::debug)) { "debug" } else { "optimized" };
+    std::println(f"built as {mode}");
+
+    u32 user_value = cast::truncate<u32>(message.len()) * 20;   // a run-time value: 180
+    std::println(f"{percent_to_byte(user_value)}");     // the run-time half of the check fires
+    return 0;
+}

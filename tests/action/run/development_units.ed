@@ -1,0 +1,27 @@
+// RUN: edaxc run --mode=development %s
+// The development mode is compiled in units through the cache (ThinLTO): generic containers, text,
+// formatting, a vtable and an interface across units give the same results as one module.
+import std;
+
+interface shape {
+    f64 area();
+}
+
+struct square : shape {
+    f64 side = 0.0;
+    f64 area() override { return this.side * this.side; }
+}
+
+i32 main() {
+    mut std::darray<u64> values = default;
+    for (u64 i : 0..1000) { values.push(i * i); }
+    mut u64 sum = 0;
+    for (u64 v : values) { sum += v; }
+    mut std::hash_map<u64, u64> m = default;
+    for (u64 i : 0..100) { m.insert(i, i * 2); }
+    mut std::string text = default;
+    for (u32 i : 0..5) { text.push_str(std::format(f"{i},")); }
+    std::unique_ptr<shape> s = std::unique_ptr<square>::make(square{ .side = 1.5 });
+    std::println(f"{sum} {m.len()} {text} {s->area()}");
+    return 0;
+}

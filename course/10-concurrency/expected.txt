@@ -1,0 +1,4 @@
+primes below 10000: 1229, first block 168, last block 112
+jobs done: 10
+logged 10 values, sum 45
+pool sum 2475000.0

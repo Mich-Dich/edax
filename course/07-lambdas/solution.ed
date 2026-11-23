@@ -1,0 +1,72 @@
+// Lesson 7: callbacks and algorithms (solution).
+import std;
+
+struct score {
+    std::string player;
+    u32         points = 0;
+}
+
+// Named handlers for one kind of event, stored: so they are std::function.
+class event_bus {
+public:
+    void on(std::str name, std::function<void(u32)> handler) mut {
+        this.names.push(std::string::from(name));
+        this.handlers.push(move handler);
+    }
+
+    void emit(u32 value) {
+        for (usize i : 0..this.handlers.len()) {
+            std::print(f"[{this.names[i]}] ");
+            this.handlers[i](value);
+        }
+    }
+
+private:
+    std::darray<std::string>               names = default;
+    std::darray<std::function<void(u32)>>  handlers = default;
+}
+
+// Calls `f` once per element; F is deduced, nothing is stored: any lambda works, even one that
+// borrows locals or changes its captures.
+template<type T, type F>
+void each(std::span<T> items, mut F f) {
+    for (T& item : items) { f(item); }
+}
+
+void shout(u32 value) { std::println(f"plain function got {value}"); }
+
+i32 main() {
+    mut std::darray<score> scores = default;
+    std::array<std::static_str, 5> names = ["kim", "ann", "bob", "zoe", "lee"];
+    std::array<u32, 5> points = [40, 75, 10, 75, 55];
+    for (usize i : 0..5) {
+        scores.push(score{ .player = std::string::from(names[i]), .points = points[i] });
+    }
+
+    // Keep the scores of at least `cutoff`; then sort by points, highest first, names in order.
+    u32 cutoff = 30;
+    scores.retain([cutoff](score& s) { return s.points >= cutoff; });
+    scores.sort_by([](score& a, score& b) {
+        if (a.points != b.points) { return a.points > b.points; }
+        return a.player < b.player;
+    });
+
+    mut u32 total = 0;
+    mut auto rank = [mut next = 1u32]() { u32 r = next; next += 1; return r; };
+    each(scores.as_span(), [mut &total, mut &rank](score& s) {
+        total += s.points;
+        std::println(f"{rank()}. {s.player} {s.points}");
+    });
+    std::println(f"total {total}");
+
+    mut event_bus bus = default;
+    u32 bonus = 5;
+    bus.on("log", [](u32 v) { std::println(f"value {v}"); });
+    bus.on("bonus", [bonus](u32 v) { std::println(f"with bonus {v + bonus}"); });
+    std::string tag = std::string::from("final");
+    bus.on("tagged", [move tag](u32 v) { std::println(f"{tag}: {v}"); });
+    std::fn_ptr<void(u32)> plain = [](u32 v) { shout(v); };   // no captures: a plain function pointer
+    bus.on("plain", [plain](u32 v) { plain(v); });
+    bus.emit(total);
+    return 0;
+}

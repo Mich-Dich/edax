@@ -1,0 +1,4 @@
+hello from build.ed
+mean 2.5, scaled 7.5
+verbose: on
+fast mode: false

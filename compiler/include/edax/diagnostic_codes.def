@@ -7,6 +7,7 @@
 //     with a "(retired)" title.
 //   * Ranges:  E0xxx driver / I/O      E1xxx lexer      E2xxx parser (M2)
 //              E3xxx names / modules    E4xxx types      E5xxx ownership / borrows
+//              E6xxx code generation
 //              Wxxxx warnings, same ranges.
 //   * The title is what `edaxc explain <code>` prints. The message at the report site can be
 //     more specific.

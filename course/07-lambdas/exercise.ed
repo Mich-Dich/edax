@@ -1,0 +1,63 @@
+// Lesson 7: callbacks and algorithms. Fill in the TODOs until `python3 course/check.py 7` says
+// done.
+import std;
+
+struct score {
+    std::string player;
+    u32         points = 0;
+}
+
+// Named handlers for one kind of event, stored: so they are std::function.
+class event_bus {
+public:
+    void on(std::str name, std::function<void(u32)> handler) mut {
+        // TODO: remember the name and the handler.
+    }
+
+    void emit(u32 value) {
+        // TODO: for each handler in the order they were added: print "[<name>] " (std::print, no
+        // newline), then call the handler with the value.
+    }
+
+private:
+    std::darray<std::string>               names = default;
+    std::darray<std::function<void(u32)>>  handlers = default;
+}
+
+// Calls `f` once per element; F is deduced, nothing is stored: any lambda works, even one that
+// borrows locals or changes its captures.
+template<type T, type F>
+void each(std::span<T> items, mut F f) {
+    for (T& item : items) { f(item); }
+}
+
+void shout(u32 value) { std::println(f"plain function got {value}"); }
+
+i32 main() {
+    mut std::darray<score> scores = default;
+    std::array<std::static_str, 5> names = ["kim", "ann", "bob", "zoe", "lee"];
+    std::array<u32, 5> points = [40, 75, 10, 75, 55];
+    for (usize i : 0..5) {
+        scores.push(score{ .player = std::string::from(names[i]), .points = points[i] });
+    }
+
+    // TODO: keep only the scores of at least `cutoff` (darray::retain takes a lambda), then sort
+    // them by points, highest first, and equal points by name (darray::sort_by takes less(a, b)).
+    u32 cutoff = 30;
+
+    // TODO: print "<rank>. <player> <points>" for each score and add the points up in `total`.
+    // Use `each`, and a separate lambda `rank` that counts 1, 2, 3, ... in a `mut` capture.
+    mut u32 total = 0;
+    std::println(f"total {total}");
+
+    mut event_bus bus = default;
+    u32 bonus = 5;
+    std::string tag = std::string::from("final");
+    // TODO: four handlers, in this order:
+    //   "log"    prints "value <v>"
+    //   "bonus"  prints "with bonus <v + bonus>"
+    //   "tagged" prints "<tag>: <v>", and owns `tag`
+    //   "plain"  calls the function `shout` through an std::fn_ptr<void(u32)> it captured
+    bus.emit(total);
+    return 0;
+}

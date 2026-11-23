@@ -1,0 +1,53 @@
+import std;
+
+namespace core {
+    private static mut u32 made = 10;
+
+    class circle : shape {
+    public:
+        static circle make(f64 r) { return circle{ .r = r }; }
+        f64 area() override { return 3.0 * this.r * this.r; }
+
+    private:
+        f64 r;
+    }
+
+    class counter {
+    public:
+        static counter make(std::str label) {
+            unsafe { made += 1; }
+            return counter{ .n = 0, .text = std::string::from(label) };
+        }
+        u32 bump() mut {
+            this.n += 1;
+            return this.n;
+        }
+        std::str label() { return this.text; }
+        ~counter() { std::println(f"core: '{this.text}' counted {this.n}"); }
+
+    private:
+        u32 n;
+        std::string text;
+    }
+
+    template<type T>
+    T biggest(T a, T b) {
+        if (a > b) { return a; }
+        return b;
+    }
+
+    bool is_circle(shape& s) {
+        return match (cast::dynamic<circle&>(s)) {
+            std::some(_) => true,
+            std::none => false,
+        };
+    }
+
+    u32 twice(u32 x) { return x * 2; }
+    u32 created() { unsafe { return made; } }
+    std::darray<u32> squares(u32 n) {
+        mut std::darray<u32> out = default;
+        for (u32 i : 0..n) { out.push(i * i); }
+        return out;
+    }
+}

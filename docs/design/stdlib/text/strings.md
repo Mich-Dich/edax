@@ -1,6 +1,6 @@
 # Strings
 
-Edax has one owning string type and two non-owning ones. All three hold UTF-8.
+Edax has one owning string type (with a variant for other allocators) and two non-owning ones. All of them hold UTF-8.
 
 ## Rules
 
@@ -8,6 +8,7 @@ Edax has one owning string type and two non-owning ones. All three hold UTF-8.
 | Type | Owns? | Kind | Use |
 |---|---|---|---|
 | `std::string` | Yes (heap) | Owning | Building and storing text |
+| `std::string_with<A>` | Yes (from the allocator `A`) | Owning | Text in an arena or another allocator (see [Allocators](../memory/allocators.md)); converts to `std::str` like `std::string` |
 | `std::str` | No | `view` (see [Ownership, Copies, Moves and References](../../language/memory/ownership-and-references.md)) | Parameters and borrowed text |
 | `std::static_str` | No (static memory) | Normal value | Type of string literals; can be stored anywhere |
 

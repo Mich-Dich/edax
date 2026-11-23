@@ -30,6 +30,9 @@
 
 namespace edax {
 
+std::string_view registry_generator_stamp() { return __DATE__ " " __TIME__; }
+
+
 namespace {
 
 // ---- a small XML reader ---------------------------------------------------------------------

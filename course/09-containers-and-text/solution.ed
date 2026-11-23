@@ -1,0 +1,59 @@
+// Lesson 9: a log report (solution).
+import std;
+
+// The frame log, read into the program when it is compiled. One line per sample:
+// "<level> <system> <milliseconds>".
+compile_time std::static_str log = std::embed_text("frames.log");
+
+view struct sample {
+    std::str system;     // a view into `log`: the darray of samples borrows the text
+    u32      ms = 0;
+}
+
+i32 main() {
+    mut std::hash_map<std::str, u32> per_level = default;
+    mut std::tree_map<std::str, u64> per_system = default;    // sorted by name
+    mut std::darray<sample> samples = default;
+    mut u32 skipped = 0;
+
+    for (std::str line : log.split('\n')) {
+        std::str trimmed = line.trim();
+        if (trimmed.is_empty()) { continue; }
+        std::darray<std::str> parts = trimmed.split(' ');
+        if (parts.len() != 3) {
+            skipped += 1;
+            continue;
+        }
+        u32 n = match (parts[2].parse<u32>()) {
+            std::some(v) => v,
+            std::none => {
+                skipped += 1;
+                continue;
+            },
+        };
+        per_level.get_or_insert(parts[0], 0) += 1;
+        per_system.get_or_insert(parts[1], 0) += cast<u64>(n);
+        samples.push(sample{ .system = parts[1], .ms = n });
+    }
+
+    // The hash map has no order: print the levels in a fixed one.
+    std::array<std::static_str, 3> levels = ["info", "warn", "error"];
+    mut std::string counts = default;
+    for (std::static_str level : levels) {
+        u32 n = per_level.get(level).value_or(0);
+        if (!counts.is_empty()) { counts.push_str(", "); }
+        counts.push_str(std::format(f"{level} {n}"));
+    }
+    std::println(f"levels: {counts}");
+
+    for (std::map_entry<std::str, u64> e : per_system.entries()) {
+        std::println(f"{e.key:<8} {e.value:>3} ms");
+    }
+
+    samples.sort_by_key(std::sort_order::descending, [](sample& s) { return s.ms; });
+    std::print("slowest:");
+    for (usize i : 0..3) { std::print(f" {samples[i].system}={samples[i].ms}"); }
+    std::println("");
+    std::println(f"skipped {skipped} lines");
+    return 0;
+}

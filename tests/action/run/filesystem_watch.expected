@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+nothing yet: 0
+changed a.txt
+changed b.txt
+--- stderr

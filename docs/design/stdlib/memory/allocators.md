@@ -29,7 +29,7 @@ std::unique_ptr<mesh, std::arena_allocator>
 - The container stores its allocator value. `std::global_allocator` is an empty struct, so the default costs no space.
 - A container with another allocator is another type: `std::darray<u32>` and `std::darray<u32, std::arena_allocator>` don't convert into each other.
 - Containers with a non-default allocator are created with `T::with_allocator(alloc)` (and `with_capacity_in(n, alloc)`); `default` only works when `A` has a default.
-- `std::string` is `std::string_with<std::global_allocator>`; text in another allocator is a `std::string_with<A>`.
+- Text in another allocator is a `std::string_with<A>` (`with_allocator(alloc)`, `from_in(text, alloc)`): the methods of `std::string`, and like it, it converts to `std::str` implicitly and formats as its text. `std::string` itself is the global allocator's text, with up to 23 bytes stored inline. `std::tree_map<K, V, A>` takes its nodes from `A` (`with_allocator(alloc)`).
 
 ### Allocators in the standard library
 | Allocator | Memory from | Freed |

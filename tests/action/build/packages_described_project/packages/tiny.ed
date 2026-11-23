@@ -1,0 +1,12 @@
+// The package 'tiny' has no build files of its own: this description says how it is built.
+import std;
+
+namespace build::packages::tiny {
+    compile_time void describe(mut std::build::graph& g, std::build::package& p) {
+        std::build::target t = g.add_c_library(std::build::c_target{ .name = "tiny" });
+        g.add_sources(t, p.files(["tiny.c"]));
+        g.add_include_dir(t, p.at("include"), std::build::visibility::shared);
+        g.define(t, "TINY_ANSWER", "42");
+        p.export_target(t);
+    }
+}

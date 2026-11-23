@@ -1,0 +1,5 @@
+square: 4 corners, area 4.00, perimeter 8.00
+triangle: 3 corners, area 6.00, perimeter 12.00
+a == b: true, a + b = (2.0, 4.0)
+triangle is gone
+square is gone

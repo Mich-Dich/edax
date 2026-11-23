@@ -1,0 +1,9 @@
+1. ann 75
+2. zoe 75
+3. lee 55
+4. kim 40
+total 245
+[log] value 245
+[bonus] with bonus 250
+[tagged] final: 245
+[plain] plain function got 245

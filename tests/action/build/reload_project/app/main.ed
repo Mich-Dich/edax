@@ -1,0 +1,16 @@
+import std;
+import api::greeter;
+
+i32 main() {
+    std::filesystem::path dir = std::filesystem::executable_dir() / "plugins";
+    mut std::plugin<api::greeter> game = std::plugin<api::greeter>::load(dir / "v1.so").expect("v1");
+    _ = game->calls();
+    _ = game->calls();
+    std::println(f"{game->greet("you")}: {game->calls()} calls");
+    std::println("reloading v2");
+    game.reload(dir / "v2.so").expect("v2");
+    std::println(f"{game->greet("you")}: {game->calls()} (3 + 10: the count was carried over)");
+    std::result<void, std::plugin_error> changed = game.reload(dir / "v3.so");
+    std::println(f"v3: {changed.is_error()} (count changed its type), still {game->greet("you")}");
+    return 0;
+}

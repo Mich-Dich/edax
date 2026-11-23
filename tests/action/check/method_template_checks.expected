@@ -1,0 +1,25 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: sort_by takes less(a, b) returning bool; a three-way comparison is `(a <=> b) == std::ordering::less`
+   --> tests/action/check/method_template_checks.ed:16:5
+    |
+ 16 |     v.sort_by([](u32& a, u32& b) { return a <=> b; });
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   ::: <std>/std.ed:375:33
+    |
+375 |             compile_time check (std::returns<F, bool>())
+    |                                 -----------------------
+    = note: the check of 'sort_by' is here
+
+error[E4210]: run needs a callable returning bool
+  --> tests/action/check/method_template_checks.ed:18:5
+   |
+18 |     b.run([]() { return 1u32; });
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   |
+ 9 |         compile_time check (std::returns<F, bool>()) else "run needs a callable returning bool";
+   |                             -----------------------
+   = note: the check of 'run' is here
+
+2 errors, 0 warnings

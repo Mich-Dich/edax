@@ -1,0 +1,15 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4070]: 'u32' has no method 'size'
+ --> tests/action/check/hidden_frame_project/main.ed:2:21
+  |
+2 | u32 main() { return lib::outer(5u32); }
+  |                     ^^^^^^^^^^^^^^^^ unknown method
+ ::: tests/action/check/hidden_frame_project/lib.ed:5:31
+  |
+5 |     u32 inner(T x) { return x.size(); }
+  |                               ----
+  = note: inside the library, in 'inner'
+
+1 error, 0 warnings

@@ -1,0 +1,73 @@
+// Lesson 5: a tiny game world (solution).
+import std;
+
+// What the world can update. No fields; `alive` has a default body.
+interface entity {
+    void update(f32 dt) mut;
+    std::string describe();
+    bool alive() { return true; }
+}
+
+// A moving thing. `open`: it may be derived from. `speed` is dispatched through the vtable.
+open class actor : entity {
+public:
+    std::string name;
+    f32 x = 0.0;
+    i32 health = 10;
+
+    virtual f32 speed() abstract;
+
+    void update(f32 dt) mut override { this.x += this.speed() * dt; }
+    std::string describe() override { return std::format(f"{this.name} at {this.x:.1}"); }
+    bool alive() override { return this.health > 0; }
+}
+
+class player : actor {
+public:
+    bool sprinting = false;
+    f32 speed() override { return if (this.sprinting) { 6.0 } else { 3.0 }; }
+}
+
+class enemy : actor {
+public:
+    f32 speed() override { return -1.0; }
+    std::string describe() override { return std::format(f"enemy {this.actor::describe()}"); }
+}
+
+// A struct can implement an interface too; it keeps the default `alive`.
+struct coin : entity {
+    u32 value = 1;
+    f32 spin = 0.0;
+    void update(f32 dt) mut override { this.spin += 90.0 * dt; }
+    std::string describe() override { return std::format(f"coin worth {this.value}, spun {this.spin:.0} degrees"); }
+}
+
+// Static dispatch: one copy of this function per type, no table.
+template<type T : entity>
+void step_twice(mut T& e, f32 dt) {
+    e.update(dt);
+    e.update(dt);
+}
+
+i32 main() {
+    mut std::darray<std::unique_ptr<entity>> world = default;
+    world.push(std::unique_ptr<player>::make(player{ .name = std::string::from("ada"), .sprinting = true }));
+    world.push(std::unique_ptr<enemy>::make(enemy{ .name = std::string::from("slime"), .x = 10.0 }));
+    world.push(std::unique_ptr<enemy>::make(enemy{ .name = std::string::from("ghost"), .x = 4.0, .health = 0 }));
+    world.push(std::unique_ptr<coin>::make(coin{ .value = 5 }));
+
+    for (u32 frame : 0..2) {
+        for (mut std::unique_ptr<entity>& e : world) { e->update(0.5); }
+    }
+    mut u32 enemies = 0;
+    for (std::unique_ptr<entity>& e : world) {
+        std::println(f"{e->describe()}{if (e->alive()) { "" } else { " (dead)" }}");
+        if (cast::dynamic<enemy&>(*e) is std::some(_)) { enemies += 1; }
+    }
+    std::println(f"{enemies} enemies");
+
+    mut coin c = coin{};
+    step_twice(mut c, 1.0);
+    std::println(c.describe());
+    return 0;
+}

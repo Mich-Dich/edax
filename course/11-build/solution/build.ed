@@ -1,0 +1,32 @@
+// The project's build: a program, a Edax library, a C library, two settings and a mode.
+import std;
+
+namespace build {
+    // Release without overflow checks: the program wraps instead of panicking.
+    class fast : std::build::mode::release {
+    public:
+        compile_time std::build::overflow overflow() override { return std::build::overflow::wrap; }
+    }
+
+    // The line the program starts with.
+    compile_time std::build::setting<std::static_str> greeting = default;
+    // Print more.
+    compile_time std::build::setting<bool> verbose = default;
+
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(fast);
+        bool chatty = g.option(verbose, std::build::mode_is(std::build::mode::debug), "Print more");
+
+        std::build::target scale = g.add_c_library(std::build::c_target{ .name = "scale" });
+        g.add_sources(scale, "vendor/scale.c");
+        g.define(scale, "FACTOR", "3");
+
+        std::build::target lib = g.add_library(std::build::edax_target{ .name = "stats", .root = "stats/stats.ed" });
+
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        g.link(app, lib);
+        g.link(app, scale);
+        g.set(app, greeting, "hello from build.ed");
+        g.set(app, verbose, chatty);
+    }
+}

@@ -1,0 +1,11 @@
+// build.ed with a converted package: packages/plat.ed was written by `edaxc package convert plat`
+// and finished by hand.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::package plat = g.package(std::build::package_spec{ .source = std::build::local{ .path = "vendor/plat" } });
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        g.link(app, plat.target("plat"));
+    }
+}

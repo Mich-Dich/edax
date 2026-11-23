@@ -24,10 +24,10 @@ Every number type has `compile_time` constants reached through its name:
 | `T::min` | Smallest value (`i8::min` is `-128`, `u8::min` is `0`) | Most negative finite value |
 | `T::max` | Largest value | Largest finite value |
 | `T::bits` | Width in bits, as a `u32` | Width in bits, as a `u32` |
-| `f32::infinity`, `f32::nan`, `f32::epsilon` (and `f64::...`) | - | IEEE special values and the machine epsilon |
+| `f32::infinity`, `f32::nan`, `f32::epsilon` (and `f16::...`, `f64::...`) | - | IEEE special values and the machine epsilon |
 
 ### Methods of numbers
-Numbers have methods; the arguments take the receiver's type (spec 34):
+Numbers have methods; the arguments take the receiver's type:
 
 | Types | Methods |
 |---|---|
@@ -117,4 +117,4 @@ This is **every** implicit conversion in the language. Anything else needs a `ca
 - **Bool conversion only in conditions:** you get the convenience of `if (ptr)` and `if (flags & mask)` without the C++ pitfall where `5` silently binds to a `bool` parameter.
 - **`usize`:** sizes depend on the target (32-bit embedded vs 64-bit desktop). Hard-coding `u64` would be wrong on small targets.
 - **Methods on numbers:** `x.sqrt()` reads left to right and needs no `std::math::` prefix or overload set per type. Integers get no `sqrt`: the error says to convert first, so the precision is chosen in the code.
-- **`f16` as storage:** GPU buffers and compressed assets use half floats; arithmetic in `f16` loses too much to be a default, so it converts to `f32`.
+- **`f16` for data:** GPU buffers and compressed assets use half floats. Arithmetic on `f16` is rounded to `f16` after each operation, like every other type's; code that wants more precision converts with `cast<f32>(h)`, which is lossless.

@@ -1,0 +1,60 @@
+// RUN: edaxc run --mode=release %s
+// Large values in a release build (lower_aggregates.cpp): structs of hundreds of bytes are returned, passed, built
+// field by field, chosen by `if`/`match` and swapped in a loop; every copy keeps its own value.
+import std;
+
+struct table {
+    std::array<u64, 64> slots = default;
+    u64 tag = 0;
+}
+
+table make(u64 tag) {
+    mut table t = table{ .tag = tag };
+    for (usize i : 0..64) { t.slots[i] = tag * 100 + cast<u64>(i); }
+    return t;
+}
+
+u64 sum(table t) {
+    mut u64 s = t.tag;
+    for (u64& v : t.slots) { s += v; }
+    return s;
+}
+
+table pick(bool first, table a, table b) {
+    return if (first) { a } else { b };
+}
+
+std::option<table> maybe(u64 tag) {
+    if (tag == 0) { return std::none; }
+    return std::some(make(tag));
+}
+
+std::exit_code main() {
+    table a = make(1);
+    table b = make(2);
+    std::println(f"sums {sum(a)} {sum(b)}");
+    std::println(f"pick {pick(true, a, b).tag} {pick(false, a, b).tag}");
+    // A swap in a loop: each iteration's values must not be overwritten by the next one.
+    mut table x = make(3);
+    mut table y = make(4);
+    for (u32 i : 0..5u32) {
+        table t = x;
+        x = y;
+        y = t;
+    }
+    std::println(f"swapped {x.tag} {y.tag} {x.slots[63]} {y.slots[0]}");
+    u64 got = match (maybe(7)) {
+        std::some(t) => t.slots[5],
+        std::none    => 0,
+    };
+    u64 none = match (maybe(0)) {
+        std::some(t) => t.slots[5],
+        std::none    => 99,
+    };
+    std::println(f"option {got} {none}");
+    mut std::darray<table> many = default;
+    for (u64 k : 1..4u64) { many.push(make(k)); }
+    many[1] = many[0];
+    std::println(f"darray {many[0].tag} {many[1].tag} {many[2].tag} {sum(many[2])}");
+    return std::exit_code::success;
+}

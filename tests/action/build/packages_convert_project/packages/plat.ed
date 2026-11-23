@@ -1,0 +1,23 @@
+// packages/plat.ed: the package 'plat', described for edaxc's build (packages, section 3).
+// Written by `edaxc package convert plat` from its CMakeLists.txt; finished by hand.
+import std;
+
+namespace build::packages::plat {
+    compile_time void describe(mut std::build::graph& g, std::build::package& p) {
+        std::build::os os = g.target_platform().os;
+
+        // CMakeLists.txt:4
+        std::build::target t_plat = g.add_c_library(std::build::c_target{ .name = "plat", .language = std::build::language::c });
+        g.add_sources(t_plat, p.files(["plat.c"]));
+        g.add_include_dir(t_plat, p.at("include"), std::build::visibility::shared);
+        g.define(t_plat, "PLAT_VERSION", "7");   // was `git rev-list --count HEAD`
+        if (os == std::build::os::linux || os == std::build::os::macos) {
+            g.add_sources(t_plat, p.files(["plat_posix.c"]));
+        }
+        if (os == std::build::os::windows) {
+            g.add_sources(t_plat, p.files(["plat_windows.c"]));
+            g.link(t_plat, g.add_system_library(std::build::system_library{ .name = "ws2_32" }));
+        }
+        p.export_target(t_plat);
+    }
+}

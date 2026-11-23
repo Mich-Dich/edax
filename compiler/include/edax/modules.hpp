@@ -24,6 +24,9 @@ struct LoadOptions {
     // More directories to find imported modules in, after `root`: the roots of dependencies
     // whose libraries a target links (spec 25).
     std::vector<std::string> extra_roots;
+    // More files loaded as modules of their own (named by their path), imported by nobody: the
+    // package descriptions next to build.ed (packages/*.ed).
+    std::vector<std::string> extra_modules;
 };
 
 // Loads the entry module and its imports. Lexer, parser and import errors go to `diags`; the

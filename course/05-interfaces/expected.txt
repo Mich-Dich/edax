@@ -1,0 +1,6 @@
+ada at 6.0
+enemy slime at 9.0
+enemy ghost at 3.0 (dead)
+coin worth 5, spun 90 degrees
+2 enemies
+coin worth 1, spun 180 degrees

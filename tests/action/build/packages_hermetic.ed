@@ -1,0 +1,3 @@
+// RUN: edaxc build --hermetic --root=%S/packages_hermetic_project --out-dir=%t
+// Packages (section 5): with --hermetic, a library a package links that no `.uses` answers is an
+// error instead of a library of the build machine.

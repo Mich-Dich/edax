@@ -53,30 +53,30 @@ borrows borrowed until it is joined. See `example/concurrency.ed`.
 
 Also in 0.8.0: **packages** (`g.package` with git (commit or tag), archive and local sources,
 `.path`, `.options`, `.uses`, `.patches`, locked in `build.lock`; packages with a `build.ed`,
-a `CMakeLists.txt` read by edaxc's own CMake reader, or only headers; `edaxc package
-list|fetch|status`), **C and C++ interop** (`g.import_c_headers` turns C headers into a Edax module,
+a `CMakeLists.txt` read by edaxc's own CMake reader, a description in `packages/<name>.ed`,
+real CMake as a last resort (`cmake_external`), or only headers; `edaxc package
+list|fetch|status|update|convert`), **C and C++ interop** (`g.import_c_headers` turns C headers into a Edax module,
 `g.wrap_cpp` wraps C++ classes through generated C wrappers with exceptions as
 `std::cpp_exception` errors, structs passed by value to and from C as the C calling convention
-does on x86-64 and AArch64), shared C libraries and Edax plugins (`g.add_shared_library` of a C
-target, `g.add_plugin`, `std::plugin<I>`, `std::c_library`), allocators (`std::allocator`, arenas,
+does on x86-64 and AArch64), shared Edax, C and C++ libraries and Edax plugins (`g.add_shared_library`, `g.add_plugin`, `std::plugin<I>` with hot reload, `std::c_library`, `std::filesystem::watch`), allocators (`std::allocator`, arenas,
 `g.set_global_allocator`, a sealable heap), target platforms and CPU levels (`--target`, `--cpu`,
 target descriptions), step verification, parameter packs, file annotation checks, SIMD
 multiversioning, `must_vectorize`, raw SIMD intrinsics and `edaxc simd-report`, `std::rw_mutex`
 and the timed waits, thread platform options, time zones, and wrapping annotations on templates.
 
 Known limits of 0.8.0 (designed, not implemented yet):
-- Shared **Edax** libraries (`g.add_shared_library(std::build::edax_target{...})`); a shared C or
-  C++ library works.
-- Package descriptions in the project (`packages/<name>.ed`, `package_build::script`), the
-  CMake converter (`edaxc package convert`), `edaxc package update`, and
-  `package_build::cmake_external`. The CMake reader stops, with the command's file and line, at
-  what it doesn't translate (`execute_process`, `ExternalProject_Add`, `FetchContent`, ...).
-- An allocator parameter for `std::tree_map` and `std::string_with<A>`.
+- The CMake reader stops, with the command's file and line, at what it doesn't translate
+  (`execute_process`, `ExternalProject_Add`, `FetchContent`, ...); `edaxc package convert` turns
+  such a package into a description with TODOs to finish.
 - `g.wrap_cpp` reads the headers with clang (`clang++`, or `$EDAX_CLANGXX`); it wraps numbers,
   `bool`, strings (`std::string`, `std::string_view`, `const char*`) and the wrapped classes
   themselves, and lists everything else in its report.
 - Structs by value through `extern` functions are supported on x86-64 (System V) and AArch64; other
   targets report it.
+- Generators and resumable functions, `@std::reflect` and compile-time values as static data,
+  field-generating templates and compiled module interfaces on disk: their pages carry a
+  **Planned** note, and [`docs/compiler/spec-34-status.md`](docs/compiler/spec-34-status.md) lists
+  them all.
 
 ## Building
 
@@ -85,7 +85,7 @@ Requires:
 - CMake ≥ 3.25
 - Ninja (recommended) or Make
 - Clang 18+ or GCC 14+, with `-std=c++2c` support
-- LLVM 18, 19, 20 or 21 development files (e.g. `llvm-20-dev`, plus `libzstd-dev` for its CMake exports); the backend emits LLVM IR. CMake takes the first of 18, 20, 21, 19 it finds; `-DRIFT_LLVM_VERSION=21` or `-DLLVM_DIR=...` picks one
+- LLVM 18, 19, 20 or 21 development files (e.g. `llvm-20-dev`, plus `libzstd-dev` for its CMake exports); the backend emits LLVM IR. CMake takes the first of 18, 20, 21, 19 it finds; `-DEDAX_LLVM_VERSION=21` or `-DLLVM_DIR=...` picks one
 - Python 3.10+ (test runner only)
 - To link Edax programs: a system linker driver such as GCC or Clang as `cc` (or set `EDAX_CC` / `--cc=`)
 

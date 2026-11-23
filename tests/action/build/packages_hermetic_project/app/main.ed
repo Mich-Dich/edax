@@ -1,0 +1,6 @@
+import std;
+extern(std::build::language::c) i32 z_value();
+i32 main() {
+    unsafe { std::println(f"{z_value()}"); }
+    return 0;
+}

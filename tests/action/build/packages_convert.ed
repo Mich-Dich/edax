@@ -1,0 +1,3 @@
+// RUN: edaxc package convert odd --root=%S/packages_bad_project --out-dir=%t --to=%t/packages
+// `edaxc package convert` writes a description where the CMake reader stops: the command it
+// can't translate becomes a TODO.

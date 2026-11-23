@@ -1,0 +1,22 @@
+// The project's build. Only the program is declared so far: complete it until
+// `python3 course/check.py 11` says done (app/main.ed, stats/ and vendor/ are written).
+import std;
+
+namespace build {
+    // TODO: a mode `fast`: `release`, but overflow wraps instead of panicking.
+
+    // TODO: two settings: `greeting` (std::static_str), the line the program starts with, and
+    // `verbose` (bool). Each gets a `//` comment: the comment is the setting's documentation.
+
+    compile_time void build(mut std::build::graph& g) {
+        // TODO: register the mode; make `verbose` a command-line option (-Dverbose=...) that
+        // defaults to true in debug-derived modes.
+
+        // TODO: a C library `scale` from vendor/scale.c, with FACTOR defined as 3.
+
+        // TODO: a Edax library `stats` rooted at stats/stats.ed.
+
+        std::build::target app = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+        // TODO: link both libraries to app, and set app's greeting and verbose settings.
+    }
+}

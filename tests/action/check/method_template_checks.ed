@@ -1,0 +1,21 @@
+// RUN: edaxc check %s
+// The compile_time entry checks of a method template run per call with the instance's types:
+// darray::sort_by refuses a three-way comparison with one message (std::returns<F, R>).
+import std;
+
+struct box {
+    template<type F>
+    void run(F g) {
+        compile_time check (std::returns<F, bool>()) else "run needs a callable returning bool";
+        _ = g();
+    }
+}
+
+i32 main() {
+    mut std::darray<u32> v = default;
+    v.sort_by([](u32& a, u32& b) { return a <=> b; });
+    box b = box{};
+    b.run([]() { return 1u32; });
+    b.run([]() { return true; });
+    return 0;
+}

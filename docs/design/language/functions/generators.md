@@ -1,5 +1,7 @@
 # Generators and Resumable Functions
 
+> **Planned:** nothing on this page is implemented yet. Generators, resumable functions and `std::raw::stack_switch` are lowered on the mid-level IR, which edaxc doesn't have yet.
+
 A **generator** produces a sequence of values, one per `yield`, and keeps its state between them. A **resumable function** can stop at an `await` and continue later. Both are ordinary values with a size known at compile time: they never allocate unless the program says so.
 
 ## Rules

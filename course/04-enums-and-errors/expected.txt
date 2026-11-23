@@ -1,0 +1,6 @@
+3 4 + 2 * = 14
+10 2 8 * + 3 - = 23
+1 +: an operator is missing an operand
+4 0 /: division by zero
+2 x *: word 1 is not a number or an operator
+1 2 3: 3 values left over

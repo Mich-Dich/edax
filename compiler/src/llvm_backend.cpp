@@ -1,5 +1,7 @@
 #include "edax/simd_intrinsics.hpp"
 #include "edax/llvm_backend.hpp"
+#include "edax/lower_aggregates.hpp"
+#include "edax/thin_lto.hpp"
 #include "edax/ast_walk.hpp"
 
 #include "edax/ast_printer.hpp"
@@ -31,14 +33,21 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/PGOOptions.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
+#include "llvm/Support/BLAKE3.h"
+#include "llvm/Support/CachePruning.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -52,6 +61,8 @@
 #include "llvm/Transforms/IPO/ArgumentPromotion.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -59,6 +70,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -282,6 +294,17 @@ llvm::DataLayout host_data_layout() {
 }
 
 // --- names ----------------------------------------------------------------------------------
+
+// FNV-1a: short, stable hashes for names (not for the object cache's keys, which use BLAKE3).
+std::uint64_t fnv1a(std::string_view text) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (char ch : text) {
+        auto c = static_cast<unsigned char>(ch);
+        h ^= c;
+        h *= 1099511628211ull;
+    }
+    return h;
+}
 
 // Length-prefixed name parts, as in the C backend: `r_3geo6shapes1f`.
 std::string mangle_parts(const std::vector<std::string>& parts) {
@@ -632,11 +655,37 @@ private:
                 if (s->kind == SymbolKind::function && s->decl && sema::find_annotation(s->decl->annotations, "std::test")) tests.push_back(s);
             }
         }
-        Symbol* main = options_.all_functions || !tests.empty() || program_.is_plugin ? find_main_quietly() : find_main();
-        if (!main && !options_.all_functions && tests.empty() && !program_.is_plugin) return nullptr;
+        bool    no_main = program_.is_plugin || program_.is_shared_library;
+        Symbol* main = options_.all_functions || !tests.empty() || no_main ? find_main_quietly() : find_main();
+        if (!main && !options_.all_functions && tests.empty() && !no_main) return nullptr;
         declare_runtime();
         if (program_.entry && program_.entry->source) inspect_file_ = program_.entry->source->id;
-        if (main && !program_.is_plugin) edax_main_ = function_of(main);
+        if (main && !no_main) edax_main_ = function_of(main);
+        if (program_.is_shared_library) {   // everything the library's modules define, for its programs
+            std::function<void(const Symbol*)> add = [&](const Symbol* s) {
+                if (generic(s)) return;
+                if (s->kind == SymbolKind::function || s->kind == SymbolKind::method) {
+                    const FunctionDecl* f = body_decl(s);
+                    if (!f || !f->body || f->is_template || f->is_abstract || (f->is_compile_time && !f->is_run_time)) return;
+                    function_of(s);
+                } else if (s->kind == SymbolKind::global && s->decl && s->decl->kind == DeclKind::variable &&
+                           s->decl->as<VariableDecl>().storage != Storage::compile_time) {
+                    global_of(s);
+                } else if ((s->kind == SymbolKind::class_ || s->kind == SymbolKind::struct_ || s->kind == SymbolKind::interface) && s->decl &&
+                           !s->decl->is_template) {
+                    if (s->kind != SymbolKind::interface) {   // one type id and vtable, the library's
+                        type_id(s);
+                        if (has_vtable(s)) vtable_of(s);
+                    }
+                    for (const auto& [name, members] : s->members) {
+                        for (const Symbol* m : members) add(m);
+                    }
+                }
+            };
+            for (const Module* m : program_.library_modules) {
+                for (const Symbol* s : m->item_order) add(s);
+            }
+        }
         if (program_.is_plugin && program_.plugin_class) emit_plugin_entry();
         std::vector<llvm::Function*> test_fns;
         for (const Symbol* t : tests) test_fns.push_back(function_of(t));
@@ -651,8 +700,9 @@ private:
         if (options_.all_functions) {
             for (auto& [name, m] : program_.modules) {
                 for (Symbol* s : m->item_order) {
-                    if (s->kind != SymbolKind::function || s->function()->is_template) continue;
-                    if (s->function()->is_compile_time && !s->function()->is_run_time) continue;   // never runs
+                    const FunctionDecl* f = s->kind == SymbolKind::function ? s->function() : nullptr;
+                    if (!f || f->is_template) continue;
+                    if (f->is_compile_time && !f->is_run_time) continue;   // never runs
                     function_of(s);
                 }
             }
@@ -691,7 +741,11 @@ private:
             }
         }
         if (!packed_types_.empty()) unalign_packed_accesses();
-        if (program_.is_plugin) {
+        if (program_.is_shared_library) {
+            // No `main`: the library's globals are initialized when it is loaded.
+            llvm::Function* init = emit_init_globals();
+            llvm::appendToGlobalCtors(*mod_, init, 65535);
+        } else if (program_.is_plugin) {
             // A plugin has no `main`: the library's only entry is edax_plugin_entry.
         } else if (!tests.empty()) {
             emit_test_entry(tests, test_fns, main);
@@ -770,10 +824,35 @@ private:
             b.CreateStore(as_i, create->getArg(0));
             b.CreateRetVoid();
         }
-        llvm::Constant* fields[] = {llvm::ConstantInt::get(i64, 0x5249465450474C31ull), llvm::ConstantInt::get(i64, program_.plugin_interface_hash),
-                                    string_global(EDAX_VERSION_TEXT), create};
-        auto* descriptor = new llvm::GlobalVariable(*mod_, st, true, llvm::GlobalValue::InternalLinkage, llvm::ConstantStruct::get(st, fields),
+        // Hot reload (dynamic libraries): an entry class marked @std::hot_reload_state carries a table
+        // of its fields, { name, offset, size, type hash } each, so that `reload` can move the
+        // state of the old build's object into the new one field by field, by name.
+        llvm::Constant* layout = llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+        const Symbol*   cls    = program_.plugin_class;
+        if (cls->decl && sema::find_annotation(cls->decl->annotations, "std::hot_reload_state")) {
+            const llvm::StructLayout* sl    = mod_->getDataLayout().getStructLayout(llvm::cast<llvm::StructType>(user_type(cls)));
+            auto*                     entry = llvm::StructType::get(ctx_, {ptr_type(), i64, i64, i64});
+            std::vector<llvm::Constant*> rows;
+            for (const Symbol* f : fields_of(cls)) {
+                const types::Type* ft    = field_type(f);
+                llvm::Type*        lt    = lower_type(ft);
+                std::uint64_t      size  = mod_->getDataLayout().getTypeAllocSize(lt).getFixedValue();
+                std::uint64_t      hash  = fnv1a(type_key(ft) + std::format("/{}", size));
+                rows.push_back(llvm::ConstantStruct::get(entry, {string_global(f->name), llvm::ConstantInt::get(i64, sl->getElementOffset(field_index(f))),
+                                                                 llvm::ConstantInt::get(i64, size), llvm::ConstantInt::get(i64, hash)}));
+            }
+            rows.push_back(llvm::ConstantStruct::get(entry, {llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), llvm::ConstantInt::get(i64, 0),
+                                                             llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i64, 0)}));   // the end
+            auto* array = llvm::ArrayType::get(entry, rows.size());
+            layout = new llvm::GlobalVariable(*mod_, array, true, llvm::GlobalValue::InternalLinkage, llvm::ConstantArray::get(array, rows),
+                                              "edax.plugin.state_layout");
+        }
+        auto* st2 = llvm::StructType::get(ctx_, {i64, i64, ptr_type(), ptr_type(), ptr_type()});
+        llvm::Constant* fields[] = {llvm::ConstantInt::get(i64, 0x5249465450474C32ull), llvm::ConstantInt::get(i64, program_.plugin_interface_hash),
+                                    string_global(EDAX_VERSION_TEXT), create, layout};
+        auto* descriptor = new llvm::GlobalVariable(*mod_, st2, true, llvm::GlobalValue::InternalLinkage, llvm::ConstantStruct::get(st2, fields),
                                                     "edax.plugin.descriptor");
+        (void)st;
         auto* entry = llvm::Function::Create(llvm::FunctionType::get(ptr_type(), {}, false), llvm::Function::ExternalLinkage,
                                              "edax_plugin_entry", mod_.get());
         llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", entry));
@@ -801,15 +880,113 @@ private:
         return nullptr;
     }
 
+    // --- stable names (object cache) ------------------------------------------------------------
+    //
+    // Every name in the module comes from what it names, never from the order things were
+    // generated in: the same function gets the same name, and so the same IR text, in every build
+    // that contains it. build_executable's object cache relies on that.
+
+    std::map<const Symbol*, std::string> symbol_keys_;
+
+    // What a type is, written out: template arguments by their own keys, a lambda by where it is
+    // written (types::to_string would make all lambdas of one signature equal).
+    std::string type_key(const types::Type* t) {
+        if (!t) return "?";
+        switch (t->kind) {
+        case Kind::reference: return (t->is_mut ? "mut " : "") + type_key(t->inner) + "&";
+        case Kind::user:
+        case Kind::pending: return t->symbol ? symbol_key(t->symbol) : t->name;
+        case Kind::closure: {
+            const LambdaExpr* l = tc_.lambda_of(t);
+            return l ? std::format("lambda@{}:{}", sources_.file(l->span.file).path(), l->span.begin) : "lambda";
+        }
+        default: {
+            std::string out = std::format("{}:{}:{}:{}{}{}", static_cast<int>(t->kind), t->name, t->bits, t->is_signed ? "s" : "",
+                                          t->is_size ? "z" : "", t->is_mut ? "m" : "");
+            if (t->inner) out += "(" + type_key(t->inner) + ")";
+            for (const types::Type* a : t->args) out += "," + type_key(a);
+            return out;
+        }
+        }
+    }
+
+    // The full name of a symbol with the arguments of every instance on the way.
+    std::string symbol_key(const Symbol* s) {
+        if (auto it = symbol_keys_.find(s); it != symbol_keys_.end()) return it->second;
+        std::string out;
+        if (s->parent) {
+            out = symbol_key(s->parent) + "::";
+        } else {
+            for (const std::string& p : symbol_scope(s)) out += p + "::";
+        }
+        out += s->name;
+        if (s->pack_origin) out += std::format("#{}", s->pack_count);
+        if (s->template_of) {
+            out += "<";
+            for (const types::Type* a : s->template_args) out += type_key(a) + ",";
+            out += ">";
+        }
+        if (!s->cpu_level.empty()) out += "@" + s->cpu_level;
+        return symbol_keys_[s] = out;
+    }
+
+    static std::string short_hash(std::string_view text) { return std::format("{:016x}", fnv1a(text)); }
+
+    // The name part of an instance: a hash of its arguments (it was the order instances were made in).
+    std::string instance_tag(const Symbol* s) {
+        std::string args;
+        for (const types::Type* a : s->template_args) args += type_key(a) + ",";
+        return "0i" + short_hash(args);
+    }
+
+    // The name of a function generated for a piece of `cur_fn_`'s body (a lambda, a format
+    // string): the enclosing function and the place.
+    std::string local_helper_name(std::string_view prefix, Span span) {
+        std::string where = std::format("{}@{}:{}", cur_fn_ ? cur_fn_->getName().str() : std::string(), sources_.file(span.file).path(),
+                                        span.begin);
+        return std::string(prefix) + short_hash(where);
+    }
+
+    // --- object-cache units --------------------------------------------------------------------
+    //
+    // build_executable compiles a debug build in units and caches each unit's object code. A unit
+    // is a group of functions that change together: one per module of the program; the standard
+    // library's functions are spread over a few units per module, with a type's methods kept
+    // together so that they still inline into each other. Instances are grouped by the instance
+    // that owns them.
+    std::string unit_of(const Symbol* s) {
+        const Symbol* top      = s;
+        bool          instance = s->template_of != nullptr;
+        while (top->parent) {
+            top      = top->parent;
+            instance = instance || top->template_of;
+        }
+        const sema::Module* m       = s->module;
+        bool                library = m && m->project == "std";
+        std::string         base    = std::string(library ? "std/" : "user/") + (m ? m->name : "?");
+        if (instance) return std::format("{}/i{}", base, fnv1a(symbol_key(top)) % 16);
+        if (!library) return base;
+        return std::format("{}/p{}", base, fnv1a(symbol_key(top)) % 8);
+    }
+
+    static void set_unit(llvm::Function* fn, const std::string& unit) {
+        if (fn && !unit.empty()) fn->addFnAttr("edax-unit", unit);
+    }
+
+    // A helper made for a function belongs to that function's unit.
+    static void inherit_unit(llvm::Function* fn, const llvm::Function* from) {
+        if (from && from->hasFnAttribute("edax-unit")) set_unit(fn, from->getFnAttribute("edax-unit").getValueAsString().str());
+    }
+
     // Names as in the C backend: `r_<module parts><type><name>`, overloads numbered in order.
     std::string function_name(const Symbol* s) {
         std::vector<std::string> parts = symbol_scope(s);
         if (s->parent) {
             parts.push_back(s->parent->name);
-            if (s->parent->template_of) parts.push_back("0i" + std::to_string(s->parent->instance_index));
+            if (s->parent->template_of) parts.push_back(instance_tag(s->parent));
         }
         parts.push_back(s->name == "~" + (s->parent ? s->parent->name : "") ? "drop" : s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         std::string name = "r_" + mangle_parts(parts);
         const auto&   table = s->parent ? s->parent->members : s->module->items;
         const Symbol* entry = s;   // an instance is named after its template's overload
@@ -822,6 +999,37 @@ private:
     }
 
     // The LLVM function for `s`, declared on first use; its body is generated later.
+    // Shared Edax libraries: whether `s` is compiled in a shared library this program links (the
+    // program declares it), or exported by the shared library being built. Generic instances are
+    // made where they are used, as always.
+    static bool generic(const Symbol* s) { return s->template_of || sema::substitution_of(s); }
+    const Module* owner_module(const Symbol* s) const {
+        for (; s; s = s->parent) {
+            if (s->module) return s->module;
+        }
+        return nullptr;
+    }
+    bool from_shared_library(const Symbol* s) const {
+        return !program_.shared_modules.empty() && !generic(s) && program_.shared_modules.contains(owner_module(s));
+    }
+    bool exported_by_library(const Symbol* s) const {
+        return program_.is_shared_library && !generic(s) && program_.library_modules.contains(owner_module(s));
+    }
+    // A global (vtable, type id, variable) of a shared library: declared here, or exported.
+    void share_global(llvm::GlobalVariable* g, const Symbol* s) {
+        // Not dso_local (an internal global was): the program and the library reach the one copy
+        // through the GOT, so they agree on its address.
+        if (from_shared_library(s)) {
+            g->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            g->setInitializer(nullptr);
+            g->setDSOLocal(false);
+        } else if (exported_by_library(s)) {
+            g->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            g->setVisibility(llvm::GlobalValue::DefaultVisibility);
+            g->setDSOLocal(false);
+        }
+    }
+
     llvm::Function* function_of(const Symbol* s) {
         if (auto it = fns_.find(s); it != fns_.end()) return it->second;
         const FunctionDecl* f = body_decl(s);
@@ -830,11 +1038,18 @@ private:
         if (f->is_extern && f->abi == "cpp") unsupported(s->span, "'extern(std::build::language::cpp)' (C++ linkage)");
         if (f->is_extern && !f->body) return extern_function(s, *f);   // a C function: imported
         if (!f->body) unsupported(s->span, "functions without a body");
+        if (from_shared_library(s)) {   // compiled in a shared Edax library the program links
+            auto* fn = llvm::Function::Create(function_type(s), llvm::Function::ExternalLinkage, function_name(s), mod_.get());
+            fn->addFnAttr(llvm::Attribute::NoUnwind);
+            fns_[s] = fn;
+            return fn;
+        }
         // One module is the whole program: Edax functions are internal (LLVM may inline, specialize
         // or drop them); C sees only `main` and the exported wrappers. Edax never unwinds: a panic
         // aborts (spec 11).
         auto* fn = llvm::Function::Create(function_type(s), llvm::Function::InternalLinkage, function_name(s), mod_.get());
         fn->addFnAttr(llvm::Attribute::NoUnwind);
+        set_unit(fn, unit_of(s));
         const Symbol* annotated = s->template_of && s->template_of->kind == s->kind ? s->template_of : s;
         if (annotated->decl) {   // @std::inline_always, @std::inline_never, @std::cold (spec 29)
             const auto& uses = annotated->decl->annotations;
@@ -866,6 +1081,11 @@ private:
         fns_[s] = fn;
         queue_.push_back(s);
         if (f->is_extern) export_function(s, *f, fn);   // a Edax function that C can call
+        if (exported_by_library(s)) {   // the shared Edax library being built: programs call it
+            fn->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            fn->setVisibility(llvm::GlobalValue::DefaultVisibility);
+            fn->setDSOLocal(false);
+        }
         return fn;
     }
 
@@ -1415,7 +1635,7 @@ private:
             fields.push_back(ct->is(Kind::reference) ? ptr_type() : lower_type(ct));
         }
         if (fields.empty()) fields.push_back(llvm::Type::getInt8Ty(ctx_));
-        auto* st = llvm::StructType::create(ctx_, fields, "closure");
+        auto* st = llvm::StructType::create(ctx_, fields, "closure." + short_hash(type_key(t)));
         return closure_types_[t] = st;
     }
 
@@ -1520,8 +1740,9 @@ private:
         for (std::size_t i = 0; i + 1 < t->args.size(); ++i) params.push_back(lower_type(t->args[i]));
         llvm::Type* ret = is_void(t->args.back()) ? llvm::Type::getVoidTy(ctx_) : lower_type(t->args.back());
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(ret, params, false), llvm::Function::InternalLinkage,
-                                          "rl_" + std::to_string(lambda_fns_.size()), mod_.get());
+                                          local_helper_name("rl_", l.span), mod_.get());
         fn->addFnAttr(llvm::Attribute::NoUnwind);
+        inherit_unit(fn, cur_fn_);
         {   // a lambda is optimized like the code around it: its file's level, the library's own level (spec 34)
             std::string level = file_optimization(l.span);
             if (level.empty() && sources_.file(l.span.file).path().starts_with("<std>")) level = mode_setting("std_optimization");
@@ -2031,6 +2252,7 @@ private:
         }
         if (a.op != TokenKind::eq && a.op_symbol) {   // spec 16: `operator+=`, or `a = a + b`
             const FunctionDecl* f = body_decl(a.op_symbol);
+            if (!f) unsupported(a.span, "an operator without a body");
             bool compound = f->name != token_kind_spelling(compound_operator(a.op));
             llvm::Value* addr = place(*a.target);
             if (compound) {
@@ -3600,6 +3822,17 @@ private:
                 for (ExprPtr& a : c.args) args.push_back(a.get());
                 if (only) return call_symbol(only, b_.CreateExtractValue(fat, 0), args, c.span);   // spec 34 §8: one implementing type
                 llvm::Value* table  = b_.CreateExtractValue(fat, 1);
+                if (c.hint_symbol && reaches(c.hint_symbol, dispatched->symbol)) {   // @std::dispatch_hint<T>
+                    if (const Symbol* impl = implementation(c.hint_symbol, s)) {
+                        speculation_ = Speculation{b_.CreateICmpEQ(table, itable_of(c.hint_symbol, dispatched->symbol)), function_of(impl)};
+                        if (inspect_) {
+                            insight(callee_name(c), "dispatch", "speculative", "range",
+                                    std::format("guarded direct call to {} (@std::dispatch_hint), the table call otherwise", display_name(impl)),
+                                    "The object's interface table is compared with the hinted class's: on a match the call goes "
+                                    "straight to its implementation and can be inlined (performance §8).");
+                        }
+                    }
+                }
                 llvm::Value* target = b_.CreateLoad(ptr_type(), b_.CreateConstGEP1_32(ptr_type(), table, itable_header + static_cast<unsigned>(slot)));
                 return call_symbol(s, b_.CreateExtractValue(fat, 0), args, c.span, false, target);
             }
@@ -3626,6 +3859,19 @@ private:
                     std::vector<Expr*> args;
                     for (ExprPtr& a : c.args) args.push_back(a.get());
                     if (only) return call_symbol(only, object, args, c.span);   // spec 34 §8: one target
+                    if (c.hint_symbol && c.hint_symbol->kind == SymbolKind::class_ && reaches(c.hint_symbol, target->symbol)) {
+                        if (const Symbol* impl = implementation(c.hint_symbol, s)) {   // @std::dispatch_hint<T>
+                            llvm::Value* vtable = b_.CreateLoad(ptr_type(), object);
+                            speculation_ = Speculation{b_.CreateICmpEQ(vtable, vtable_of(c.hint_symbol)), function_of(impl)};
+                            if (inspect_) {
+                                insight(callee_name(c), "dispatch", "speculative", "range",
+                                        std::format("guarded direct call to {} (@std::dispatch_hint), the vtable call otherwise",
+                                                    display_name(impl)),
+                                        "The object's vtable is compared with the hinted class's: on a match the call goes straight "
+                                        "to its implementation and can be inlined (performance §8).");
+                            }
+                        }
+                    }
                     return call_symbol(s, object, args, c.span, false, virtual_function(object, slot));
                 }
             }
@@ -3682,8 +3928,17 @@ private:
 
     // Calls the function `s` with `in` as its arguments (after the receiver, for a method). A
     // reference result is read through unless `want_address`, which returns the address itself.
+    // `@std::dispatch_hint<T>` (performance §8): the next dynamic call compares the object's table
+    // with T's and calls T's implementation directly when they match.
+    struct Speculation {
+        llvm::Value*    guard  = nullptr;   // the object's table is T's
+        llvm::Function* direct = nullptr;   // T's implementation
+    };
+    Speculation speculation_;
+
     llvm::Value* call_symbol(const Symbol* s, llvm::Value* receiver, const std::vector<Expr*>& in, Span span,
                              bool want_address = false, llvm::Value* indirect = nullptr) {
+        Speculation speculate = std::exchange(speculation_, Speculation{});
         const CallExpr* call_ast = std::exchange(call_expr_, nullptr);   // set by call_function: the call being made
         const FunctionDecl* f = body_decl(s);
         if (!f) unsupported(span, "this function");
@@ -3712,13 +3967,34 @@ private:
             }
         }
         bool tracked = !indirect && has_run_time_entry_checks(s);
-        bool by_arg  = tracked && !imported && !f->is_extern && s->versions.empty() && !s->version_of;
+        bool by_arg  = tracked && !imported && !f->is_extern && s->versions.empty() && !s->version_of && !from_shared_library(s);
         if (tracked && !by_arg) b_.CreateStore(loc_global(span), call_site_global());
         llvm::Value* call = nullptr;
         if (by_arg) {   // the caller's location as a hidden argument (site_variant_of)
             std::vector<llvm::Value*> with_site = args;
             with_site.push_back(loc_global(span));
             call = b_.CreateCall(site_variant_of(s), with_site);
+        } else if (indirect && speculate.guard) {   // guarded direct call, the dynamic call for other classes
+            llvm::Function*   fn     = cur_fn_ ? cur_fn_ : b_.GetInsertBlock()->getParent();
+            llvm::BasicBlock* direct = llvm::BasicBlock::Create(ctx_, "hint.direct", fn);
+            llvm::BasicBlock* other  = llvm::BasicBlock::Create(ctx_, "hint.dynamic", fn);
+            llvm::BasicBlock* done   = llvm::BasicBlock::Create(ctx_, "hint.done", fn);
+            b_.CreateCondBr(speculate.guard, direct, other, llvm::MDBuilder(ctx_).createBranchWeights(15, 1));
+            b_.SetInsertPoint(direct);
+            llvm::Value* a = b_.CreateCall(speculate.direct->getFunctionType(), speculate.direct, args);
+            b_.CreateBr(done);
+            b_.SetInsertPoint(other);
+            llvm::Value* d = b_.CreateCall(function_type(s), indirect, args);
+            b_.CreateBr(done);
+            b_.SetInsertPoint(done);
+            if (d->getType()->isVoidTy()) {
+                call = d;
+            } else {
+                llvm::PHINode* phi = b_.CreatePHI(d->getType(), 2);
+                phi->addIncoming(a, direct);
+                phi->addIncoming(d, other);
+                call = phi;
+            }
         } else {
             call = indirect ? b_.CreateCall(function_type(s), indirect, args)   // a virtual or interface call
                  : imported ? c_call(function_of(s), args)                       // C's calling convention
@@ -3925,7 +4201,8 @@ private:
         std::vector<const Symbol*> out;
         if (const Symbol* base = s->base_class()) out = vtable_slots(base);
         for (const Symbol* m : methods_of(s)) {
-            const FunctionDecl* f = m->function();
+            const FunctionDecl* f = m->function();   // methods_of only returns methods with a declaration
+            if (!f) continue;
             bool introduces = f->is_virtual || f->is_abstract;
             // In a class hierarchy with a vtable, implementing an interface method makes it
             // dispatched dynamically too: a derived class may override it again (spec 07).
@@ -3983,10 +4260,15 @@ private:
         auto* array_type = llvm::ArrayType::get(ptr_type(), vtable_header + slots.size());
         std::vector<std::string> parts = symbol_scope(s);
         parts.push_back(s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         auto* g = new llvm::GlobalVariable(*mod_, array_type, true, llvm::GlobalValue::InternalLinkage, nullptr,
                                            "rv_" + mangle_parts(parts));
         vtables_[s] = g;   // before the entries: a class's methods may need its own vtable
+        if (from_shared_library(s)) {   // one vtable per class: the shared library's
+            share_global(g, s);
+            return g;
+        }
+        if (exported_by_library(s)) share_global(g, s);
         std::vector<llvm::Constant*> entries;
         const Symbol* base = s->base_class();
         entries.push_back(base ? vtable_of(base) : llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)));
@@ -4008,7 +4290,7 @@ private:
     void list_types() {
         if (types_listed_) return;
         types_listed_ = true;
-        open_world_   = program_.is_plugin;
+        open_world_   = program_.is_plugin || program_.is_shared_library || !program_.shared_modules.empty();
         for (const auto& [name, m] : program_.modules) {
             for (const Symbol& sym : m->storage) {
                 if (sym.kind != SymbolKind::class_ && sym.kind != SymbolKind::struct_ && sym.kind != SymbolKind::enum_) continue;
@@ -4089,10 +4371,11 @@ private:
         if (auto it = type_ids_.find(s); it != type_ids_.end()) return it->second;
         std::vector<std::string> parts = symbol_scope(s);
         parts.push_back(s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         auto* g = new llvm::GlobalVariable(*mod_, llvm::Type::getInt8Ty(ctx_), true, llvm::GlobalValue::InternalLinkage,
                                            llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), "rt_" + mangle_parts(parts));
         type_ids_[s] = g;
+        share_global(g, s);   // one type id per type across a shared library and its programs
         return g;
     }
 
@@ -4104,8 +4387,9 @@ private:
         if (auto it = thunks_.find(key); it != thunks_.end()) return it->second;
         llvm::FunctionType* type = function_type(impl);
         auto* fn = llvm::Function::Create(type, llvm::Function::InternalLinkage,
-                                          std::string(function_of(impl)->getName()) + ".dispatch", mod_.get());
+                                          std::format("{}.dispatch{}", function_of(impl)->getName().str(), slot), mod_.get());
         thunks_[key] = fn;
+        inherit_unit(fn, function_of(impl));
         llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", fn));
         llvm::Value* object = fn->getArg(0);
         llvm::Value* vtable = b.CreateLoad(ptr_type(), object);
@@ -4129,7 +4413,7 @@ private:
         auto* array_type = llvm::ArrayType::get(ptr_type(), itable_header + ms.size() + extended.size());
         std::vector<std::string> parts = symbol_scope(s);
         parts.push_back(s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         parts.push_back(iface->name);
         auto* g = new llvm::GlobalVariable(*mod_, array_type, true, llvm::GlobalValue::InternalLinkage, nullptr,
                                            "ri_" + mangle_parts(parts));
@@ -4277,7 +4561,7 @@ private:
         if (auto it = user_types_.find(s); it != user_types_.end()) return it->second;
         if (s->kind == SymbolKind::enum_) return enum_type(s);
         if (!is_struct_symbol(s)) unsupported(s->span, "values of this type");
-        auto* st       = llvm::StructType::create(ctx_, s->name);
+        auto* st       = llvm::StructType::create(ctx_, s->name + "." + short_hash(symbol_key(s)));
         user_types_[s] = st;
         if (types::is_union(s)) {   // spec 34: storage for the largest member, aligned for the strictest
             types::Layout l    = tc_.layout(tc_.user(s));
@@ -4327,7 +4611,7 @@ private:
             size          = std::max<std::uint64_t>(size, layout.getTypeAllocSize(p).getFixedValue());
             align         = std::max(align, static_cast<unsigned>(layout.getABITypeAlign(p).value()));
         }
-        auto* st       = llvm::StructType::create(ctx_, e->name);
+        auto* st       = llvm::StructType::create(ctx_, e->name + "." + short_hash(symbol_key(e)));
         user_types_[e] = st;
         llvm::Type* elem = llvm::IntegerType::get(ctx_, align * 8);
         if (tc_.niche_enum(e)) st->setBody(llvm::ArrayRef<llvm::Type*>{llvm::ArrayType::get(elem, (size + align - 1) / align)});   // no tag (spec 34)
@@ -4585,6 +4869,10 @@ private:
     // object it points to); a reference to a place that *holds* a raw pointer (`*p` of a
     // `std::raw_ptr<std::raw_ptr<T>>`, an element of a darray of pointers) is that place's address.
     llvm::Value* reference_to(Expr& e) {
+        if (e.kind == ExprKind::unary) {   // `f(mut p)` with a pointer `p`: the place, not the pointer
+            UnaryOp op = e.as<UnaryExpr>().op;
+            if (op == UnaryOp::mut_marker || op == UnaryOp::move) return reference_to(*e.as<UnaryExpr>().operand);
+        }
         if (e.type && e.type->is(Kind::pointer) && is_place(e)) return place(e);
         return object_address(e);
     }
@@ -4783,8 +5071,9 @@ private:
                        b_.CreateStructGEP(env_t, env, static_cast<unsigned>(captured.size())));
         auto* vd = llvm::Type::getVoidTy(ctx_);
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr_type(), ptr_type()}, false), llvm::Function::InternalLinkage,
-                                          "edax_format", mod_.get());
+                                          local_helper_name("edax_format_", lit.span), mod_.get());
         fn->addFnAttr(llvm::Attribute::NoUnwind);
+        inherit_unit(fn, cur_fn_);
         llvm::IRBuilderBase::InsertPoint saved_ip     = b_.saveIP();
         llvm::DebugLoc                   saved_loc    = b_.getCurrentDebugLocation();
         llvm::Function*                  saved_fn     = cur_fn_;
@@ -4937,10 +5226,11 @@ private:
         return out;
     }
 
-    // Whether `t` is the library's `std::string` class.
+    // Whether `t` is the library's `std::string` class, or a `std::string_with<A>` (text that
+    // converts to `std::str` and formats the same way).
     bool is_string(const types::Type* t) const {
         if (!t || !t->is(Kind::user) || !program_.std_module) return false;
-        return program_.std_module->item("std::string") == t->symbol;
+        return program_.std_module->item("std::string") == t->symbol || types::is_std_instance(t, "string_with");
     }
 
     // The name of the alternative of the simple enum `e` whose tag is `tag`: a simple enum prints
@@ -6145,6 +6435,14 @@ private:
             gv->setThreadLocalMode(llvm::GlobalValue::LocalExecTLSModel);
         }
         globals_[g] = gv;
+        if (from_shared_library(g) || exported_by_library(g)) {   // one copy, in the shared library
+            share_global(gv, g);
+            if (v.storage == Storage::thread_local_) {
+                gv->setThreadLocalMode(from_shared_library(g) ? llvm::GlobalValue::InitialExecTLSModel
+                                                              : llvm::GlobalValue::GeneralDynamicTLSModel);
+            }
+            if (from_shared_library(g)) return gv;   // initialized by the library when it is loaded
+        }
         global_queue_.push_back(g);
         return gv;
     }
@@ -6304,9 +6602,10 @@ private:
         if (auto it = drop_fns_.find(s); it != drop_fns_.end()) return it->second;
         std::vector<std::string> parts = symbol_scope(s);
         parts.push_back(s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {llvm::PointerType::get(ctx_, 0)}, false),
                                           llvm::Function::InternalLinkage, "rd_" + mangle_parts(parts), mod_.get());
+        set_unit(fn, unit_of(s));
         if (is_std_function(s)) {   // a library type's destructor: optimized like the library (spec 34)
             if (std::string level = mode_setting("std_optimization"); !level.empty()) fn->addFnAttr("edax-optimize", level);
         }
@@ -6370,7 +6669,7 @@ private:
         if (clone) params.push_back(ptr_type());
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), params, false),
                                           llvm::Function::InternalLinkage,
-                                          (clone ? "rac_" : "rad_") + std::to_string(array_fns_.size()), mod_.get());
+                                          (clone ? "rac_" : "rad_") + short_hash(type_key(t)), mod_.get());
         array_fns_[key] = fn;
         llvm::IRBuilderBase::InsertPoint saved = b_.saveIP();
         llvm::Function*                  saved_fn = cur_fn_;
@@ -6412,7 +6711,7 @@ private:
         if (clone) params.push_back(ptr_type());
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), params, false),
                                           llvm::Function::InternalLinkage,
-                                          (clone ? "rtc_" : "rtd_") + std::to_string(tuple_fns_.size()), mod_.get());
+                                          (clone ? "rtc_" : "rtd_") + short_hash(type_key(t)), mod_.get());
         tuple_fns_[key] = fn;
         llvm::IRBuilderBase::InsertPoint saved    = b_.saveIP();
         llvm::DebugLoc                   saved_loc = b_.getCurrentDebugLocation();
@@ -6444,8 +6743,9 @@ private:
     llvm::Function* closure_drop(const types::Type* t) {
         if (auto it = closure_drops_.find(t); it != closure_drops_.end()) return it->second;
         auto* fn = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr_type()}, false),
-                                          llvm::Function::InternalLinkage, "rld_" + std::to_string(closure_drops_.size()), mod_.get());
+                                          llvm::Function::InternalLinkage, "rld_" + short_hash(type_key(t)), mod_.get());
         closure_drops_[t] = fn;
+        if (const LambdaExpr* l = tc_.lambda_of(t); l && lambda_fns_.count(l)) inherit_unit(fn, lambda_fns_.at(l));
         llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx_, "entry", fn));
         llvm::StructType* st = closure_type(t);
         const LambdaExpr* l  = tc_.lambda_of(t);
@@ -6570,10 +6870,11 @@ private:
         if (auto it = clone_fns_.find(s); it != clone_fns_.end()) return it->second;
         std::vector<std::string> parts = symbol_scope(s);
         parts.push_back(s->name);
-        if (s->template_of) parts.push_back("0i" + std::to_string(s->instance_index));
+        if (s->template_of) parts.push_back(instance_tag(s));
         auto* ptr = llvm::PointerType::get(ctx_, 0);
         auto* fn  = llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr, ptr}, false),
                                            llvm::Function::InternalLinkage, "rc_" + mangle_parts(parts), mod_.get());
+        set_unit(fn, unit_of(s));
         if (is_std_function(s)) {   // optimized like the library (spec 34)
             if (std::string level = mode_setting("std_optimization"); !level.empty()) fn->addFnAttr("edax-optimize", level);
         }
@@ -6890,7 +7191,7 @@ private:
     void track_init(const Symbol* var, const Expr* init) {
         if (!inspect_ || !var) return;
         const types::Type* t = var->type;
-        bool text = is_string(t);
+        bool text = is_string(t) && !types::is_std_instance(t, "string_with");   // 23 bytes inline: std::string only
         if (!text && !is_darray(t)) return;
         Capacity c;
         c.text = text;
@@ -7011,7 +7312,7 @@ private:
             }
         } else if (call && call->callee->kind == ExprKind::path && (method == "with_capacity" || method == "from") &&
                    call->args.size() == 1) {
-            bool text = s && s->parent && is_string(tc_.user(s->parent));
+            bool text = s && s->parent && is_string(tc_.user(s->parent)) && !s->parent->template_of;
             if (method == "with_capacity") {
                 if (auto n = constant_count(*call->args[0])) {
                     if (*n == 0 || (text && *n <= 23)) return;
@@ -7725,20 +8026,119 @@ yes:
 }
 
 
-std::string generate_llvm_ir(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
-                             LlvmOptions options) {
-    llvm::LLVMContext ctx;
-    Gen               gen(program, sources, diags, options, ctx);
+namespace {
+// Private constants (string literals, messages, format specs, source locations) are named after
+// their contents: `.str.<hash>` instead of `.str.17`, so that a function's IR text doesn't change
+// when another function adds a string (the object cache, build_executable). Equal constants are
+// merged. A constant is named after the constants it points to, so those come first.
+void name_constants_by_content(llvm::Module& mod) {
+    std::vector<llvm::GlobalVariable*> pending;
+    for (llvm::GlobalVariable& g : mod.globals()) {
+        if (g.hasPrivateLinkage() && g.isConstant() && g.hasInitializer()) pending.push_back(&g);
+    }
+    std::set<const llvm::GlobalVariable*> waiting(pending.begin(), pending.end());
+    auto refers_to_waiting = [&](const llvm::Constant* c) {
+        std::vector<const llvm::Constant*> work{c};
+        while (!work.empty()) {
+            const llvm::Constant* x = work.back();
+            work.pop_back();
+            if (const auto* g = llvm::dyn_cast<llvm::GlobalVariable>(x)) {
+                if (waiting.count(g)) return true;
+                continue;
+            }
+            for (const llvm::Use& op : x->operands()) {
+                if (const auto* oc = llvm::dyn_cast<llvm::Constant>(op.get())) work.push_back(oc);
+            }
+        }
+        return false;
+    };
+    std::map<std::string, llvm::GlobalVariable*> by_name;
+    bool progress = true;
+    while (!pending.empty() && progress) {
+        progress = false;
+        std::vector<llvm::GlobalVariable*> later;
+        for (llvm::GlobalVariable* g : pending) {
+            if (refers_to_waiting(g->getInitializer())) {
+                later.push_back(g);
+                continue;
+            }
+            std::string text;
+            llvm::raw_string_ostream out(text);
+            g->getValueType()->print(out);
+            out << ' ';
+            g->getInitializer()->print(out);
+            out << (g->hasGlobalUnnamedAddr() ? " u" : "") << ' ' << g->getAlign().valueOrOne().value();
+            out.flush();
+            std::string base = g->getName().str();
+            while (!base.empty() && (std::isdigit(static_cast<unsigned char>(base.back())) || base.back() == '.' || base.back() == '_')) {
+                base.pop_back();
+            }
+            std::string name = std::format("{}.{:016x}", base, fnv1a(text));
+            if (auto it = by_name.find(name); it != by_name.end()) {   // the same contents: one constant
+                g->replaceAllUsesWith(it->second);
+                g->eraseFromParent();
+            } else {
+                g->setName(name);
+                by_name[name] = g;
+            }
+            waiting.erase(g);
+            progress = true;
+        }
+        pending = std::move(later);
+    }
+}
+} // namespace
+
+namespace {
+// A few calls are made with the callee's declared type while an argument has another type of the
+// same meaning (an interface reference for a plain pointer, ...). The printed IR spells each call
+// with its arguments' types, and the parser accepts that, so the text form was always valid: this
+// gives in-memory calls the same function type the text would have.
+void spell_calls_like_text(llvm::Module& mod) {
+    for (llvm::Function& fn : mod) {
+        for (llvm::Instruction& i : llvm::make_early_inc_range(llvm::instructions(fn))) {
+            auto* call = llvm::dyn_cast<llvm::CallInst>(&i);
+            if (!call || call->getFunctionType()->isVarArg()) continue;
+            llvm::FunctionType* ft = call->getFunctionType();
+            bool same = ft->getNumParams() == call->arg_size();
+            for (unsigned k = 0; same && k < call->arg_size(); ++k) same = ft->getParamType(k) == call->getArgOperand(k)->getType();
+            if (same) continue;
+            std::vector<llvm::Type*>  types;
+            std::vector<llvm::Value*> args;
+            for (llvm::Value* a : call->args()) {
+                types.push_back(a->getType());
+                args.push_back(a);
+            }
+            auto* nc = llvm::CallInst::Create(llvm::FunctionType::get(ft->getReturnType(), types, false), call->getCalledOperand(), args, "",
+                                              call);
+            nc->takeName(call);
+            nc->setAttributes(call->getAttributes());
+            nc->setCallingConv(call->getCallingConv());
+            nc->setTailCallKind(call->getTailCallKind());
+            nc->setDebugLoc(call->getDebugLoc());
+            call->replaceAllUsesWith(nc);
+            call->eraseFromParent();
+        }
+    }
+}
+
+// The checked program as an LLVM module (without the runtime), or null after errors.
+std::unique_ptr<llvm::Module> generate_module(llvm::LLVMContext& ctx, sema::Program& program, const SourceManager& sources,
+                                              DiagnosticEngine& diags, LlvmOptions options) {
+    Gen                           gen(program, sources, diags, options, ctx);
     std::unique_ptr<llvm::Module> mod = gen.run();
-    if (!mod) return {};
-    if (!program.must_vectorize_loops.empty() && !check_vectorized(*mod, program, sources, diags)) return {};
-    if (!program.no_checks_left.empty() && !check_no_checks_left(*mod, program, diags)) return {};
-    std::string           printed;
-    llvm::raw_string_ostream module_out(printed);
-    mod->print(module_out, nullptr);
-    module_out.flush();
-    // The runtime defines the functions and intrinsics it shares with the module; the module's
-    // declarations of them would clash with those.
+    if (!mod) return nullptr;
+    spell_calls_like_text(*mod);
+    lower_large_aggregates(*mod);   // large structs in memory: instruction selection splits SSA aggregates
+    name_constants_by_content(*mod);
+    if (!program.must_vectorize_loops.empty() && !check_vectorized(*mod, program, sources, diags)) return nullptr;
+    if (!program.no_checks_left.empty() && !check_no_checks_left(*mod, program, diags)) return nullptr;
+    return mod;
+}
+
+// The runtime's IR (llvm_runtime.cpp) for this build: the host's futex number, the CPU detection,
+// and with `panic() == trap` a trap in edax_panic_buf.
+std::string runtime_text_for(const LlvmOptions& options) {
     std::string runtime_text = llvm_runtime_ir();
     {   // the futex system call's number on the host (edaxc compiles for the machine it runs on)
         llvm::Triple      host(target_triple());
@@ -7746,6 +8146,95 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
         for (std::size_t at; (at = runtime_text.find("@@SYS_FUTEX@@")) != std::string::npos;) runtime_text.replace(at, 13, number);
     }
     runtime_text += cpu_detection_ir();
+    if (options.panic_trap) {   // every panic ends in edax_panic_buf: make it a trap
+        const std::string head = "define internal void @edax_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
+        std::size_t at = runtime_text.find(head);
+        if (at != std::string::npos) {
+            runtime_text.replace(at, head.size(), head + "\n  call void @llvm.trap()\n  unreachable\n}\n"
+                                                  "define internal void @edax_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
+            runtime_text += "\ndeclare void @llvm.trap() cold noreturn nounwind\n";
+        }
+    }
+    return runtime_text;
+}
+
+// Links the runtime into `mod`. The two refer to each other's internal symbols (the text form is
+// one module): those are external while linking and internal again afterwards.
+bool link_runtime(llvm::Module& mod, const std::string& runtime_text, std::string& error) {
+    llvm::SMDiagnostic err;
+    std::unique_ptr<llvm::Module> rt =
+        llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(runtime_text.data(), runtime_text.size()), "edax-runtime.ll"), err, mod.getContext());
+    if (!rt) {
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        err.print("edaxc", os);
+        error = "internal error: the runtime's LLVM IR does not parse\n" + text;
+        return false;
+    }
+    std::vector<std::string> local;
+    auto open_up = [&](llvm::Module& defining, llvm::Module& using_) {
+        for (llvm::GlobalValue& gv : defining.global_values()) {
+            if (gv.isDeclaration() || !gv.hasLocalLinkage()) continue;
+            llvm::GlobalValue* other = using_.getNamedValue(gv.getName());
+            if (!other || !other->isDeclaration()) continue;
+            local.push_back(gv.getName().str());
+            gv.setLinkage(llvm::GlobalValue::ExternalLinkage);
+        }
+    };
+    open_up(*rt, mod);
+    open_up(mod, *rt);
+    rt->setDataLayout(mod.getDataLayout());
+    rt->setTargetTriple(mod.getTargetTriple());
+    if (llvm::Linker::linkModules(mod, std::move(rt))) {
+        error = "internal error: the runtime does not link with the program";
+        return false;
+    }
+    for (const std::string& name : local) {
+        if (llvm::GlobalValue* gv = mod.getNamedValue(name)) gv->setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
+    return true;
+}
+} // namespace
+
+struct GeneratedProgram::Impl {
+    llvm::LLVMContext             ctx;
+    std::unique_ptr<llvm::Module> mod;
+};
+
+GeneratedProgram::GeneratedProgram() = default;
+GeneratedProgram::~GeneratedProgram() = default;
+GeneratedProgram::GeneratedProgram(GeneratedProgram&&) noexcept = default;
+GeneratedProgram& GeneratedProgram::operator=(GeneratedProgram&&) noexcept = default;
+
+GeneratedProgram generate_llvm_program(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
+                                       LlvmOptions options) {
+    GeneratedProgram out;
+    out.impl_      = std::make_unique<GeneratedProgram::Impl>();
+    out.impl_->mod = generate_module(out.impl_->ctx, program, sources, diags, options);
+    if (!out.impl_->mod) {
+        out.impl_.reset();
+        return out;
+    }
+    std::string error;
+    if (!link_runtime(*out.impl_->mod, runtime_text_for(options), error)) {
+        diags.report(DiagCode::E6001, Span{}, error, "");
+        out.impl_.reset();
+    }
+    return out;
+}
+
+std::string generate_llvm_ir(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
+                             LlvmOptions options) {
+    llvm::LLVMContext             ctx;
+    std::unique_ptr<llvm::Module> mod = generate_module(ctx, program, sources, diags, options);
+    if (!mod) return {};
+    std::string           printed;
+    llvm::raw_string_ostream module_out(printed);
+    mod->print(module_out, nullptr);
+    module_out.flush();
+    // The runtime defines the functions and intrinsics it shares with the module; the module's
+    // declarations of them would clash with those.
+    std::string runtime_text = runtime_text_for(options);
     std::set<std::string> provided;
     for (std::string_view line : split_lines(runtime_text)) {
         if (!line.starts_with("define ") && !line.starts_with("declare ")) continue;
@@ -7762,15 +8251,6 @@ std::string generate_llvm_ir(sema::Program& program, const SourceManager& source
             if (end != std::string_view::npos && provided.count(std::string(line.substr(at + 1, end - at - 1)))) continue;
         }
         text.append(line);
-    }
-    if (options.panic_trap) {   // every panic ends in edax_panic_buf: make it a trap
-        const std::string head = "define internal void @edax_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
-        std::size_t at = runtime_text.find(head);
-        if (at != std::string::npos) {
-            runtime_text.replace(at, head.size(), head + "\n  call void @llvm.trap()\n  unreachable\n}\n"
-                                                  "define internal void @edax_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
-            runtime_text += "\ndeclare void @llvm.trap() cold noreturn nounwind\n";
-        }
     }
     return text + "\n" + runtime_text;
 }
@@ -7893,86 +8373,51 @@ std::vector<CheckSite> explain_checks(sema::Program& program, const SourceManage
 
 std::string llvm_version() { return LLVM_VERSION_STRING; }
 
-bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
-                      const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
-    initialize_targets();
-    llvm::LLVMContext ctx;
-    llvm::SMDiagnostic err;
-    std::unique_ptr<llvm::Module> mod = llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir.data(), ir.size()), "edax.ll"), err, ctx);
-    if (!mod) {
-        std::string text;
-        llvm::raw_string_ostream os(text);
-        err.print("edaxc", os);
-        error = "internal error: the generated LLVM IR does not parse\n" + text;
-        return false;
+// --- building: optimization, object code, the object cache ------------------------------------
+
+namespace {
+
+int optimization_rank(const std::string& l) { return l == "basic" ? 1 : l == "size" ? 2 : l == "speed" ? 3 : 0; }
+
+// The highest optimization level a function of `mod` asks for ("none" when all are at none);
+// functions without their own level are at `default_level` (the mode's).
+std::string highest_level(const llvm::Module& mod, const std::string& default_level = "none") {
+    std::string highest = "none";
+    for (const llvm::Function& fn : mod) {
+        if (fn.isDeclaration() || fn.hasAvailableExternallyLinkage() || fn.hasFnAttribute(llvm::Attribute::OptimizeNone)) continue;
+        std::string l = fn.hasFnAttribute("edax-optimize") ? fn.getFnAttribute("edax-optimize").getValueAsString().str() : default_level;
+        if (optimization_rank(l) > optimization_rank(highest)) highest = l;
     }
-    std::string bad;
-    llvm::raw_string_ostream verify_out(bad);
-    if (llvm::verifyModule(*mod, &verify_out)) {
-        error = "internal error: the generated LLVM IR is invalid\n" + verify_out.str();
-        return false;
-    }
-    std::string triple_name = target_triple();
-    std::string lookup_error;
-    const llvm::Target* target = lookup_target(triple_name, lookup_error);
-    if (!target) {
-        error = "no LLVM target for " + triple_name + ": " + lookup_error;
-        return false;
-    }
-    llvm::TargetOptions options;
-    // Per-function optimization (spec 34): `@std::optimize` and g.optimize_files mark functions
-    // with "edax-optimize". The module runs the pipeline of the highest level asked for; functions
-    // that asked for `none` (or, in an unoptimized build, didn't ask) are kept as written.
-    std::string level = codegen.optimization;
-    {
-        auto rank = [](const std::string& l) { return l == "basic" ? 1 : l == "size" ? 2 : l == "speed" ? 3 : 0; };
-        std::string highest = level;
-        bool        any     = false;
-        for (llvm::Function& fn : *mod) {
-            if (!fn.hasFnAttribute("edax-optimize")) continue;
-            any = true;
-            std::string l = fn.getFnAttribute("edax-optimize").getValueAsString().str();
-            if (rank(l) > rank(highest)) highest = l;
-        }
-        if (any) {
-            for (llvm::Function& fn : *mod) {
-                if (fn.isDeclaration()) continue;
-                std::string own = fn.hasFnAttribute("edax-optimize") ? fn.getFnAttribute("edax-optimize").getValueAsString().str() : level;
-                if (rank(own) == 0 && rank(highest) > 0) {
-                    fn.removeFnAttr(llvm::Attribute::AlwaysInline);
-                    fn.addFnAttr(llvm::Attribute::OptimizeNone);
-                    fn.addFnAttr(llvm::Attribute::NoInline);
-                } else if (own == "size") {
-                    fn.addFnAttr(llvm::Attribute::OptimizeForSize);
-                }
-            }
-            level = highest;
-        }
-    }
+    return highest;
+}
+
+// Optimizes `mod` at `level` (with the sanitizer passes) and writes its object code to `path`.
+bool emit_object(llvm::Module& mod, const llvm::Target* target, const std::string& triple_name, const std::string& level, bool asan,
+                 bool tsan, const std::string& path, std::string& error, const std::string& profile_generate = {},
+                 const std::string& profile_use = {}) {
     bool optimize = level != "none";
-    bool asan     = codegen.sanitize == "address";
-    bool tsan     = codegen.sanitize == "thread";
-    if (asan || tsan) {   // the mode's sanitize() (spec 34): every Edax function is instrumented
-        for (llvm::Function& fn : *mod) {
-            if (fn.isDeclaration()) continue;
-            fn.addFnAttr(asan ? llvm::Attribute::SanitizeAddress : llvm::Attribute::SanitizeThread);
-        }
-    }
+    bool pgo      = !profile_generate.empty() || !profile_use.empty();
     std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(
-        target, triple_name, options,
+        target, triple_name, llvm::TargetOptions(),
         !optimize ? llvm::CodeGenOptLevel::None : level == "basic" ? llvm::CodeGenOptLevel::Less : llvm::CodeGenOptLevel::Aggressive));
-    set_target_triple(*mod, triple_name);
-    mod->setDataLayout(machine->createDataLayout());
-    if (optimize || asan || tsan) {   // the mode's optimization() (spec 24), plus sanitizer passes (spec 34)
+    set_target_triple(mod, triple_name);
+    mod.setDataLayout(machine->createDataLayout());
+    if (optimize || asan || tsan || pgo) {   // the mode's optimization() (spec 24), sanitizer passes (spec 34), PGO
         llvm::LoopAnalysisManager     lam;
         llvm::FunctionAnalysisManager fam;
         llvm::CGSCCAnalysisManager    cgam;
         llvm::ModuleAnalysisManager   mam;
         // The standard instrumentations make the passes skip `optnone` functions (@std::optimize).
         llvm::PassInstrumentationCallbacks pic;
-        llvm::StandardInstrumentations     si(ctx, false);
+        llvm::StandardInstrumentations     si(mod.getContext(), false);
         si.registerCallbacks(pic, &mam);
-        llvm::PassBuilder             pb(machine.get(), llvm::PipelineTuningOptions(), std::nullopt, &pic);
+        std::optional<llvm::PGOOptions> pgo_options;
+        if (!profile_generate.empty()) {   // counters in every function, written at exit
+            pgo_options = llvm::PGOOptions(profile_generate, "", "", "", llvm::vfs::getRealFileSystem(), llvm::PGOOptions::IRInstr);
+        } else if (!profile_use.empty()) {
+            pgo_options = llvm::PGOOptions(profile_use, "", "", "", llvm::vfs::getRealFileSystem(), llvm::PGOOptions::IRUse);
+        }
+        llvm::PassBuilder             pb(machine.get(), llvm::PipelineTuningOptions(), pgo_options, &pic);
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
@@ -8001,35 +8446,661 @@ bool build_executable(std::string_view ir, const std::string& out_path, const st
 #endif
         }
         llvm::ModulePassManager mpm = optimize ? pb.buildPerModuleDefaultPipeline(pipeline) : pb.buildO0DefaultPipeline(llvm::OptimizationLevel::O0);
-        mpm.run(*mod, mam);
+        mpm.run(mod, mam);
+    }
+    std::error_code ec;
+    llvm::raw_fd_ostream file(path, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+        error = "cannot write " + path + ": " + ec.message();
+        return false;
+    }
+    llvm::legacy::PassManager pm;
+    if (machine->addPassesToEmitFile(pm, file, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+        error = "the target cannot emit object files";
+        return false;
+    }
+    pm.run(mod);
+    return true;
+}
+
+// The object cache (debug builds). A program is compiled in units (the "edax-unit" attribute the
+// generator puts on each function, see Gen::unit_of): each unit becomes a module of its own, and
+// its object code is stored under a hash of that module's IR text and of everything else that
+// decides the code (edaxc, LLVM, target, CPU, optimization, sanitizer). A unit whose text is the
+// same as in an earlier build - the standard library's, almost always - isn't compiled again.
+// The key is the content itself, so whole-program decisions (devirtualization, what `main`
+// reaches, optimization levels) can't make a cached object stale: if they change the code, they
+// change the text.
+//
+// Only builds whose own code is unoptimized use it: across units nothing is inlined, which an
+// unoptimized program doesn't do anyway (the library still inlines within its units). Optimized
+// builds stay one module.
+//
+// The directory: $EDAX_CACHE_DIR, else $XDG_CACHE_HOME/edax/objects, else ~/.cache/edax/objects;
+// EDAX_CACHE_DIR=off turns the cache off. It is pruned to 2 GB, and of objects unused for 30 days.
+// EDAX_CACHE_STATS=1 prints a line about each build's units to stderr (2: also the units compiled),
+// EDAX_CACHE_DUMP=<dir> writes each unit's IR there.
+std::string object_cache_dir() {
+    const char* own = std::getenv("EDAX_CACHE_DIR");
+    if (own && (std::string_view(own) == "off" || std::string_view(own) == "0")) return {};
+    std::filesystem::path dir;
+    if (own && *own) {
+        dir = own;
+    } else if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+        dir = std::filesystem::path(xdg) / "edax" / "objects";
+    } else if (const char* home = std::getenv("HOME"); home && *home) {
+        dir = std::filesystem::path(home) / ".cache" / "edax" / "objects";
+    } else {
+        return {};
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (!std::filesystem::is_directory(dir, ec)) return {};
+    return dir.string();
+}
+
+// What decides the object code besides the IR text. __DATE__/__TIME__: a rebuilt backend (its
+// passes may have changed) doesn't reuse the objects of the previous one.
+std::string object_cache_salt(const std::string& triple_name, const std::string& level, bool asan, bool tsan) {
+    auto [cpu, features] = llvm_cpu_and_features();
+    return std::format("edax-object-cache 1\nedaxc {} {} {}\nllvm {}\n{}\n{}\n{}\n{} {}{}\npic\n", EDAX_VERSION, __DATE__, __TIME__,
+                       LLVM_VERSION_STRING, triple_name, cpu, features, level, asan ? "asan" : "", tsan ? "tsan" : "");
+}
+
+std::string hex_digest(llvm::ArrayRef<std::uint8_t> bytes) {
+    std::string out;
+    for (std::uint8_t b : bytes) out += std::format("{:02x}", b);
+    return out;
+}
+
+// The unit of a function or global: the "edax-unit" attribute; "shared" for what the generator
+// made without one (the runtime, `main`, helpers of tuples and arrays), "globals" for variables,
+// vtables and type ids (one definition each). Private constants (strings, source locations) have
+// no unit: each unit gets its own copy of those it uses.
+const std::string no_unit;
+
+struct Units {
+    std::map<const llvm::GlobalValue*, std::string> of;
+    std::map<std::string, std::vector<const llvm::GlobalValue*>> members;   // ordered: the build is deterministic
+
+    static bool copied(const llvm::GlobalValue& gv) {
+        const auto* g = llvm::dyn_cast<llvm::GlobalVariable>(&gv);
+        return g && g->hasPrivateLinkage() && g->isConstant() && g->hasInitializer();
     }
 
-    std::string object_path = out_path + ".o";
-    std::error_code ec;
-    {
-        llvm::raw_fd_ostream file(object_path, ec, llvm::sys::fs::OF_None);
-        if (ec) {
-            error = "cannot write " + object_path + ": " + ec.message();
-            return false;
+    explicit Units(llvm::Module& mod) {
+        for (llvm::Function& fn : mod) {
+            if (fn.isDeclaration()) continue;
+            std::string u = fn.hasFnAttribute("edax-unit") ? fn.getFnAttribute("edax-unit").getValueAsString().str() : "shared";
+            of[&fn] = u;
+            members[u].push_back(&fn);
         }
-        llvm::legacy::PassManager pm;
-        if (machine->addPassesToEmitFile(pm, file, nullptr, llvm::CodeGenFileType::ObjectFile)) {
-            error = "the target cannot emit object files";
-            return false;
+        for (llvm::GlobalVariable& g : mod.globals()) {
+            if (g.isDeclaration()) continue;
+            if (copied(g)) {
+                of[&g] = no_unit;
+                continue;
+            }
+            of[&g] = "globals";
+            members["globals"].push_back(&g);
         }
-        pm.run(*mod);
     }
-    std::string command = linker + (codegen.shared ? " -shared" : "") + " -o '" + out_path + "' '" + object_path + "'";
+
+    // Small optimized functions of other units that an optimized unit calls get a copy of their
+    // body in that unit (available_externally), so that they still inline there: the library's
+    // code calls across its units all the time (an instance's methods, allocation, hashing).
+    // The copy is part of the unit's text, so a change to the original changes the unit's key.
+    std::map<std::string, std::set<const llvm::Function*>> imports;
+
+    std::string default_level = "none";   // the mode's optimization(): functions without their own level
+
+    bool optimized(const llvm::Function& fn) const {
+        if (fn.isDeclaration() || fn.hasFnAttribute(llvm::Attribute::OptimizeNone)) return false;
+        std::string level = fn.hasFnAttribute("edax-optimize") ? fn.getFnAttribute("edax-optimize").getValueAsString().str() : default_level;
+        return optimization_rank(level) > 0;
+    }
+
+    void find_imports() {
+        constexpr unsigned small = 120;   // instructions of unoptimized IR
+        for (const auto& [gv, unit] : of) {
+            const auto* caller = llvm::dyn_cast<llvm::Function>(gv);
+            if (!caller || !optimized(*caller)) continue;
+            for (const llvm::Instruction& i : llvm::instructions(*caller)) {
+                const auto* call = llvm::dyn_cast<llvm::CallBase>(&i);
+                const llvm::Function* callee = call ? call->getCalledFunction() : nullptr;
+                if (!callee || !optimized(*callee) || callee->hasFnAttribute(llvm::Attribute::NoInline) ||
+                    callee->getInstructionCount() > small) {
+                    continue;
+                }
+                auto it = of.find(callee);
+                if (it != of.end() && it->second != unit) imports[unit].insert(callee);
+            }
+        }
+    }
+
+    // The functions and globals the body of `fn` refers to (through constants and copied constants).
+    void references(const llvm::Function& fn, std::set<const llvm::GlobalValue*>& out) const {
+        std::vector<const llvm::Value*> work;
+        for (const llvm::Instruction& i : llvm::instructions(fn)) {
+            for (const llvm::Use& op : i.operands()) work.push_back(op.get());
+        }
+        std::set<const llvm::Value*> seen;
+        while (!work.empty()) {
+            const llvm::Value* v = work.back();
+            work.pop_back();
+            if (!seen.insert(v).second) continue;
+            if (const auto* g = llvm::dyn_cast<llvm::GlobalValue>(v)) {
+                auto it = of.find(g);
+                if (it != of.end() && it->second.empty()) {
+                    work.push_back(llvm::cast<llvm::GlobalVariable>(g)->getInitializer());
+                } else {
+                    out.insert(g);
+                }
+            } else if (const auto* c = llvm::dyn_cast<llvm::Constant>(v)) {
+                for (const llvm::Use& op : c->operands()) work.push_back(op.get());
+            }
+        }
+    }
+
+    // The units that use `v` (through constants and copied constants).
+    void users(const llvm::Value* v, std::set<std::string>& out) const {
+        for (const llvm::User* u : v->users()) {
+            if (const auto* i = llvm::dyn_cast<llvm::Instruction>(u)) {
+                auto it = of.find(i->getFunction());
+                if (it != of.end()) out.insert(it->second);
+            } else if (const auto* g = llvm::dyn_cast<llvm::GlobalValue>(u)) {
+                auto it = of.find(g);
+                if (it == of.end()) continue;
+                if (it->second.empty()) users(g, out);
+                else out.insert(it->second);
+            } else if (llvm::isa<llvm::Constant>(u)) {
+                users(u, out);
+            }
+        }
+    }
+};
+
+// Makes the module of one unit: its own functions and globals, declarations of what it uses from
+// other units, copies of the private constants it uses. The compile unit of the debug info gets
+// the unit's first file and no list of all enums, so that it doesn't depend on the rest.
+std::unique_ptr<llvm::Module> unit_module(llvm::Module& whole, const Units& units, const std::string& unit) {
+    llvm::ValueToValueMapTy map;
+    const std::set<const llvm::Function*>* imported = nullptr;
+    if (auto it = units.imports.find(unit); it != units.imports.end()) imported = &it->second;
+    std::unique_ptr<llvm::Module> part = llvm::CloneModule(whole, map, [&](const llvm::GlobalValue* gv) {
+        auto it = units.of.find(gv);
+        if (it != units.of.end() && (it->second == unit || it->second.empty())) return true;
+        const auto* fn = llvm::dyn_cast<llvm::Function>(gv);
+        return fn && imported && imported->count(fn);
+    });
+    if (imported) {
+        for (const llvm::Function* fn : *imported) {
+            auto* copy = llvm::cast<llvm::Function>(map[fn]);
+            copy->setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
+            copy->setVisibility(llvm::GlobalValue::DefaultVisibility);
+        }
+    }
+    for (bool erased = true; erased;) {   // what the unit doesn't use (copies point to copies)
+        erased = false;
+        for (llvm::GlobalVariable& g : llvm::make_early_inc_range(part->globals())) {
+            if (g.use_empty() && (g.isDeclaration() || g.hasPrivateLinkage())) {
+                g.eraseFromParent();
+                erased = true;
+            }
+        }
+    }
+    for (llvm::Function& fn : llvm::make_early_inc_range(*part)) {
+        if (fn.isDeclaration() && fn.use_empty()) fn.eraseFromParent();
+    }
+    // In name order: the whole module's order is the order things were generated in, which
+    // depends on the rest of the program.
+    std::vector<llvm::GlobalVariable*> globals;
+    for (llvm::GlobalVariable& g : part->globals()) globals.push_back(&g);
+    std::sort(globals.begin(), globals.end(), [](auto* a, auto* b) { return a->getName() < b->getName(); });
+    for (llvm::GlobalVariable* g : globals) {
+        g->removeFromParent();
+        part->insertGlobalVariable(g);
+    }
+    std::vector<llvm::Function*> functions;
+    for (llvm::Function& fn : *part) functions.push_back(&fn);
+    std::sort(functions.begin(), functions.end(), [](auto* a, auto* b) { return a->getName() < b->getName(); });
+    for (llvm::Function* fn : functions) {
+        fn->removeFromParent();
+        part->getFunctionList().push_back(fn);
+    }
+    if (llvm::NamedMDNode* cus = part->getNamedMetadata("llvm.dbg.cu")) {
+        llvm::DIFile* first = nullptr;
+        std::string   first_name;
+        for (llvm::Function& fn : *part) {
+            llvm::DISubprogram* sp = fn.isDeclaration() ? nullptr : fn.getSubprogram();
+            if (sp && sp->getFile() && (!first || fn.getName() < first_name)) {
+                first      = sp->getFile();
+                first_name = fn.getName().str();
+            }
+        }
+        if (!first) {
+            part->eraseNamedMetadata(cus);
+        } else {
+            for (llvm::MDNode* node : cus->operands()) {
+                auto* cu = llvm::dyn_cast<llvm::DICompileUnit>(node);
+                if (!cu || !cu->isDistinct()) continue;
+                cu->replaceEnumTypes(nullptr);
+                cu->replaceOperandWith(0, first);
+            }
+        }
+    }
+    return part;
+}
+
+// Compiles `mod` unit by unit through the cache; `objects` gets the object files to link.
+bool compile_units(llvm::Module& mod, const llvm::Target* target, const std::string& triple_name, const std::string& cache_dir,
+                   const std::string& default_level, bool asan, bool tsan, std::vector<std::string>& objects, std::string& error) {
+    Units units(mod);
+    units.default_level = default_level;
+    // A function or global another unit uses becomes visible to the other objects of the
+    // program, and only to them (hidden).
+    for (const auto& [gv, unit] : units.of) {
+        if (unit.empty() || !gv->hasLocalLinkage()) continue;
+        std::set<std::string> used_by;
+        units.users(gv, used_by);
+        used_by.erase(unit);
+        if (used_by.empty()) continue;
+        auto* g = const_cast<llvm::GlobalValue*>(gv);
+        g->setLinkage(llvm::GlobalValue::ExternalLinkage);
+        g->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    }
+    // What an imported copy refers to is reached from the importing unit as well.
+    units.find_imports();
+    for (const auto& [unit, fns] : units.imports) {
+        std::set<const llvm::GlobalValue*> refs;
+        for (const llvm::Function* fn : fns) {
+            refs.insert(fn);
+            units.references(*fn, refs);
+        }
+        for (const llvm::GlobalValue* gv : refs) {
+            auto it = units.of.find(gv);
+            if (it == units.of.end() || it->second.empty() || it->second == unit || !gv->hasLocalLinkage()) continue;
+            auto* g = const_cast<llvm::GlobalValue*>(gv);
+            g->setLinkage(llvm::GlobalValue::ExternalLinkage);
+            g->setVisibility(llvm::GlobalValue::HiddenVisibility);
+        }
+    }
+    struct Miss {
+        std::string text;
+        std::string path;
+        std::string level;
+        std::string unit;
+    };
+    std::vector<Miss> misses;
+    std::size_t       hits = 0;
+    for (const auto& [unit, members] : units.members) {
+        std::unique_ptr<llvm::Module> part = unit_module(mod, units, unit);
+        std::string level = highest_level(*part, default_level);
+        std::string text;
+        llvm::raw_string_ostream out(text);
+        part->print(out, nullptr);
+        out.flush();
+        if (const char* dump = std::getenv("EDAX_CACHE_DUMP"); dump && *dump) {   // each unit's IR, to see why one changed
+            std::string name = unit;
+            std::replace_if(name.begin(), name.end(), [](char c) { return c == '/' || c == ':'; }, '_');
+            std::error_code dump_ec;
+            llvm::raw_fd_ostream(std::string(dump) + "/" + name + ".ll", dump_ec) << text;
+        }
+        llvm::BLAKE3 hasher;
+        hasher.update(object_cache_salt(triple_name, level, asan, tsan));
+        hasher.update(text);
+        std::string path = (std::filesystem::path(cache_dir) / ("llvmcache-" + hex_digest(hasher.final()) + ".o")).string();
+        std::error_code ec;
+        if (std::filesystem::file_size(path, ec) > 0 && !ec) {
+            ++hits;
+            // Used: pruning keeps it (pruneCache goes by the modification time).
+            std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);
+        } else {
+            misses.push_back(Miss{std::move(text), path, level, unit});
+        }
+        objects.push_back(path);
+    }
+    // The units that aren't cached yet, in parallel: each worker has its own LLVM context.
+    std::vector<std::string> errors(misses.size());
+    std::atomic<std::size_t> next{0};
+    auto work = [&] {
+        for (std::size_t i; (i = next.fetch_add(1)) < misses.size();) {
+            const Miss& m = misses[i];
+            llvm::LLVMContext ctx;
+            llvm::SMDiagnostic err;
+            std::unique_ptr<llvm::Module> part =
+                llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(m.text.data(), m.text.size()), "edax-unit.ll"), err, ctx);
+            if (!part) {
+                std::string text;
+                llvm::raw_string_ostream os(text);
+                err.print("edaxc", os);
+                errors[i] = "internal error: a unit's LLVM IR does not parse\n" + text;
+                continue;
+            }
+            // Written next to its final name and renamed: another edaxc may be writing it too.
+            std::string temporary = std::format("{}.tmp{}-{}", m.path, llvm::sys::Process::getProcessId(), i);
+            if (!emit_object(*part, target, triple_name, m.level, asan, tsan, temporary, errors[i])) {
+                llvm::sys::fs::remove(temporary);
+                continue;
+            }
+            if (std::error_code ec = llvm::sys::fs::rename(temporary, m.path)) {
+                errors[i] = "cannot write " + m.path + ": " + ec.message();
+                llvm::sys::fs::remove(temporary);
+            }
+        }
+    };
+    unsigned threads = std::max(1u, std::min<unsigned>(std::thread::hardware_concurrency(), static_cast<unsigned>(misses.size())));
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < threads; ++t) pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool) t.join();
+    for (const std::string& e : errors) {
+        if (!e.empty()) {
+            error = e;
+            return false;
+        }
+    }
+    if (const char* stats = std::getenv("EDAX_CACHE_STATS"); stats && *stats && std::string_view(stats) != "0") {
+        llvm::errs() << std::format("edaxc: object cache: {} units, {} cached, {} compiled\n", units.members.size(), hits, misses.size());
+        if (std::string_view(stats) == "2") {   // which, and where their IR is (to see why a unit changed)
+            for (const Miss& m : misses) llvm::errs() << std::format("  compiled {} ({})\n", m.unit, m.path);
+        }
+    }
+    if (llvm::Expected<llvm::CachePruningPolicy> policy =
+            llvm::parseCachePruningPolicy("prune_interval=1h:prune_after=720h:cache_size_bytes=2g")) {
+        llvm::pruneCache(cache_dir, *policy);
+    } else {
+        llvm::consumeError(policy.takeError());
+    }
+    return true;
+}
+
+// Optimized builds through the cache (ThinLTO). Each unit is optimized on its own up to the
+// point where whole-program information matters (LLVM's ThinLTO pre-link pipeline), and the
+// result, bitcode with a summary of what it defines and calls, is cached under the hash of the
+// unit's IR. LLVM's ThinLTO then imports the functions worth inlining across units, internalizes
+// what no other unit uses, optimizes each unit again and makes its object code; that step has a
+// cache of its own, keyed by the unit and everything it imported. An edit recompiles the units it
+// changed and the units that imported from them.
+// EDAX_THINLTO=off keeps optimized builds in one module.
+bool compile_thin(llvm::Module& mod, const llvm::Target* target, const std::string& triple_name, const std::string& cache_dir,
+                  const std::string& level, const std::string& work_dir, std::vector<std::string>& objects, std::string& error) {
+    Units units(mod);
+    units.default_level = level;
+    for (const auto& [gv, unit] : units.of) {   // what another unit uses: visible to the program's objects only
+        if (unit.empty() || !gv->hasLocalLinkage()) continue;
+        std::set<std::string> used_by;
+        units.users(gv, used_by);
+        used_by.erase(unit);
+        if (used_by.empty()) continue;
+        auto* g = const_cast<llvm::GlobalValue*>(gv);
+        g->setLinkage(llvm::GlobalValue::ExternalLinkage);
+        g->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    }
+    ThinLtoJob job;
+    job.triple    = triple_name;
+    std::tie(job.cpu, job.features) = llvm_cpu_and_features();
+    job.opt_level = level == "basic" ? 1 : 2;
+    std::filesystem::path thin_dir = std::filesystem::path(cache_dir) / "thinlto";
+    // LLVM's key for a ThinLTO object doesn't cover Edax's passes: the objects of each edaxc
+    // build (and level) go to a directory of their own.
+    {
+        llvm::BLAKE3 hasher;
+        hasher.update(object_cache_salt(triple_name, level, false, false));
+        job.cache_dir = (thin_dir / ("objects-" + hex_digest(hasher.final()).substr(0, 16))).string();
+    }
+    job.work_dir  = work_dir;
+    job.machine   = [target, triple_name, &job] {
+        return make_target_machine(target, triple_name, llvm::TargetOptions(),
+                                   job.opt_level == 1 ? llvm::CodeGenOptLevel::Less : llvm::CodeGenOptLevel::Aggressive);
+    };
+    job.passes           = [](llvm::PassBuilder& pb) { register_edax_passes(pb); };
+    job.post_link_passes = [](llvm::PassBuilder& pb) { register_edax_passes(pb); };
+    std::string salt = object_cache_salt(triple_name, level, false, false) + "thinlto-unit 2\n";
+    struct Part {
+        std::string text;
+        std::string path;
+    };
+    std::vector<Part>        parts;
+    std::vector<std::size_t> missing;
+    std::error_code          ec;
+    std::filesystem::create_directories(thin_dir, ec);
+    for (const auto& [unit, members] : units.members) {
+        std::unique_ptr<llvm::Module> part = unit_module(mod, units, unit);
+        Part p;
+        llvm::raw_string_ostream out(p.text);
+        part->print(out, nullptr);
+        out.flush();
+        llvm::BLAKE3 hasher;
+        hasher.update(salt);
+        hasher.update(p.text);
+        p.path = (thin_dir / ("unit-" + hex_digest(hasher.final()) + ".bc")).string();
+        if (std::filesystem::file_size(p.path, ec) > 0 && !ec) {
+            std::filesystem::last_write_time(p.path, std::filesystem::file_time_type::clock::now(), ec);
+        } else {
+            missing.push_back(parts.size());
+        }
+        parts.push_back(std::move(p));
+    }
+    std::vector<std::string> errors(missing.size());
+    std::atomic<std::size_t> next{0};
+    auto work = [&] {
+        for (std::size_t i; (i = next.fetch_add(1)) < missing.size();) {
+            thin_prelink(job, parts[missing[i]].text, parts[missing[i]].path, errors[i]);
+        }
+    };
+    unsigned threads = std::max(1u, std::min<unsigned>(std::thread::hardware_concurrency(), static_cast<unsigned>(missing.size())));
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < threads; ++t) pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool) t.join();
+    for (const std::string& e : errors) {
+        if (!e.empty()) {
+            error = e;
+            return false;
+        }
+    }
+    std::vector<std::string> bitcode;
+    for (const Part& p : parts) bitcode.push_back(p.path);
+    std::size_t compiled = 0;
+    if (!thin_link(job, bitcode, objects, compiled, error)) return false;
+    if (const char* stats = std::getenv("EDAX_CACHE_STATS"); stats && *stats && std::string_view(stats) != "0") {
+        llvm::errs() << std::format("edaxc: ThinLTO: {} units, {} optimized again\n", parts.size(), missing.size());
+    }
+    if (llvm::Expected<llvm::CachePruningPolicy> policy =
+            llvm::parseCachePruningPolicy("prune_interval=1h:prune_after=720h:cache_size_bytes=2g")) {
+        llvm::pruneCache(thin_dir.string(), *policy);
+        for (const auto& entry : std::filesystem::directory_iterator(thin_dir, ec)) {
+            if (entry.is_directory(ec) && entry.path().filename().string().starts_with("objects-")) {
+                llvm::pruneCache(entry.path().string(), *policy);
+                std::filesystem::remove(entry.path(), ec);   // only when it is empty
+            }
+        }
+    } else {
+        llvm::consumeError(policy.takeError());
+    }
+    return true;
+}
+
+} // namespace
+
+namespace {
+bool build_module(std::unique_ptr<llvm::Module> mod, const std::string& out_path, const std::string& linker, std::string& error,
+                  const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs);
+} // namespace
+
+bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
+                      const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
+    initialize_targets();
+    llvm::LLVMContext ctx;
+    llvm::SMDiagnostic err;
+    std::unique_ptr<llvm::Module> mod = llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir.data(), ir.size()), "edax.ll"), err, ctx);
+    if (!mod) {
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        err.print("edaxc", os);
+        error = "internal error: the generated LLVM IR does not parse\n" + text;
+        return false;
+    }
+    return build_module(std::move(mod), out_path, linker, error, codegen, extra_inputs);
+}
+
+bool build_executable(GeneratedProgram& program, const std::string& out_path, const std::string& linker, std::string& error,
+                      const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
+    if (!program.impl_ || !program.impl_->mod) {
+        error = "internal error: no generated program";
+        return false;
+    }
+    initialize_targets();
+    return build_module(std::move(program.impl_->mod), out_path, linker, error, codegen, extra_inputs);
+}
+
+namespace {
+bool build_module(std::unique_ptr<llvm::Module> mod, const std::string& out_path, const std::string& linker, std::string& error,
+                  const CodegenOptions& codegen, const std::vector<std::string>& extra_inputs) {
+    std::string bad;
+    llvm::raw_string_ostream verify_out(bad);
+    if (llvm::verifyModule(*mod, &verify_out)) {
+        error = "internal error: the generated LLVM IR is invalid\n" + verify_out.str();
+        return false;
+    }
+    std::string triple_name = target_triple();
+    std::string lookup_error;
+    const llvm::Target* target = lookup_target(triple_name, lookup_error);
+    if (!target) {
+        error = "no LLVM target for " + triple_name + ": " + lookup_error;
+        return false;
+    }
+    // Per-function optimization (spec 34): `@std::optimize` and g.optimize_files mark functions
+    // with "edax-optimize". The module runs the pipeline of the highest level asked for; functions
+    // that asked for `none` (or, in an unoptimized build, didn't ask) are kept as written.
+    std::string level = codegen.optimization;
+    bool        own_code_optimized = optimization_rank(level) > 0;   // the program's own functions (not the library's)
+    {
+        std::string highest = level;
+        bool        any     = false;
+        for (llvm::Function& fn : *mod) {
+            if (!fn.hasFnAttribute("edax-optimize")) continue;
+            any = true;
+            std::string l = fn.getFnAttribute("edax-optimize").getValueAsString().str();
+            if (optimization_rank(l) > optimization_rank(highest)) highest = l;
+        }
+        if (any) {
+            for (llvm::Function& fn : *mod) {
+                if (fn.isDeclaration()) continue;
+                std::string own = fn.hasFnAttribute("edax-optimize") ? fn.getFnAttribute("edax-optimize").getValueAsString().str() : level;
+                bool library = fn.hasFnAttribute("edax-unit") && fn.getFnAttribute("edax-unit").getValueAsString().starts_with("std/");
+                if (!library && optimization_rank(own) > 0) own_code_optimized = true;
+                if (optimization_rank(own) == 0 && optimization_rank(highest) > 0) {
+                    fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+                    fn.addFnAttr(llvm::Attribute::OptimizeNone);
+                    fn.addFnAttr(llvm::Attribute::NoInline);
+                } else if (own == "size") {
+                    fn.addFnAttr(llvm::Attribute::OptimizeForSize);
+                }
+            }
+            level = highest;
+        }
+    }
+    bool asan = codegen.sanitize == "address";
+    bool tsan = codegen.sanitize == "thread";
+    if (asan || tsan) {   // the mode's sanitize() (spec 34): every Edax function is instrumented
+        for (llvm::Function& fn : *mod) {
+            if (fn.isDeclaration()) continue;
+            fn.addFnAttr(asan ? llvm::Attribute::SanitizeAddress : llvm::Attribute::SanitizeThread);
+        }
+    }
+
+    // Profile-guided optimization: the instrumented program needs LLVM's profile runtime.
+    std::string profile_runtime;
+    if (!codegen.profile_generate.empty()) {
+        llvm::Triple t(triple_name);
+        std::string  archive = std::format("libclang_rt.profile-{}.a", t.getArchName().str());
+        std::string  found;
+        for (std::string clang : {std::string("clang"), std::format("clang-{}", LLVM_VERSION_MAJOR)}) {
+            std::string command = std::format("{} -print-file-name={} 2>/dev/null", clang, archive);
+            if (FILE* p = popen(command.c_str(), "r")) {
+                char buffer[4096];
+                std::string text;
+                while (std::fgets(buffer, sizeof buffer, p)) text += buffer;
+                pclose(p);
+                while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+                if (text.find('/') != std::string::npos && std::filesystem::exists(text)) {
+                    found = text;
+                    break;
+                }
+            }
+        }
+        if (found.empty()) {
+            error = std::format("--profile-generate needs LLVM's profile runtime ({}): install compiler-rt for LLVM {} "
+                                "(e.g. libclang-rt-{}-dev)", archive, LLVM_VERSION_MAJOR, LLVM_VERSION_MAJOR);
+            return false;
+        }
+        profile_runtime = found;
+    }
+    if (!codegen.profile_use.empty() && !std::filesystem::exists(codegen.profile_use)) {
+        error = std::format("the profile '{}' named by profile_guided() does not exist (record one with --profile-generate, "
+                            "then merge it with llvm-profdata)", codegen.profile_use);
+        return false;
+    }
+    bool pgo = !codegen.profile_generate.empty() || !codegen.profile_use.empty();
+
+    // Unoptimized programs go through the object cache; shared libraries (plugins) don't yet:
+    // their thread-locals can't be reached across objects the way an executable's can.
+    // Optimized programs stay one module: compiled in units (with the small callees copied in)
+    // bench/ ran 1.1-3.5x slower (string_build 3.5x, text_parse 1.4x, hash_int 1.3x), because
+    // whole-program inlining, argument promotion and dead-function removal stop at units.
+    std::vector<std::string> objects;
+    bool                     temporary = true;
+    std::string              cache_dir = !own_code_optimized && !codegen.shared && !pgo ? object_cache_dir() : std::string();
+    std::string thin_dir;
+    {
+        // `basic` (the development mode): through the cache. `speed` stays one module unless
+        // EDAX_THINLTO=on: in units, bench/ ran up to 1.5x slower (text_parse 1.5x, vec_push_sum
+        // 1.25x, hash_int 1.15x), because functions another unit calls stay external.
+        const char*      thin = std::getenv("EDAX_THINLTO");
+        std::string_view how  = thin ? thin : "";
+        bool             on   = how == "on" || how == "1" ? (level == "speed" || level == "basic")
+                              : how == "off" || how == "0" ? false
+                                                           : level == "basic";
+        if (on && own_code_optimized && !codegen.shared && !pgo && !asan && !tsan) thin_dir = object_cache_dir();
+    }
+    if (!thin_dir.empty()) {
+        set_target_triple(*mod, triple_name);
+        std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(target, triple_name, llvm::TargetOptions(), llvm::CodeGenOptLevel::Aggressive));
+        mod->setDataLayout(machine->createDataLayout());
+        std::string work = out_path + ".thin";
+        std::filesystem::create_directories(work);
+        if (!compile_thin(*mod, target, triple_name, thin_dir, level, work, objects, error)) return false;
+    } else if (!cache_dir.empty()) {
+        set_target_triple(*mod, triple_name);
+        std::unique_ptr<llvm::TargetMachine> machine(make_target_machine(target, triple_name, llvm::TargetOptions(), llvm::CodeGenOptLevel::None));
+        mod->setDataLayout(machine->createDataLayout());
+        if (!compile_units(*mod, target, triple_name, cache_dir, codegen.optimization, asan, tsan, objects, error)) return false;
+        temporary = false;
+    } else {
+        std::string object_path = out_path + ".o";
+        if (!emit_object(*mod, target, triple_name, level, asan, tsan, object_path, error, codegen.profile_generate, codegen.profile_use)) {
+            return false;
+        }
+        objects.push_back(object_path);
+    }
+    std::string command = linker + (codegen.shared ? " -shared" : "") + " -o '" + out_path + "'";
+    for (const std::string& object : objects) command += " '" + object + "'";
     for (const std::string& input : extra_inputs) command += " '" + input + "'";
+    if (!profile_runtime.empty()) command += " -u __llvm_profile_runtime '" + profile_runtime + "'";
     command += " -lm -ldl";
-    int         status  = std::system(command.c_str());
-    llvm::sys::fs::remove(object_path);
+    int status = std::system(command.c_str());
+    if (temporary) {
+        for (const std::string& object : objects) llvm::sys::fs::remove(object);
+    }
     if (status != 0) {
         error = "the linker '" + linker + "' failed";
         return false;
     }
     return true;
 }
+} // namespace
 
 bool set_build_target(const std::string& platform, std::string& error) {
     if (platform.empty()) {

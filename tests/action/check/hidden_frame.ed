@@ -1,0 +1,3 @@
+// RUN: edaxc check --root=%S/hidden_frame_project %S/hidden_frame_project/main.ed
+// @std::diagnostic_frame{ .hide = true } (templates, "Library error frames"): the library's
+// instances leave the chain, and the error is reported at the user's call.

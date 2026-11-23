@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/library_mode_project --out-dir=%t app
+// g.set_mode on an Edax library (build system): the library's files are optimized as its mode
+// says, inside a debug build of the program that links it.

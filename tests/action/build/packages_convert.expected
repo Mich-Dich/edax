@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+wrote %t/packages/odd.ed (1 target, 1 TODO) and %t/packages/odd.convert.md
+finish the TODO(convert)s; from then on the package is built from the description
+--- stderr

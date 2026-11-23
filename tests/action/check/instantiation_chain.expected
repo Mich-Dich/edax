@@ -1,0 +1,18 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4070]: 'u32' has no method 'size'
+  --> tests/action/check/instantiation_chain.ed:5:27
+   |
+ 5 | u32 inner(T x) { return x.size(); }
+   |                           ^^^^ unknown method
+   |
+ 8 | u32 outer(T x) { return inner(x); }
+   |                         --------
+   = note: in the instance 'inner<u32>', asked for here
+   |
+10 | u32 main() { return outer(5u32); }
+   |                     -----------
+   = note: in the instance 'outer<u32>', asked for here
+
+1 error, 0 warnings

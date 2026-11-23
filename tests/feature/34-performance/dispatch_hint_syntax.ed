@@ -1,0 +1,4 @@
+// @std::dispatch_hint<T> stands directly before a call; it is the only annotation on an expression.
+interface shape { f32 area(); }
+f32 b(shape& s) { return @std::dispatch_hint<shape> (s.area() + 1.0); }   //~ error[E2035]: '@std::dispatch_hint' is written directly before a call
+f32 c(shape& s) { return @std::deprecated s.area(); }   //~ error[E2035]: only '@std::dispatch_hint<T>' may be written on an expression

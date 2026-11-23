@@ -9,7 +9,10 @@
 #include <filesystem>
 #include <format>
 #include <map>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
+#include <unistd.h>
 #include <system_error>
 
 namespace edax {
@@ -41,7 +44,7 @@ public:
     Loader(std::string root, SourceManager& sources, DiagnosticEngine& diags, std::vector<std::string> extra_roots = {})
         : root_(std::move(root)), extra_roots_(std::move(extra_roots)), sources_(sources), diags_(diags) {}
 
-    sema::Program run(const std::string& entry, const std::string& build_script = {}) {
+    sema::Program run(const std::string& entry, const std::string& build_script = {}, const std::vector<std::string>& extra = {}) {
         fs::path    entry_path(entry);
         std::string name = module_name_for(entry, root_);
         auto        module = std::make_unique<sema::Module>();
@@ -76,6 +79,20 @@ public:
             process_imports(*s);
             stack_.pop_back();
             state_["build"] = State::done;
+        }
+        for (const std::string& file : extra) {
+            std::string extra_name = module_name_for(file, root_);
+            if (program_.modules.count(extra_name)) continue;
+            auto extra_module  = std::make_unique<sema::Module>();
+            extra_module->name = extra_name;
+            load_file(*extra_module, fs::path(file), /*is_header=*/false);
+            sema::Module* e = extra_module.get();
+            program_.modules.emplace(extra_name, std::move(extra_module));
+            state_[extra_name] = State::visiting;
+            stack_.push_back(extra_name);
+            process_imports(*e);
+            stack_.pop_back();
+            state_[extra_name] = State::done;
         }
         load_named_std();
         return std::move(program_);
@@ -187,6 +204,60 @@ private:
         }
     }
 
+    // The generated module of a registry: from the disk cache when this edaxc made it before
+    // (reading the XML is most of a graphics program's check), otherwise made and stored there.
+    // The module is a function of the embedded registry and of the generator, so the cache key is
+    // the registry's text and edaxc's build. EDAX_CACHE_DIR=off turns it off, as for objects.
+    static GeneratedStdModule cached_generated_module(bool vulkan) {
+        std::string_view xml = std_registry(vulkan ? "vk.xml" : "gl.xml");
+        auto generate = [&] { return vulkan ? generate_vulkan_module(xml) : generate_opengl_module(xml); };
+        namespace fs = std::filesystem;
+        fs::path dir;
+        if (const char* own = std::getenv("EDAX_CACHE_DIR"); own && *own) {
+            if (std::string_view(own) == "off" || std::string_view(own) == "0") return generate();
+            dir = fs::path(own).parent_path() / "modules";   // next to the objects directory
+        } else if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+            dir = fs::path(xdg) / "edax" / "modules";
+        } else if (const char* home = std::getenv("HOME"); home && *home) {
+            dir = fs::path(home) / ".cache" / "edax" / "modules";
+        } else {
+            return generate();
+        }
+        std::uint64_t h = 1469598103934665603ull;
+        auto mix = [&](std::string_view text) {
+            for (char c : text) {
+                h ^= static_cast<unsigned char>(c);
+                h *= 1099511628211ull;
+            }
+        };
+        mix(xml);
+        mix(registry_generator_stamp());
+        fs::path file = dir / std::format("{}-{:016x}.edmodule", vulkan ? "vulkan" : "opengl", h);
+        if (std::ifstream in(file, std::ios::binary); in) {   // "<header size>\n<header><source>"
+            std::size_t header_size = 0;
+            in >> header_size;
+            in.get();
+            std::string all = read_rest(in);
+            if (header_size > 0 && header_size <= all.size()) {
+                GeneratedStdModule m;
+                m.header = all.substr(0, header_size);
+                m.source = all.substr(header_size);
+                return m;
+            }
+        }
+        GeneratedStdModule m = generate();
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        fs::path temporary = file;
+        temporary += std::format(".tmp{}", static_cast<long>(::getpid()));
+        if (std::ofstream out(temporary, std::ios::binary); out) {
+            out << m.header.size() << "\n" << m.header << m.source;
+        }
+        fs::rename(temporary, file, ec);
+        if (ec) fs::remove(temporary, ec);
+        return m;
+    }
+
     // std::graphics::opengl or ::vulkan, made from its registry once per process. Null (and an
     // error) when the registry can't be read.
     const StdModule* generated_std_module(std::string_view name) {
@@ -203,7 +274,7 @@ private:
             Made m;
             bool vulkan = name == "std::graphics::vulkan";
             try {
-                m.text = vulkan ? generate_vulkan_module(std_registry("vk.xml")) : generate_opengl_module(std_registry("gl.xml"));
+                m.text = cached_generated_module(vulkan);
             } catch (const std::exception& e) {
                 m.error = e.what();
             }
@@ -346,7 +417,7 @@ std::string module_name_for(const std::string& path, const std::string& root) {
 
 sema::Program load_program(const std::string& entry_path, const LoadOptions& options,
                            SourceManager& sources, DiagnosticEngine& diags) {
-    return Loader(root_or_default(entry_path, options.root), sources, diags, options.extra_roots).run(entry_path, options.build_script);
+    return Loader(root_or_default(entry_path, options.root), sources, diags, options.extra_roots).run(entry_path, options.build_script, options.extra_modules);
 }
 
 } // namespace edax

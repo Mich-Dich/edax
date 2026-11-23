@@ -1,0 +1,10 @@
+// RUN: edaxc run %s
+// A std::array is indexed and assigned element by element in compile-time code.
+import std;
+compile_time std::array<u8, 4> make() {
+    mut std::array<u8, 4> t = default;
+    t[1] = 5;
+    return t;
+}
+compile_time std::array<u8, 4> made = make();
+i32 main() { std::println(f"{made[1]}"); return 0; }

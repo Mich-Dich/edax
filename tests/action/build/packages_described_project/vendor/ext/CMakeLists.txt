@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(ext C)
+set(EXT_BASE 1 CACHE STRING "The base")
+execute_process(COMMAND ${CMAKE_COMMAND} -E echo configured OUTPUT_VARIABLE EXT_NOTE)
+add_library(ext STATIC ext.c)
+target_compile_definitions(ext PRIVATE EXT_BASE=${EXT_BASE})
+install(TARGETS ext ARCHIVE DESTINATION lib)
+install(FILES ext.h DESTINATION include)

@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/packages_convert_project --out-dir=%t app
+// Packages (section 4): a package built from the description `edaxc package convert` wrote and
+// someone finished: its CMakeLists.txt isn't read any more.

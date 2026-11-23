@@ -30,7 +30,7 @@ Identifiers are ASCII letters, digits and `_`, and must not start with a digit. 
 
 ### Keywords
 ```
-import  namespace  struct  class  interface  enum  template  type  annotation
+import  namespace  struct  class  interface  enum  template  type
 virtual  override  abstract  operator
 public  protected  private  static  extern
 mut  move  this  view
@@ -42,11 +42,16 @@ true  false  nullptr  default  auto  cast  bit  unsafe
 
 | Word | Keyword when | See |
 |---|---|---|
-| `open` | directly before `class` or `struct` (`open class shape`) | [Inheritance and interfaces](../user-types/inheritance-and-interfaces.md) |
+| `open` | directly before `class`, `struct` or `view` (`open class shape`) | [Inheritance and interfaces](../user-types/inheritance-and-interfaces.md) |
+| `annotation` | directly before `(` at the top of a declaration (`annotation(std::meta::target::field) struct range`) | [Annotations](../compile-time/annotations.md) |
+| `distinct` | directly before `type` (`distinct type meters = f32;`) | [Templates](../compile-time/templates.md) |
+| `union` | directly before a name and `{` (`union bits { ... }`) | [Memory layout](../user-types/layout.md) |
+| `implement` | at the start of a declaration (`implement I for T { ... }`) | [Templates](../compile-time/templates.md) |
+| `is` | after the value in an `if` or `while` condition (`if (x is std::some(v))`) | [Control flow](control-flow.md) |
 | `implicit` | directly before a parameter's type (`implicit std::call_site where`) | [Functions](../functions/functions.md) |
 | `annotated`, `generate`, `wrap` | inside an `annotation` declaration | [Annotations](../compile-time/annotations.md) |
 
-`@` starts an annotation (see [Annotations](../compile-time/annotations.md)).
+`@` starts an annotation (see [Annotations](../compile-time/annotations.md)); before an expression only `@std::dispatch_hint<T>` (see [Performance](../performance/performance.md)).
 
 A keyword may be used as the name of a field or method, because such names are always reached through `.` or `::`: `std::meta::field` has a field called `type`, read as `f.type`.
 
@@ -55,7 +60,7 @@ Built-in type names, which are reserved like keywords:
 bool  char  void  never
 i8 i16 i32 i64 i128 isize
 u8 u16 u32 u64 u128 usize
-f32 f64
+f16 f32 f64
 ```
 The SIMD vector types `<number type>x<lanes>` (`f32x8`, `u8x32`, `i64x4`, ...) are reserved the same way (see [SIMD](../simd/simd.md)).
 

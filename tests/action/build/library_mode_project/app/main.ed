@@ -1,0 +1,3 @@
+import std;
+import fastlib::fastlib;
+u32 main() { return cast::truncate<u32>(fastlib::mix(2) % 256); }

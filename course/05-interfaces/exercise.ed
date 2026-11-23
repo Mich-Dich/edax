@@ -1,0 +1,52 @@
+// Lesson 5: a tiny game world. The interface and main are written; add the types until
+// `python3 course/check.py 5` says done.
+import std;
+
+// What the world can update. No fields; `alive` has a default body.
+interface entity {
+    void update(f32 dt) mut;
+    std::string describe();
+    bool alive() { return true; }
+}
+
+// TODO: the types main uses. It doesn't build until they exist.
+//
+// - `actor`: a class others derive from. Public fields: name (std::string), x (f32, 0.0) and
+//   health (i32, 10). It implements `entity`: update moves x by speed() * dt; describe gives
+//   "<name> at <x with 1 decimal>"; it is alive while health > 0. Its speed is abstract.
+// - `player`: an actor with `bool sprinting = false`; speed 6.0 when sprinting, else 3.0.
+// - `enemy`: an actor with speed -1.0, described as "enemy " + what an actor says
+//   (call the base: this.actor::describe()).
+// - `coin`: a struct implementing `entity` with `u32 value = 1` and `f32 spin = 0.0`. update turns
+//   it by 90 degrees per second; describe gives "coin worth <value>, spun <spin, 0 decimals> degrees".
+//   It keeps the interface's default `alive`.
+
+// Static dispatch: one copy of this function per type, no table.
+template<type T : entity>
+void step_twice(mut T& e, f32 dt) {
+    e.update(dt);
+    e.update(dt);
+}
+
+i32 main() {
+    mut std::darray<std::unique_ptr<entity>> world = default;
+    world.push(std::unique_ptr<player>::make(player{ .name = std::string::from("ada"), .sprinting = true }));
+    world.push(std::unique_ptr<enemy>::make(enemy{ .name = std::string::from("slime"), .x = 10.0 }));
+    world.push(std::unique_ptr<enemy>::make(enemy{ .name = std::string::from("ghost"), .x = 4.0, .health = 0 }));
+    world.push(std::unique_ptr<coin>::make(coin{ .value = 5 }));
+
+    for (u32 frame : 0..2) {
+        for (mut std::unique_ptr<entity>& e : world) { e->update(0.5); }
+    }
+    mut u32 enemies = 0;
+    for (std::unique_ptr<entity>& e : world) {
+        std::println(f"{e->describe()}{if (e->alive()) { "" } else { " (dead)" }}");
+        if (cast::dynamic<enemy&>(*e) is std::some(_)) { enemies += 1; }
+    }
+    std::println(f"{enemies} enemies");
+
+    mut coin c = coin{};
+    step_twice(mut c, 1.0);
+    std::println(c.describe());
+    return 0;
+}

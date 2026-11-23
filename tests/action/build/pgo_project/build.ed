@@ -1,0 +1,11 @@
+import std;
+namespace build {
+    class pgo : std::build::mode::release {
+    public:
+        compile_time std::option<std::static_str> profile_guided() override { return std::some("missing.profdata"); }
+    }
+    compile_time void build(mut std::build::graph& g) {
+        g.add_mode(pgo);
+        _ = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
+    }
+}

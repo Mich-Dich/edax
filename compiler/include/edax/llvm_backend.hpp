@@ -13,6 +13,7 @@
 #include "edax/source.hpp"
 #include "edax/symbols.hpp"
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,7 +54,29 @@ struct CodegenOptions {
     bool        debug_info   = false;    // (the IR carries it: LlvmOptions::debug_info)
     bool        shared       = false;    // a shared library (a plugin) instead of a program
     std::string sanitize     = "none";   // the mode's sanitize() (spec 34): "none", "address", "thread"
+    // Profile-guided optimization (build modes): `edaxc build --profile-generate` instruments the
+    // program to write raw profiles to this pattern (`%p` is the process id); the mode's
+    // profile_guided() names a merged profile (.profdata) to optimize with.
+    std::string profile_generate;
+    std::string profile_use;
 };
+
+// The checked program as an LLVM module with the runtime linked in, ready for build_executable
+// (no LLVM types here: the module stays inside the backend). Empty after errors.
+class GeneratedProgram {
+public:
+    GeneratedProgram();
+    ~GeneratedProgram();
+    GeneratedProgram(GeneratedProgram&&) noexcept;
+    GeneratedProgram& operator=(GeneratedProgram&&) noexcept;
+    [[nodiscard]] bool empty() const { return !impl_; }
+
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+GeneratedProgram generate_llvm_program(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags,
+                                       LlvmOptions options = {});
 
 // Lowers the checked program to textual LLVM IR (LLVM 18 syntax). Returns an empty string when
 // errors were added to `diags`.
@@ -130,6 +153,9 @@ bool set_target_description(const TargetPlatform& description, std::string& erro
 std::string llvm_version();
 
 bool build_executable(std::string_view ir, const std::string& out_path, const std::string& linker, std::string& error,
+                      const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});
+// The same for a generated module (no printing and parsing of the IR); consumes `program`.
+bool build_executable(GeneratedProgram& program, const std::string& out_path, const std::string& linker, std::string& error,
                       const CodegenOptions& codegen = {}, const std::vector<std::string>& extra_inputs = {});
 
 // The runtime every generated module is linked with, as LLVM IR text (llvm_runtime.cpp).

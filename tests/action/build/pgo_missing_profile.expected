@@ -1,0 +1,8 @@
+exit: 1
+--- stdout
+edaxc build: pgo, 1 target
+ ✓ build.ed       1 target <t>
+ ✗ app            1 error <t>
+build failed: 1 error, 0 warnings   details: %t/pgo/build.log
+--- stderr
+edaxc: error: target 'app': the profile 'tests/action/build/pgo_project/missing.profdata' named by profile_guided() does not exist (record one with --profile-generate, then merge it with llvm-profdata)

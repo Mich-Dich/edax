@@ -4,6 +4,12 @@
 // source). It is written in Edax; the `std::raw` intrinsics are its only access to memory.
 
 namespace std {
+    template<type F, type R>
+    compile_time bool returns() {
+        compile_time type got = std::meta::result_of<F>();
+        return std::is_same<got, R>();
+    }
+
     // Whether `a[i]` and the other index checks are compiled in: the mode's `bounds()` (spec 24).
     private compile_time bool checks_bounds() {
         return std::build::current_mode().bounds() == std::build::bounds::panic;
@@ -366,7 +372,11 @@ namespace std {
 
         template<type F>
         void sort_by(F less) mut {
-            unsafe { intro_sort(this.data, this.count, less); }
+            compile_time check (std::returns<F, bool>())
+                else "sort_by takes less(a, b) returning bool; a three-way comparison is `(a <=> b) == std::ordering::less`";
+            if compile_time (std::returns<F, bool>()) {
+                unsafe { intro_sort(this.data, this.count, less); }
+            }
         }
 
         void reserve(usize n) mut {
@@ -838,7 +848,11 @@ namespace std {
 
         template<type F>
         void sort_by(F less) {
-            unsafe { intro_sort(this.data, this.count, less); }
+            compile_time check (std::returns<F, bool>())
+                else "sort_by takes less(a, b) returning bool; a three-way comparison is `(a <=> b) == std::ordering::less`";
+            if compile_time (std::returns<F, bool>()) {
+                unsafe { intro_sort(this.data, this.count, less); }
+            }
         }
 
         template<type F>
@@ -912,6 +926,97 @@ namespace std {
         std::raw_ptr<mut T> data;
         usize left;
         usize size;
+    }
+
+    // --- string_with: text in an allocator's memory (allocators) ------------------------------------
+    template<type A>
+    class string_with {
+    public:
+        static string_with<A> with_allocator(A alloc) { return string_with<A>{ .alloc = alloc }; }
+
+        static string_with<A> from_in(std::str text, A alloc) {
+            mut string_with<A> out = string_with<A>{ .alloc = alloc };
+            out.push_str(text);
+            return out;
+        }
+
+        static string_with<A> from(std::str text) {
+            mut string_with<A> out = default;
+            out.push_str(text);
+            return out;
+        }
+
+        usize len() { return this.count; }
+
+        bool is_empty() { return this.count == 0; }
+
+        std::str as_str() {
+            if (this.count == 0) { return ""; }
+            unsafe { return std::raw::str_from(this.data, this.count); }
+        }
+
+        void push_str(std::str text) mut {
+            usize n = text.len();
+            if (n == 0) { return; }
+            this.reserve(this.count + n);
+            unsafe { std::raw::copy(this.data.offset(this.count), text.as_ptr(), n); }
+            this.count += n;
+        }
+
+        void push(char c) mut {
+            mut std::string one = default;   // the UTF-8 bytes of `c` (inline: no allocation)
+            one.push(c);
+            this.push_str(one.as_str());
+        }
+
+        void clear() mut { this.count = 0; }
+
+        void reserve(usize n) mut {
+            if (n <= this.room) { return; }
+            mut usize next = this.room * 2;
+            if (next < 32) { next = 32; }
+            if (next < n) { next = n; }
+            unsafe {
+                if (this.room == 0) {
+                    this.data = allocate_in<u8, A>(mut this.alloc, next);
+                } else {
+                    this.data = reallocate_in<u8, A>(mut this.alloc, this.data, this.room, next);
+                }
+            }
+            this.room = next;
+        }
+
+        usize capacity() { return this.room; }
+
+        string_with<A> clone() { return string_with<A>::from_in(this.as_str(), this.alloc); }
+
+        bool operator==(string_with<A>& other) { return this.as_str() == other.as_str(); }
+
+        std::ordering operator<=>(string_with<A>& other) {
+            std::str a = this.as_str();
+            std::str b = other.as_str();
+            mut usize n = a.len();
+            if (b.len() < n) { n = b.len(); }
+            mut i32 c = 0;
+            if (n > 0) {
+                unsafe { c = memcmp(a.as_ptr(), b.as_ptr(), n); }
+            }
+            if (c < 0) { return std::ordering::less; }
+            if (c > 0) { return std::ordering::greater; }
+            return a.len() <=> b.len();
+        }
+
+        ~string_with() {
+            if (this.room > 0) {
+                unsafe { free_in<u8, A>(mut this.alloc, this.data, this.room); }
+            }
+        }
+
+    private:
+        std::raw_ptr<mut u8> data = nullptr;
+        usize count = 0;
+        usize room = 0;
+        A alloc = default;
     }
 
     // --- string: small-string optimization ---------------------------------------------------------
@@ -1496,13 +1601,22 @@ namespace std {
     // it returns the plugin's descriptor. `create` makes the object with T::make() and writes it,
     // as a `std::raw_ptr<mut I>` (the object and its interface table), to `out`.
 
-    private compile_time u64 plugin_magic = 0x5249465450474C31;   // "EDAXPGL1"
+    private compile_time u64 plugin_magic = 0x5249465450474C32;   // "EDAXPGL2"
+
+    // One field of a plugin object's state (hot reload); a row with a null name ends the table.
+    private struct plugin_state_field {
+        std::raw_ptr<u8> name;   // NUL-terminated
+        u64              offset;
+        u64              size;
+        u64              type_hash;
+    }
 
     private struct plugin_descriptor {
         u64                                     magic;
         u64                                     interface_hash;
         std::raw_ptr<u8>                        compiler;   // the edaxc version, NUL-terminated
         std::fn_ptr<void(std::raw_ptr<mut u8>)> create;
+        std::raw_ptr<plugin_state_field>        state;      // null: the object carries no state over
     }
 
     template<type I>
@@ -1537,7 +1651,56 @@ namespace std {
                 mut std::raw::array<u64, 2> slot = default;
                 (*d).create(cast::reinterpret<std::raw_ptr<mut u8>>(mut &slot));
                 std::raw_ptr<mut I> object = std::raw::read(cast::reinterpret<std::raw_ptr<mut std::raw_ptr<mut I>>>(mut &slot));
-                return std::ok(plugin<I>{ .handle = handle, .object = object });
+                return std::ok(plugin<I>{ .handle = handle, .object = object, .state = (*d).state });
+            }
+        }
+
+        std::result<void, plugin_error> reload(std::filesystem::path& path) mut {
+            compile_time check (std::build::target_has(std::build::capability::dynamic_libraries))
+                else "std::plugin needs a target with dynamic libraries";
+            if compile_time (std::build::target_has(std::build::capability::dynamic_libraries)) {
+                mut plugin<I> fresh = plugin<I>::load(path)?;
+                unsafe {
+                    if (this.state && fresh.state) {
+                        // Every field both builds have must have kept its type.
+                        mut usize i = 0;
+                        while ((*this.state.offset(i)).name) {
+                            std::raw_ptr<plugin_state_field> old = this.state.offset(i);
+                            std::raw_ptr<plugin_state_field> now = plugin_state_find(fresh.state, (*old).name);
+                            if (now && ((*now).type_hash != (*old).type_hash || (*now).size != (*old).size)) {
+                                return std::error(plugin_error::state_changed);
+                            }
+                            i += 1;
+                        }
+                        // Swap them: the new object gets the old values, the old object (destroyed with
+                        // the old build below) the new defaults. Fields only one side has stay put.
+                        std::raw_ptr<mut u8> old_object = std::raw::read(cast::reinterpret<std::raw_ptr<std::raw_ptr<mut u8>>>(mut &this.object));
+                        std::raw_ptr<mut u8> new_object = std::raw::read(cast::reinterpret<std::raw_ptr<std::raw_ptr<mut u8>>>(mut &fresh.object));
+                        i = 0;
+                        while ((*this.state.offset(i)).name) {
+                            std::raw_ptr<plugin_state_field> old = this.state.offset(i);
+                            std::raw_ptr<plugin_state_field> now = plugin_state_find(fresh.state, (*old).name);
+                            if (now) {
+                                std::raw_ptr<mut u8> a = old_object.offset(cast::truncate<usize>((*old).offset));
+                                std::raw_ptr<mut u8> b = new_object.offset(cast::truncate<usize>((*now).offset));
+                                mut usize k = 0;
+                                while (k < cast::truncate<usize>((*old).size)) {
+                                    u8 t = std::raw::read(a.offset(k));
+                                    std::raw::write(a.offset(k), std::raw::read(b.offset(k)));
+                                    std::raw::write(b.offset(k), t);
+                                    k += 1;
+                                }
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+                std::swap(mut this.handle, mut fresh.handle);
+                std::swap(mut this.object, mut fresh.object);
+                std::swap(mut this.state, mut fresh.state);
+                return std::ok();   // `fresh` now holds the old build: its object is destroyed, then it is unloaded
+            } else {
+                return std::error(plugin_error::not_found);   // never runs: the check above
             }
         }
 
@@ -1560,6 +1723,20 @@ namespace std {
     private:
         std::raw_ptr<mut u8> handle;
         std::raw_ptr<mut I>  object;
+        std::raw_ptr<plugin_state_field> state = nullptr;
+    }
+
+    // The field called `name` in a state table, or null.
+    private unsafe std::raw_ptr<plugin_state_field> plugin_state_find(std::raw_ptr<plugin_state_field> table, std::raw_ptr<u8> name) {
+        usize n = strlen(name);
+        std::str wanted = std::raw::str_from(name, n);
+        mut usize i = 0;
+        while ((*table.offset(i)).name) {
+            std::raw_ptr<u8> other = (*table.offset(i)).name;
+            if (std::raw::str_from(other, strlen(other)) == wanted) { return table.offset(i); }
+            i += 1;
+        }
+        return nullptr;
     }
 
     struct cpp_exception {
@@ -2265,13 +2442,18 @@ namespace std {
         return cast::reinterpret<std::raw_ptr<mut std::raw_ptr<mut btree_node<K, V>>>>(mut &(*n).children).offset(i);
     }
 
-    private unsafe template<type K, type V>
-    std::raw_ptr<mut btree_node<K, V>> bt_new(bool leaf) {
-        // A leaf has no children: it is allocated without the children array (the last field), which
-        // makes leaves, most of the nodes, 128 bytes smaller.
+    // The size of a node in words. A leaf has no children: it is allocated without the children
+    // array (the last field), which makes leaves, most of the nodes, 128 bytes smaller.
+    private template<type K, type V>
+    usize bt_words(bool leaf) {
         mut usize bytes = std::size_of<btree_node<K, V>>();
         if (leaf) { bytes -= 16 * std::size_of<std::raw_ptr<u8>>(); }
-        std::raw_ptr<mut btree_node<K, V>> n = cast::reinterpret<std::raw_ptr<mut btree_node<K, V>>>(std::raw::allocate<u64>((bytes + 7) / 8));
+        return (bytes + 7) / 8;
+    }
+
+    private unsafe template<type K, type V, type A>
+    std::raw_ptr<mut btree_node<K, V>> bt_new(mut A& a, bool leaf) {
+        std::raw_ptr<mut btree_node<K, V>> n = cast::reinterpret<std::raw_ptr<mut btree_node<K, V>>>(allocate_in<u64, A>(mut a, bt_words<K, V>(leaf)));
         std::raw::write(mut &(*n).len, 0u32);
         std::raw::write(mut &(*n).leaf, leaf);
         return n;
@@ -2301,10 +2483,15 @@ namespace std {
     }
 
     // Splits the full child `i` of `x` around its middle key, which moves up into `x`.
-    private unsafe template<type K, type V>
-    void bt_split_child(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
+    private unsafe template<type K, type V, type A>
+    void bt_free(mut A& a, std::raw_ptr<mut btree_node<K, V>> n) {
+        free_in<u64, A>(mut a, cast::reinterpret<std::raw_ptr<mut u64>>(n), bt_words<K, V>((*n).leaf));
+    }
+
+    private unsafe template<type K, type V, type A>
+    void bt_split_child(mut A& a, std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> y = *bt_child(x, i);
-        std::raw_ptr<mut btree_node<K, V>> z = bt_new<K, V>((*y).leaf);
+        std::raw_ptr<mut btree_node<K, V>> z = bt_new<K, V, A>(mut a, (*y).leaf);
         u32 t = btree_degree;
         std::raw::copy(bt_key(z, 0), bt_key(y, t), cast<usize>(t - 1));
         std::raw::copy(bt_value(z, 0), bt_value(y, t), cast<usize>(t - 1));
@@ -2321,8 +2508,8 @@ namespace std {
     }
 
     // Merges child `i + 1` of `x` and the key between into child `i`; frees child `i + 1`.
-    private unsafe template<type K, type V>
-    void bt_merge(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
+    private unsafe template<type K, type V, type A>
+    void bt_merge(mut A& a, std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> y = *bt_child(x, i);
         std::raw_ptr<mut btree_node<K, V>> z = *bt_child(x, i + 1);
         u32 yl = (*y).len;
@@ -2337,13 +2524,13 @@ namespace std {
         bt_shift(x, i, true);
         std::raw::copy(bt_child(x, i + 1), bt_child(x, i + 2), cast<usize>(len - i - 1));
         std::raw::write(mut &(*x).len, len - 1);
-        std::raw::free(z);
+        bt_free<K, V, A>(mut a, z);
     }
 
     // Makes child `i` of `x` hold at least t keys before the removal descends into it (borrowing
     // from a sibling or merging with one); returns the index of the child to descend into.
-    private unsafe template<type K, type V>
-    u32 bt_fill(std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
+    private unsafe template<type K, type V, type A>
+    u32 bt_fill(mut A& a, std::raw_ptr<mut btree_node<K, V>> x, u32 i) {
         std::raw_ptr<mut btree_node<K, V>> c = *bt_child(x, i);
         u32 t = btree_degree;
         if ((*c).len >= t) { return i; }
@@ -2376,22 +2563,22 @@ namespace std {
             return i;
         }
         if (i < (*x).len) {
-            bt_merge(x, i);
+            bt_merge<K, V, A>(mut a, x, i);
             return i;
         }
-        bt_merge(x, i - 1);
+        bt_merge<K, V, A>(mut a, x, i - 1);
         return i - 1;
     }
 
     // Moves the smallest (`max` false) or largest entry of the subtree at `start` (which has at
     // least t keys) to `key_to` / `value_to`, and removes it from the subtree.
-    private unsafe template<type K, type V>
-    void bt_take_end(std::raw_ptr<mut btree_node<K, V>> start, bool max, std::raw_ptr<mut K> key_to, std::raw_ptr<mut V> value_to) {
+    private unsafe template<type K, type V, type A>
+    void bt_take_end(mut A& a, std::raw_ptr<mut btree_node<K, V>> start, bool max, std::raw_ptr<mut K> key_to, std::raw_ptr<mut V> value_to) {
         mut std::raw_ptr<mut btree_node<K, V>> n = start;
         while (!(*n).leaf) {
             mut u32 i = 0;
             if (max) { i = (*n).len; }
-            n = *bt_child(n, bt_fill(n, i));
+            n = *bt_child(n, bt_fill<K, V, A>(mut a, n, i));
         }
         u32 len = (*n).len;
         mut u32 at = 0;
@@ -2403,8 +2590,8 @@ namespace std {
     }
 
     // Destroys every key and value below `n` and frees the nodes.
-    private unsafe template<type K, type V>
-    void bt_destroy(std::raw_ptr<mut btree_node<K, V>> n) {
+    private unsafe template<type K, type V, type A>
+    void bt_destroy(mut A& a, std::raw_ptr<mut btree_node<K, V>> n) {
         u32 len = (*n).len;
         mut u32 i = 0;
         while (i < len) {
@@ -2415,16 +2602,20 @@ namespace std {
         if (!(*n).leaf) {
             mut u32 c = 0;
             while (c <= len) {
-                bt_destroy(*bt_child(n, c));
+                bt_destroy<K, V, A>(mut a, *bt_child(n, c));
                 c +%= 1;
             }
         }
-        std::raw::free(n);
+        bt_free<K, V, A>(mut a, n);
     }
 
-    template<type K, type V>
+    template<type K, type V, type A>
     class tree_map {
     public:
+        static tree_map<K, V, A> with_allocator(A alloc) {
+            return tree_map<K, V, A>{ .alloc = alloc };
+        }
+
         usize len() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
@@ -2476,20 +2667,20 @@ namespace std {
                             std::raw_ptr<mut btree_node<K, V>> side = if (from_left) { left } else { right };
                             std::raw::drop(bt_key(n, i));
                             out = std::some(std::raw::read(bt_value(n, i)));
-                            bt_take_end(side, from_left, bt_key(n, i), bt_value(n, i));
+                            bt_take_end<K, V, A>(mut this.alloc, side, from_left, bt_key(n, i), bt_value(n, i));
                             break;
                         }
-                        bt_merge(n, i);                      // both thin: merge, the key goes down
+                        bt_merge<K, V, A>(mut this.alloc, n, i);   // both thin: merge, the key goes down
                         n = left;
                         continue;
                     }
                     if ((*n).leaf) { break; }
-                    n = *bt_child(n, bt_fill(n, i));
+                    n = *bt_child(n, bt_fill<K, V, A>(mut this.alloc, n, i));
                 }
                 if ((*this.root).len == 0 && !(*this.root).leaf) {   // the root emptied: the tree shrinks
                     std::raw_ptr<mut btree_node<K, V>> old = this.root;
                     this.root = *bt_child(old, 0);
-                    std::raw::free(old);
+                    bt_free<K, V, A>(mut this.alloc, old);
                 }
                 if (out.is_some()) { this.count -= 1; }
                 return out;
@@ -2540,7 +2731,7 @@ namespace std {
 
         void clear() mut {
             unsafe {
-                if (this.root) { bt_destroy(this.root); }
+                if (this.root) { bt_destroy<K, V, A>(mut this.alloc, this.root); }
             }
             this.root = nullptr;
             this.count = 0;
@@ -2551,6 +2742,7 @@ namespace std {
     private:
         std::raw_ptr<mut btree_node<K, V>> root = nullptr;
         usize count = 0;
+        A alloc = default;
         // The value of `key`, or null.
         std::raw_ptr<mut V> find(K& key) {
             if (!this.root) { return nullptr; }
@@ -2570,12 +2762,12 @@ namespace std {
         // inserted with `key`.
         std::raw_ptr<mut V> place(K key, V value) mut {
             unsafe {
-                if (!this.root) { this.root = bt_new<K, V>(true); }
+                if (!this.root) { this.root = bt_new<K, V, A>(mut this.alloc, true); }
                 if ((*this.root).len == btree_max) {                     // a full root: the tree grows a level
-                    std::raw_ptr<mut btree_node<K, V>> top = bt_new<K, V>(false);
+                    std::raw_ptr<mut btree_node<K, V>> top = bt_new<K, V, A>(mut this.alloc, false);
                     std::raw::write(bt_child(top, 0), this.root);
                     this.root = top;
-                    bt_split_child(top, 0);
+                    bt_split_child<K, V, A>(mut this.alloc, top, 0);
                 }
                 mut std::raw_ptr<mut btree_node<K, V>> n = this.root;
                 while (true) {
@@ -2590,7 +2782,7 @@ namespace std {
                         return bt_value(n, i);
                     }
                     if ((**bt_child(n, i)).len == btree_max) {
-                        bt_split_child(n, i);
+                        bt_split_child<K, V, A>(mut this.alloc, n, i);
                         if (!(key < *bt_key(n, i)) && !(*bt_key(n, i) < key)) { return bt_value(n, i); }
                         if (*bt_key(n, i) < key) { i += 1; }
                     }

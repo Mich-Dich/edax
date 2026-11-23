@@ -46,10 +46,10 @@ compile_time(std::build::mode::release) check (...) else ...;            // a bu
 compile_time run_time(std::build::mode::debug) check (...) else ...;     // compile-time part always, run-time part only in debug
 ```
 - A listed mode also covers every mode **derived from** it (see [Build Modes](../../build/build-modes.md)): `run_time(std::build::mode::release)` applies to `release`, `release_with_debug_info` and a user mode based on either.
-- Modes are written with their **full names**, like every other name: the built-in ones are the classes `std::build::mode::debug`, `::release` and `::release_with_debug_info` (see [Build Modes](../../build/build-modes.md)). A bare `debug` is an error; there is no implicit namespace.
+- Modes are written with their **full names**, like every other name: the built-in ones are the classes `std::build::mode::debug`, `::development`, `::release` and `::release_with_debug_info` (see [Build Modes](../../build/build-modes.md)). A bare `debug` is an error; there is no implicit namespace.
 - A user mode is a class derived in `build.ed` (`build::profile`, see [Build Modes](../../build/build-modes.md) and [Edax as a Build System](../../build/build-system.md)). It is only valid if the build defines it, so library code should list built-in modes only.
 - A check **without** a list is in every mode. Only a mode whose `run_time_checks()` returns `gated_only` or `none` and whose `allow_undefined_behavior()` returns `true` can remove it (see [Build Modes](../../build/build-modes.md)).
-- For entry checks the **caller's** mode decides (see [Build Modes](../../build/build-modes.md), "Scope of a mode").
+- A program is compiled in one mode, which decides every check, the entry checks of library functions included (see [Build Modes](../../build/build-modes.md), "Scope of a mode").
 - Mode-gated checks have no side effects to lose: the condition and the message are only evaluated when the check is active. That's why removing them can't change what a correct program does.
 
 ```edax
@@ -273,7 +273,7 @@ There are no macros, so a malformed check is a normal syntax or name error at th
 
 ## Rationale
 - **`compile_time` / `run_time` on the check:** the difference from an assert isn't a different feature but a different *time*. The language already has words for that, so a check reads exactly like a function declaration's modifiers.
-- **Source only:** the source is the single source of truth. Headers stay a clean list of declarations, and the compiled interface carries what importers need, the same mechanism as for templates.
+- **Source only:** the source is the single source of truth. Headers stay a clean list of declarations, and importers see the checks with the declarations (see [Modules](../organization/modules.md)), as they see template bodies.
 - **Entry section:** preconditions are written where a reader looks first, at the top of the function. "At the top" also tells the compiler which checks belong to each call, with no extra syntax.
 - **Mode lists on the modifier:** the build mode is just another "when". `run_time(std::build::mode::debug)` reads as "at run time, in debug", so gating needs no new keyword.
 - **`compile_time check` requires compile-time arguments instead of silently skipping:** a check you can't be sure ran is not a requirement. Code that wants "check if possible" says so with `compile_time run_time`.

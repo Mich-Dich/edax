@@ -37,6 +37,18 @@ struct CMakeInput {
     std::string                        system_name = "Linux";
     // Runs the C compiler for a check (`check_include_file`, ...): true when `source` compiles.
     std::function<bool(const std::string& source)> compiles;
+    // `edaxc package convert`: a command the reader can't translate is skipped and recorded as a
+    // TODO instead of stopping.
+    bool lenient = false;
+};
+
+// A command `lenient` reading skipped.
+struct CMakeTodo {
+    std::string file;
+    int         line = 0;
+    std::string command;
+    std::string message;
+    std::string text;   // the command as written
 };
 
 struct CMakeResult {
@@ -44,6 +56,7 @@ struct CMakeResult {
     std::vector<std::string>                         files;      // the CMake files read
     std::vector<std::pair<std::string, std::string>> commands;   // a command (file:line) and what it became
     std::vector<std::string>                         system_libraries;   // find_package/find_library not in `.uses`
+    std::vector<CMakeTodo>                           todos;      // lenient reading
     std::string                                      error;      // "file:line: message"
 };
 

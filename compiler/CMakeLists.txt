@@ -15,6 +15,8 @@ add_library(edax STATIC
     src/ownership.cpp
     src/llvm_backend.cpp
     src/llvm_runtime.cpp
+    src/lower_aggregates.cpp
+    src/thin_lto.cpp
     src/driver.cpp
     src/c_import.cpp
     src/cpp_wrap.cpp
@@ -83,7 +85,7 @@ target_compile_definitions(edax PRIVATE EDAX_VERSION="${PROJECT_VERSION}" EDAX_S
 # edaxc builds with LLVM 18 to 21. Each major version is asked for by number, which skips other
 # LLVM installs on the search path (e.g. the Vulkan SDK ships DirectXShaderCompiler's LLVM fork
 # with a CMake package that does not even load). Tested versions first; pass
-# -DRIFT_LLVM_VERSION=21 (or -DLLVM_DIR=...) to pick one.
+# -DEDAX_LLVM_VERSION=21 (or -DLLVM_DIR=...) to pick one.
 set(EDAX_LLVM_VERSION "" CACHE STRING "LLVM major version to use (18-21); empty: the first one found of 18, 20, 21, 19")
 if (EDAX_LLVM_VERSION)
     set(edax_llvm_candidates ${EDAX_LLVM_VERSION})
@@ -111,13 +113,27 @@ if (NOT LLVM_FOUND OR LLVM_VERSION_MAJOR LESS 18 OR LLVM_VERSION_MAJOR GREATER 2
 endif()
 message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 llvm_map_components_to_libnames(EDAX_LLVM_LIBS
-    core support irreader linker target analysis passes codegen native
+    core support irreader linker target analysis passes codegen native bitwriter bitreader ipo objcarcopts object
     aarch64codegen aarch64desc aarch64info aarch64asmparser
     x86codegen x86desc x86info x86asmparser
     riscvcodegen riscvdesc riscvinfo riscvasmparser)
 target_include_directories(edax SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
-target_link_libraries(edax PRIVATE ${EDAX_LLVM_LIBS})
+# LLVM's ThinLTO (optimized builds through the object cache). Linked by file: the LTO component's
+# CMake target drags in Polly, which Debian/Ubuntu's LLVM packages don't ship by default.
+find_library(EDAX_LLVM_LTO NAMES LLVMLTO PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+find_library(EDAX_LLVM_EXTENSIONS NAMES LLVMExtensions PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+if(NOT EDAX_LLVM_LTO)
+    message(FATAL_ERROR "edaxc needs LLVM's LTO library (libLLVMLTO) from ${LLVM_LIBRARY_DIR}")
+endif()
+# LLVM's LTO headers don't compile as C++26.
+set_source_files_properties(src/thin_lto.cpp PROPERTIES COMPILE_OPTIONS "-std=c++20;-Wno-null-dereference")
+# GCC's -Wnull-dereference fires inside LLVM's inlined ilist/CallBase code (false positives that
+# -isystem can't silence once inlined). Keep it for every other source file.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_property(SOURCE src/llvm_backend.cpp src/lower_aggregates.cpp APPEND PROPERTY COMPILE_OPTIONS -Wno-null-dereference)
+endif()
+target_link_libraries(edax PRIVATE ${EDAX_LLVM_LTO} ${EDAX_LLVM_EXTENSIONS} ${EDAX_LLVM_LIBS})
 
 # edaxc: the command-line driver.
 add_executable(edaxc driver/main.cpp)

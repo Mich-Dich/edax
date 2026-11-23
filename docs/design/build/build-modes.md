@@ -1,6 +1,6 @@
 # Build Modes
 
-A **build mode** is a named set of settings that applies to a whole build: optimization, debug info, how arithmetic and checks behave, and which mode-gated checks (see [Checks](../language/errors/checks.md)) are compiled in. A mode is a class; the standard library defines `debug` and `release` (and `release_with_debug_info`, derived from `release`). Projects derive their own in `build.ed` (see [Edax as a Build System](build-system.md)).
+A **build mode** is a named set of settings that applies to a whole build: optimization, debug info, how arithmetic and checks behave, and which mode-gated checks (see [Checks](../language/errors/checks.md)) are compiled in. A mode is a class; the standard library defines `debug` and `release`, and `development` (derived from `debug`) and `release_with_debug_info` (derived from `release`). Projects derive their own in `build.ed` (see [Edax as a Build System](build-system.md)).
 
 ## Rules
 
@@ -19,7 +19,7 @@ edaxc build --mode=release
 edaxc build --mode=profile                  # a mode defined in build.ed
 ```
 
-**All built-in modes are safe.** The language rules from 16 (overflow panics, bounds checks, etc.) hold in each of them.
+**All built-in modes are safe.** The language's safety rules (overflow panics, bounds checks, etc., see [Operators](../language/basics/operators.md)) hold in each of them.
 
 ### Modes are classes
 A mode is a **class** in `std::build::mode` that implements the interface `std::build::mode::settings`. The settings are its methods, so a mode changes a setting the way any derived class changes behaviour: it **overrides** the method.
@@ -36,16 +36,23 @@ interface settings {
     compile_time bool                        link_time_optimization();
     compile_time bool                        allow_undefined_behavior();
     compile_time std::build::float_determinism float_determinism();
+    compile_time std::build::sanitizer       sanitize();
+    compile_time std::build::optimization    std_optimization();
+    compile_time std::option<std::static_str> profile_guided();
 }
 
 open class debug : settings { ... }            // every method returns the debug value
 open class release : settings { ... }
+open class development : debug {
+public:
+    compile_time std::build::optimization optimization() override { return std::build::optimization::basic; }
+}
 open class release_with_debug_info : release {
 public:
     compile_time std::build::debug_info debug_info() override { return std::build::debug_info::full; }
 }
 ```
-- The standard library defines the two modes `debug` and `release`. `release_with_debug_info` is the first derived mode, and the library provides it too.
+- The standard library defines the two base modes `debug` and `release`, and two derived ones: `development` (a `debug` with light optimization) and `release_with_debug_info`.
 - A user mode **inherits** from one of them (or from another user mode) and overrides what it changes. Everything else comes from its base. Because the modes are `open`, every built-in mode can be a base.
 - A mode "is" its base: `release_with_debug_info` is a `release` mode. That matters for mode-gated checks (see [Checks](../language/errors/checks.md)) and `std::build::mode_is`.
 - A mode is selected on the command line by its class name: `--mode=profile`.
@@ -61,6 +68,10 @@ public:
 | `panic()` | `abort`, `trap` (CPU trap instruction, no message) | `abort` | `abort` |
 | `link_time_optimization()` | `bool` | `false` | `false` |
 | `allow_undefined_behavior()` | `bool` | `false` | `false` |
+| `float_determinism()` | `relaxed`, `strict` | `relaxed` | `relaxed` |
+| `sanitize()` | `none`, `address`, `thread` | `none` | `none` |
+| `std_optimization()` | as `optimization()` | `speed` | `speed` |
+| `profile_guided()` | `std::option<std::static_str>` | `std::none` | `std::none` |
 
 ### Modes can change safety rules, explicitly
 A user mode may relax the language's safety rules. There are two levels:
@@ -101,7 +112,14 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
       compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::address; }
   }
   ```
-- `profile_guided()`: `std::none`, or the path of a profile recorded with `edaxc build --profile-generate`; the profile is a recorded input of the build.
+- `profile_guided()`: `std::none` (every built-in mode), or the path of a merged profile (relative to the project) for profile-guided optimization. The profile is an input of the build: a newer profile rebuilds the program. The workflow:
+  ```
+  edaxc build --mode=release --profile-generate app   # instrumented: writes build/release/app-<pid>.profraw when it runs
+  ./build/release/app                                 # play a representative session
+  llvm-profdata merge -o app.profdata build/release/app-*.profraw
+  edaxc build --mode=pgo app                          # a mode whose profile_guided() returns std::some("app.profdata")
+  ```
+  `--profile-generate` needs LLVM's profile runtime (compiler-rt, e.g. `libclang-rt-18-dev`); edaxc says so when it is missing. A profile only helps optimized code, so programs built with one are compiled as one module (without the object cache).
 - `debug_info()`: `line_tables` gives DWARF 5 line tables (statement by statement) for every Edax function, including the standard library's, enough for a debugger's breakpoints, stepping and backtraces. `full` also describes locals, parameters, `this`, loop variables and `match` bindings with their types, so that a debugger shows variables:
   - Built-in types are typedefs with their Edax names (`u32`, `f64`) of the matching C type; structs and classes are described from the backend's layout (base class first, then the vtable pointer or fields); simple enums are DWARF enumerations; an enum with payloads is `struct { tag; union { <alternative> ... } payload; }`.
   - Namespaces are DWARF namespaces (`std::darray<u32>`, `geometry::point`). A function is named by its full path, `namespace::type::name` (`std::darray<u32>::push`), and that is also its DWARF linkage name, so debuggers show it as written.
@@ -111,8 +129,19 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
 - `overflow()`, `shifts()`, `panic()`: how `+ - *`, `<< >> bit(n)` and panics are compiled.
 - `bounds()`: the standard library's index checks are written as `if compile_time (std::build::current_mode().bounds() == std::build::bounds::panic) { run_time check ... }`.
 - `run_time_checks()`: applies to the program's own `run_time` checks; the library's index checks follow `bounds()`.
-- `link_time_optimization()`: a program's Edax code is always one LLVM module; with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.
+- `link_time_optimization()`: a program's Edax code is optimized as a whole (one LLVM module, or ThinLTO for `development`, see "The object cache"); with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.
 - A mode's methods are `compile_time` (the interface declares them so, see [Inheritance and Interfaces](../language/user-types/inheritance-and-interfaces.md)); edaxc evaluates them while compiling.
+
+### The object cache
+Builds whose program code is unoptimized (`debug` and the modes derived from it, as long as no file or function of the program asks for optimization) reuse object code between builds:
+- edaxc compiles the program in **units**: one per module of the program, and a few per module of the standard library (a type's methods stay in one unit). Each unit's object code is stored under a hash of its LLVM IR and of everything else that decides the code: the edaxc build, LLVM, the target, the CPU level, the optimization level and the sanitizer. A unit whose IR is the same as in an earlier build is not compiled again; in practice the standard library's units almost always are.
+- The key is the code itself, so a cached object can't be stale: anything that changes a unit's code (an edit, another mode setting, a new template instance) changes its key.
+- Names in the generated code come from what they name (a type, a template's arguments, a string's contents), never from the order code was generated in, so an edit in one module leaves the other units' code unchanged.
+- Small optimized functions a library unit calls from another unit are copied into it so they still inline there; the program's own unoptimized code calls the library, as it does without the cache.
+- **`basic` optimization (the `development` mode) goes through the cache too, with LLVM's ThinLTO.** Each unit is stored as bitcode with a summary of what it defines and calls; ThinLTO then imports the functions worth inlining into each unit (up to 300 instructions), makes internal what no other unit uses, optimizes each unit and compiles it. Its objects are cached under the unit, everything it imported and the edaxc build, so an edit recompiles the edited unit and the units that imported from it. Windowing example, `development`: 4.4 s as one module; with the cache 7 s the first time, 2.1-2.4 s after an edit in `main.ed`. The price is run time: across units, a called function stays external, so `bench/` runs up to 1.5x slower than as one module (`text_parse` 1.5x, `vec_push_sum` 1.25x, `hash_int` 1.15x; the rest within 5%).
+- **`speed` and `size` (`release`, `release_with_debug_info`) stay one module**, so everything can be inlined into everything: they are the builds that ship. `EDAX_THINLTO=on` puts `speed` through ThinLTO as well (an edit to the windowing example: 3.2 s → 1.5 s, at the run-time price above); `EDAX_THINLTO=off` keeps `basic` in one module.
+- Builds with a profile (`profile_guided()`, `--profile-generate`), a sanitizer, plugins and shared libraries are compiled as one module.
+- The cache is `$EDAX_CACHE_DIR`, else `$XDG_CACHE_HOME/edax/objects`, else `~/.cache/edax/objects`. `EDAX_CACHE_DIR=off` turns it off. It is shared by all projects, kept under 2 GB, and objects unused for 30 days are removed. `EDAX_CACHE_STATS=1` prints how many units were reused; `EDAX_CACHE_STATS=2` also names the units that were compiled, and `EDAX_CACHE_DUMP=<dir>` writes each unit's IR there.
 
 ### Reading the mode in code
 All of these are `compile_time` functions:
@@ -126,13 +155,16 @@ if compile_time (std::build::current_mode().debug_info() != std::build::debug_in
 ```
 - `mode_is` with a user mode's name works only if the build defines that mode. Library code should use the built-in modes.
 - Mode lists name a mode of build.ed by its full name, `build::profile`: build.ed declares everything in `namespace build` and every target imports it (see [Edax as a Build System](build-system.md#names-from-builded)).
-- `std::build::current_mode()` returns a reference to the interpreter's value of the mode; compile-time-only functions may return references with no parameter to borrow from (12), since their results live for the whole compilation.
+- `std::build::current_mode()` returns a reference to the interpreter's value of the mode; compile-time-only functions may return references with no parameter to borrow from (see [Ownership](../language/memory/ownership-and-references.md)), since their results live for the whole compilation.
 - Prefer testing a **setting** (`.overflow() == wrap`) over a mode name: the code then also does the right thing in modes it has never heard of.
 
 ### Scope of a mode
-- A build runs in **one mode**. Every module, including dependencies, is compiled in that mode, so compiled interfaces are kept per mode.
-- `build.ed` may override the mode **per target**, for example to build heavy dependencies with `release` inside a `debug` build (see [Edax as a Build System](build-system.md)). A target then uses that mode for all its own modules.
-- **Entry checks follow the caller.** A `run_time` entry check (see [Checks](../language/errors/checks.md)) is compiled into each call, so the calling module's mode decides whether it's there. All other checks follow the mode of the module they're written in.
+- A build runs in **one mode**. Every module, including dependencies, is compiled in that mode, so cached objects are kept per mode (the mode's settings are part of the object cache's key; see [Headers, sources and modules](../language/organization/modules.md)).
+- `build.ed` may override the mode **per target** with `g.set_mode(t, mode)` (see [Edax as a Build System](build-system.md)), to build heavy dependencies optimized inside a `debug` build:
+  - a C or C++ target is compiled with that mode's optimization;
+  - an Edax program or plugin target is built entirely in that mode;
+  - an Edax library target is compiled into each program that links it, as part of that program: its files get the mode's optimization (like `g.optimize_files`), while checks, overflow, shifts and debug info follow the program's mode. A program has one set of safety rules.
+- **Checks follow the program.** A program is compiled in one mode, so its mode decides every check, the entry checks of functions in other modules included. A `run_time` entry check is compiled into the function and reports the caller's line, which each call passes along.
 
 ## Example
 ```edax

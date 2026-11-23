@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/reload_project --out-dir=%t app
+// std::plugin::reload (dynamic libraries, "Hot reload"): the @std::hot_reload_state object's
+// fields move to the new build by name; a field whose type changed refuses the reload.

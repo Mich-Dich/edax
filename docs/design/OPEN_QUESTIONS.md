@@ -11,7 +11,7 @@ What isn't decided yet. Every other topic is described in the pages.
 
 ## Language
 6. **A garbage collector, far in the future.** Edax is built on ownership and RAII, and a collector is not planned. If one ever comes, it would be opt-in and visible in the type (`std::gc<T>` from a collected heap), never a global switch, so code that doesn't use it pays nothing.
-7. **Packed structs and bit fields:** `@std::layout{ .packed = true }` is designed ([Memory layout](language/user-types/layout.md)); whether bit fields are a language feature (`u32 kind : 4;`) or a library type built with field-generating templates is open. The library version is preferred.
+7. **Packed structs and bit fields:** `@std::layout{ .packed = true }` exists ([Memory layout](language/user-types/layout.md)); whether bit fields are a language feature (`u32 kind : 4;`) or a library type built with field-generating templates is open. The library version is preferred.
 8. **`defer`:** a scope-exit block for C interop code without RAII wrappers. Added only if the C interop examples show the need; RAII stays the one way for Edax types.
 9. **Field-generating templates and name suffixes:** whether `f.name ~ "_dirty"` (a generated name with a written suffix) is allowed, or only `f.name` itself.
 10. **Resumable functions and threads:** whether a `resumable<T>` may move between threads when its captures are sendable (like a lambda), and what `std::waker` is on each platform.

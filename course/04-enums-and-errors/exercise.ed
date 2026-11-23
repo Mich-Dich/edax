@@ -1,0 +1,52 @@
+// Lesson 4: a reverse-Polish calculator. The types and main are done; write the four functions
+// until `python3 course/check.py 4` says done. No exceptions, no -1 return codes: every failure is
+// a `calc_error` value.
+import std;
+
+enum op : u8 { add, sub, mul, div }
+
+enum token : u8 {
+    number(i64),
+    apply(op),
+}
+
+enum calc_error : u8 {
+    bad_token(usize),          // the position of the word, counting from 0
+    missing_operand,
+    division_by_zero,
+    leftover(usize),           // how many values were left on the stack
+}
+
+// One word: a number, or one of + - * /.
+std::result<token, calc_error> read_token(std::str word, usize position) {
+    // TODO: match on the word for the four operators, else parse an i64 (word.parse<i64>() is an
+    // std::option<i64>). A word that is neither is calc_error::bad_token(position).
+    return std::error(calc_error::bad_token(position));
+}
+
+std::result<i64, calc_error> apply(op o, i64 a, i64 b) {
+    // TODO: one match expression; dividing by zero is an error value, not a panic.
+    return std::error(calc_error::division_by_zero);
+}
+
+std::result<i64, calc_error> evaluate(std::str text) {
+    // TODO: split the text at ' ', keep a stack of i64 (std::darray: push / pop, pop gives an
+    // std::option), and let `?` pass errors up. One value must be left at the end.
+    return std::error(calc_error::leftover(0));
+}
+
+std::string describe(calc_error& e) {
+    // TODO: the texts expected.txt shows. A leftover of 0 is "nothing to compute".
+    return std::string::from("?");
+}
+
+i32 main() {
+    std::array<std::static_str, 6> inputs = ["3 4 + 2 *", "10 2 8 * + 3 -", "1 +", "4 0 /", "2 x *", "1 2 3"];
+    for (std::static_str input : inputs) {
+        match (evaluate(input)) {
+            std::ok(v) => std::println(f"{input} = {v}"),
+            std::error(e) => std::println(f"{input}: {describe(e)}"),
+        }
+    }
+    return 0;
+}

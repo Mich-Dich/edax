@@ -17,9 +17,9 @@ error[E4210]: std::file needs a target with files
      |
   22 |     std::result<std::file, std::io_error> f = std::file::open(std::filesystem::path::from("data.bin"));
      |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
-    ::: <std>/std.ed:1369:33
+    ::: <std>/std.ed:1474:33
      |
-1369 |             compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+1474 |             compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
      |                                 -----------------------------------------------------
      = note: the check of 'open' is here
 

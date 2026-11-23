@@ -97,9 +97,9 @@ std::string describe(T value) {
 
 ### Compilation model
 1. The template **declaration** is in the `.edh`; the **body** is in the `.ed`.
-2. Compiling the `.ed` stores the template body in the module's compiled interface (see [Headers, Sources and Modules](../organization/modules.md)).
-3. An importer that uses `larger<u32>` **instantiates and type-checks at its own compile time**. Layout, `sizeof`, `compile_time` evaluation and `deduce` return types are all available there.
-4. Identical instantiations from different files are **merged at link time**. Each unique instantiation ends up in the binary only once.
+2. Importers see the body with the declaration (see [Headers, Sources and Modules](../organization/modules.md)).
+3. An importer that uses `larger<u32>` **instantiates and type-checks it where it is used**. Layout, `sizeof`, `compile_time` evaluation and `deduce` return types are all available there.
+4. Each instantiation is made **once per program**, whichever files use it: its code is named after its template arguments, so it lands in the binary once (and, in an unoptimized build, its object code is cached like the rest).
 
 ### Name lookup in template bodies
 Names in a template body are looked up **where the template is written** (see [Namespaces](../organization/namespaces.md)), never where it's instantiated. Behaviour that depends on `T` comes from `T`'s members and from the constraints' interfaces, so code at the instantiation site can't change which function a template calls.
@@ -166,11 +166,17 @@ meters area  = lap * lap;                    // ERROR: meters * meters isn't met
 - A distinct type can be written in a header and used as a field, parameter or template argument like any struct.
 
 ### Library error frames
-`@std::diagnostic_frame{ .hide = true }` on a template of a library drops its frames from instantiation chains in errors, so a user sees the call in their code and the check that failed, not the library's internals.
+An error in an instance shows the **instantiation chain**: a note for each instance that led to it, innermost first, each pointing at the place that asked for it (at most eight). `@std::diagnostic_frame{ .hide = true }` on a template of a library drops its instances from that chain, and an error in its own code is reported at the call that reached it, with one note pointing into the library. A user sees the call in their code and what failed, not the library's internals.
+```edax
+// in the library's header
+@std::diagnostic_frame{ .hide = true }
+template<type T>
+u32 checksum(T value);
+```
 
 ## Rationale
 - **Declared parameters:** every name in a declaration is introduced somewhere a reader can see. `template<type T>` is familiar from C++, and `type` is shorter than `typename`.
-- **Instantiation at compile time:** a file using `std::darray<employee>` needs its size immediately to put it on the stack, and `deduce` needs the return type to type-check the caller. Only the *duplicate machine code* can wait until link time. The header/source split is still kept, because the body travels in the compiled interface.
+- **Instantiation at compile time:** a file using `std::darray<employee>` needs its size immediately to put it on the stack, and `deduce` needs the return type to type-check the caller. Only the *duplicate machine code* can wait until link time. The header/source split is still kept, because importers see the body with the declaration (see [Modules](../organization/modules.md)).
 - **Interfaces as constraints:** one concept (interface) serves both dynamic dispatch and generic constraints, so there's nothing extra like C++ "concepts" to learn.
 - **`if compile_time` instead of specialization:** all variants are in one place and can be read top to bottom.
 - **Associated types and retroactive implementations:** these are what generic libraries the size of Boost need (graphs, geometry, ranges). The orphan rule (`implement` only next to the interface or the type) keeps them coherent.

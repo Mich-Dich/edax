@@ -1,0 +1,9 @@
+import std;
+
+extern(std::build::language::c) i32 plat_version();
+extern(std::build::language::c) f64 plat_root(f64 x);
+
+i32 main() {
+    unsafe { std::println(f"plat {plat_version()}: root of 4 is {plat_root(4.0)}"); }
+    return 0;
+}

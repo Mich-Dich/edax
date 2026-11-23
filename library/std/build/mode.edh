@@ -19,6 +19,10 @@ namespace std::build::mode {
         // program's code (spec 34): `speed` in every built-in mode, so a debug build of a game
         // stays fast where the library does the work. `none` to step through the library.
         compile_time std::build::optimization std_optimization();
+        // A profile recorded with `edaxc build --profile-generate` (and merged with
+        // llvm-profdata) for profile-guided optimization, or none. The file is an input of the
+        // build: a new profile rebuilds the program.
+        compile_time std::option<std::static_str> profile_guided();
     }
 
     // No optimization, full debug info, every check (the default mode).
@@ -36,6 +40,7 @@ namespace std::build::mode {
         compile_time std::build::float_determinism float_determinism() override;
         compile_time std::build::sanitizer sanitize() override;
         compile_time std::build::optimization std_optimization() override;
+        compile_time std::option<std::static_str> profile_guided() override;
     }
 
     // Optimized for speed, no debug info, every check.
@@ -53,6 +58,7 @@ namespace std::build::mode {
         compile_time std::build::float_determinism float_determinism() override;
         compile_time std::build::sanitizer sanitize() override;
         compile_time std::build::optimization std_optimization() override;
+        compile_time std::option<std::static_str> profile_guided() override;
     }
 
     // `debug` with light optimization: every check of `debug` and full debug info, but code that

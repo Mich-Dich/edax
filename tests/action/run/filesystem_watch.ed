@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// std::filesystem::watch (dynamic libraries, "Hot reload"): changed files below a directory, each
+// once; a new subdirectory is watched too.
+import std;
+import std::filesystem;
+void main() {
+    std::filesystem::path dir = std::filesystem::path::from("/tmp/edax_watch_test");
+    _ = std::filesystem::create_directories(dir);
+    mut std::filesystem::watcher w = std::filesystem::watch(dir).expect("watch");
+    std::println(f"nothing yet: {w.changes().len()}");
+    {
+        mut std::file f = std::file::create(dir / "a.txt").expect("create");
+        _ = f.write("one");
+        _ = f.write("two");
+    }
+    std::darray<std::filesystem::path> first = w.wait(1000);
+    for (std::filesystem::path& p : first) { std::println(f"changed {p.file_name()}"); }
+    _ = std::filesystem::create_directories(dir / "sub");
+    _ = w.wait(200);
+    {
+        mut std::file g = std::file::create(dir / "sub" / "b.txt").expect("create");
+        _ = g.write("x");
+    }
+    std::darray<std::filesystem::path> second = w.wait(1000);
+    for (std::filesystem::path& p : second) { std::println(f"changed {p.file_name()}"); }
+}

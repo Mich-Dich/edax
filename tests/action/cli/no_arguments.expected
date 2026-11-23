@@ -27,6 +27,11 @@ commands:
                         the packages of ./build.ed: list them (version, path, how they're built,
                         local changes), fetch them without building, or show those whose files
                         differ from build.lock
+  package update <name> --tag <tag> | --commit <commit>
+                        change a git package's version in build.ed, then fetch it
+  package convert <name> [--compare] [--to=DIR]
+                        write packages/<name>.ed from the package's CMakeLists.txt (what the
+                        CMake reader can't translate becomes TODOs), or compare the one you have
   definition <file> <line>:<column>
                         where the name at that place is declared, as <file>:<line>:<column>
                         (editors' go to definition)
@@ -66,6 +71,10 @@ options:
   --cpu=LEVEL                       the CPU level: x86_64, x86_64_v2, x86_64_v3, x86_64_v4, armv8,
                                     armv9, riscv64, riscv64_v (default: the architecture's first)
   --all-functions                   generate every function, not only those main reaches (testing)
+  --profile-generate                build/run: instrument the program to record a profile for the mode's
+                                    profile_guided() (merge the .profraw files with llvm-profdata)
+  --hermetic                        build/run/package: a package's find_package that .uses doesn't
+                                    answer is an error, not a library of the build machine
   -h, --help                        show this help
   -V, --version                     show the compiler version
 

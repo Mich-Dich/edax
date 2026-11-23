@@ -47,9 +47,10 @@ edaxc simd-report <file> [<function>]   # how vector types and operations map to
 |---|---|
 | `g.add_executable(std::build::edax_target{...})` | A Edax program: `.root` is its main `.ed` file, relative to the project root |
 | `g.add_library(std::build::edax_target{...})` | A static Edax library (one or more modules) |
-| `g.add_shared_library(std::build::edax_target{...})` | A shared Edax library, linked when the program starts |
+| `g.add_shared_library(std::build::edax_target{...})` | A shared Edax library, `lib<name>.so` next to the programs that link it, loaded when they start (see [Dynamic Libraries and Plugins](../stdlib/system/dynamic-libraries.md)) |
 | `g.add_plugin(std::build::edax_target{...})` | A shared library loaded by the program at run time (see [Dynamic Libraries and Plugins](../stdlib/system/dynamic-libraries.md)) |
-| `g.add_c_library(std::build::c_target{...})` | A C or C++ library; `.linkage = std::build::linkage::shared` makes it a shared one |
+| `g.add_c_library(std::build::c_target{...})` | A static C or C++ library |
+| `g.add_shared_library(std::build::c_target{...})` | A shared C or C++ library: the programs that link it find it next to them |
 | `g.add_test(std::build::edax_target{...})` | A test program, run by `edaxc test`: its `main`, or each of its `@std::test` functions |
 
 Each method returns a **target handle** (`std::build::target`), a small copy type used to connect targets:

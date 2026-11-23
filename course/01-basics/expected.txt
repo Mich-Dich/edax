@@ -1,0 +1,4 @@
+low -35, high 122, span 157 tenths
+mean 3.89 degrees: cold
+3 readings at 5.0 or above, 2 below zero
+saturated 122, wrapped 66

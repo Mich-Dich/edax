@@ -1,0 +1,5 @@
+exit: 2
+--- stdout
+--- stderr
+edaxc: error: the package 'hdr' is not a git package: edit its .source in build.ed
+Run 'edaxc --help' for usage.

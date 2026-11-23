@@ -1,0 +1,21 @@
+import std;
+import api::greeter;
+
+namespace v2 {
+    @std::plugin_entry
+    @std::hot_reload_state
+    class game : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"v2 greets {who} (bonus {this.bonus})"); }
+        u32 calls() mut override {
+            this.count += 10;
+            return this.count;
+        }
+        static game make() { return game{ .count = 1000, .bonus = 7 }; }
+        ~game() { std::println(f"v2: destroyed, count {this.count}"); }
+
+    private:
+        u32 count = 0;
+        u64 bonus = 0;
+    }
+}

@@ -1,0 +1,100 @@
+// Lesson 10: workers, channels, a pool (solution).
+import std;
+
+// How many primes lie in [from, to).
+u32 count_primes(u32 from, u32 to) {
+    mut u32 count = 0;
+    for (u32 n : from..to) {
+        if (n < 2) { continue; }
+        mut bool prime = true;
+        mut u32 d = 2;
+        while (d * d <= n) {
+            if (n % d == 0) {
+                prime = false;
+                break;
+            }
+            d += 1;
+        }
+        if (prime) { count += 1; }
+    }
+    return count;
+}
+
+struct range_job {
+    u32 id;
+    u32 from;
+    u32 to;
+}
+
+struct range_result {
+    u32 id;
+    u32 primes;
+}
+
+i32 main() {
+    // 1. Three owned worker threads fed through a bounded channel; results come back on another.
+    std::channel<range_job> jobs = std::channel<range_job>::bounded(4);
+    std::channel<range_result> results = std::channel<range_result>::unbounded();
+    std::atomic<u32> jobs_done = default;
+    mut std::darray<std::thread::scoped_handle<void>> workers = default;
+    for (u32 w : 0..3) {
+        std::channel_receiver<range_job> input = jobs.receiver();
+        std::channel_sender<range_result> output = results.sender();
+        workers.push(std::thread::spawn([move input, move output, &jobs_done]() {
+            for (range_job j : input) {                  // ends when the channel is closed and empty
+                _ = output.send(range_result{ .id = j.id, .primes = count_primes(j.from, j.to) });
+                _ = jobs_done.fetch_wrapping_add(1, std::memory_order::relaxed);
+            }
+        }));
+    }
+    std::channel_sender<range_job> submit = jobs.sender();
+    for (u32 i : 0..10) {
+        _ = submit.send(range_job{ .id = i, .from = i * 1000, .to = (i + 1) * 1000 });
+    }
+    jobs.close();
+    std::channel_receiver<range_result> collect = results.receiver();
+    mut std::darray<range_result> found = default;
+    for (u32 i : 0..10) { found.push(collect.receive().expect("a worker stopped")); }
+    while (workers.pop() is std::some(w)) { w.join(); }
+    found.sort_by_key(std::sort_order::ascending, [](range_result& r) { return r.id; });
+    mut u32 total = 0;
+    for (range_result& r : found) { total += r.primes; }
+    std::println(f"primes below 10000: {total}, first block {found[0].primes}, last block {found[9].primes}");
+    std::println(f"jobs done: {jobs_done.load(std::memory_order::acquire)}");
+
+    // 2. A mutex owns the data it protects; scoped threads borrow `log` until they are joined.
+    std::mutex<std::darray<u32>> log = std::mutex<std::darray<u32>>::make(default);
+    {
+        std::thread::scoped_handle<void> evens = std::thread::spawn([&log]() {
+            for (u32 i : 0..5) { log.lock()->push(i * 2); }
+        });
+        std::thread::scoped_handle<void> odds = std::thread::spawn([&log]() {
+            for (u32 i : 0..5) { log.lock()->push(i * 2 + 1); }
+        });
+        evens.join();
+        odds.join();
+    }
+    mut std::mutex_guard<std::darray<u32>> entries = log.lock();
+    entries->sort();
+    std::println(f"logged {entries->len()} values, sum {sum_of(*entries)}");
+
+    // 3. A thread pool: data-parallel work with a deterministic result.
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });
+    mut std::darray<f64> samples = default;
+    for (u32 i : 0..100000) { samples.push(cast<f64>(i % 100) * 0.5); }
+    f64 sum = pool.reduce_chunks(samples.as_span(), 8192, 0.0,
+        [](std::span<f64> part) {
+            mut f64 s = 0.0;
+            for (f64 v : part) { s += v; }
+            return s;
+        },
+        [](f64 a, f64 b) { return a + b; });
+    std::println(f"pool sum {sum:.1}");
+    return 0;
+}
+
+u32 sum_of(std::darray<u32>& values) {
+    mut u32 s = 0;
+    for (u32 v : values) { s += v; }
+    return s;
+}

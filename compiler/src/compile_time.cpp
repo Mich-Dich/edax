@@ -413,8 +413,9 @@ struct Evaluator::Impl {
         case ExprKind::member: return member(e.as<MemberExpr>());
         case ExprKind::index: {
             const auto& ix = e.as<IndexExpr>();
-            Value       o  = eval(*ix.object);
+            Value       whole = eval(*ix.object);
             Value       i  = eval(*ix.index);
+            const Value& o = elements_of(whole);   // a std::array: its items
             if (o.kind != Value::Kind::list) not_constant(e.span, "only lists can be indexed at compile time");
             if (i.integer >= o.elements.size()) {
                 failed(ix.index->span, std::format("index {} is out of bounds for a list of {} elements", edax::to_string(i.integer),
@@ -956,6 +957,16 @@ struct Evaluator::Impl {
         }
         return out;
     }
+
+    // The elements a compile-time value holds: a list's own, or a std::array's (its one field).
+    static Value& elements_of(Value& v) {
+        if (v.kind == Value::Kind::aggregate && v.elements.size() == 1 && v.elements[0].kind == Value::Kind::list && v.type &&
+            types::is_std_instance(v.type, "array")) {
+            return v.elements[0];
+        }
+        return v;
+    }
+    static const Value& elements_of(const Value& v) { return elements_of(const_cast<Value&>(v)); }
 
     Value default_of(const Type* t, Span span) {
         if (t->is_integer()) return integer(0, t);
@@ -1708,7 +1719,7 @@ struct Evaluator::Impl {
             for (const Symbol* candidate : it->second) {
                 if (candidate->kind != SymbolKind::method) continue;
                 const FunctionDecl* f = body_decl(candidate);
-                if (f && f->body && f->params.size() == body_decl(m)->params.size()) return candidate;
+                if (const FunctionDecl* mf = body_decl(m); f && f->body && mf && f->params.size() == mf->params.size()) return candidate;
             }
         }
         return m;
@@ -2014,6 +2025,9 @@ struct Evaluator::Impl {
                                            : BuildTarget::Kind::c_library;
             t.shared = n == "add_shared_library";
             const Value& spec = args.at(0);
+            if (n == "add_shared_library" && spec.type && spec.type->is(Kind::user) && spec.type->symbol->name == "edax_target") {
+                t.kind = BuildTarget::Kind::library;   // a shared Edax library
+            }
             t.name = static_text(field(spec, "name"));
             if (t.name.empty()) failed(c.args[0]->span, "a target needs a '.name'", "no name");
             for (const BuildTarget& other : g->targets) {
@@ -2111,7 +2125,25 @@ struct Evaluator::Impl {
             if (!ok || !implements) {
                 failed(c.args.back()->span, "a mode is a class that derives from a std::build::mode class", "not a mode");
             }
-            if (n == "set_mode") target_of(0).mode = t->symbol;
+            if (n == "set_mode" && ok && implements) {
+                target_of(0).mode              = t->symbol;
+                // That mode's optimization(): its method, as Evaluator::mode_setting runs it.
+                const Symbol* method = nullptr;
+                for (const Symbol* cls = t->symbol; cls && !method; cls = cls->base_class()) {
+                    auto it = cls->members.find("optimization");
+                    const FunctionDecl* f = it != cls->members.end() && it->second.front()->kind == SymbolKind::method
+                                                ? body_decl(it->second.front()) : nullptr;
+                    if (f && f->body) {
+                        method = it->second.front();
+                    }
+                }
+                if (method) {
+                    Value mode_self;
+                    mode_self.kind = Value::Kind::aggregate;
+                    mode_self.type = tc.user(t->symbol);
+                    target_of(0).mode_optimization = std::make_shared<const Value>(run_values(method, mode_self, {}, method->span));
+                }
+            }
             else g->modes.push_back(t->symbol);
             return Value{};
         }
@@ -2254,7 +2286,10 @@ struct Evaluator::Impl {
         if (package_method) {
             args.insert(args.begin(), *self);
         }
-        if (package_method && n == "target") {
+        if (package_method && n == "target" && [&] {   // a described package: its exports (below)
+                u128 id = args.at(0).elements.empty() ? 0 : args[0].elements[0].integer;
+                return id == 0 || id > g->dependencies.size() || g->dependencies[static_cast<std::size_t>(id - 1)].exports.empty();
+            }()) {
             u128 id = args.at(0).elements.empty() ? 0 : args[0].elements[0].integer;
             if (id == 0 || id > g->dependencies.size()) failed(c.span, "not a package of this build", "unknown package");
             BuildTarget t;
@@ -2264,6 +2299,61 @@ struct Evaluator::Impl {
             t.span       = c.span;
             g->targets.push_back(std::move(t));
             return handle(g->targets.size());
+        }
+        auto package_of = [&]() -> BuildDependency& {
+            u128 id = args.at(0).elements.empty() ? 0 : args[0].elements[0].integer;
+            if (id == 0 || id > g->dependencies.size()) failed(c.span, "not a package of this build", "unknown package");
+            return g->dependencies[static_cast<std::size_t>(id - 1)];
+        };
+        if (package_method && (n == "files" || n == "at")) {   // `p.files([...])`, `p.at("include")`
+            namespace fs = std::filesystem;
+            BuildDependency& d = package_of();
+            std::error_code ec;
+            auto inside = [&](const std::string& rel, Span where) {
+                fs::path full = (fs::path(d.dir) / rel).lexically_normal();
+                if (fs::path(rel).is_absolute() || rel.starts_with("..")) {
+                    failed(where, std::format("'{}' is not a path inside the package '{}'", rel, d.name), "outside the package");
+                }
+                return full;
+            };
+            if (n == "at") return string_value(inside(static_text(args.at(1)), c.args.at(0)->span).generic_string());
+            Value list;
+            list.kind = Value::Kind::list;
+            list.type = type_of(c);
+            const Type* path_type = nullptr;
+            if (auto bm = program.modules.find("std::build"); bm != program.modules.end()) {
+                if (const Symbol* p = bm->second->item("std::build::path")) path_type = tc.user(p);
+            }
+            for (const Value& f : args.at(1).elements) {
+                fs::path full = inside(static_text(f), c.args.at(0)->span);
+                if (!fs::is_regular_file(full, ec)) {
+                    failed(c.args.at(0)->span, std::format("the package '{}' has no file '{}'", d.name, static_text(f)), "no such file");
+                }
+                list.elements.push_back(path_value(full.generic_string(), path_type));
+            }
+            return list;
+        }
+        if (package_method && n == "export_target") {   // in a package description (packages, section 3)
+            BuildDependency& d = package_of();
+            BuildTarget&     t = target_of(1);
+            std::string name = args.size() > 2 ? static_text(args[2]) : std::string();
+            if (name.empty()) name = t.name;
+            if (d.exports.contains(name)) failed(c.span, std::format("the package '{}' already exports a target '{}'", d.name, name), "exported twice");
+            if (!t.name.starts_with(d.name + ":")) t.name = d.name + ":" + t.name;
+            d.exports[name] = static_cast<std::size_t>(args[1].elements[0].integer - 1);
+            return Value{};
+        }
+        if (package_method && n == "target" && !package_of().exports.empty()) {   // a described package's export
+            BuildDependency& d = package_of();
+            std::string name = static_text(args.at(1));
+            auto it = d.exports.find(name);
+            if (it == d.exports.end()) {
+                std::string list;
+                for (const auto& [k, v] : d.exports) list += (list.empty() ? "" : ", ") + k;
+                failed(c.args.at(0)->span, std::format("the package '{}' has no target '{}' (its targets: {})", d.name, name, list),
+                       "unknown target");
+            }
+            return handle(it->second + 1);
         }
         if (n == "package" && !package_method) {   // g.package(spec) (packages)
             BuildDependency d;
@@ -2306,7 +2396,16 @@ struct Evaluator::Impl {
             if (d.path.empty() && kind != "local") d.path = "build/packages/" + d.name;
             const Value& how = field(spec, "build");
             d.build          = how.symbol ? how.symbol->name : "automatic";
-            if (!how.elements.empty()) d.build_arg = static_text(how.elements[0]);
+            if (d.build == "cmake_external" && !how.elements.empty()) {
+                const Value& outputs = how.elements[0];
+                for (const Value& o : field(outputs, "outputs").elements) d.external_outputs.push_back(static_text(o));
+                for (const Value& o : field(outputs, "include_dirs").elements) d.external_include_dirs.push_back(static_text(o));
+                if (d.external_outputs.empty() && d.external_include_dirs.empty()) {
+                    failed(c.args[0]->span, "cmake_external names the files it uses: '.outputs' and '.include_dirs'", "no outputs");
+                }
+            } else if (!how.elements.empty()) {
+                d.build_arg = static_text(how.elements[0]);
+            }
             for (const Value& o : field(spec, "options").elements) {
                 if (o.elements.size() == 2) d.options.emplace_back(static_text(o.elements[0]), static_text(o.elements[1]));
             }
@@ -2319,12 +2418,48 @@ struct Evaluator::Impl {
             std::string error;
             d.dir = g->fetch(d, error);
             if (d.dir.empty()) failed(c.span, std::format("cannot fetch the package '{}': {}", d.name, error), "fetch failed");
+            // A description in the project (packages, section 3): `packages/<name>.ed`, unless the
+            // package has a build.ed of its own.
+            std::error_code ec;
+            if (d.build == "automatic" && !std::filesystem::is_regular_file(std::filesystem::path(d.dir) / "build.ed", ec) &&
+                std::filesystem::is_regular_file(std::filesystem::path(g->root) / "packages" / (d.name + ".ed"), ec)) {
+                d.build     = "script";
+                d.build_arg = "packages/" + d.name + ".ed";
+            }
             g->dependencies.push_back(d);
             Value v;
             v.kind = Value::Kind::aggregate;
             v.type = type_of(c);
             v.elements.push_back(integer(g->dependencies.size(), tc.builtin("u32")));
             v.elements.push_back(string_value(kind == "local" ? d.source : d.path));
+            if (d.build == "script") {
+                std::string file = std::filesystem::path(d.build_arg).lexically_normal().generic_string();
+                if (!file.starts_with("packages/") || !file.ends_with(".ed")) {
+                    failed(c.args[0]->span, std::format("a package description is a .ed file under packages/ ('{}')", d.build_arg), "not a description");
+                }
+                std::string module = file.substr(0, file.size() - 3);
+                for (std::size_t at; (at = module.find('/')) != std::string::npos;) module.replace(at, 1, "::");
+                auto mod = program.modules.find(module);
+                const Symbol* describe = nullptr;
+                if (mod != program.modules.end()) {
+                    for (const Symbol* item : mod->second->item_order) {
+                        if (item->name == "describe" && item->kind == SymbolKind::function) describe = item;
+                    }
+                }
+                if (!describe) {
+                    failed(c.args[0]->span, std::format("{} has no 'compile_time void describe(mut std::build::graph& g, std::build::package& p)'", file),
+                           "no description");
+                }
+                Value graph;
+                graph.kind = Value::Kind::aggregate;
+                if (auto bm = program.modules.find("std::build"); bm != program.modules.end()) {
+                    if (const Symbol* gs = bm->second->item("std::build::graph")) graph.type = tc.user(gs);
+                }
+                (void)run_values(describe, std::nullopt, {graph, v}, c.span);
+                if (g->dependencies.back().exports.empty()) {
+                    failed(c.span, std::format("{} exports no target (p.export_target(t))", file), "nothing exported");
+                }
+            }
             return v;
         }
         if (n == "glob" || n == "glob_in") {
@@ -2695,7 +2830,7 @@ struct Evaluator::Impl {
         }
         if (e.kind == ExprKind::index) {
             const auto& ix = e.as<IndexExpr>();
-            Value&      o  = place(*ix.object);
+            Value&      o  = elements_of(place(*ix.object));
             Value       i  = eval(*ix.index);
             if (o.kind != Value::Kind::list || i.integer >= o.elements.size()) {
                 failed(ix.index->span, "index out of bounds at compile time", "out of bounds");

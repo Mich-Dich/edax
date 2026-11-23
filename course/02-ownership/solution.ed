@@ -1,0 +1,75 @@
+// Lesson 2: a bag of items (solution).
+import std;
+
+struct item {
+    std::string name;
+    u32         weight = 0;
+}
+
+class bag {
+public:
+    static bag make(std::str owner) {
+        return bag{ .who = std::string::from(owner), .items = default };
+    }
+
+    void add(item it) mut { this.items.push(move it); }
+
+    // The heaviest item, borrowed from the bag.
+    std::option<item&> heaviest() {
+        mut std::option<item&> best = std::none;
+        for (item& it : this.items) {
+            if (best is std::some(b) && b.weight >= it.weight) { continue; }
+            best = std::some(it);
+        }
+        return best;
+    }
+
+    // Hands every item over to the caller; the bag is empty afterwards.
+    std::darray<item> empty_out() mut { return std::take(mut this.items); }
+
+    u32 total() {
+        mut u32 sum = 0;
+        for (item& it : this.items) { sum += it.weight; }
+        return sum;
+    }
+
+    std::str owner() { return this.who; }
+
+    ~bag() { std::println(f"bag of {this.who} destroyed with {this.items.len()} items"); }
+
+private:
+    std::string       who;
+    std::darray<item> items;
+}
+
+// The longer of two names. Both are views of the caller's text, so the result can't borrow from
+// "the" parameter: it is returned as a new string.
+std::string longer(std::str a, std::str b) {
+    if (a.len() >= b.len()) { return std::string::from(a); }
+    return std::string::from(b);
+}
+
+i32 main() {
+    mut bag mine = bag::make("ada");
+    std::string rope = std::string::from("rope");
+    mine.add(item{ .name = rope.clone(), .weight = 3 });     // a copy of the text: rope is used below
+    mine.add(item{ .name = std::string::from("lamp"), .weight = 5 });
+    mine.add(item{ .name = move rope, .weight = 2 });        // the last use: moved, not copied
+    if (mine.heaviest() is std::some(h)) {
+        std::println(f"heaviest: {h.name} ({h.weight})");
+    }
+    std::println(f"{mine.owner()} carries {mine.total()}");
+
+    // Double every weight into a second darray.
+    std::darray<item> taken = mine.empty_out();
+    mut std::darray<item> doubled = default;
+    for (item& it : taken) {
+        doubled.push(item{ .name = it.name.clone(), .weight = it.weight * 2 });
+    }
+    mut bag yours = bag::make("bob");
+    for (mut item& it : doubled) { it.weight += 1; }
+    while (doubled.pop() is std::some(it)) { yours.add(move it); }
+    std::println(f"{yours.owner()} carries {yours.total()}, {mine.owner()} carries {mine.total()}");
+    std::println(longer(mine.owner(), yours.owner()));
+    return 0;
+}

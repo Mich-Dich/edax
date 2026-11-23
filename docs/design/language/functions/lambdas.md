@@ -51,8 +51,8 @@ frozen();                                    // ERROR: calling 'frozen' changes 
 ```
 
 ### Callables with bounds
-- `std::function<R(A...), I...>` stores a callable that implements the interfaces `I...` and implements them itself: `std::function<void(), std::sendable>` can be moved to another thread. Type erasure with bounds is general: `std::any_of<I...>` holds a value of any type implementing `I...`.
-- `std::function` takes an allocator like the containers.
+- `std::function<R(A...), I...>` stores a callable that implements the interfaces `I...` and implements them itself: `std::function<void(), std::sendable>` can be moved to another thread. Bounds other than `std::sendable` and `std::shareable` are **planned**, and so is `std::any_of<I...>`, a value of any type implementing `I...`.
+- `std::function` takes an allocator like the containers (**planned**; today it uses the global allocator).
 - `std::inline_function<R(A...), N>` stores captures of up to `N` bytes inline and never allocates. A lambda with bigger captures is a compile error that names its size. `N` is rounded up to whole 8-byte words; the value takes `N + 16` bytes (the code and the drop function). Bounds come after the size: `std::inline_function<void(), 32, std::sendable>`.
 - The bounds are `std::sendable` and `std::shareable`. A lambda converts to a bounded function only when its captures meet the bound; the function then meets it too (it can go to another thread).
 

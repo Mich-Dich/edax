@@ -1,0 +1,3 @@
+// RUN: edaxc package convert plat --root=%S/packages_convert_project --out-dir=%t --compare
+// `edaxc package convert --compare` converts the package again and shows the difference against
+// the finished description: here, the TODO that was finished by hand.

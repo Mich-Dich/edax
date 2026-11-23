@@ -1,0 +1,73 @@
+// Lesson 6: generic code. `kind` and main are written; fill in the TODOs until
+// `python3 course/check.py 6` says done.
+import std;
+
+// A fixed-capacity queue that overwrites its oldest element when full.
+template<type T, usize N>
+class ring {
+public:
+    // Adds a value; when the ring is full the oldest one is dropped (and returned).
+    std::option<T> push(T value) mut {
+        // TODO: put the value after the newest one; when the ring is full, the oldest is dropped and
+        // returned. A ring<T, 0> should be a compile error with a message (a compile_time check).
+        // std::replace(mut place, new) and std::take(mut place) move values in and out of a slot.
+        return std::none;
+    }
+
+    std::option<T> pop() mut {
+        // TODO: the oldest value, or none.
+        return std::none;
+    }
+
+    usize len() { return 0; }
+
+private:
+    // TODO: the slots (an std::array of N options) and where the oldest value is.
+}
+
+// The largest element; checked once, where it is written, against std::comparable.
+template<type T : std::comparable>
+std::option<T&> largest(std::span<T> values) {
+    // TODO: a reference to the largest element (the first one if several are equal).
+    return std::none;
+}
+
+// No specialization: the body picks with `if compile_time`.
+template<type T>
+std::string kind(T value) {
+    if compile_time (std::is_integer<T>()) {
+        return std::format(f"integer {value}");
+    } else if compile_time (std::is_float<T>()) {
+        return std::format(f"float {value:.1}");
+    } else {
+        return std::format(f"something else: {value}");
+    }
+}
+
+// Any number of arguments of any types: one copy of the loop body per argument.
+// TODO: join(...) takes any number of values of any types and returns their kind(...) texts
+// separated by ", ". Declare it as a template with a pack, and walk the pack with
+// `for compile_time`.
+template<type... A>
+std::string join(A&... values) {
+    return std::string::from("");
+}
+
+i32 main() {
+    mut ring<std::string, 3> recent = default;
+    std::array<std::static_str, 5> words = ["one", "two", "three", "four", "five"];
+    for (std::static_str w : words) {
+        if (recent.push(std::string::from(w)) is std::some(old)) {
+            std::println(f"dropped {old}");
+        }
+    }
+    while (recent.pop() is std::some(w)) {
+        std::println(f"kept {w}");
+    }
+    std::array<f64, 4> scores = [2.5, 9.0, -1.0, 4.0];
+    if (largest(scores.as_span()) is std::some(best)) { std::println(f"best {best}"); }
+    std::array<std::str, 3> names = ["kim", "zoe", "ann"];
+    if (largest(names.as_span()) is std::some(last)) { std::println(f"last {last}"); }
+    std::println(join(7u8, 2.25, "x", -3i64));
+    return 0;
+}

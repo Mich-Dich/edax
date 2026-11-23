@@ -34,6 +34,9 @@ GeneratedStdModule generate_opengl_module(std::string_view gl_xml);
 // std::graphics::vulkan from the text of vk.xml.
 GeneratedStdModule generate_vulkan_module(std::string_view vk_xml);
 
+// Identifies this build of the generator (a cache of generated modules is only valid for it).
+std::string_view registry_generator_stamp();
+
 // The registry embedded in edaxc: "gl.xml" or "vk.xml".
 std::string_view std_registry(std::string_view file);
 

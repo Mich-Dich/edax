@@ -78,6 +78,8 @@ g.wrap_cpp(physics, std::build::cpp_wrap{
 ### Engine libraries in C++
 Engines depend on C++ libraries (physics, UI, audio, platform SDKs). The wrapper generator also covers:
 
+> **Planned:** of this table, only exceptions (as `std::cpp_exception` errors) and strings (`std::string`, `std::string_view`, `const char*`) work today. C++ virtual interfaces implemented in Edax, C++ template instantiations, `@cpp::value`, spans and the Windows ABI are planned.
+
 | Need | How |
 |---|---|
 | Edax implementing a C++ virtual interface (contact listeners, UI backends, allocator hooks) | `extern(cpp) class my_listener : JPH::ContactListener { ... override ... }`: the generator writes a C++ subclass that forwards each virtual to the Edax method |

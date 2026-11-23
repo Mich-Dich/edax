@@ -38,6 +38,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <optional>
+#include <regex>
 #include <ostream>
 #include <vector>
 
@@ -86,6 +87,11 @@ constexpr std::string_view usage_text =
     "                        the packages of ./build.ed: list them (version, path, how they're built,\n"
     "                        local changes), fetch them without building, or show those whose files\n"
     "                        differ from build.lock\n"
+    "  package update <name> --tag <tag> | --commit <commit>\n"
+    "                        change a git package's version in build.ed, then fetch it\n"
+    "  package convert <name> [--compare] [--to=DIR]\n"
+    "                        write packages/<name>.ed from the package's CMakeLists.txt (what the\n"
+    "                        CMake reader can't translate becomes TODOs), or compare the one you have\n"
     "  definition <file> <line>:<column>\n"
     "                        where the name at that place is declared, as <file>:<line>:<column>\n"
     "                        (editors' go to definition)\n"
@@ -125,6 +131,10 @@ constexpr std::string_view usage_text =
     "  --cpu=LEVEL                       the CPU level: x86_64, x86_64_v2, x86_64_v3, x86_64_v4, armv8,\n"
     "                                    armv9, riscv64, riscv64_v (default: the architecture's first)\n"
     "  --all-functions                   generate every function, not only those main reaches (testing)\n"
+    "  --profile-generate                build/run: instrument the program to record a profile for the mode's\n"
+    "                                    profile_guided() (merge the .profraw files with llvm-profdata)\n"
+    "  --hermetic                        build/run/package: a package's find_package that .uses doesn't\n"
+    "                                    answer is an error, not a library of the build machine\n"
     "  -h, --help                        show this help\n"
     "  -V, --version                     show the compiler version\n"
     "\n"
@@ -144,6 +154,8 @@ struct Options {
     std::string      output;
     std::string      cc;
     bool             all_functions = false;   // --all-functions (testing the backend)
+    bool             profile_generate = false; // build/run --profile-generate (profile-guided optimization)
+    bool             hermetic = false;         // build/run --hermetic: packages use only what the project declares
     std::vector<std::string> program_args;   // `run ... -- args`
     std::map<std::string, std::string> warn;  // --warn=gfx::deprecated=off|error|on (spec 23)
     std::vector<std::string> targets;         // build.ed targets named on the command line
@@ -366,6 +378,14 @@ std::optional<ExitCode> parse_options(std::span<const std::string_view> args, Op
         }
         if (builds && arg == "--all-functions") {
             opts.all_functions = true;
+            continue;
+        }
+        if (builds && arg == "--profile-generate") {
+            opts.profile_generate = true;
+            continue;
+        }
+        if (builds && arg == "--hermetic") {
+            opts.hermetic = true;
             continue;
         }
         if (arg.starts_with("--error-limit=")) {
@@ -719,6 +739,19 @@ ExitCode run_insights(const Options& opts, sema::Program& program, SourceManager
 
 // The backend: LLVM IR text (emit-llvm), then an executable: the IR is compiled to an object file
 // for the host and linked with the system linker (--cc, EDAX_CC or cc).
+// Profile-guided optimization (build modes): `--profile-generate` makes the program write raw
+// profiles next to itself; the mode's profile_guided() (relative to the project) is the merged
+// profile to optimize with.
+void set_profile_options(CodegenOptions& codegen, const Options& opts, const std::filesystem::path& exe, const std::string& profile,
+                         const std::filesystem::path& base) {
+    if (opts.profile_generate) {
+        codegen.profile_generate = exe.string() + "-%p.profraw";
+    } else if (!profile.empty()) {
+        std::filesystem::path p(profile);
+        codegen.profile_use = (p.is_absolute() ? p : base / p).lexically_normal().string();
+    }
+}
+
 ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager& sources, DiagnosticEngine& diags,
                           DriverStreams& s) {
     auto setting = [&](const char* name) {
@@ -728,7 +761,10 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     LlvmOptions llvm_options{opts.all_functions, setting("panic") == "trap",
                              setting("debug_info") == "full" || setting("debug_info") == "line_tables",
                              setting("debug_info") == "full"};
-    std::string ir = generate_llvm_ir(program, sources, diags, llvm_options);
+    std::string      ir;          // emit-llvm: the text
+    GeneratedProgram generated;   // build, run: the module itself
+    if (opts.command == "emit-llvm") ir = generate_llvm_ir(program, sources, diags, llvm_options);
+    else generated = generate_llvm_program(program, sources, diags, llvm_options);
     diags.sort_by_location();
     render_all(s.err, diags, sources, opts.render);
     if (diags.has_errors()) return ExitCode::compile_error;
@@ -764,7 +800,8 @@ ExitCode run_backend(const Options& opts, sema::Program& program, SourceManager&
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
     codegen.sanitize     = setting("sanitize").empty() ? "none" : setting("sanitize");
     if (codegen.sanitize != "none") linker += " -fsanitize=" + codegen.sanitize;
-    if (!build_executable(ir, exe.string(), linker, error, codegen)) {
+    set_profile_options(codegen, opts, exe, setting("profile_guided"), input.parent_path());
+    if (!build_executable(generated, exe.string(), linker, error, codegen)) {
         if (error.starts_with("the linker")) {
             s.err << std::format("edaxc: error: {}\n", error);
             if (!opts.target.empty()) {
@@ -1032,15 +1069,18 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     // Up to date (spec 25): the executable is newer than every file it was built from, and was
     // built the same way (mode, settings, libraries, linker, this edaxc).
     bool     plugin   = t.kind == ct::BuildTarget::Kind::plugin;   // `<bin>/plugins/<name>.so` (dynamic libraries)
+    bool     shared_library = t.kind == ct::BuildTarget::Kind::library && t.shared;   // `<bin>/lib<name>.so`
     fs::path bin_dir  = opts.bin_dir.empty() ? out / mode / opts.target : fs::path(opts.bin_dir);
-    fs::path exe_path = plugin ? bin_dir / "plugins" / (t.name + ".so") : bin_dir / t.name;
+    fs::path exe_path = plugin ? bin_dir / "plugins" / (t.name + ".so") : shared_library ? bin_dir / ("lib" + t.name + ".so") : bin_dir / t.name;
     fs::path stamp    = exe_path;
     stamp += ".inputs";
-    std::string signature = std::format("mode={} target={} cc={}", mode, opts.target, linker_command(opts));
+    std::string signature = std::format("mode={} target={} cc={}{}", mode, opts.target, linker_command(opts),
+                                        opts.profile_generate ? " profile-generate" : "");
     for (const auto& [name, value] : t.settings) signature += std::format(" -D{}={}", name, value ? ct::to_string(*value) : "?");
     for (const auto& [id, level] : opts.warn) signature += std::format(" --warn={}={}", id, level);
     for (const std::string& l : libraries) signature += " " + l;
     for (const std::string& r : extra_roots) signature += " root=" + r;
+    for (const std::string& d : t.shared_library_dirs) signature += " shared=" + d;
     {
         auto edaxc_time = fs::last_write_time("/proc/self/exe", ec);
         if (!ec) signature += std::format(" edaxc={}", edaxc_time.time_since_epoch().count());
@@ -1134,18 +1174,41 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     program.file_settings  = t.file_settings;
     program.build_target   = t.name;
     program.is_plugin      = plugin;
+    program.is_shared_library = shared_library;
+    {   // shared Edax libraries: which modules are the library's (its root's directory) and which
+        // are compiled in a shared library this target links
+        auto module_dir = [&](const sema::Module& m) -> std::string {
+            const std::optional<sema::ModuleFile>& f = m.source ? m.source : m.header;
+            if (!f) return {};
+            std::error_code e2;
+            return fs::weakly_canonical(fs::absolute(sources.file(f->id).path(), e2), e2).generic_string();
+        };
+        auto under = [](const std::string& file, const std::string& dir) { return !dir.empty() && file.starts_with(dir + "/"); };
+        std::string own_dir = shared_library ? fs::weakly_canonical(entry.parent_path(), ec).generic_string() : std::string();
+        for (const auto& [name, m] : program.modules) {
+            if (name == "build" || name == "std" || name.starts_with("std::")) continue;
+            std::string file = module_dir(*m);
+            if (shared_library && under(file, own_dir)) {
+                program.library_modules.insert(m.get());
+                continue;
+            }
+            for (const std::string& d : t.shared_library_dirs) {
+                if (under(file, d)) program.shared_modules.insert(m.get());
+            }
+        }
+    }
     if (!diags.has_errors()) check_types(program, sources, diags);
     if (!diags.has_errors()) check_ownership(program, diags);
     if (item && !diags.has_errors()) {
         for (std::size_t k = 0; k < source_units; ++k) g_report->unit_done(*item, k);
     }
     if (read_ok) phase(unit_check, unit_code, !diags.has_errors());
-    std::string ir;
+    GeneratedProgram generated;
     auto setting = [&](const char* name) {
         auto it = program.mode_settings.find(name);
         return it == program.mode_settings.end() ? std::string() : it->second;
     };
-    if (!diags.has_errors()) ir = generate_llvm_ir(program, sources, diags, LlvmOptions{false, setting("panic") == "trap",
+    if (!diags.has_errors()) generated = generate_llvm_program(program, sources, diags, LlvmOptions{false, setting("panic") == "trap",
                                                                          setting("debug_info") == "full" || setting("debug_info") == "line_tables",
                                                                          setting("debug_info") == "full"});
     if (item && !diags.has_errors()) phase(unit_code, unit_link, true);
@@ -1177,9 +1240,10 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     codegen.debug_info   = setting("debug_info") == "full" || setting("debug_info") == "line_tables";
     codegen.sanitize     = setting("sanitize").empty() ? "none" : setting("sanitize");
     if (codegen.sanitize != "none") linker += " -fsanitize=" + codegen.sanitize;
-    codegen.shared       = plugin;
+    codegen.shared       = plugin || shared_library;
+    set_profile_options(codegen, opts, exe, setting("profile_guided"), base);
     std::string error;
-    if (!build_executable(ir, exe.string(), linker, error, codegen, libraries)) {
+    if (!build_executable(generated, exe.string(), linker, error, codegen, libraries)) {
         s.err << std::format("edaxc: error: target '{}': {}\n", t.name, error);
         if (!opts.target.empty() && error.starts_with("the linker")) {
             s.err << std::format("note: linking for '{}' needs its C library: install a cross toolchain ({}-gcc) or pass --cc=...\n",
@@ -1200,6 +1264,10 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
             if (!path.starts_with("<") && fs::exists(path, e2)) st << fs::absolute(path, e2).lexically_normal().string() << "\n";
         }
         for (const std::string& f : program.embedded_files) st << f << "\n";   // std::embed (spec 34)
+        if (auto it = program.mode_settings.find("profile_guided"); it != program.mode_settings.end() && !it->second.empty() && !opts.profile_generate) {
+            fs::path p(it->second);
+            st << fs::absolute(p.is_absolute() ? p : base / p, ec).lexically_normal().string() << "\n";   // the profile: an input
+        }
         st << fs::absolute(load.build_script, ec).lexically_normal().string() << "\n";
     }
     return exe.string();
@@ -1253,6 +1321,7 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         std::string              output;   // compiler output
         int                      status = 0;
         std::size_t              unit   = 0;
+        std::string              object;
     };
     std::vector<Job> jobs;   // the objects that are out of date: compiled in parallel
     for (std::size_t i = 0; i < t.sources.size(); ++i) {
@@ -1287,12 +1356,55 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         for (const auto& [name, value] : t.defines) cmd.push_back("-D" + name + "=" + value);
         if (commands) commands->push_back(CompileCommand{base.string(), src.string(), cmd});
         objects.push_back(obj.string());
-        // Up to date: the object is newer than its source (headers are not tracked yet).
-        if (fs::exists(obj, ec) && fs::last_write_time(obj, ec) >= fs::last_write_time(src, ec)) {
+        // Up to date: made by the same command, and newer than its source and every header it
+        // included (the compiler's dependency file).
+        std::string command_line;
+        for (const std::string& a : cmd) command_line += a + "\n";
+        fs::path deps = obj, recorded = obj;
+        deps.replace_extension(".d");
+        recorded.replace_extension(".cmd");
+        auto up_to_date = [&] {
+            if (!fs::exists(obj, ec)) return false;
+            std::ifstream in(recorded, std::ios::binary);
+            std::string   before = read_rest(in);
+            if (before != command_line) return false;
+            auto made = fs::last_write_time(obj, ec);
+            if (fs::last_write_time(src, ec) > made) return false;
+            std::ifstream d(deps);
+            std::string   text = read_rest(d);
+            std::size_t   colon = text.find(": ");
+            if (colon == std::string::npos) return false;
+            std::string file;
+            auto check = [&] {
+                if (file.empty()) return true;
+                bool fresh = fs::exists(file, ec) && fs::last_write_time(file, ec) <= made;
+                file.clear();
+                return fresh;
+            };
+            for (std::size_t k = colon + 2; k < text.size(); ++k) {
+                char ch = text[k];
+                if (ch == '\\' && k + 1 < text.size() && text[k + 1] == ' ') {
+                    file += ' ';
+                    ++k;
+                } else if (ch == '\\' && k + 1 < text.size() && text[k + 1] == '\n') {
+                    ++k;
+                } else if (ch == ' ' || ch == '\n' || ch == '\t') {
+                    if (!check()) return false;
+                } else {
+                    file += ch;
+                }
+            }
+            return check();
+        };
+        if (up_to_date()) {
             if (item) g_report->unit_up_to_date(*item, i);
             continue;
         }
-        jobs.push_back(Job{cmd, t.sources[i], {}, 0, i});
+        fs::remove(recorded, ec);
+        std::vector<std::string> with_deps = cmd;
+        for (std::string a : {std::string("-MMD"), std::string("-MF"), deps.string()}) with_deps.push_back(a);
+        std::ofstream(recorded.string() + ".pending", std::ios::binary) << command_line;
+        jobs.push_back(Job{with_deps, t.sources[i], {}, 0, i, obj.string()});
     }
     for (const Job& j : jobs) show_command(j.cmd);
     {
@@ -1321,6 +1433,11 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         if (j.status == 0) continue;
         s.err << j.output << std::format("edaxc: error: target '{}': compiling '{}' failed\n", t.name, j.source);
         return fail();
+    }
+    for (const Job& j : jobs) {   // each object's command, for the next build's up-to-date check
+        fs::path recorded = j.object;
+        recorded.replace_extension(".cmd");
+        fs::rename(recorded.string() + ".pending", recorded, ec);
     }
     std::size_t link_unit = item ? g_report->add_unit(*item, t.shared ? "link" : "archive") : 0;
     if (item) g_report->unit_start(*item, link_unit);
@@ -1420,7 +1537,7 @@ std::string import_c_target(const Options& opts, const std::filesystem::path& ro
         CImportResult r = import_c_headers(output, o);
         auto write_if_changed = [&](const fs::path& p, const std::string& text) {
             std::ifstream in(p);
-            std::string   old((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string   old = read_rest(in);
             if (in && old == text) return;
             std::ofstream(p) << text;
         };
@@ -1498,7 +1615,7 @@ std::string wrap_cpp_target(const Options&, const std::filesystem::path& root, c
         }
         auto write_if_changed = [&](const fs::path& p, const std::string& text) {
             std::ifstream in(p);
-            std::string   old((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string   old = read_rest(in);
             if (in && old == text) return;
             std::ofstream(p) << text;
         };
@@ -1629,8 +1746,10 @@ struct EvaluatedBuild {
 // The targets of a package that has no build.ed (packages, section 3): read from its
 // CMakeLists.txt, or one header-only target. They join the graph; the package's foreign targets
 // (`pkg.target("name")`) link them. Returns an error message, or "".
+std::string command_output(const std::vector<std::string>& cmd, int* status = nullptr);
+
 std::string add_package_targets(const Options& opts, const std::filesystem::path&, const std::filesystem::path& out,
-                                ct::BuildGraph& graph, std::size_t d, DriverStreams& s) {
+                                ct::BuildGraph& graph, std::size_t d, DriverStreams& s, const std::map<std::string, std::string>& mode) {
     namespace fs = std::filesystem;
     std::error_code ec;
     (void)s;
@@ -1638,17 +1757,95 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
     fs::path dir = dep.dir;
     std::map<std::string, std::size_t> names;   // the package's target names → graph index
     std::size_t first = graph.targets.size();
+    // CMAKE_BUILD_TYPE from the mode's settings (build modes, packages): unoptimized is Debug;
+    // optimized is Release, MinSizeRel for `size`, RelWithDebInfo with debug info.
+    auto setting = [&](const char* name) {
+        auto it = mode.find(name);
+        return it == mode.end() ? std::string() : it->second;
+    };
+    std::string optimization = setting("optimization").empty() ? (opts.mode == "debug" ? "none" : "speed") : setting("optimization");
+    bool        debug_info   = !setting("debug_info").empty() && setting("debug_info") != "none";
+    std::string build_type   = optimization == "none" ? "Debug" : debug_info ? "RelWithDebInfo" : optimization == "size" ? "MinSizeRel" : "Release";
+    if (dep.build == "cmake_external") {   // real CMake as a build step (packages, section 4): the last resort
+        if (!fs::is_regular_file(dir / "CMakeLists.txt", ec)) return std::format("the package '{}' has no CMakeLists.txt", dep.name);
+        fs::path work    = out / "packages" / dep.name / ("cmake-" + build_type);
+        fs::path build   = work / "build";
+        fs::path install = work / "install";
+        std::vector<std::string> configure = {"cmake", "-S", dir.string(), "-B", build.string(), "-DCMAKE_BUILD_TYPE=" + build_type,
+                                              "-DCMAKE_INSTALL_PREFIX=" + install.string(), "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+                                              "-DCMAKE_C_COMPILER=" + c_compiler(opts, false).front(),
+                                              "-DCMAKE_CXX_COMPILER=" + c_compiler(opts, true).front()};
+        for (const auto& [k, v] : dep.options) configure.push_back("-D" + k + "=" + v);
+        // The step's inputs: every file of the package (size and time) and the command.
+        std::uint64_t h = 1469598103934665603ull;
+        auto mix = [&](std::string_view text) {
+            for (char ch : text) h = (h ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+            h = (h ^ 0xff) * 1099511628211ull;
+        };
+        for (const std::string& a : configure) mix(a);
+        std::vector<std::string> files;
+        for (auto it = fs::recursive_directory_iterator(dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (it->is_directory(ec) && it->path().filename().string().starts_with(".")) {
+                it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_regular_file(ec)) continue;
+            auto when = fs::last_write_time(it->path(), ec).time_since_epoch().count();
+            files.push_back(std::format("{} {} {}", it->path().lexically_relative(dir).generic_string(), it->file_size(ec), when));
+        }
+        std::sort(files.begin(), files.end());
+        for (const std::string& f : files) mix(f);
+        std::string stamp = std::format("{:016x}", h);
+        std::string before;
+        {
+            std::ifstream in(work / "stamp");
+            std::getline(in, before);
+        }
+        bool complete = true;
+        for (const std::string& o : dep.external_outputs) complete = complete && fs::exists(install / o, ec);
+        if (before != stamp || !complete) {
+            if (command_output({"sh", "-c", "command -v cmake"}).empty()) {
+                return std::format("the package '{}' is built with real CMake (cmake_external), but cmake is not on the PATH", dep.name);
+            }
+            fs::remove(work / "stamp", ec);
+            fs::create_directories(work, ec);
+            for (const std::vector<std::string>& cmd : {configure, std::vector<std::string>{"cmake", "--build", build.string(), "--parallel"},
+                                                        std::vector<std::string>{"cmake", "--install", build.string()}}) {
+                std::string output;
+                if (run_process(cmd, &output) != 0) {
+                    if (output.size() > 4000) output = "..." + output.substr(output.size() - 4000);
+                    return std::format("the package '{}': '{} {}' failed (cmake_external):\n{}", dep.name, cmd[0], cmd[1], output);
+                }
+            }
+            for (const std::string& o : dep.external_outputs) {
+                if (!fs::exists(install / o, ec)) {
+                    return std::format("the package '{}': CMake installed no '{}' (cmake_external's .outputs, relative to {})", dep.name, o,
+                                       install.string());
+                }
+            }
+            std::ofstream(work / "stamp") << stamp << "\n";
+        }
+        ct::BuildTarget t;
+        t.kind = ct::BuildTarget::Kind::c_library;
+        t.name = dep.name + ":" + dep.name;
+        t.base = dir.string();
+        t.span = dep.span;
+        for (const std::string& o : dep.external_outputs) t.prebuilt.push_back((install / o).string());
+        for (const std::string& i : dep.external_include_dirs) t.include_dirs.emplace_back((install / i).lexically_normal().string(), true);
+        names[dep.name] = graph.targets.size();
+        graph.targets.push_back(std::move(t));
+    }
     bool cmake = dep.build == "cmake" || (dep.build == "automatic" && fs::is_regular_file(dir / "CMakeLists.txt", ec));
-    if (cmake) {
+    if (dep.build == "cmake_external") {
+    } else if (cmake) {
         if (!fs::is_regular_file(dir / "CMakeLists.txt", ec)) return std::format("the package '{}' has no CMakeLists.txt", dep.name);
         CMakeInput in;
         in.root    = dir.string();
         in.out_dir = (out / "packages" / dep.name).string();
         for (const auto& [k, v] : dep.options) in.options[k] = v;
         for (const auto& [k, t] : dep.uses) in.uses[k] = std::to_string(t);
-        in.build_type  = opts.mode == "release" ? "Release"
-                       : opts.mode == "release_with_debug_info" || opts.mode == "development" ? "RelWithDebInfo"
-                                                                                               : "Debug";
+        in.build_type  = build_type;
         in.system_name = target_platform().os == "windows" ? "Windows" : target_platform().os == "macos" ? "Darwin" : "Linux";
         in.compiles    = [&](const std::string& source) {
             fs::path probe = out / "packages" / (dep.name + ".check.c");
@@ -1666,8 +1863,8 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
             std::string shown = r.error;   // the file relative to the project
             std::string prefix = dir.lexically_normal().string() + "/";
             if (shown.starts_with(prefix)) shown = (dep.kind == "local" ? dep.source : dep.path) + "/" + shown.substr(prefix.size());
-            return std::format("the package '{}': {}\nnote: the CMake reader stops at what it can't translate, never guessing; give the "
-                               "package a build.ed of its own (.build = std::build::package_build::edax)", dep.name, shown);
+            return std::format("the package '{}': {}\nnote: the CMake reader stops at what it can't translate, never guessing; describe the "
+                               "package in packages/{}.ed (`edaxc package convert {}` writes one to start from)", dep.name, shown, dep.name, dep.name);
         }
         std::map<std::string, std::string> alias;
         for (const CMakeTarget& c : r.targets) {
@@ -1714,6 +1911,10 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
                         found = true;
                     }
                 }
+                if (!found && opts.hermetic) {   // packages, section 5
+                    return std::format("the package '{}': its target '{}' links '{}', which no '.uses' of the package answers "
+                                       "(--hermetic: a build uses only what the project declares)", dep.name, c.name, l);
+                }
                 if (!found) {   // a system library looked up on the build machine
                     ct::BuildTarget sys;
                     sys.kind = ct::BuildTarget::Kind::system_library;
@@ -1752,7 +1953,7 @@ std::string add_package_targets(const Options& opts, const std::filesystem::path
 }
 
 // The output of a command, without its trailing newline.
-std::string command_output(const std::vector<std::string>& cmd, int* status = nullptr) {
+std::string command_output(const std::vector<std::string>& cmd, int* status) {
     std::string out;
     int         st = run_process(cmd, &out);
     if (status) *status = st;
@@ -1996,7 +2197,20 @@ bool evaluate_build(EvaluatedBuild& b, const Options& opts, const std::filesyste
     };
     DiagnosticEngine diags;
     fs::path script = (b.root / "build.ed").lexically_normal();
-    b.program = load_program(script.string(), [&] { LoadOptions o; o.root = b.root.lexically_normal().string(); return o; }(), b.sources, diags);
+    LoadOptions load;
+    load.root = b.root.lexically_normal().string();
+    {   // package descriptions (packages, section 3): packages/**/*.ed
+        std::error_code ec;
+        fs::path dir = b.root / "packages";
+        if (fs::is_directory(dir, ec)) {
+            for (auto it = fs::recursive_directory_iterator(dir, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (ec) break;
+                if (it->is_regular_file(ec) && it->path().extension() == ".ed") load.extra_modules.push_back(it->path().lexically_normal().string());
+            }
+            std::sort(load.extra_modules.begin(), load.extra_modules.end());
+        }
+    }
+    b.program = load_program(script.string(), load, b.sources, diags);
     if (!diags.has_errors()) resolve_program(b.program, diags);
     b.program.build_mode  = opts.mode;
     b.program.warn_levels = opts.warn;
@@ -2048,9 +2262,9 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         fs::path dep_root = graph.dependencies[d].dir;
         const ct::BuildDependency& dependency = graph.dependencies[d];
         bool has_build = fs::is_regular_file(dep_root / "build.ed", ec);
-        if (dependency.is_package && (dependency.build == "cmake" || dependency.build == "headers_only" ||
+        if (dependency.is_package && (dependency.build == "cmake" || dependency.build == "headers_only" || dependency.build == "cmake_external" ||
                                       (dependency.build == "automatic" && !has_build))) {
-            std::string error = add_package_targets(opts, root, out, graph, d, s);
+            std::string error = add_package_targets(opts, root, out, graph, d, s, program.mode_settings);
             if (!error.empty()) {
                 s.err << "edaxc: error: " << error << "\n";
                 return ExitCode::compile_error;
@@ -2165,6 +2379,28 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             }
         }
         selected.insert(selected.begin(), plugins.begin(), plugins.end());
+        // Shared Edax libraries are built before the programs that link them.
+        std::vector<std::size_t> shared;
+        std::function<void(std::size_t, std::set<std::size_t>&)> find_shared = [&](std::size_t i, std::set<std::size_t>& seen) {
+            for (std::size_t l : graph.targets[i].links) {
+                if (!seen.insert(l).second) continue;
+                find_shared(l, seen);
+                const ct::BuildTarget& lib = graph.targets[l];
+                if (lib.kind == ct::BuildTarget::Kind::library && lib.shared && std::find(shared.begin(), shared.end(), l) == shared.end()) {
+                    shared.push_back(l);
+                }
+            }
+        };
+        std::set<std::size_t> seen_shared;
+        for (std::size_t i : selected) find_shared(i, seen_shared);
+        for (std::size_t i : selected) {
+            if (graph.targets[i].kind == ct::BuildTarget::Kind::library && graph.targets[i].shared &&
+                std::find(shared.begin(), shared.end(), i) == shared.end()) {
+                shared.push_back(i);
+            }
+        }
+        std::erase_if(selected, [&](std::size_t i) { return std::find(shared.begin(), shared.end(), i) != shared.end(); });
+        selected.insert(selected.begin(), shared.begin(), shared.end());
     }
 
     // The build output (docs/design/build/build-output.md): the checklist, build.log. Set by
@@ -2251,11 +2487,17 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     std::string optimization = program.mode_settings["optimization"];
     g_c_sanitize             = program.mode_settings["sanitize"];
     bool        lto          = program.mode_settings["link_time_optimization"] == "true";
+    // A target with its own mode (`g.set_mode`, build system): its code is optimized as that mode says.
+    auto own_optimization = [&](const ct::BuildTarget& target) {
+        const ct::Value* v = target.mode_optimization.get();
+        return v && v->symbol ? v->symbol->name : optimization;
+    };
     std::vector<CompileCommand> commands;
     std::map<std::size_t, std::string> archives;
     std::map<std::size_t, std::string> imports;   // g.import_c_headers: the module root
     std::map<std::size_t, std::string> wraps;     // g.wrap_cpp: the module root
     std::set<std::size_t> steps_done;
+    std::map<std::size_t, std::string> shared_built;   // shared Edax libraries: their lib<name>.so
     bool failed = false;
     // What a target links, directly or through other targets: archives, -l flags, and the
     // roots of dependencies whose Edax modules it imports.
@@ -2275,15 +2517,22 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                         if (!failed && !archives.count(l)) {
                             ct::BuildTarget with_wrappers = used;
                             with_wrappers.sources.insert(with_wrappers.sources.end(), extra.begin(), extra.end());
-                            archives[l] = build_c_target(opts, root, out, graph, with_wrappers, optimization, lto, s, failed, &commands);
+                            archives[l] = build_c_target(opts, root, out, graph, with_wrappers, own_optimization(with_wrappers), lto, s, failed, &commands);
                         }
                     }
                     if (wraps.count(l) && !wraps[l].empty() && std::find(roots.begin(), roots.end(), wraps[l]) == roots.end()) roots.push_back(wraps[l]);
-                    if (!archives.count(l)) archives[l] = build_c_target(opts, root, out, graph, used, optimization, lto, s, failed, &commands);
+                    if (!archives.count(l)) archives[l] = build_c_target(opts, root, out, graph, used, own_optimization(used), lto, s, failed, &commands);
                     if (!archives[l].empty()) libs.push_back(archives[l]);
+                    libs.insert(libs.end(), used.prebuilt.begin(), used.prebuilt.end());   // cmake_external's outputs
                     // C++ code needs its runtime: the program is linked by the C compiler driver.
                     if (used.language == "cpp" && !archives[l].empty()) libs.push_back("-lstdc++");
                     if (used.shared && !archives[l].empty()) libs.push_back("-Wl,-rpath," + fs::path(archives[l]).parent_path().string());
+                } else if (used.kind == ct::BuildTarget::Kind::library && used.shared) {   // a shared Edax library
+                    if (auto it = shared_built.find(l); it != shared_built.end() && !it->second.empty()) {
+                        libs.push_back(it->second);
+                        libs.push_back("-Wl,-rpath,$ORIGIN");
+                    }
+                    if (!used.base.empty() && std::find(roots.begin(), roots.end(), used.base) == roots.end()) roots.push_back(used.base);
                 } else if (used.kind == ct::BuildTarget::Kind::system_library) {
                     if (!used.library_root.empty()) libs.push_back("-L" + (fs::path(used.library_root) / "lib").string());
                     libs.push_back("-l" + used.name);
@@ -2417,13 +2666,13 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         run_steps(i);
         if (failed) return ExitCode::compile_error;
         if (t.kind == ct::BuildTarget::Kind::c_library) {
-            if (!archives.count(i)) archives[i] = build_c_target(opts, root, out, graph, t, optimization, lto, s, failed, &commands);
+            if (!archives.count(i)) archives[i] = build_c_target(opts, root, out, graph, t, own_optimization(t), lto, s, failed, &commands);
             if (failed) any_failed = true, failed = false;
             continue;
         }
-        bool plugin = t.kind == ct::BuildTarget::Kind::plugin;
+        bool plugin = t.kind == ct::BuildTarget::Kind::plugin || (t.kind == ct::BuildTarget::Kind::library && t.shared);
         if (plugin && opts.command == "run" && opts.targets.size() == 1 && opts.targets[0] == t.name) {
-            return usage_error(s, std::format("'{}' is a plugin, not a program", t.name));
+            return usage_error(s, std::format("'{}' is a {}, not a program", t.name, t.shared ? "shared library" : "plugin"));
         }
         if (!plugin && t.kind != ct::BuildTarget::Kind::executable && t.kind != ct::BuildTarget::Kind::test) {
             if (opts.command == "run") return usage_error(s, std::format("'{}' is a {}, not a program", t.name, kind_name(t.kind)));
@@ -2447,9 +2696,54 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
         std::string mode          = t.mode ? t.mode->name : opts.mode;
         bool        target_failed = false;
-        std::string exe           = build_edax_target(opts, root, out, t, mode, libs, roots, s, target_failed);
+        // Edax libraries it links that have their own mode (`g.set_mode`): a program is compiled
+        // as one, so their files get that mode's optimization, like `g.optimize_files`.
+        ct::BuildTarget with_modes = t;
+        {   // shared Edax libraries it links, directly or through others: their modules' code is theirs
+            std::set<std::size_t>    linked;
+            std::vector<std::size_t> todo(t.links.begin(), t.links.end());
+            while (!todo.empty()) {
+                std::size_t l = todo.back();
+                todo.pop_back();
+                if (!linked.insert(l).second || l >= graph.targets.size()) continue;
+                const ct::BuildTarget& lib = graph.targets[l];
+                todo.insert(todo.end(), lib.links.begin(), lib.links.end());
+                if (lib.kind != ct::BuildTarget::Kind::library || !lib.shared) continue;
+                fs::path dir = ((lib.base.empty() ? root : fs::path(lib.base)) / lib.root).parent_path();
+                with_modes.shared_library_dirs.push_back(fs::weakly_canonical(dir, ec).generic_string());
+            }
+        }
+        {
+            std::set<std::size_t>    linked;
+            std::vector<std::size_t> todo(t.links.begin(), t.links.end());
+            while (!todo.empty()) {
+                std::size_t l = todo.back();
+                todo.pop_back();
+                if (!linked.insert(l).second || l >= graph.targets.size()) continue;
+                const ct::BuildTarget& lib = graph.targets[l];
+                todo.insert(todo.end(), lib.links.begin(), lib.links.end());
+                if (lib.kind != ct::BuildTarget::Kind::library || !lib.mode_optimization) continue;
+                sema::FileSetting fsetting;
+                fsetting.name  = "std::build::optimization";
+                fsetting.value = lib.mode_optimization;
+                fs::path dir = ((lib.base.empty() ? root : fs::path(lib.base)) / lib.root).parent_path();
+                std::error_code walk_ec;
+                for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, walk_ec);
+                     it != fs::recursive_directory_iterator(); it.increment(walk_ec)) {
+                    if (walk_ec) break;
+                    std::string ext = it->path().extension().string();
+                    if (ext == ".ed" || ext == ".edh") fsetting.files.push_back(fs::weakly_canonical(it->path(), walk_ec).generic_string());
+                }
+                with_modes.file_settings.push_back(std::move(fsetting));
+            }
+        }
+        std::string exe           = build_edax_target(opts, root, out, with_modes, mode, libs, roots, s, target_failed);
         if (target_failed) {
             any_failed = true;
+            continue;
+        }
+        if (t.kind == ct::BuildTarget::Kind::library && t.shared) {
+            shared_built[i] = exe;
             continue;
         }
         if (plugin || opts.command == "build") continue;
@@ -2590,7 +2884,7 @@ ExitCode explain_id(std::string_view id, DriverStreams& s) {
         for (const fs::path& f : files) {
             std::ifstream in(f);
             if (!in) continue;
-            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            std::string text = read_rest(in);
             if (!ns.empty() && text.find("namespace " + std::string(ns.substr(0, ns.find("::")))) == std::string::npos) continue;
             doc = diagnostic_doc(text, name);
             if (doc) break;
@@ -2625,28 +2919,429 @@ ExitCode run_explain(std::span<const std::string_view> args, DriverStreams& s) {
 
 } // namespace
 
+// --- edaxc package convert (packages, section 4) ---------------------------------------------
+// Reads a package's CMakeLists.txt for each platform, leniently, and writes what it found as a
+// package description: ordinary build-API calls, platform differences as `if`s on
+// g.target_platform().os, and every command the reader couldn't translate as a TODO.
+struct ConvertedPackage {
+    std::string description;   // packages/<name>.ed
+    std::string report;        // packages/<name>.convert.md
+    std::size_t targets = 0;
+    std::size_t todos   = 0;
+    std::string generated_from;   // the configured files to copy (the host's), or ""
+};
+
+static ConvertedPackage convert_cmake_package(const Options& opts, const ct::BuildDependency& dep, const std::filesystem::path& out,
+                                       const std::string& generated_dir /* "packages/<name>.generated" */) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::path(dep.dir).lexically_normal();
+    struct Platform {
+        const char* os;       // std::build::os
+        const char* system;   // CMAKE_SYSTEM_NAME
+        CMakeResult result;
+        fs::path    out_dir;
+    };
+    std::vector<Platform> platforms = {{"linux", "Linux", {}, {}}, {"windows", "Windows", {}, {}}, {"macos", "Darwin", {}, {}}};
+    for (Platform& p : platforms) {
+        CMakeInput in;
+        in.root       = dir.string();
+        p.out_dir     = out / "packages" / dep.name / (std::string("convert-") + p.os);
+        fs::remove_all(p.out_dir, ec);
+        in.out_dir    = p.out_dir.string();
+        in.build_type = "Release";
+        in.system_name = p.system;
+        in.lenient    = true;
+        for (const auto& [k, v] : dep.options) in.options[k] = v;
+        for (const auto& [k, t] : dep.uses) in.uses[k] = std::to_string(t);
+        in.compiles = [&](const std::string& source) {   // answered by the host's compiler
+            fs::path probe = out / "packages" / (dep.name + ".check.c");
+            fs::create_directories(probe.parent_path(), ec);
+            std::ofstream(probe) << source;
+            std::vector<std::string> cmd = c_compiler(opts, false);
+            cmd.insert(cmd.end(), {"-fsyntax-only", probe.string()});
+            std::string output;
+            bool ok = run_process(cmd, &output) == 0;
+            fs::remove(probe, ec);
+            return ok;
+        };
+        p.result = read_cmake(in);
+    }
+    const Platform& host = platforms[0];
+    auto shown_file = [&](const std::string& file) {
+        std::string rel = fs::path(file).lexically_normal().lexically_relative(dir).generic_string();
+        return rel.empty() || rel.starts_with("..") ? file : rel;
+    };
+    auto ident = [](const std::string& name) {
+        std::string r = "t_";
+        for (char ch : name) r += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_';
+        return r;
+    };
+    auto quote = [](const std::string& text) {
+        std::string r = "\"";
+        for (char ch : text) {
+            if (ch == '"' || ch == '\\') r += '\\';
+            r += ch;
+        }
+        return r + "\"";
+    };
+    // A path the reader found, as an expression of the description.
+    auto path_expr = [&](const std::string& path, const Platform& p) -> std::string {
+        fs::path full = fs::path(path).lexically_normal();
+        std::string in_package = full.lexically_relative(dir).generic_string();
+        if (!in_package.empty() && !in_package.starts_with("..")) return std::format("p.at({})", quote(in_package));
+        std::string generated = full.lexically_relative(p.out_dir).generic_string();
+        if (!generated.empty() && !generated.starts_with("..")) {
+            return quote(generated == "." ? generated_dir : generated_dir + "/" + generated);
+        }
+        return quote(path);
+    };
+    // Each target's lines (without indentation), per platform: what all platforms share is
+    // written once, the rest under `if`s.
+    struct Lines {
+        std::string              declaration;
+        std::vector<std::string> body;
+        std::vector<std::string> files;   // sources in the package, quoted
+        std::string              file;
+        int                      line = 0;
+    };
+    std::vector<std::string> order;
+    std::map<std::string, std::map<std::string, Lines>> per;   // target → os → lines
+    std::map<std::string, std::string> alias_of;
+    std::vector<std::string> notes;   // for the report
+    std::set<std::string>    executables;
+    for (const Platform& p : platforms) {
+        std::set<std::string> names;
+        for (const CMakeTarget& t : p.result.targets) names.insert(t.name);
+        for (const CMakeTarget& t : p.result.targets) {
+            if (t.kind == CMakeTarget::Kind::alias) {
+                alias_of[t.name] = t.alias_of;
+                continue;
+            }
+            if (t.kind == CMakeTarget::Kind::executable) {
+                executables.insert(t.name);
+                continue;
+            }
+            if (std::find(order.begin(), order.end(), t.name) == order.end()) order.push_back(t.name);
+            Lines& l = per[t.name][p.os];
+            l.file = t.file;
+            l.line = t.line;
+            std::string standard = t.standard.empty() ? "" : std::format(", .standard = std::build::cpp_standard::{}", t.standard);
+            l.declaration = std::format("std::build::target {} = g.{}(std::build::c_target{{ .name = {}, .language = std::build::language::{}{} }});",
+                                        ident(t.name), t.kind == CMakeTarget::Kind::shared_library ? "add_shared_library" : "add_c_library",
+                                        quote(t.name), t.language, standard);
+            std::vector<std::string> package_files, other_files;
+            for (const std::string& f : t.sources) {
+                std::string e = path_expr(f, p);
+                if (e.starts_with("p.at(")) package_files.push_back(e.substr(5, e.size() - 6));
+                else other_files.push_back(e);
+            }
+            l.files = package_files;
+            for (const std::string& f : other_files) l.body.push_back(std::format("g.add_sources({}, {});", ident(t.name), f));
+            for (const auto& [i, vis] : t.include_dirs) {
+                l.body.push_back(std::format("g.add_include_dir({}, {}, std::build::visibility::{});", ident(t.name), path_expr(i, p), vis));
+            }
+            for (const auto& [def, vis] : t.defines) {
+                std::size_t eq = def.find('=');
+                l.body.push_back(std::format("g.define({}, {}, {});", ident(t.name), quote(def.substr(0, eq)),
+                                             quote(eq == std::string::npos ? "1" : def.substr(eq + 1))));
+            }
+            for (const auto& [link, vis] : t.links) {
+                std::string to = alias_of.contains(link) ? alias_of[link] : link;
+                bool own = names.contains(to);
+                bool used = false;
+                for (const auto& [u, idx] : dep.uses) used = used || u == link || u == link.substr(0, link.find("::"));
+                if (own) {
+                    l.body.push_back(std::format("g.link({}, {});", ident(t.name), ident(to)));
+                } else if (used) {
+                    l.body.push_back(std::format("// TODO(convert): links '{}', which build.ed's .uses answers: link that target to "
+                                                 "this package's users in build.ed", link));
+                } else {
+                    std::string lib = link.substr(link.find("::") == std::string::npos ? 0 : link.rfind("::") + 2);
+                    if (lib.starts_with("-l")) lib = lib.substr(2);
+                    l.body.push_back(std::format("g.link({}, g.add_system_library(std::build::system_library{{ .name = {} }}));",
+                                                 ident(t.name), quote(lib)));
+                }
+            }
+            for (const auto& [o, vis] : t.options) notes.push_back(std::format("`{}`: the compile option `{}` ({}) is not carried over: the "
+                                                                               "build mode sets warnings and optimization", t.name, o, vis));
+        }
+    }
+    // Events in reading order: targets and TODOs, by file then line.
+    std::map<std::string, std::size_t> file_index;
+    for (const Platform& p : platforms) {
+        for (const std::string& f : p.result.files) file_index.emplace(fs::path(f).lexically_normal().string(), file_index.size());
+    }
+    auto position = [&](const std::string& file, int line) {
+        auto it = file_index.find(fs::path(file).lexically_normal().string());
+        return std::make_pair(it == file_index.end() ? file_index.size() : it->second, line);
+    };
+    struct Todo {
+        CMakeTodo                todo;
+        std::vector<std::string> platforms;
+    };
+    std::vector<Todo> todos;
+    for (const Platform& p : platforms) {
+        for (const CMakeTodo& t : p.result.todos) {
+            auto it = std::find_if(todos.begin(), todos.end(), [&](const Todo& o) { return o.todo.file == t.file && o.todo.line == t.line; });
+            if (it == todos.end()) todos.push_back(Todo{t, {p.os}});
+            else it->platforms.push_back(p.os);
+        }
+    }
+    for (const Platform& p : platforms) {   // a reader that stopped anyway (a file it can't read)
+        if (!p.result.error.empty()) {
+            CMakeTodo t;
+            t.message = p.result.error;
+            auto it = std::find_if(todos.begin(), todos.end(), [&](const Todo& o) { return o.todo.message == t.message; });
+            if (it == todos.end()) todos.push_back(Todo{t, {p.os}});
+            else it->platforms.push_back(p.os);
+        }
+    }
+    struct Event {
+        std::pair<std::size_t, int> at;
+        bool                        is_target;
+        std::size_t                 index;
+    };
+    std::vector<Event> events;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const Lines& any = per[order[i]].begin()->second;
+        events.push_back(Event{position(any.file, any.line), true, i});
+    }
+    for (std::size_t i = 0; i < todos.size(); ++i) events.push_back(Event{position(todos[i].todo.file, todos[i].todo.line), false, i});
+    std::stable_sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.at < b.at; });
+
+    std::string ns;
+    for (char ch : dep.name) ns += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '_';
+    std::string d;
+    d += std::format("// packages/{}.ed: the package '{}', described for edaxc's build (packages, section 3).\n", dep.name, dep.name);
+    d += std::format("// Written by `edaxc package convert {}` from its CMakeLists.txt; finish the TODO(convert)s, then it is yours.\n", dep.name);
+    d += "import std;\n\n";
+    d += std::format("namespace build::packages::{} {{\n", ns);
+    d += "    compile_time void describe(mut std::build::graph& g, std::build::package& p) {\n";
+    bool uses_os = false;
+    std::string body;
+    auto os_condition = [](const std::vector<std::string>& oses) {
+        std::string c;
+        for (const std::string& o : oses) c += (c.empty() ? "" : " || ") + std::format("os == std::build::os::{}", o);
+        return c;
+    };
+    auto add_block = [&](const std::vector<std::string>& oses, const std::vector<std::string>& lines, const std::string& indent) {
+        if (lines.empty()) return;
+        if (oses.size() == platforms.size()) {
+            for (const std::string& l : lines) body += indent + l + "\n";
+            return;
+        }
+        uses_os = true;
+        body += indent + "if (" + os_condition(oses) + ") {\n";
+        for (const std::string& l : lines) body += indent + "    " + l + "\n";
+        body += indent + "}\n";
+    };
+    bool first = true;
+    for (const Event& e : events) {
+        if (!first) body += "\n";
+        first = false;
+        if (!e.is_target) {
+            const Todo& t = todos[e.index];
+            std::string where = t.todo.file.empty() ? "" : std::format("{}:{}: ", shown_file(t.todo.file), t.todo.line);
+            body += std::format("        // TODO(convert): {}{}", where, t.todo.message);
+            if (t.platforms.size() != platforms.size()) {
+                std::string list;
+                for (const std::string& o : t.platforms) list += (list.empty() ? "" : ", ") + o;
+                body += std::format(" (read for {})", list);
+            }
+            body += "\n";
+            std::istringstream text(t.todo.text);
+            for (std::string line; std::getline(text, line);) body += "        //     " + line + "\n";
+            continue;
+        }
+        const std::string& name = order[e.index];
+        std::map<std::string, Lines>& by_os = per[name];
+        std::vector<std::string> present;
+        for (const Platform& p : platforms) {
+            if (by_os.contains(p.os)) present.push_back(p.os);
+        }
+        const Lines& base = by_os.at(present.front());
+        std::string indent = "        ";
+        bool wrapped = present.size() != platforms.size();
+        if (wrapped) {   // a target only some platforms have
+            uses_os = true;
+            body += indent + "if (" + os_condition(present) + ") {\n";
+            indent += "    ";
+        }
+        body += indent + std::format("// {}:{}\n", shown_file(base.file), base.line);
+        body += indent + base.declaration + "\n";
+        // Lines every present platform has, in the first platform's order; then each group of
+        // platforms' own lines.
+        auto add_sources = [&](const std::vector<std::string>& files) {
+            std::string list;
+            for (const std::string& f : files) list += (list.empty() ? "" : ", ") + f;
+            return std::format("g.add_sources({}, p.files([{}]));", ident(name), list);
+        };
+        std::vector<std::string> common_files;
+        for (const std::string& f : base.files) {
+            bool everywhere = true;
+            for (const std::string& o : present) {
+                const std::vector<std::string>& fs_ = by_os.at(o).files;
+                everywhere = everywhere && std::find(fs_.begin(), fs_.end(), f) != fs_.end();
+            }
+            if (everywhere) common_files.push_back(f);
+        }
+        if (!common_files.empty()) body += indent + add_sources(common_files) + "\n";
+        for (const std::string& o : present) {   // the other sources as a line of each platform's own
+            std::vector<std::string> extra;
+            for (const std::string& f : by_os.at(o).files) {
+                if (std::find(common_files.begin(), common_files.end(), f) == common_files.end()) extra.push_back(f);
+            }
+            if (!extra.empty()) by_os.at(o).body.insert(by_os.at(o).body.begin(), add_sources(extra));
+        }
+        std::vector<std::string> common;
+        for (const std::string& l : base.body) {
+            bool everywhere = true;
+            for (const std::string& o : present) {
+                const std::vector<std::string>& b = by_os.at(o).body;
+                everywhere = everywhere && std::find(b.begin(), b.end(), l) != b.end();
+            }
+            if (everywhere) common.push_back(l);
+        }
+        for (const std::string& l : common) body += indent + l + "\n";
+        std::map<std::vector<std::string>, std::vector<std::string>> groups;   // lines → platforms
+        std::map<std::string, std::vector<std::string>> own;
+        for (const std::string& o : present) {
+            for (const std::string& l : by_os.at(o).body) {
+                if (std::find(common.begin(), common.end(), l) == common.end()) own[o].push_back(l);
+            }
+        }
+        for (const auto& [o, lines] : own) groups[lines].push_back(o);
+        for (const auto& [lines, oses] : groups) {
+            std::vector<std::string> ordered;   // platforms in their usual order
+            for (const Platform& p : platforms) {
+                if (std::find(oses.begin(), oses.end(), p.os) != oses.end()) ordered.push_back(p.os);
+            }
+            if (wrapped && ordered.size() == present.size()) {
+                for (const std::string& l : lines) body += indent + l + "\n";
+            } else if (wrapped) {
+                body += indent + "if (" + os_condition(ordered) + ") {\n";
+                for (const std::string& l : lines) body += indent + "    " + l + "\n";
+                body += indent + "}\n";
+            } else {
+                add_block(ordered, lines, indent);
+            }
+        }
+        body += indent + std::format("p.export_target({});\n", ident(name));
+        for (const auto& [a, to] : alias_of) {
+            if (to == name) body += indent + std::format("p.export_target({}, {});\n", ident(name), quote(a));
+        }
+        if (wrapped) body += "        }\n";
+    }
+    if (uses_os) d += "        std::build::os os = g.target_platform().os;\n";
+    if (!body.empty()) d += (uses_os ? "\n" : "") + body;
+    d += "    }\n}\n";
+
+    // The report.
+    std::string r;
+    r += std::format("# Converting the package '{}'\n\n", dep.name);
+    r += std::format("`edaxc package convert {}` read the package's CMake files for linux, windows and macos and wrote "
+                     "`packages/{}.ed`. This report says what each command became.\n\n", dep.name, dep.name);
+    r += "## Options\n\n";
+    if (dep.options.empty()) r += "None (each option at its default).\n";
+    for (const auto& [k, v] : dep.options) r += std::format("- `{}` = `{}`\n", k, v);
+    r += "\nThe files were read with `CMAKE_BUILD_TYPE=Release`; feature checks (`check_include_file`, ...) were answered by this "
+         "machine's compiler for every platform.\n\n## Files read\n\n";
+    for (const std::string& f : host.result.files) r += std::format("- `{}`\n", shown_file(f));
+    r += "\n## Commands\n\n| Where | Command | Became |\n|---|---|---|\n";
+    for (const auto& [where, became] : host.result.commands) {
+        std::string w = where;
+        std::size_t colon = w.find(':', w.find(':') + 1);
+        std::string loc = colon == std::string::npos ? w : w.substr(0, colon);
+        std::string cmd = colon == std::string::npos ? "" : w.substr(colon + 2);
+        std::size_t c2 = loc.rfind(':');
+        if (c2 != std::string::npos) loc = shown_file(loc.substr(0, c2)) + loc.substr(c2);
+        std::string b = became;
+        for (std::string from : {host.out_dir.string() + "//", host.out_dir.string() + "/", host.out_dir.string()}) {
+            for (std::size_t at; (at = b.find(from)) != std::string::npos;) b.replace(at, from.size(), generated_dir + (from.ends_with("/") ? "/" : ""));
+        }
+        for (char& ch : b) {
+            if (ch == '|') ch = '/';
+        }
+        r += std::format("| `{}` | `{}` | {} |\n", loc, cmd, b);
+    }
+    r += "\n## TODOs\n\n";
+    if (todos.empty()) r += "None: the description is complete.\n";
+    for (const Todo& t : todos) {
+        std::string where = t.todo.file.empty() ? "" : std::format("`{}:{}` ", shown_file(t.todo.file), t.todo.line);
+        r += std::format("- {}{}", where, t.todo.message);
+        if (t.platforms.size() != platforms.size()) {
+            std::string list;
+            for (const std::string& o : t.platforms) list += (list.empty() ? "" : ", ") + o;
+            r += std::format(" (read for {})", list);
+        }
+        r += ". The reader doesn't translate it: write what it does with build-API calls (a `g.add_step` for a command "
+             "that makes files), or leave it out if the build doesn't need it.\n";
+    }
+    if (!executables.empty()) {
+        r += "\n## Left out\n\n";
+        for (const std::string& e : executables) r += std::format("- the executable `{}` (a package provides libraries)\n", e);
+    }
+    if (!notes.empty()) {
+        r += executables.empty() ? "\n## Left out\n\n" : "";
+        for (const std::string& n : notes) r += "- " + n + "\n";
+    }
+    if (!fs::is_empty(host.out_dir, ec) && fs::is_directory(host.out_dir, ec)) {
+        r += std::format("\n## Configured files\n\n`configure_file` outputs are copied to `{}` (as configured for linux with the "
+                         "options above). Re-run the converter when the options change.\n", generated_dir);
+    }
+    ConvertedPackage c;
+    c.description    = d;
+    c.report         = r;
+    c.targets        = order.size();
+    c.todos          = todos.size();
+    c.generated_from = fs::is_directory(host.out_dir, ec) && !fs::is_empty(host.out_dir, ec) ? host.out_dir.string() : "";
+    return c;
+}
+
 std::string version_string() { return std::string("edaxc ") + EDAX_VERSION; }
 
-// `edaxc package list|fetch|status [name]` (packages, section 8). Evaluating build.ed
+// `edaxc package list|fetch|status|update|convert [name]` (packages, section 8). Evaluating build.ed
 // fetches the packages; this prints what it found.
 ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    if (args.empty()) return usage_error(s, "edaxc package list|fetch|status [name]");
+    if (args.empty()) return usage_error(s, "edaxc package list|fetch|status|update|convert [name]");
     std::string sub(args[0]);
-    if (sub == "convert" || sub == "update") {
-        return usage_error(s, std::format("'edaxc package {}' is not supported by this edaxc yet; edit build.ed", sub));
+    if (sub != "list" && sub != "fetch" && sub != "status" && sub != "update" && sub != "convert") {
+        return usage_error(s, std::format("unknown package command '{}'", sub));
     }
-    if (sub != "list" && sub != "fetch" && sub != "status") return usage_error(s, std::format("unknown package command '{}'", sub));
     Options opts;
     opts.command = "build";
-    std::string only;
-    for (std::string_view a : args.subspan(1)) {
+    std::string only, new_tag, new_commit, to;
+    bool        compare = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        std::string_view a = args[i];
+        auto value = [&](std::string_view option, std::string& into) {   // `--tag=X` or `--tag X`
+            if (a.starts_with(std::string(option) + "=")) {
+                into = std::string(a.substr(option.size() + 1));
+                return true;
+            }
+            if (a == option && i + 1 < args.size()) {
+                into = std::string(args[++i]);
+                return true;
+            }
+            return false;
+        };
         if (a.starts_with("--root=")) opts.root = std::string(a.substr(7));
         else if (a.starts_with("--out-dir=")) opts.out_dir = std::string(a.substr(10));
         else if (a.starts_with("--mode=")) opts.mode = std::string(a.substr(7));
+        else if (a == "--hermetic") opts.hermetic = true;
+        else if (sub == "update" && value("--tag", new_tag)) continue;
+        else if (sub == "update" && value("--commit", new_commit)) continue;
+        else if (sub == "convert" && a == "--compare") compare = true;
+        else if (sub == "convert" && value("--to", to)) continue;
         else if (!a.starts_with("-") && only.empty()) only = std::string(a);
         else return usage_error(s, std::format("unknown option '{}'", a));
+    }
+    if ((sub == "update" || sub == "convert") && only.empty()) return usage_error(s, std::format("edaxc package {}: which package?", sub));
+    if (sub == "update" && new_tag.empty() == new_commit.empty()) {
+        return usage_error(s, "edaxc package update NAME --tag TAG | --commit COMMIT");
     }
     fs::path root = opts.root.empty() ? fs::path(".") : fs::path(opts.root);
     if (!fs::is_regular_file(root / "build.ed", ec)) return usage_error(s, "no build.ed here (--root=DIR)");
@@ -2671,6 +3366,78 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
         lock_out << "# Written by edaxc (spec 25): the content hash of each dependency. Keep it in version control.\n";
         for (const auto& [key, hash] : lock) lock_out << key << " " << hash << "\n";
     }
+    if (sub == "update" || sub == "convert") {
+        const ct::BuildDependency* found = nullptr;
+        for (const ct::BuildDependency& d : b.graph.dependencies) {
+            if (d.is_package && d.name == only) found = &d;
+        }
+        if (!found) return usage_error(s, std::format("build.ed has no package '{}'", only));
+        const ct::BuildDependency& d = *found;
+        if (sub == "update") {   // edits the version in build.ed, then fetches it (packages, section 8)
+            if (d.kind != "git") return usage_error(s, std::format("the package '{}' is not a git package: edit its .source in build.ed", d.name));
+            const SourceFile& file = b.sources.file(d.span.file);
+            std::string text(file.text());
+            std::string call = text.substr(d.span.begin, d.span.end - d.span.begin);
+            std::regex  version(R"re(\.(tag|commit)(\s*)=(\s*)"[^"]*")re");
+            std::smatch m;
+            std::ptrdiff_t matches = std::distance(std::sregex_iterator(call.begin(), call.end(), version), std::sregex_iterator());
+            if (matches != 1 || !std::regex_search(call, m, version)) {
+                return usage_error(s, std::format("cannot find the version of '{}' in {}: edit it there", d.name, file.path()));
+            }
+            std::string field = new_tag.empty() ? "commit" : "tag";
+            std::string updated = std::format(".{}{}={}\"{}\"", field, m[2].str(), m[3].str(), new_tag.empty() ? new_commit : new_tag);
+            call.replace(static_cast<std::size_t>(m.position(0)), static_cast<std::size_t>(m.length(0)), updated);
+            text.replace(d.span.begin, d.span.end - d.span.begin, call);
+            std::string old_version = d.commit.empty() ? "tag " + d.tag : "commit " + d.commit;
+            {
+                std::ofstream w(file.path());
+                w << text;
+            }
+            s.out << std::format("{}: {} -> {} {} in {}\n", d.name, old_version, field, new_tag.empty() ? new_commit : new_tag, file.path());
+            std::vector<std::string> again = {"fetch", d.name};
+            if (!opts.root.empty()) again.push_back("--root=" + opts.root);
+            if (!opts.out_dir.empty()) again.push_back("--out-dir=" + opts.out_dir);
+            std::vector<std::string_view> views(again.begin(), again.end());
+            return run_package(views, s);
+        }
+        // convert
+        fs::path dir = d.dir;
+        if (!fs::is_regular_file(dir / "CMakeLists.txt", ec)) return usage_error(s, std::format("the package '{}' has no CMakeLists.txt to convert", d.name));
+        fs::path into = to.empty() ? root / "packages" : fs::path(to);
+        std::string generated = "packages/" + d.name + ".generated";
+        ConvertedPackage c = convert_cmake_package(opts, d, out, generated);
+        fs::path description = into / (d.name + ".ed");
+        if (compare) {   // the new conversion against the description you have
+            if (!fs::is_regular_file(description, ec)) {
+                return usage_error(s, std::format("there is no {} to compare with: run 'edaxc package convert {}' first", description.string(), d.name));
+            }
+            fs::path fresh = out / "packages" / d.name / (d.name + ".converted.ed");
+            fs::create_directories(fresh.parent_path(), ec);
+            std::ofstream(fresh) << c.description;
+            std::string output;
+            int status = run_process({"diff", "-u", "--label", description.string(), "--label", "converted from " + d.name + "/CMakeLists.txt",
+                                      description.string(), fresh.string()}, &output);
+            if (status == 0) s.out << std::format("{} matches the package's CMake files\n", description.string());
+            else s.out << output;
+            return ExitCode::success;
+        }
+        if (fs::exists(description, ec)) {
+            return usage_error(s, std::format("{} exists: compare it with the package's CMake files with --compare, or delete it to "
+                                              "convert again", description.string()));
+        }
+        fs::create_directories(into, ec);
+        std::ofstream(description) << c.description;
+        std::ofstream(into / (d.name + ".convert.md")) << c.report;
+        if (!c.generated_from.empty()) {
+            fs::path copy = into / (d.name + ".generated");
+            fs::create_directories(copy, ec);
+            fs::copy(c.generated_from, copy, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        }
+        s.out << std::format("wrote {} ({} target{}, {} TODO{}) and {}\n", description.string(), c.targets, c.targets == 1 ? "" : "s", c.todos,
+                             c.todos == 1 ? "" : "s", (into / (d.name + ".convert.md")).string());
+        if (c.todos > 0) s.out << "finish the TODO(convert)s; from then on the package is built from the description\n";
+        return ExitCode::success;
+    }
     std::size_t shown = 0;
     for (const ct::BuildDependency& d : b.graph.dependencies) {
         if (!d.is_package || (!only.empty() && d.name != only)) continue;
@@ -2682,7 +3449,8 @@ ExitCode run_package(std::span<const std::string_view> args, DriverStreams& s) {
             run_process({"git", "-C", dir.string(), "status", "--porcelain", "--untracked-files=no"}, &output);
             changes = output;
         }
-        std::string how = d.build != "automatic" ? d.build
+        std::string how = d.build == "script" ? "script (" + d.build_arg + ")"
+                        : d.build != "automatic" ? d.build
                         : fs::is_regular_file(dir / "build.ed", ec)    ? "edax (build.ed)"
                         : fs::is_regular_file(dir / "CMakeLists.txt", ec) ? "cmake (CMakeLists.txt, read by edaxc)"
                                                                            : "headers_only";
@@ -2750,7 +3518,7 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
         return ExitCode::success;
     }
     if (command == "lex" || command == "parse" || command == "check" || command == "symbols" || command == "typed" ||
-        command == "build" || command == "run" || command == "emit-c" || command == "emit-llvm" || command == "test" ||
+        command == "build" || command == "run" || command == "emit-llvm" || command == "test" ||
         command == "insights" || command == "expand" || command == "simd-report" || command == "definition" ||
         command == "explain-checks") {
         Options opts;

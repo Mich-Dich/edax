@@ -129,6 +129,7 @@ bool starts_expression(TokenKind k) {
         return true;
     }
     switch (k) {
+    case TokenKind::at:   // `@std::dispatch_hint<T> call`
     case TokenKind::kw_this:
     case TokenKind::kw_default:
     case TokenKind::kw_true:
@@ -760,16 +761,17 @@ private:
     bool at_check_start() {
         if (at(TokenKind::kw_check)) return true;
         if (!at(TokenKind::kw_compile_time) && !at(TokenKind::kw_run_time)) return false;
-        return lookahead([&] {
-            for (TokenKind k : {TokenKind::kw_compile_time, TokenKind::kw_run_time}) {
-                if (accept(k) && at(TokenKind::l_paren)) {
-                    advance();
-                    while (!at(TokenKind::r_paren) && !at(TokenKind::eof)) advance();
-                    advance();
-                }
+        std::size_t i = 0;   // `compile_time (modes)? run_time (modes)? check`, without speculating
+        for (TokenKind k : {TokenKind::kw_compile_time, TokenKind::kw_run_time}) {
+            if (peek(i).kind != k) continue;
+            ++i;
+            if (peek(i).kind == TokenKind::l_paren) {
+                ++i;
+                while (peek(i).kind != TokenKind::r_paren && peek(i).kind != TokenKind::eof) ++i;
+                ++i;
             }
-            if (!at(TokenKind::kw_check)) throw ParseError{};
-        });
+        }
+        return peek(i).kind == TokenKind::kw_check;
     }
 
     std::vector<std::string> parse_mode_list(Span& span) {
@@ -1830,6 +1832,22 @@ private:
         if (!at(TokenKind::identifier) && !at(TokenKind::colon_colon) && !at(TokenKind::l_paren)) {
             return false;
         }
+        if (at(TokenKind::identifier)) {   // the common cases, without speculating
+            switch (peek(1).kind) {
+            case TokenKind::identifier: return true;   // `T name`
+            case TokenKind::dot: case TokenKind::l_paren: case TokenKind::r_paren: case TokenKind::semicolon:
+            case TokenKind::comma: case TokenKind::r_brace: case TokenKind::l_brace: case TokenKind::eq:
+            case TokenKind::eq_eq: case TokenKind::bang_eq: case TokenKind::plus: case TokenKind::minus:
+            case TokenKind::slash: case TokenKind::percent: case TokenKind::question: case TokenKind::dot_dot:
+            case TokenKind::dot_dot_eq: case TokenKind::arrow: case TokenKind::fat_arrow: case TokenKind::pipe_pipe:
+            case TokenKind::amp_amp: case TokenKind::pipe: case TokenKind::caret: case TokenKind::shl:
+            case TokenKind::greater: case TokenKind::greater_eq: case TokenKind::less_eq: case TokenKind::colon:
+                return false;   // an expression goes on (a type is followed by `::`, `<`, `&`, `[`, `*`, `...` or a name)
+            default:
+                if (is_assignment_op(peek(1).kind)) return false;
+                break;
+            }
+        }
         return lookahead([&] {
             parse_type({});
             if (!at(TokenKind::identifier)) {
@@ -1856,7 +1874,9 @@ private:
             block.statements.push_back(std::move(stmt));
             return;
         }
-        if (at(TokenKind::at)) {   // `@std::allow{ .id = x } stmt;`: only @std::allow on a statement
+        bool hinted_call = at(TokenKind::at) && peek(1).kind == TokenKind::identifier && peek(1).text == "std" &&
+                           peek(2).kind == TokenKind::colon_colon && peek(3).kind == TokenKind::identifier && peek(3).text == "dispatch_hint";
+        if (at(TokenKind::at) && !hinted_call) {   // `@std::allow{ .id = x } stmt;`: only @std::allow on a statement
             std::vector<ExprPtr> allowed;
             while (at(TokenKind::at)) {
                 AnnotationUse u = parse_annotation_use();
@@ -2261,6 +2281,32 @@ private:
         }
     }
 
+    // `@std::dispatch_hint<circle> shape.area()` (performance §8): the only annotation written
+    // on an expression. It names the class a dynamic call is expected to reach.
+    ExprPtr parse_hinted_call() {
+        AnnotationUse u = parse_annotation_use();
+        ExprPtr       operand = parse_prefix();
+        bool hint = to_string(u.path) == "std::dispatch_hint" ||
+                    (u.path.segments.size() == 2 && u.path.segments[0].name == "std" && u.path.segments[1].name == "dispatch_hint");
+        PathSegment& last = u.path.segments.back();
+        if (!hint) {
+            report(DiagCode::E2035, u.span, "only '@std::dispatch_hint<T>' may be written on an expression", "not allowed here")
+                .notes.push_back(Note{"annotations describe declarations", std::nullopt});
+            return operand;
+        }
+        if (last.template_args.size() != 1 || !last.template_args[0].type) {
+            report(DiagCode::E2035, u.span, "'@std::dispatch_hint' names one class: '@std::dispatch_hint<circle>'", "no class");
+            return operand;
+        }
+        if (operand->kind != ExprKind::call) {
+            report(DiagCode::E2035, u.span, "'@std::dispatch_hint' is written directly before a call", "not before a call");
+            return operand;
+        }
+        auto& call         = operand->as<CallExpr>();
+        call.dispatch_hint = std::move(last.template_args[0].type);
+        return operand;
+    }
+
     ExprPtr parse_prefix() {
         Span    start = cur().span;
         UnaryOp op;
@@ -2283,6 +2329,7 @@ private:
         case TokenKind::star: op = UnaryOp::deref; break;
         case TokenKind::amp: op = UnaryOp::address_of; break;
         case TokenKind::kw_move: op = UnaryOp::move; break;
+        case TokenKind::at: return parse_hinted_call();
         case TokenKind::kw_mut:
             if (peek(1).kind == TokenKind::amp) {
                 advance();

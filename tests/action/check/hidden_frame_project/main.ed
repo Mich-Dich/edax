@@ -1,0 +1,2 @@
+import lib;
+u32 main() { return lib::outer(5u32); }

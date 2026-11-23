@@ -1,0 +1,3 @@
+// RUN: edaxc run --root=%S/packages_described_project --out-dir=%t app
+// Packages (section 3): a package without build files described by packages/tiny.ed (found by
+// its name), and one built by real CMake (package_build::cmake_external) and linked by its outputs.

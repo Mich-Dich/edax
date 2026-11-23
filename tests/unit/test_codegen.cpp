@@ -5,7 +5,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <regex>
+#include <set>
 #include <sstream>
+#include <cstdlib>
 
 using edax_test::Project;
 
@@ -91,14 +94,31 @@ TEST_CASE("codegen: missing main and unsupported constructs are errors") {
 TEST_CASE("codegen: output is deterministic") {
     std::string src = "struct a { u32 x = 0; }\nstruct b { a inner = default; }\nenum e : u8 { one, two(u32) }\n"
                       "u32 main() { b v = b{}; e w = e::two(3); return v.inner.x; }";
-    CHECK_EQ(generate(src).ir, generate(src).ir);
+    // Names are hashes of what they name; string constants hold the (temporary) project path,
+    // so their hashes differ between the two projects.
+    auto without_hashes = [](const std::string& ir) { return std::regex_replace(ir, std::regex(R"(\.[0-9a-f]{16})"), ".H"); };
+    CHECK_EQ(without_hashes(generate(src).ir), without_hashes(generate(src).ir));
+}
+
+TEST_CASE("codegen: names come from what they name, not from the order they were made in") {
+    // Adding a function that uses a new string and a new instance doesn't rename anything in main.
+    std::string body = "u32 main() { std::darray<u32> xs = default; std::println(\"one\"); return 0; }";
+    Generated   a    = generate("import std;\n" + body);
+    Generated   b    = generate("import std;\nvoid other() { std::darray<u8> ys = default; std::println(\"two\"); }\n" + body);
+    auto main_of = [](const std::string& ir) {
+        std::size_t at = ir.find("@r_4main4main(");
+        return at == std::string::npos ? std::string() : ir.substr(at, ir.find("\n}\n", at) - at);
+    };
+    CHECK(!main_of(a.ir).empty());
+    CHECK_EQ(main_of(a.ir), main_of(b.ir));
 }
 
 TEST_CASE("codegen: a struct type holds the types of its fields") {
     Generated g = generate("struct outer { inner i = default; }\nstruct inner { u32 x = 0; }\n"
                            "u32 main() { outer o = outer{}; return o.i.x; }");
-    CHECK(contains(g.ir, "%inner = type { i32 }"));
-    CHECK(contains(g.ir, "%outer = type { %inner }"));
+    // Struct types are named `<name>.<hash of the full name>`.
+    CHECK(std::regex_search(g.ir, std::regex(R"(%inner\.[0-9a-f]{16} = type \{ i32 \})")));
+    CHECK(std::regex_search(g.ir, std::regex(R"(%outer\.[0-9a-f]{16} = type \{ %inner\.[0-9a-f]{16} \})")));
 }
 
 // --- the driver: build and run ------------------------------------------------------------
@@ -140,6 +160,40 @@ TEST_CASE("driver: run returns the program's exit status") {
     std::filesystem::path src = write_program("seven.ed", "u32 main() { return 7; }\n");
     CHECK_EQ(drive({"run", src.string()}).status, 7);
     std::filesystem::remove_all(src.parent_path());
+}
+
+TEST_CASE("driver: a debug build reuses the object code of units that didn't change") {
+    namespace fs = std::filesystem;
+    fs::path cache = fs::temp_directory_path() / "edax_unit_object_cache";
+    fs::remove_all(cache);
+    const char* saved = std::getenv("EDAX_CACHE_DIR");
+    std::string saved_value = saved ? saved : "";
+    setenv("EDAX_CACHE_DIR", cache.string().c_str(), 1);
+    auto objects = [&] {
+        std::set<std::string> out;
+        for (const fs::directory_entry& e : fs::directory_iterator(cache)) {
+            if (e.path().filename().string().starts_with("llvmcache-") && e.path().extension() == ".o") out.insert(e.path().filename().string());
+        }
+        return out;
+    };
+    std::string program = "import std;\nu32 main() { mut std::darray<u32> xs = default; xs.push(5); return xs[0]; }\n";
+    fs::path src = write_program("cached.ed", program);
+    CHECK_EQ(drive({"run", src.string()}).status, 5);
+    std::set<std::string> first = objects();
+    CHECK(first.size() > 1);   // the program's unit and the library's units
+    CHECK_EQ(drive({"run", src.string()}).status, 5);
+    CHECK(objects() == first);   // all reused
+    // A change to the program's own code: only its unit is compiled again.
+    std::ofstream(src) << "import std;\nu32 main() { mut std::darray<u32> xs = default; xs.push(6); return xs[0]; }\n";
+    CHECK_EQ(drive({"run", src.string()}).status, 6);
+    CHECK_EQ(objects().size(), first.size() + 1);
+    // Release builds are one module, without the cache.
+    CHECK_EQ(drive({"run", src.string(), "--mode=release"}).status, 6);
+    CHECK_EQ(objects().size(), first.size() + 1);
+    if (saved) setenv("EDAX_CACHE_DIR", saved_value.c_str(), 1);
+    else unsetenv("EDAX_CACHE_DIR");
+    fs::remove_all(cache);
+    fs::remove_all(src.parent_path());
 }
 
 TEST_CASE("driver: emit-llvm prints the module") {

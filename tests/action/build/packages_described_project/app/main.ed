@@ -1,0 +1,9 @@
+import std;
+
+extern(std::build::language::c) i32 tiny_value();
+extern(std::build::language::c) i32 ext_value();
+
+i32 main() {
+    unsafe { std::println(f"tiny {tiny_value()}, ext {ext_value()}"); }
+    return 0;
+}

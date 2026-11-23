@@ -5,6 +5,7 @@
 // only computed when something is shown to a human (diagnostics, token dumps).
 
 #include <cstdint>
+#include <istream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,5 +75,14 @@ std::size_t decode_utf8(std::string_view text, std::size_t pos, char32_t& out);
 
 // Appends the UTF-8 encoding of `cp` to `out`.
 void encode_utf8(char32_t cp, std::string& out);
+
+// The rest of a stream as a string. Reads in blocks: the istreambuf_iterator idiom trips GCC's
+// -Wnull-dereference inside libstdc++.
+inline std::string read_rest(std::istream& in) {
+    std::string out;
+    char        block[1 << 14];
+    while (in.read(block, sizeof block) || in.gcount() > 0) out.append(block, static_cast<std::size_t>(in.gcount()));
+    return out;
+}
 
 } // namespace edax

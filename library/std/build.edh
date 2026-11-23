@@ -190,6 +190,19 @@ namespace std::build {
         // One header-only target named after the package; the payload is its include directory
         // ("" for `include/` if it exists, else the package's root).
         headers_only(std::static_str),
+        // A description in the project (`packages/<name>.ed`): the payload is its file, under
+        // `packages/`. Its `describe(g, p)` adds the targets and exports them.
+        script(std::static_str),
+        // Real CMake, run as a build step (the last resort): the files it installs.
+        cmake_external(std::build::cmake_outputs),
+    }
+
+    // What `package_build::cmake_external` uses of CMake's install directory (paths relative to it).
+    view struct cmake_outputs {
+        // Libraries to link, in order: `"lib/libfoo.a"`.
+        std::span<std::static_str> outputs = [];
+        // Include directories for what links the package: `"include"`.
+        std::span<std::static_str> include_dirs = [];
     }
 
     // A package (packages): outside code fetched into the project and built with it.
@@ -218,6 +231,14 @@ namespace std::build {
         compile_time std::build::target target(std::static_str name);
         // The files of the package matching a pattern (absolute paths).
         compile_time std::span<std::build::path> glob(std::static_str pattern);
+        // Files of the package by their path inside it (absolute paths; a missing one is an error).
+        compile_time std::span<std::build::path> files(std::span<std::static_str> relative);
+        // A directory or file of the package by its path inside it, as an absolute path.
+        compile_time std::static_str at(std::static_str relative);
+        // A package description (`describe`): makes `t` the package's target, what
+        // `p.target(name)` returns, under its own name or under `name` (a CMake-style alias).
+        compile_time void export_target(std::build::target t);
+        compile_time void export_target(std::build::target t, std::static_str name);
     }
 
     // Another project this build uses (`g.dependency(...)`).
@@ -324,6 +345,9 @@ namespace std::build {
         // A shared C or C++ library (`lib<name>.so`), loaded by the operating system when a
         // program that links it starts. Its sources are added like a static one's.
         compile_time std::build::target add_shared_library(std::build::c_target spec) mut;
+        // A shared Edax library: its modules' code is compiled once, into lib<name>.so next to the
+        // programs; the programs that link it import its modules and call into it.
+        compile_time std::build::target add_shared_library(std::build::edax_target spec) mut;
         // A Edax plugin (dynamic libraries): its `@std::plugin_entry` class, built as
         // `<name>.so` in the `plugins` directory next to the programs, which load it with
         // `std::plugin<I>::load`. Built with the programs of the build.

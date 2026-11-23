@@ -94,7 +94,7 @@ void print_one(T& item) {                                       // static dispat
 ```
 
 ### Who may implement an interface
-Only the type's own declaration: its base list, or an annotation written on it that generates the implementation (see [Annotations](../compile-time/annotations.md)). No other module can make an existing type implement an interface (see [Namespaces](../organization/namespaces.md)).
+The type's own declaration (its base list, or an annotation written on it that generates the implementation, see [Annotations](../compile-time/annotations.md)), or an `implement I for T { ... }` block in the module that declares `I` or the one that declares `T` (see [Templates](../compile-time/templates.md)). No third module can make an existing type implement an interface (see [Namespaces](../organization/namespaces.md)).
 
 ## Rationale
 - **`virtual` only introduces, `override` only implements:** every method says exactly one thing, and a reader can tell a new dispatch point from an implementation.

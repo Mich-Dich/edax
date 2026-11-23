@@ -12,6 +12,11 @@
 // `expect`, `or_error`, `map_error`) and the `?` operator are provided by the compiler.
 
 namespace std {
+    // Whether calling a callable of type F gives an R, for the checks of functions that take one:
+    // `compile_time check (std::returns<F, bool>()) else "...";`.
+    template<type F, type R>
+    compile_time bool returns();
+
     // A value that may be absent.
     template<type T>
     enum option : u8 {
@@ -391,6 +396,40 @@ namespace std {
         ~string();
     }
 
+    // Text in UTF-8 whose bytes come from the allocator `A` (allocators): `std::string` is the
+    // global allocator's (with 23 bytes stored inline), `std::string_with<std::arena_allocator>`
+    // keeps its text in an arena. It converts to a `std::str` implicitly and formats like a string.
+    template<type A = std::global_allocator>
+    class string_with : unsafe std::sendable(std::implements<A, std::sendable>()),
+                        unsafe std::shareable(std::implements<A, std::shareable>()) {
+    public:
+        // An empty string that allocates from `alloc`.
+        static string_with<A> with_allocator(A alloc);
+
+        // A copy of `text` in memory from `alloc`.
+        static string_with<A> from_in(std::str text, A alloc);
+
+        // A copy of `text` (when `A` has a default).
+        static string_with<A> from(std::str text);
+
+        usize len();
+        bool is_empty();
+        std::str as_str();
+        void push_str(std::str text) mut;
+        void push(char c) mut;
+        void clear() mut;
+        void reserve(usize n) mut;
+        usize capacity();
+
+        // A copy, from the same allocator.
+        string_with<A> clone();
+
+        bool operator==(string_with<A>& other);
+        std::ordering operator<=>(string_with<A>& other);
+
+        ~string_with();
+    }
+
     // Why an I/O operation failed (spec 20). It prints as its name: `not_found`.
     enum io_error : u8 {
         not_found,
@@ -451,6 +490,9 @@ namespace std {
         // A plugin built against another interface (or another version of it), or by another edaxc.
         incompatible,
         platform_error,
+        // `reload`: a field of the plugin's @std::hot_reload_state object has another type in the
+        // new build; the old plugin stays loaded.
+        state_changed,
     }
 
     // Marks the class a plugin provides (`g.add_plugin`): it implements the plugin's interface
@@ -467,6 +509,13 @@ namespace std {
     public:
         // Loads the plugin at `path`. Needs a target with dynamic libraries.
         static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path);
+
+        // Replaces the plugin with the build at `path` (checked like `load`). When the plugin's
+        // object is of a type marked @std::hot_reload_state in both builds, its fields move into
+        // the new object by name: a field in both keeps its value, a new field keeps the value the
+        // new `make()` gave it, a removed field is destroyed with the old object. A field whose
+        // type changed is `std::plugin_error::state_changed`, and nothing is replaced.
+        std::result<void, plugin_error> reload(std::filesystem::path& path) mut;
 
         // The plugin's object, through its interface: a reference into the plugin.
         I& operator*();
@@ -690,10 +739,15 @@ namespace std {
     //
     // A B-tree: nodes of up to 15 keys keep lookups to a few cache lines per level and make the
     // ordered walk of `entries()` fast; nothing is reached through one pointer per key.
-    template<type K, type V>
-    class tree_map : unsafe std::sendable(std::implements<K, std::sendable>() && std::implements<V, std::sendable>()),
+    // Its nodes come from the allocator `A` (allocators).
+    template<type K, type V, type A = std::global_allocator>
+    class tree_map : unsafe std::sendable(std::implements<K, std::sendable>() && std::implements<V, std::sendable>() &&
+                                          std::implements<A, std::sendable>()),
                      unsafe std::shareable(std::implements<K, std::shareable>() && std::implements<V, std::shareable>()) {
     public:
+        // An empty map whose nodes come from `alloc`.
+        static tree_map<K, V, A> with_allocator(A alloc);
+
         usize len();
         bool is_empty();
         std::option<V> insert(K key, V value) mut;
@@ -1281,6 +1335,19 @@ namespace std {
     // takes no parameters and returns nothing; it passes when it returns.
     annotation(std::meta::target::function)
     struct test { }
+
+    // On a plugin's entry class (dynamic libraries, "Hot reload"): `std::plugin::reload` moves
+    // the object's fields into the new build's object by name.
+    annotation(std::meta::target::type)
+    struct hot_reload_state { }
+
+    // On a template of a library: its instances don't appear in the instantiation chains of
+    // errors, and an error inside it is reported at the user's call that reached it (templates,
+    // "Library error frames").
+    annotation(std::meta::target::function, std::meta::target::type)
+    struct diagnostic_frame {
+        bool hide = false;
+    }
 }
 
 // --- SIMD: blocks over a range (the vector types are built into the compiler) --------------------

@@ -65,7 +65,7 @@ swap(mut a, mut a);                       // ERROR: two mutable references to a
 ```
 
 ### Places: fields are separate
-The aliasing rule is about **places**. A place is a local (or `this`) followed by fields: `w`, `w.positions`, `w.camera.position`. Two places of one variable overlap when one is a prefix of the other (`w` and `w.positions`); places that part ways at a field (`w.positions` and `w.velocities`) don't. An index ends a place: `xs[i]` and `xs[j]` are the same place, because `i` may equal `j` (spec 34).
+The aliasing rule is about **places**. A place is a local (or `this`) followed by fields: `w`, `w.positions`, `w.camera.position`. Two places of one variable overlap when one is a prefix of the other (`w` and `w.positions`); places that part ways at a field (`w.positions` and `w.velocities`) don't. An index ends a place: `xs[i]` and `xs[j]` are the same place, because `i` may equal `j`.
 ```edax
 integrate(mut w.positions, w.velocities);   // OK: two fields of w
 w.positions.push(w.velocities[0]);          // OK

@@ -1,0 +1,7 @@
+levels: info 6, warn 3, error 1
+audio     14 ms
+physics   12 ms
+render    20 ms
+ui         7 ms
+slowest: audio=12 physics=9 render=7
+skipped 2 lines

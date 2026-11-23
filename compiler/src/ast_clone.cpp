@@ -279,6 +279,7 @@ ExprPtr Cloner::expr(const Expr& e) {
             }
         }
         auto out = std::make_unique<CallExpr>(c.span, expr(*c.callee));
+        if (c.dispatch_hint) out->dispatch_hint = type(*c.dispatch_hint);
         for (const ExprPtr& a : c.args) {
             if (pack_ && a->kind == ExprKind::unary && a->as<UnaryExpr>().op == UnaryOp::spread && is_pack_value(*a->as<UnaryExpr>().operand)) {
                 for (std::size_t i = 0; i < pack_count_; ++i) {   // `values...`

@@ -600,6 +600,11 @@ public:
                                          : v->symbol                          ? v->symbol->name
                                                                               : ct::to_string(*v);
         }
+        // profile_guided(): `std::some(path)` or `std::none` (spec 24); the path, or "".
+        if (std::shared_ptr<const ct::Value> v = evaluator().mode_setting(mode, "profile_guided")) {
+            const ct::Value* payload = v->symbol && v->symbol->name == "some" && !v->elements.empty() ? &v->elements[0] : nullptr;
+            program_.mode_settings["profile_guided"] = payload && payload->kind == ct::Value::Kind::string ? payload->string : "";
+        }
         auto& ms = program_.mode_settings;
         bool unsafe_mode = ms["bounds"] == "unchecked" || (ms["run_time_checks"] != "all" && !ms["run_time_checks"].empty());
         if (unsafe_mode && ms["allow_undefined_behavior"] != "true") {
@@ -927,7 +932,7 @@ private:
             return 0;
         }
         if (f->is(Kind::static_str) && t->is(Kind::external)) return 0;
-        if (is_std_string(f) && t->is(Kind::external) && t->name == "std::str" && !to_ref) return 0;   // a borrow (spec 19)
+        if (is_std_text(f) && t->is(Kind::external) && t->name == "std::str" && !to_ref) return 0;   // a borrow (spec 19)
         if (f->is(Kind::static_str) && is_std_string(t) && !to_ref) return 0;   // allocates, with a warning
         if (f->is(Kind::nullptr_) && t->is(Kind::pointer)) return 0;
         if (f->is(Kind::pointer) && t->is(Kind::pointer)) {
@@ -941,6 +946,10 @@ private:
         if (lambda_fits(f, t) && !to_ref) return 0;
         return -1;
     }
+
+    // Whether `t` is text that converts to `std::str` and formats like it: `std::string` or a
+    // `std::string_with<A>` (allocators).
+    bool is_std_text(const Type* t) const { return is_std_string(t) || types::is_std_instance(t, "string_with"); }
 
     // Whether `t` is `std::string`: the library's class, or the name before std is imported.
     bool is_std_string(const Type* t) const {
@@ -1451,7 +1460,7 @@ private:
             e.conversion   = Expr::Conversion::pointer_upcast;
             e.converted_to = t;
         }
-        if (is_std_string(types::strip_ref(e.type)) && t->is(Kind::external) && t->name == "std::str" &&
+        if (is_std_text(types::strip_ref(e.type)) && t->is(Kind::external) && t->name == "std::str" &&
             !target->is(Kind::reference)) {
             e.conversion = Expr::Conversion::string_to_str;
         }
@@ -2363,10 +2372,10 @@ private:
             // Assigning through `v[i]` uses `mut T& operator[](usize) mut` (spec 16).
             auto&       ix  = a.target->as<IndexExpr>();
             const Type* obj = types::strip_ref(ix.object->type);
-            if (Symbol* m = index_operator(obj, true); m && m->function()->is_mut) {
+            if (Symbol* m = index_operator(obj, true); m && m->function_decl().is_mut) {
                 ix.op_symbol    = m;
                 use_method(m, ix.span);
-                target          = m->function()->result ? lower_owned(m, *m->function()->result) : target;
+                target          = m->function_decl().result ? lower_owned(m, *m->function_decl().result) : target;
                 a.target->type  = target;
                 require_mutable(place_of(*ix.object), *ix.object, "change an element of");
             }
@@ -2470,7 +2479,7 @@ private:
             if (m.arrow) {
                 const Type* pt = types::strip_ref(objt);
                 p.is_place     = true;
-                p.is_mutable   = m.deref_symbol ? m.deref_symbol->function()->is_mut : !pt->is(Kind::pointer) || pt->is_mut;
+                p.is_mutable   = m.deref_symbol ? m.deref_symbol->function_decl().is_mut : !pt->is(Kind::pointer) || pt->is_mut;
                 p.name         = ast::to_string(m.name);
                 return p;
             }
@@ -3178,7 +3187,7 @@ private:
         const Type* s = types::strip_ref(t);
         if (s->is(Kind::user) && u.op == UnaryOp::deref) {   // `*p` on a smart pointer: its `operator*`
             if (const Type* target = smart_target(*u.operand, s, u.op_symbol)) {
-                return set(u, tc_.reference(target, u.op_symbol->function()->is_mut));
+                return set(u, tc_.reference(target, u.op_symbol->function_decl().is_mut));
             }
         }
         if (const Type* under = u.op == UnaryOp::negate ? distinct_arithmetic(s) : nullptr) {   // `-d` (spec 34)
@@ -3397,7 +3406,7 @@ private:
                  "the path is relative to the directory of the source file");
             return result;
         }
-        std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string bytes = read_rest(in);
         if (text && !valid_utf8(bytes)) {
             error(DiagCode::E4201, c.args[0]->span, std::format("'{}' is not UTF-8 text; use std::embed for bytes", rel), "not text");
             return result;
@@ -4335,8 +4344,8 @@ private:
             }
             if (Symbol* expanded = instantiator_pack_variant(s, n)) s = expanded;
         }
-        Candidate c{s, s->function(), {}, {}, nullptr, 0, false, {}, false, {}, {}};
-        const FunctionDecl& f = *c.decl;
+        const FunctionDecl& f = s->function_decl();
+        Candidate c{s, &f, {}, {}, nullptr, 0, false, {}, false, {}, {}};
         if (f.is_template) {
             // A method template of a class template instance also uses the class's arguments.
             if (const auto* outer = s->parent ? substitution_of(s->parent) : nullptr) c.subst = *outer;
@@ -4454,8 +4463,8 @@ private:
             if (a->is_unknown()) return chosen.symbol;
         }
         if (!check_constraints(syms, args, span, display)) return nullptr;
-        if (chosen.symbol->kind == SymbolKind::method) return instantiate_method(chosen.symbol, args);
-        return instantiate_function(chosen.symbol, args);
+        if (chosen.symbol->kind == SymbolKind::method) return instantiate_method(chosen.symbol, args, span);
+        return instantiate_function(chosen.symbol, args, span);
     }
 
     // Picks an overload, reports problems, coerces the arguments. Returns the chosen symbol.
@@ -4618,6 +4627,15 @@ private:
 
     const Type* infer_call(CallExpr& c) {
         call_marks_[&c] = diags_.size();   // errors from here on that a failing entry check suppresses
+        if (c.dispatch_hint) {   // @std::dispatch_hint<T> (performance §8): a class or struct with methods
+            const Type* h = lower(*c.dispatch_hint);
+            if (h->is(Kind::user) && (h->symbol->kind == SymbolKind::class_ || h->symbol->kind == SymbolKind::struct_)) {
+                c.hint_symbol = const_cast<Symbol*>(h->symbol);
+            } else if (!h->is_unknown()) {
+                error(DiagCode::E4210, c.dispatch_hint->span, std::format("@std::dispatch_hint names a class or struct, not {}", quoted(h)),
+                      "not a class");
+            }
+        }
         if (c.wrapped) {   // `std::meta::wrapped_body()`: the function's own body; its returns give the value
             bool saved_unsafe = unsafe_depth_ > 0;
             (void)saved_unsafe;
@@ -4904,7 +4922,7 @@ private:
             } else {
                 methods = find_methods(t->symbol, name);
             }
-            if (!methods.empty() && methods[0]->function() && !methods[0]->function()->is_static) {
+            if (!methods.empty() && methods[0]->function() && !methods[0]->function_decl().is_static) {
                 reject_packed_reference(*me.object, "the receiver of a method");
             }
             callee.type = nullptr;
@@ -4975,7 +4993,8 @@ private:
             check_compile_time_call(chosen->symbol, c.span);
             check_unsafe_call(chosen->symbol, c.span);
             set(c, chosen->result);
-            run_entry_checks(chosen->symbol, c, args);
+            // A method template's checks are those of its instance (its parameters' types known).
+            run_entry_checks(me.symbol ? me.symbol : chosen->symbol, c, args);
             return chosen->result;
         }
 
@@ -5140,7 +5159,7 @@ private:
                 return c.type;
             }
             const Symbol* root = from->symbol;
-            while (root->base_class()) root = root->base_class();
+            for (const Symbol* b = root->base_class(); b; b = b->base_class()) root = b;
             if (!root->is_open()) {
                 error(DiagCode::E4091, c.span, std::format("cast::dynamic needs an open class hierarchy; {} is not one", quoted(from)),
                       "not polymorphic");
@@ -6036,7 +6055,7 @@ private:
             }
             i.op_symbol = op;
             use_method(op, i.span);
-            const FunctionDecl* f  = op->function();
+            const FunctionDecl* f  = &op->function_decl();
             const Type*         pt = lower_owned(op, *f->params[0].type);
             if (idx->is_untyped() || operand_fits(idx, pt)) coerce(*i.index, pt);
             else if (!idx->is_unknown()) mismatch(i.index->span, idx, pt, " (the index)");
@@ -6202,10 +6221,10 @@ private:
             if (!f || !f->params.empty() || !f->is_operator) continue;
             if (!chosen || f->is_mut == want_mut) chosen = m;
         }
-        if (!chosen || !chosen->function()->result) return nullptr;
+        if (!chosen || !chosen->function_decl().result) return nullptr;
         op = const_cast<Symbol*>(chosen);
         use_method(chosen, object.span);
-        return types::strip_ref(lower_owned(chosen, *chosen->function()->result));
+        return types::strip_ref(lower_owned(chosen, *chosen->function_decl().result));
     }
 
     // `std::unique_ptr<circle>::make(...)`: the resolver names the template's member; the call
@@ -6546,7 +6565,7 @@ private:
     bool formattable(const Type* t) {
         t = types::strip_ref(t);
         if (t->is_unknown() || t->is(Kind::type_param)) return true;
-        if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || is_std_string(t) ||
+        if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || is_std_text(t) ||
             (t->is(Kind::external) && t->name == "std::str")) {
             return true;
         }
@@ -6587,7 +6606,7 @@ private:
         for (const Symbol* s = t->symbol; s; s = s->base_class()) {
             if (auto it = s->members.find("hash"); it != s->members.end()) {
                 for (const Symbol* m : it->second) {
-                    if (m->function() && m->function()->params.empty() && !m->is_static) return true;
+                    if (m->function() && m->function_decl().params.empty() && !m->is_static) return true;
                 }
             }
         }
@@ -6667,7 +6686,7 @@ private:
     // A method of `t` named `name` that takes no arguments, or null.
     Symbol* nullary_method(const Type* t, const std::string& name) {
         for (Symbol* m : find_methods(t->symbol, name)) {
-            if (m->function() && m->function()->params.empty() && !m->function()->is_template) return m;
+            if (m->function() && m->function_decl().params.empty() && !m->function_decl().is_template) return m;
         }
         return nullptr;
     }
@@ -6684,7 +6703,7 @@ private:
             f.index_symbol = at;
             use_method(len, f.iterable->span);
             use_method(at, f.iterable->span);
-            const FunctionDecl* af = at->function();
+            const FunctionDecl* af = &at->function_decl();
             const Type* el = af->result ? types::strip_ref(lower_owned(at, *af->result)) : tc_.error();
             if (!var->is_unknown() && !el->is_unknown() && types::strip_ref(var) != el) {
                 mismatch(f.type->span, var, el, " (the container's elements)");
@@ -7079,6 +7098,8 @@ public:
     }
 private:   // compile-time values that depend on a template parameter
 
+    friend class Instantiator;   // reads annotation values (@std::diagnostic_frame) through ensure_constant
+
     // On-demand checking for compile-time code; defined after Instantiator, which keeps the state.
     bool begin_check(const Decl* d);
     void end_check(const Decl* d);
@@ -7087,10 +7108,10 @@ private:   // compile-time values that depend on a template parameter
     void ensure_field(const Symbol* f);
 
     // The instance of the function template `templ` for `args` (spec 14), defined after Instantiator.
-    Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args);
+    Symbol* instantiate_function(const Symbol* templ, const std::vector<const Type*>& args, std::optional<Span> site = std::nullopt);
     // The pack template `templ` as an ordinary template for `n` pack arguments.
     Symbol* instantiator_pack_variant(const Symbol* templ, std::size_t n);
-    Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args);
+    Symbol* instantiate_method(const Symbol* templ, const std::vector<const Type*>& args, std::optional<Span> site = std::nullopt);
 };
 
 // Makes the instances of template types (spec 14). An instance is a copy of the template's
@@ -7101,6 +7122,64 @@ class Instantiator {
 public:
     Instantiator(sema::Program& program, const SourceManager& sources, DiagnosticEngine& diags)
         : program_(program), sources_(sources), diags_(diags) {}
+
+    // Where the next function instance is asked for (the call), set by the checker.
+    std::optional<Span> next_site;
+
+    // The instantiation chain of errors (templates): every error reported while an instance is
+    // checked gets a note naming the instance and where it was asked for, innermost first. A
+    // template marked `@std::diagnostic_frame{ .hide = true }` leaves no note, and an error in
+    // its own code moves to the call that reached it, with a note where the check is.
+    bool hidden_frame(const Symbol* templ) {
+        const Decl* d = templ ? templ->decl : nullptr;
+        const AnnotationUse* u = d ? sema::find_annotation(d->annotations, "std::diagnostic_frame") : nullptr;
+        if (!u || !u->value_symbol) return false;
+        std::shared_ptr<const ct::Value> v = u->value_symbol->ct_value;
+        if (!v) v = Checker(program_, diags_, this).ensure_constant(u->value_symbol);
+        return v && !v->elements.empty() && v->elements[0].kind == ct::Value::Kind::boolean && v->elements[0].boolean;   // .hide
+    }
+
+    static bool inside(Span inner, Span outer) { return inner.file == outer.file && inner.begin >= outer.begin && inner.end <= outer.end; }
+
+    void add_frame(std::size_t mark, const Symbol* templ, const Symbol* inst, std::optional<Span> site) {
+        if (diags_.size() == mark) return;
+        std::vector<Diagnostic> made   = diags_.take_since(mark);
+        bool                    hidden = hidden_frame(templ);
+        for (Diagnostic& d : made) {
+            if (d.severity != Severity::error && d.severity != Severity::warning) {
+                diags_.add(std::move(d));
+                continue;
+            }
+            const Decl* src = templ->definition ? templ->definition : templ->decl;
+            if (hidden) {
+                if (site && src && inside(d.span, src->span)) {   // in the library's code: at the call that reached it
+                    bool noted = false;
+                    for (const Note& n : d.notes) noted = noted || n.message.starts_with("inside the library");
+                    if (!noted) d.notes.push_back(Note{std::format("inside the library, in '{}'", templ->name), d.span});
+                    d.span = *site;
+                }
+            } else if (site) {
+                std::size_t frames = 0;
+                for (const Note& n : d.notes) if (n.message.starts_with("in the instance ")) ++frames;
+                if (frames < 8) {
+                    d.notes.push_back(Note{std::format("in the instance '{}', asked for here", instance_name(inst)), site});
+                } else if (frames == 8) {
+                    d.notes.push_back(Note{"in the instance ... (more instances)", std::nullopt});
+                }
+            }
+            diags_.add(std::move(d));
+        }
+    }
+
+    std::string instance_name(const Symbol* inst) {
+        std::string out = inst->parent && inst->parent->template_of ? types::to_string(program_.types->user(inst->parent)) + "::" : "";
+        if (inst->kind == SymbolKind::function || inst->kind == SymbolKind::method) {
+            out += inst->name + "<";
+            for (std::size_t i = 0; i < inst->template_args.size(); ++i) out += (i ? ", " : "") + types::to_string(inst->template_args[i]);
+            return out + ">";
+        }
+        return types::to_string(program_.types->user(inst));
+    }
 
     const Type* instantiate(const Symbol* templ, const std::vector<const Type*>& args) {
         auto key = std::make_pair(templ, args);
@@ -7136,7 +7215,9 @@ public:
             std::vector<const Symbol*> declared(templ->decl->template_param_symbols.begin(), templ->decl->template_param_symbols.end());
             checker.constraints_hold(declared, args, *checker.instance_site_, templ->name);
         }
+        std::size_t mark = diags_.size();
         checker.check_instance(inst, *copy);
+        add_frame(mark, templ, inst, checker.instance_site_);
         return t;
     }
 
@@ -7156,7 +7237,10 @@ public:
         fn_memo_[key] = inst;   // before checking the body, so that recursive calls find it
         program_.instances.push_back(inst);
         program_.instance_copies.push_back(copy);
+        std::optional<Span> site = std::exchange(next_site, std::nullopt);
+        std::size_t         mark = diags_.size();
         Checker(program_, diags_, this).check_instance(inst, *copy);
+        add_frame(mark, templ, inst, site);
         return inst;
     }
 
@@ -7195,7 +7279,10 @@ public:
         fn_memo_[key] = inst;
         program_.instances.push_back(inst);
         program_.instance_copies.push_back(raw);
+        std::optional<Span> site = std::exchange(next_site, std::nullopt);
+        std::size_t         mark = diags_.size();
         Checker(program_, diags_, this).check_instance(inst, *raw);
+        add_frame(mark, templ, inst, site);
         return inst;
     }
 
@@ -7451,12 +7538,16 @@ void Checker::ensure_field(const Symbol* f) {
 }
 
 // Null only when the template's source did not parse (already reported) or no instantiator is set.
-Symbol* Checker::instantiate_method(const Symbol* templ, const std::vector<const Type*>& args) {
-    return instantiator_ ? instantiator_->instantiate_method(templ, args) : nullptr;
+Symbol* Checker::instantiate_method(const Symbol* templ, const std::vector<const Type*>& args, std::optional<Span> site) {
+    if (!instantiator_) return nullptr;
+    instantiator_->next_site = site;
+    return instantiator_->instantiate_method(templ, args);
 }
 
-Symbol* Checker::instantiate_function(const Symbol* templ, const std::vector<const Type*>& args) {
-    return instantiator_ ? instantiator_->instantiate_function(templ, args) : nullptr;
+Symbol* Checker::instantiate_function(const Symbol* templ, const std::vector<const Type*>& args, std::optional<Span> site) {
+    if (!instantiator_) return nullptr;
+    instantiator_->next_site = site;
+    return instantiator_->instantiate_function(templ, args);
 }
 
 Symbol* Checker::instantiator_pack_variant(const Symbol* templ, std::size_t n) {

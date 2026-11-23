@@ -1,0 +1,88 @@
+// Lesson 6: generic code (solution).
+import std;
+
+// A fixed-capacity queue that overwrites its oldest element when full.
+template<type T, usize N>
+class ring {
+public:
+    // Adds a value; when the ring is full the oldest one is dropped (and returned).
+    std::option<T> push(T value) mut {
+        compile_time check (N > 0) else "a ring needs room for at least one value";
+        usize slot = (this.start + this.count) % N;
+        std::option<T> dropped = std::replace(mut this.slots[slot], std::some(move value));
+        if (this.count == N) {
+            this.start = (this.start + 1) % N;
+        } else {
+            this.count += 1;
+        }
+        return dropped;
+    }
+
+    std::option<T> pop() mut {
+        if (this.count == 0) { return std::none; }
+        std::option<T> value = std::take(mut this.slots[this.start]);
+        this.start = (this.start + 1) % N;
+        this.count -= 1;
+        return value;
+    }
+
+    usize len() { return this.count; }
+
+private:
+    std::array<std::option<T>, N> slots = default;
+    usize start = 0;
+    usize count = 0;
+}
+
+// The largest element; checked once, where it is written, against std::comparable.
+template<type T : std::comparable>
+std::option<T&> largest(std::span<T> values) {
+    mut std::option<T&> best = std::none;
+    for (T& v : values) {
+        if (best is std::some(b) && !(v > b)) { continue; }
+        best = std::some(v);
+    }
+    return best;
+}
+
+// No specialization: the body picks with `if compile_time`.
+template<type T>
+std::string kind(T value) {
+    if compile_time (std::is_integer<T>()) {
+        return std::format(f"integer {value}");
+    } else if compile_time (std::is_float<T>()) {
+        return std::format(f"float {value:.1}");
+    } else {
+        return std::format(f"something else: {value}");
+    }
+}
+
+// Any number of arguments of any types: one copy of the loop body per argument.
+template<type... A>
+std::string join(A&... values) {
+    mut std::string out = default;
+    for compile_time (A& v : values) {
+        if (!out.is_empty()) { out.push_str(", "); }
+        out.push_str(kind(v));
+    }
+    return out;
+}
+
+i32 main() {
+    mut ring<std::string, 3> recent = default;
+    std::array<std::static_str, 5> words = ["one", "two", "three", "four", "five"];
+    for (std::static_str w : words) {
+        if (recent.push(std::string::from(w)) is std::some(old)) {
+            std::println(f"dropped {old}");
+        }
+    }
+    while (recent.pop() is std::some(w)) {
+        std::println(f"kept {w}");
+    }
+    std::array<f64, 4> scores = [2.5, 9.0, -1.0, 4.0];
+    if (largest(scores.as_span()) is std::some(best)) { std::println(f"best {best}"); }
+    std::array<std::str, 3> names = ["kim", "zoe", "ann"];
+    if (largest(names.as_span()) is std::some(last)) { std::println(f"last {last}"); }
+    std::println(join(7u8, 2.25, "x", -3i64));
+    return 0;
+}

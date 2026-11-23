@@ -1,0 +1,54 @@
+// Lesson 12: data-oriented code the compiler can prove fast. It doesn't build yet: make the hot
+// loop check-free and write `energy` with SIMD until `python3 course/check.py 12` says done.
+import std;
+
+// Particles as columns (structure of arrays), not as an array of structs.
+struct particles {
+    std::darray<f32> x = default;
+    std::darray<f32> y = default;
+    std::darray<f32> vx = default;
+    std::darray<f32> vy = default;
+}
+
+// The hot loop. @std::no_checks_left makes it a build error if any run-time check (an index, an
+// overflow) survives optimization; std::assume states the facts that let the optimizer drop them.
+@std::no_checks_left
+void integrate(mut std::darray<f32>& x, mut std::darray<f32>& y, mut std::darray<f32>& vx, mut std::darray<f32>& vy, f32 dt) {
+    // TODO: the build lists the checks the optimizer can't remove here. Tell it what it can't know.
+    for (usize i : 0..x.len()) {
+        vy[i] -= 9.81 * dt;
+        x[i] += vx[i] * dt;
+        y[i] += vy[i] * dt;
+        if (y[i] < 0.0) {
+            y[i] = -y[i];
+            vy[i] = -vy[i] * 0.5;
+        }
+    }
+}
+
+// Kinetic energy (mass 1), eight lanes at a time; the last block is masked.
+f32 energy(std::span<f32> vx, std::span<f32> vy) {
+    // TODO: sum vx[i]^2 + vy[i]^2 with f32x8 vectors over std::simd::blocks<8>(len): span.load(block)
+    // reads 8 lanes (masked past the end), a.mul_add(b, c) is a * b + c in one rounding, and
+    // reduce_add() sums the lanes. Check that the two spans have the same length first.
+    f32x8 sum = default;
+    return sum.reduce_add() * 0.5;
+}
+
+i32 main() {
+    mut particles p = default;
+    for (u32 i : 0..1003) {          // not a multiple of 8: the last block is partial
+        f32 f = cast<f32>(cast::truncate<u16>(i % 100)) / 100.0;   // u16 to f32 is lossless
+        p.x.push(f * 10.0);
+        p.y.push(1.0 + f * 5.0);
+        p.vx.push(1.0 - f);
+        p.vy.push(f * 2.0);
+    }
+    std::println(f"energy before: {energy(p.vx.as_span(), p.vy.as_span()):.2}");
+    for (u32 step : 0..200) {
+        integrate(mut p.x, mut p.y, mut p.vx, mut p.vy, 0.01);    // four fields: four separate places
+    }
+    std::println(f"energy after:  {energy(p.vx.as_span(), p.vy.as_span()):.2}");
+    std::println(f"first particle at ({p.x[0]:.3}, {p.y[0]:.3})");
+    return 0;
+}

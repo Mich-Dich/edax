@@ -1,0 +1,6 @@
+crc8 of 123456789: 244
+crc8 of [1, 2, 3]: 72
+header { id: 7, kind: 2, flags: 0, length: 512 }
+127 255
+masks 15 4095 4294967295
+built as debug

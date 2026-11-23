@@ -6,7 +6,7 @@ There are no C-style casts (`(T)x`) and no constructor-style casts (`T(x)`). Eve
 
 | Spelling | Allowed conversions | On loss | Safe? |
 |---|---|---|---|
-| `cast<T>(x)` | **Lossless only**: integer widening, `u8`/`u16`/`i8`/`i16` → `f32`, any ≤ 32-bit integer → `f64`, `f32` → `f64`, simple enum → its tag type, `bool` → integer | Compile error if any value could be lost | Yes |
+| `cast<T>(x)` | **Lossless only**: integer widening, `u8`/`i8` → `f16`, `u8`/`u16`/`i8`/`i16` → `f32`, any ≤ 32-bit integer → `f64`, `f16` → `f32`/`f64`, `f32` → `f64`, simple enum → its tag type, `bool` → integer, a distinct type ↔ its underlying type | Compile error if any value could be lost | Yes |
 | `cast::truncate<T>(x)` | Integer → narrower integer, signed ↔ unsigned | Keeps the low bits | Yes |
 | `cast::saturate<T>(x)` | Integer → integer, float → integer | Clamps to the range; NaN → 0 | Yes |
 | `cast::round<T>(x)` | Float → narrower float, wide integer → float | Rounds to nearest | Yes |

@@ -19,6 +19,32 @@ Small building blocks used everywhere: ownership helpers, arithmetic with explic
 
 Wrapping arithmetic is the operators `+% -% *%` (see [Operators](../../language/basics/operators.md)).
 
+### 8-bit floats
+`std::f8e4m3` and `std::f8e5m2` are the two OCP FP8 formats: one byte each, for storage (network weights, compressed vertex attributes, HDR data in memory). They are structs holding the bits (`.bits`), so arrays of them are plain bytes.
+
+| | `std::f8e4m3` | `std::f8e5m2` |
+|---|---|---|
+| Layout | 1 sign, 4 exponent (bias 7), 3 mantissa bits | 1 sign, 5 exponent (bias 15), 2 mantissa bits: the top byte of an `f16` |
+| Largest finite | 448 | 57344 |
+| Smallest positive | 2^-9 | 2^-16 |
+| `epsilon()` | 0.125 | 0.25 |
+| Infinities | none | `infinity()` |
+| NaN | `0x7F`, `0xFF` | exponent all ones, mantissa not 0 |
+| `from_f32` beyond the range | NaN | ±inf |
+
+- **Conversions:** `from_f32(v)` rounds to nearest, ties to even. `saturate(v)` clamps values beyond the range (and ±inf) to ±max; NaN stays NaN. `from_bits(b)` takes the raw byte. `to_f32()` and `to_f16()` are exact.
+- **Arithmetic:** `+ - * /` convert both sides to `f32`, compute, and round back once. This is the correctly rounded result, because `f32` has more than twice their precision. Unary `-` flips the sign bit.
+- **Comparison:** `==` is IEEE (NaN is not equal to itself, `0` equals `-0`). There is no `<=>`; `total_cmp` orders by value with NaN last, for sorting. For IEEE `<`, compare `a.to_f32() < b.to_f32()`.
+- **Limits** are functions: `max()`, `min()`, `epsilon()`, `min_positive()`, `nan()`, and `infinity()` for E5M2. `is_nan()`, and `is_infinite()` for E5M2.
+- Everything except formatting runs at compile time: `compile_time std::f8e4m3 k = std::f8e4m3::from_f32(0.3);`.
+- Formatting prints the exact value through `f32` (`0.1015625` for `from_f32(0.1)` in E4M3).
+
+```edax
+std::f8e4m3 w = std::f8e4m3::from_f32(0.1);    // 0.1015625
+std::f8e5m2 g = std::f8e5m2::saturate(1.0e9);  // 57344
+f32 sum = w.to_f32() + g.to_f32();             // accumulate in f32
+```
+
 ### Facts for the optimizer
 | Function | Meaning |
 |---|---|

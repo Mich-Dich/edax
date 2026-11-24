@@ -60,7 +60,7 @@ Built-in type names, which are reserved like keywords:
 bool  char  void  never
 i8 i16 i32 i64 i128 isize
 u8 u16 u32 u64 u128 usize
-f16 f32 f64
+f16 f32 f64 f128
 ```
 The SIMD vector types `<number type>x<lanes>` (`f32x8`, `u8x32`, `i64x4`, ...) are reserved the same way (see [SIMD](../simd/simd.md)).
 
@@ -70,7 +70,7 @@ The SIMD vector types `<number type>x<lanes>` (`f32x8`, `u8x32`, `i64x4`, ...) a
 | Integer | `42`, `0xFF`, `0b1010`, `0o17`, `1_000_000` | `_` separators are allowed anywhere after the first digit |
 | Integer with suffix | `42u32`, `0xFFu8`, `7usize` | Suffix = any integer type name |
 | Float | `1.0`, `0.5`, `1e-3`, `2.5e10` | A float must contain `.` or `e` |
-| Float with suffix | `1.0f32`, `3.14f64` | |
+| Float with suffix | `1.0f32`, `3.14f64`, `0.5f16`, `0.1f128` | An `f128` literal keeps all its digits (up to 36 significant) |
 | Bool | `true`, `false` | |
 | Char | `'a'`, `'\n'`, `'\u{1F600}'` | Type `char` |
 | String | `"hello\n"` | Type `std::static_str`, never interpolated (see [Strings](../../stdlib/text/strings.md)) |

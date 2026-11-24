@@ -29,7 +29,7 @@ public:
     }
 
     // Hands every item over to the caller; the bag is empty afterwards.
-    std::darray<item> empty_out() mut { return this.items; }
+    std::darray<item> empty_out() mut { return this.items.clone(); }
 
     u32 total() {
         mut u32 sum = 0;
@@ -69,9 +69,13 @@ i32 main() {
     for (item& it : taken) {
         doubled.push(item{ .name = it.name, .weight = it.weight * 2 });
     }
-    bag yours = bag::make("bob");
-    for (item& it : doubled) { it.weight += 1; }
-    while (doubled.pop() is std::some(it)) { yours.add(it); }
+    mut bag yours = bag::make("bob");
+    for (mut item& it : doubled) {
+        it.weight += 1;
+    }
+    while (doubled.pop() is std::some(it)) {
+        yours.add(it);
+    }
     std::println(f"{yours.owner()} carries {yours.total()}, {mine.owner()} carries {mine.total()}");
     std::println(longer(mine.owner(), yours.owner()));
     return 0;

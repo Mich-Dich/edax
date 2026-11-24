@@ -38,7 +38,7 @@ bool is_integer_type_name(std::string_view s) {
     return false;
 }
 
-bool is_float_type_name(std::string_view s) { return s == "f16" || s == "f32" || s == "f64"; }
+bool is_float_type_name(std::string_view s) { return s == "f16" || s == "f32" || s == "f64" || s == "f128"; }
 
 struct Punct {
     std::string_view spelling;
@@ -342,7 +342,7 @@ Token Lexer::lex_number(std::size_t begin) {
             if (!is_float_type_name(suffix)) {
                 diags_.report(DiagCode::E1011, suffix_span,
                               std::format("invalid suffix '{}' on float literal", suffix),
-                              "expected 'f16', 'f32' or 'f64'");
+                              "expected 'f16', 'f32', 'f64' or 'f128'");
             }
         } else if (is_float_type_name(suffix)) {
             std::string_view digits = text_.substr(begin, suffix_begin - begin);

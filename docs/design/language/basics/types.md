@@ -8,7 +8,7 @@
 | `i8` `i16` `i32` `i64` `i128` | Signed integers, two's complement |
 | `u8` `u16` `u32` `u64` `u128` | Unsigned integers |
 | `isize` `usize` | Pointer-sized integers. Used for sizes and indices (`len()` returns `usize`) |
-| `f16` `f32` `f64` | IEEE-754 floats. `f16` (2 bytes) is for GPU and asset data: its arithmetic is rounded to `f16` after each operation (computed in `f32` where the CPU has no half-precision instructions). `cast<f32>(h)` is lossless; `u8`/`i8` convert losslessly to `f16`; anything wider needs `cast::round<f16>` |
+| `f16` `f32` `f64` `f128` | IEEE-754 floats. `f16` (2 bytes) is for GPU and asset data: its arithmetic is rounded to `f16` after each operation (computed in `f32` where the CPU has no half-precision instructions). `cast<f32>(h)` is lossless; `u8`/`i8` convert losslessly to `f16`; anything wider needs `cast::round<f16>`. `f128` (binary128, 16 bytes, 16-byte aligned, 113-bit significand) is for precise reference computations, not hot code: it runs in software (libgcc/compiler-rt arithmetic, glibc's `sqrtf128`, `sinf128`, ...). Every integer up to 64 bits converts to it losslessly |
 | `bool` | `true` / `false` |
 | `char` | One Unicode scalar value (4 bytes) |
 | `void` | "No value": a return type, or a template argument used only as a result or payload (`std::thread::handle<void>`, `std::result<void, E>`, see [Threads](../../stdlib/concurrency/threads.md)) |
@@ -24,7 +24,9 @@ Every number type has `compile_time` constants reached through its name:
 | `T::min` | Smallest value (`i8::min` is `-128`, `u8::min` is `0`) | Most negative finite value |
 | `T::max` | Largest value | Largest finite value |
 | `T::bits` | Width in bits, as a `u32` | Width in bits, as a `u32` |
-| `f32::infinity`, `f32::nan`, `f32::epsilon` (and `f16::...`, `f64::...`) | - | IEEE special values and the machine epsilon |
+| `f32::infinity`, `f32::nan`, `f32::epsilon` (and `f16::...`, `f64::...`, `f128::...`) | - | IEEE special values and the machine epsilon |
+
+The 8-bit floats are library types, not built-in ones: `std::f8e4m3` and `std::f8e5m2` (see [Utilities](../../stdlib/core/utilities.md#8-bit-floats)).
 
 ### Methods of numbers
 Numbers have methods; the arguments take the receiver's type:
@@ -118,3 +120,6 @@ This is **every** implicit conversion in the language. Anything else needs a `ca
 - **`usize`:** sizes depend on the target (32-bit embedded vs 64-bit desktop). Hard-coding `u64` would be wrong on small targets.
 - **Methods on numbers:** `x.sqrt()` reads left to right and needs no `std::math::` prefix or overload set per type. Integers get no `sqrt`: the error says to convert first, so the precision is chosen in the code.
 - **`f16` for data:** GPU buffers and compressed assets use half floats. Arithmetic on `f16` is rounded to `f16` after each operation, like every other type's; code that wants more precision converts with `cast<f32>(h)`, which is lossless.
+- **`f128` built in, f8 in the library:** `f128` needs the compiler (an LLVM type, its own ABI, literals with 34 digits, exact compile-time evaluation). The two 8-bit formats are only storage with conversions, so a struct with a `u8` does the job and the language stays smaller. Two named types instead of one `f8`, because the formats differ in range and precision and choosing one is the point (E4M3 for precision, E5M2 for range).
+- **Exact `f128` at compile time:** compile-time arithmetic, limits, casts and `bit_cast` on `f128` work on the binary128 value itself, not on a double, so a `compile_time` constant has the same bits as the run-time computation. Transcendental methods (`sqrt`, `sin`, ...) don't run at compile time for `f128`.
+- **Formatting:** every float prints the shortest text that reads back as the same value of its own type: `0.1f16` prints `0.1` (not the f32 digits of the f16 value), `1.0f128 / 3.0f128` prints 34 digits.

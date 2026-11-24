@@ -1,0 +1,27 @@
+// RUN: edaxc run %s
+// f128 (IEEE binary128): literals, arithmetic, limits, casts and methods keep the full precision,
+// at run time and at compile time; formatting prints the shortest text that reads back exactly.
+import std;
+
+compile_time f128 third = 1.0f128 / 3.0f128;
+compile_time f128 big   = cast<f128>(9007199254740993i64) + 0.5f128;   // 2^53 + 1.5: not an f64
+compile_time check (big - 0.5f128 == cast<f128>(9007199254740993i64)) else "exact at compile time";
+compile_time check (std::bit_cast<u128>(1.0f128) == 0x3FFF0000000000000000000000000000) else "bit pattern";
+
+f128 half(f128 x) { return x / 2.0f128; }
+
+struct pair { f128 a; f128 b; }
+
+void main() {
+    f128 a = 1.0f128 / 3.0f128;
+    f128 b = 0.1f128;
+    std::println(f"{a} {b} {third} {big} {a == third}");
+    std::println(f"{cast::round<f64>(a)} {half(3.0f128)} {-0.25f128} {1.5f128:.3} {a < b}");
+    std::println(f"{f128::max} {f128::min} {f128::epsilon} {f128::infinity} {f128::bits}");
+    std::println(f"{(2.0f128).sqrt()} {a.sin()} {(7.5f128).floor()} {(2.5f128).min(1.0f128)} {7.0f128 % 2.5f128}");
+    i64 n = 9007199254740993;
+    f128 w = cast<f128>(n);
+    std::println(f"{cast::saturate<i64>(w)} {cast::saturate<u8>(300.0f128)} {cast::checked<i32>(7.0f128).value_or(0)} {cast::checked<i32>(7.5f128).is_none()}");
+    pair p = pair{ .a = 1.0f128, .b = 2.0f128 };
+    std::println(f"{p.a + p.b} {std::size_of<f128>()} {std::align_of<f128>()} {std::size_of<pair>()}");
+}

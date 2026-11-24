@@ -1,0 +1,21 @@
+// RUN: edaxc run %s
+// std::f8e4m3 and std::f8e5m2: 8-bit storage floats that convert through f32 (round to nearest
+// even), at run time and at compile time.
+import std;
+
+compile_time std::f8e4m3 k = std::f8e4m3::from_f32(0.3);
+compile_time check (k.bits == 0x2A) else "0.3 is 0.3125 in E4M3";
+compile_time check (std::f8e5m2::from_f32(1.0).to_f16() == 1.0f16) else "E5M2 is the top byte of an f16";
+
+void main() {
+    std::f8e4m3 a = std::f8e4m3::from_f32(0.1);
+    std::f8e4m3 b = std::f8e4m3::from_f32(3.0);
+    std::println(f"{a} {b} {a + b} {b * b} {b / a} {-b} {k}");
+    std::println(f"{std::f8e4m3::max()} {std::f8e4m3::min()} {std::f8e4m3::epsilon()} {std::f8e4m3::min_positive()}");
+    std::println(f"{std::f8e4m3::from_f32(464.0).bits:x} {std::f8e4m3::from_f32(464.1).is_nan()} {std::f8e4m3::saturate(1.0e6)} {std::f8e4m3::saturate(-1.0e6)}");
+    std::f8e5m2 c = std::f8e5m2::from_f32(0.1);
+    std::println(f"{c} {std::f8e5m2::max()} {std::f8e5m2::from_f32(61440.0)} {std::f8e5m2::from_f32(-70000.0)} {std::f8e5m2::saturate(1.0e9)}");
+    std::println(f"{std::f8e5m2::min_positive()} {std::f8e5m2::infinity().is_infinite()} {std::f8e5m2::nan().is_nan()} {std::f8e5m2::nan() == std::f8e5m2::nan()}");
+    std::println(f"{std::f8e4m3::from_f32(0.0) == -std::f8e4m3::from_f32(0.0)} {a.total_cmp(b)} {std::f8e4m3::nan().total_cmp(b)} {a.to_f16()}");
+    std::println(f"{std::size_of<std::f8e4m3>()} {std::size_of<std::f8e5m2>()} {std::f8e4m3::from_f32(0.0009765625).bits}");
+}

@@ -53,6 +53,7 @@ TypeContext::TypeContext() {
     builtins_["f32"] = make(Type{Kind::float_, 32, true, false, nullptr, nullptr, false, "f32", {}});
     builtins_["f64"] = make(Type{Kind::float_, 64, true, false, nullptr, nullptr, false, "f64", {}});
     builtins_["f16"] = make(Type{Kind::float_, 16, true, false, nullptr, nullptr, false, "f16", {}});   // spec 34
+    builtins_["f128"] = make(Type{Kind::float_, 128, true, false, nullptr, nullptr, false, "f128", {}});   // IEEE binary128
 }
 
 const Type* TypeContext::make(Type t) {

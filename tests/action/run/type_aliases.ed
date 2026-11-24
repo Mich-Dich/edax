@@ -1,0 +1,39 @@
+// RUN: edaxc run %s
+// `compile_time type` aliases used as types, to build values and to reach static members.
+import std;
+
+template<type T = f32>
+struct vec2 {
+    T x;
+    T y;
+    static vec2<T> zero() { return vec2<T>{ .x = default, .y = default }; }
+    T sum() { return this.x + this.y; }
+}
+
+enum shape : u8 { circle, square }
+
+namespace geo {
+    struct point { i32 x; i32 y; }
+    compile_time type pt = point;
+    compile_time type vec2u8 = vec2<u8>;
+}
+
+compile_time type vec2i32 = vec2<i32>;
+compile_time type ivec    = vec2i32;          // an alias of an alias
+compile_time type number  = u16;
+compile_time type kind    = shape;
+compile_time type gpt     = geo::pt;          // an alias reached through a namespace
+
+void main() {
+    vec2i32 a = vec2i32{ .x = 1, .y = 2 };
+    vec2i32 z = vec2i32::zero();
+    ivec    b = ivec{ .x = 40, .y = 2 };
+    vec2    d = vec2{ .x = 1.5, .y = 2.0 };
+    std::println(f"{a.sum()} {z.sum()} {b.sum()} {d.sum()}");
+    std::println(f"{number::max} {number::min}");
+    kind k = kind::square;
+    std::println(f"{k == shape::square}");
+    gpt p = gpt{ .x = 3, .y = 4 };
+    geo::vec2u8 q = geo::vec2u8{ .x = 200, .y = 50 };
+    std::println(f"{p.x + p.y} {q.sum()}");
+}

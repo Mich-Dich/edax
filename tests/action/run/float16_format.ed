@@ -1,0 +1,22 @@
+// RUN: edaxc run %s
+// f16 prints the shortest text that reads back as the same f16, at run time and at compile time.
+import std;
+
+compile_time f16 sum = 0.1f16 + 0.2f16;
+
+template<type T = f32>
+struct vec2 {
+    T x;
+    T y;
+    vec2<T> operator+(vec2<T> o) { return vec2<T>{ .x = this.x + o.x, .y = this.y + o.y }; }
+    T length() { return (this.x * this.x + this.y * this.y).sqrt(); }
+}
+
+compile_time type vec2f16 = vec2<f16>;
+
+void main() {
+    f16 h = 0.1f16;
+    std::println(f"{h} {h + h} {sum} {f16::max} {f16::epsilon} {1000.0f16} {-0.0f16}");
+    vec2f16 v = vec2f16{ .x = 3.0f16, .y = 4.0f16 } + vec2f16{ .x = 0.0f16, .y = 0.0f16 };
+    std::println(f"{v.x} {v.y} {v.length()} {std::size_of<vec2f16>()}");
+}

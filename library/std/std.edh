@@ -1341,6 +1341,78 @@ namespace std {
     annotation(std::meta::target::type)
     struct hot_reload_state { }
 
+    // --- 8-bit floats (OCP FP8) -------------------------------------------------------------------
+    // Storage types for weights, compressed vertex data and HDR data in memory. They convert to
+    // and from f32; arithmetic converts to f32, computes, and rounds back once, which gives the
+    // correctly rounded result (f32 has more than twice their precision). Conversions round to
+    // nearest, ties to even. Formatting prints the exact value through f32.
+
+    // E4M3 ("FN"): 1 sign, 4 exponent (bias 7) and 3 mantissa bits. Range ±448, smallest
+    // positive 2^-9. No infinities; 0x7F and 0xFF are NaN. More precision, less range than E5M2.
+    struct f8e4m3 {
+        u8 bits = 0;
+
+        // NaN for NaN, infinities and values that round beyond ±448.
+        compile_time run_time static f8e4m3 from_f32(f32 v);
+        // Like from_f32, but beyond ±448 (and ±inf) gives ±448. NaN stays NaN.
+        compile_time run_time static f8e4m3 saturate(f32 v);
+        compile_time run_time static f8e4m3 from_bits(u8 bits);
+        compile_time run_time static f8e4m3 max();            // 448
+        compile_time run_time static f8e4m3 min();            // -448
+        compile_time run_time static f8e4m3 epsilon();        // 0.125
+        compile_time run_time static f8e4m3 min_positive();   // 2^-9
+        compile_time run_time static f8e4m3 nan();
+
+        compile_time run_time f32 to_f32();
+        compile_time run_time f16 to_f16();                   // exact
+        compile_time run_time bool is_nan();
+        // -1, 0, 1 by value; NaN after everything (a total order for sorting).
+        compile_time run_time std::ordering total_cmp(f8e4m3 other);
+
+        compile_time run_time f8e4m3 operator+(f8e4m3 other);
+        compile_time run_time f8e4m3 operator-(f8e4m3 other);
+        compile_time run_time f8e4m3 operator*(f8e4m3 other);
+        compile_time run_time f8e4m3 operator/(f8e4m3 other);
+        compile_time run_time f8e4m3 operator-();
+        // IEEE: NaN is not equal to itself; 0 equals -0.
+        compile_time run_time bool operator==(f8e4m3& other);
+
+        void format(mut std::formatter& out);
+    }
+
+    // E5M2: 1 sign, 5 exponent (bias 15) and 2 mantissa bits: the top byte of an f16. Range
+    // ±57344, smallest positive 2^-16, with infinities and NaN like IEEE.
+    struct f8e5m2 {
+        u8 bits = 0;
+
+        // ±inf for values that round beyond ±57344.
+        compile_time run_time static f8e5m2 from_f32(f32 v);
+        // Like from_f32, but beyond ±57344 (and ±inf) gives ±57344. NaN stays NaN.
+        compile_time run_time static f8e5m2 saturate(f32 v);
+        compile_time run_time static f8e5m2 from_bits(u8 bits);
+        compile_time run_time static f8e5m2 max();            // 57344
+        compile_time run_time static f8e5m2 min();            // -57344
+        compile_time run_time static f8e5m2 epsilon();        // 0.25
+        compile_time run_time static f8e5m2 min_positive();   // 2^-16
+        compile_time run_time static f8e5m2 infinity();
+        compile_time run_time static f8e5m2 nan();
+
+        compile_time run_time f32 to_f32();
+        compile_time run_time f16 to_f16();                   // exact
+        compile_time run_time bool is_nan();
+        compile_time run_time bool is_infinite();
+        compile_time run_time std::ordering total_cmp(f8e5m2 other);
+
+        compile_time run_time f8e5m2 operator+(f8e5m2 other);
+        compile_time run_time f8e5m2 operator-(f8e5m2 other);
+        compile_time run_time f8e5m2 operator*(f8e5m2 other);
+        compile_time run_time f8e5m2 operator/(f8e5m2 other);
+        compile_time run_time f8e5m2 operator-();
+        compile_time run_time bool operator==(f8e5m2& other);
+
+        void format(mut std::formatter& out);
+    }
+
     // On a template of a library: its instances don't appear in the instantiation chains of
     // errors, and an error inside it is reported at the user's call that reached it (templates,
     // "Library error frames").

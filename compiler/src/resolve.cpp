@@ -5,6 +5,7 @@
 #include "edax/ast_printer.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <format>
 #include <functional>
@@ -2335,7 +2336,7 @@ private:
 
     std::vector<std::string> type_candidates() const {
         std::vector<std::string> out = {"bool", "char", "void", "never", "i8", "i16", "i32", "i64", "i128", "isize",
-                                        "u8", "u16", "u32", "u64", "u128", "usize", "f16", "f32", "f64"};
+                                        "u8", "u16", "u32", "u64", "u128", "usize", "f16", "f32", "f64", "f128"};
         for (const std::string& level : enclosing_levels(ns_)) {
             for (std::string& n : names_in(level)) {
                 Found f = find_items(join_ns(level, n));
@@ -2645,7 +2646,80 @@ private:
         return check_want(base, want, span, display);
     }
 
+    // `compile_time type vec2i32 = vec2<i32>;` used as the head of a longer path or to build a
+    // value (`vec2i32::zero()`, `vec2i32{...}`, `number::max`): the alias stands for the path it
+    // was given, so the head is replaced by that path (spec 26). Returns the namespace the
+    // replacement must be looked up in (the alias's), or nullopt when nothing was replaced.
+    std::optional<std::string> expand_type_alias_head(Path& path, bool whole = true) {
+        std::optional<std::string> where;
+        for (int depth = 0; depth < 16 && !path.segments.empty(); ++depth) {
+            auto& segs = path.segments;
+            if (is_builtin_type_name(segs[0].name)) break;
+            if (!path.global) {
+                if (find_template_param(segs[0].name)) break;
+                bool local = false;
+                for (const Scope& sc : scopes_) local = local || sc.names.contains(segs[0].name);
+                if (local) break;
+            }
+            const std::string        from   = where ? *where : ns_;
+            std::vector<std::string> levels = path.global ? std::vector<std::string>{""} : enclosing_levels(from);
+            // The longest prefix without template arguments that names something.
+            std::size_t limit = 0;
+            while (limit < segs.size() && !segs[limit].has_template_args) ++limit;
+            if (!whole && limit == segs.size()) --limit;
+            Symbol*     alias = nullptr;
+            std::size_t k     = 0;
+            for (const std::string& level : levels) {
+                std::string q = level;
+                std::vector<std::string> prefixes;
+                for (std::size_t i = 0; i < limit; ++i) prefixes.push_back(q = join_ns(q, segs[i].name));
+                for (std::size_t n = prefixes.size(); n-- > 0 && !alias;) {
+                    Found f = find_items(prefixes[n]);
+                    if (f.symbols.empty()) continue;
+                    alias = f.symbols.front();
+                    k     = n + 1;
+                }
+                if (alias) break;
+            }
+            if (!alias || alias->kind != SymbolKind::global || !alias->is_type_value || !alias->decl) break;
+            if (alias->decl->kind != DeclKind::variable) break;
+            const auto& v = alias->decl->as<VariableDecl>();
+            if (!v.init || v.init->kind != ExprKind::path) break;
+            const Path& target = v.init->as<PathExpr>().path;
+            if (target.segments.empty()) break;
+            Span         at = segs[0].span;
+            ast::Cloner  copy([](const Symbol& s) { return const_cast<Symbol*>(&s); });
+            std::vector<PathSegment> out;
+            for (const PathSegment& t : target.segments) {
+                PathSegment n{t.name, at, t.has_template_args, {}};
+                for (const TemplateArg& a : t.template_args) {
+                    TemplateArg c;
+                    if (a.type) c.type = copy.type(*a.type);
+                    if (a.value) c.value = copy.expr(*a.value);
+                    c.is_mut = a.is_mut;
+                    c.span   = at;
+                    n.template_args.push_back(std::move(c));
+                }
+                out.push_back(std::move(n));
+            }
+            for (std::size_t i = k; i < segs.size(); ++i) out.push_back(std::move(segs[i]));
+            segs        = std::move(out);
+            path.global = target.global;
+            where       = alias->ns;
+            if (!whole && segs.size() < 2) break;
+        }
+        return where;
+    }
+
     Symbol* lookup_path(Path& path, Want want, Span span) {
+        if (path.segments.size() >= 2) {
+            if (auto where = expand_type_alias_head(path, false)) {
+                std::string saved = std::exchange(ns_, *where);
+                Symbol*     r     = lookup_path(path, want, span);
+                ns_               = std::move(saved);
+                return r;
+            }
+        }
         resolve_template_args(path);
         auto& segs = path.segments;
         if (segs.size() == 1 && !path.global) {
@@ -3141,7 +3215,15 @@ private:
     }
 
     void resolve_struct_literal(StructLiteralExpr& sl) {
-        resolve_type(*sl.type);
+        std::optional<std::string> alias_ns;
+        if (sl.type->kind == TypeKind::named) alias_ns = expand_type_alias_head(sl.type->as<NamedType>().path);
+        if (alias_ns) {
+            std::string saved = std::exchange(ns_, *alias_ns);
+            resolve_type(*sl.type);
+            ns_ = std::move(saved);
+        } else {
+            resolve_type(*sl.type);
+        }
         for (FieldInit& f : sl.fields) resolve_expr(*f.value);
         const Symbol* t = sl.type->kind == TypeKind::named ? sl.type->as<NamedType>().symbol : nullptr;
         if (!t || t->kind == SymbolKind::type_param) return;

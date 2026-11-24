@@ -1774,6 +1774,132 @@ namespace std {
         std::raw_ptr<mut u8> handle;
     }
 
+    // --- 8-bit floats -----------------------------------------------------------------------------
+
+    // The f8 bits of `v` below the smallest normal: `n` units of 2^-(bias - 1 + mantissa bits),
+    // rounded to nearest even. `shift_base` is 127 + 23 - (bias - 1 + mantissa bits) + ... folded:
+    // the unit count is the 24-bit significand shifted right by `shift_base - exponent`.
+    private compile_time run_time u32 f8_subnormal(u32 a, u32 shift_base, u32 zero_below) {
+        u32 e = a >> 23;
+        if (e <= zero_below) { return 0; }                    // under half the smallest unit
+        u32 s    = shift_base - e;                            // 21..24
+        u32 full = (a & 0x7FFFFF) | 0x800000;
+        mut u32 n = full >> s;
+        u32 rem  = full & ((bit<u32>(s)) - 1);
+        u32 half = bit<u32>(s - 1);
+        if (rem > half || (rem == half && (n & 1) == 1)) { n += 1; }
+        return n;                                             // n == 2^mantissa bits is the smallest normal
+    }
+
+    private compile_time run_time u8 f8e4m3_encode(f32 v, bool saturate) {
+        u32 x    = std::bit_cast<u32>(v);
+        u32 sign = (x >> 24) & 0x80;
+        u32 a    = x & 0x7FFFFFFF;
+        if (a > 0x7F800000) { return cast::truncate<u8>(sign | 0x7F); }   // NaN
+        if (a > 0x43E80000) {                                             // rounds beyond 448 (or inf)
+            if (saturate) { return cast::truncate<u8>(sign | 0x7E); }
+            return cast::truncate<u8>(sign | 0x7F);
+        }
+        if (a >= 0x3C800000) {                                            // normal: from 2^-6
+            u32 r = a + 0x7FFFF + ((a >> 20) & 1);
+            return cast::truncate<u8>(sign | (((r >> 23) - 120) << 3) | ((r >> 20) & 7));
+        }
+        return cast::truncate<u8>(sign | f8_subnormal(a, 141, 116));
+    }
+
+    private compile_time run_time u8 f8e5m2_encode(f32 v, bool saturate) {
+        u32 x    = std::bit_cast<u32>(v);
+        u32 sign = (x >> 24) & 0x80;
+        u32 a    = x & 0x7FFFFFFF;
+        if (a > 0x7F800000) { return cast::truncate<u8>(sign | 0x7E); }   // NaN
+        if (a >= 0x47700000) {                                            // rounds to 2^16 or beyond (or inf)
+            if (saturate) { return cast::truncate<u8>(sign | 0x7B); }
+            return cast::truncate<u8>(sign | 0x7C);
+        }
+        if (a >= 0x38800000) {                                            // normal: from 2^-14
+            u32 r = a + 0xFFFFF + ((a >> 21) & 1);
+            return cast::truncate<u8>(sign | (((r >> 23) - 112) << 2) | ((r >> 21) & 3));
+        }
+        return cast::truncate<u8>(sign | f8_subnormal(a, 134, 109));
+    }
+
+    // -1, 0, 1, NaN last: the order of `f8` values for sorting.
+    private compile_time run_time std::ordering f8_total_cmp(f32 a, f32 b) {
+        bool an = a != a;
+        bool bn = b != b;
+        if (an || bn) {
+            if (an && bn) { return std::ordering::equal; }
+            if (an) { return std::ordering::greater; }
+            return std::ordering::less;
+        }
+        if (a < b) { return std::ordering::less; }
+        if (a > b) { return std::ordering::greater; }
+        return std::ordering::equal;
+    }
+
+    struct f8e4m3 {
+        compile_time run_time static f8e4m3 from_f32(f32 v) { return f8e4m3{ .bits = f8e4m3_encode(v, false) }; }
+        compile_time run_time static f8e4m3 saturate(f32 v) { return f8e4m3{ .bits = f8e4m3_encode(v, true) }; }
+        compile_time run_time static f8e4m3 from_bits(u8 bits) { return f8e4m3{ .bits = bits }; }
+        compile_time run_time static f8e4m3 max() { return f8e4m3{ .bits = 0x7E }; }
+        compile_time run_time static f8e4m3 min() { return f8e4m3{ .bits = 0xFE }; }
+        compile_time run_time static f8e4m3 epsilon() { return f8e4m3{ .bits = 0x20 }; }
+        compile_time run_time static f8e4m3 min_positive() { return f8e4m3{ .bits = 0x01 }; }
+        compile_time run_time static f8e4m3 nan() { return f8e4m3{ .bits = 0x7F }; }
+
+        compile_time run_time f32 to_f32() {
+            u32 b    = cast<u32>(this.bits);
+            u32 sign = (b & 0x80) << 24;
+            u32 e    = (b >> 3) & 15;
+            u32 m    = b & 7;
+            if (e == 15 && m == 7) { return std::bit_cast<f32>(sign | 0x7FC00000); }
+            if (e == 0) {                                    // subnormal: m * 2^-9
+                return std::bit_cast<f32>(sign | std::bit_cast<u32>(cast::round<f32>(m) * 0.001953125));
+            }
+            return std::bit_cast<f32>(sign | ((e + 120) << 23) | (m << 20));
+        }
+        compile_time run_time f16 to_f16() { return cast::round<f16>(this.to_f32()); }
+        compile_time run_time bool is_nan() { return (this.bits & 0x7F) == 0x7F; }
+        compile_time run_time std::ordering total_cmp(f8e4m3 other) { return f8_total_cmp(this.to_f32(), other.to_f32()); }
+
+        compile_time run_time f8e4m3 operator+(f8e4m3 other) { return f8e4m3::from_f32(this.to_f32() + other.to_f32()); }
+        compile_time run_time f8e4m3 operator-(f8e4m3 other) { return f8e4m3::from_f32(this.to_f32() - other.to_f32()); }
+        compile_time run_time f8e4m3 operator*(f8e4m3 other) { return f8e4m3::from_f32(this.to_f32() * other.to_f32()); }
+        compile_time run_time f8e4m3 operator/(f8e4m3 other) { return f8e4m3::from_f32(this.to_f32() / other.to_f32()); }
+        compile_time run_time f8e4m3 operator-() { return f8e4m3{ .bits = this.bits ^ 0x80 }; }
+        compile_time run_time bool operator==(f8e4m3& other) { return this.to_f32() == other.to_f32(); }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"{this.to_f32()}")); }
+    }
+
+    struct f8e5m2 {
+        compile_time run_time static f8e5m2 from_f32(f32 v) { return f8e5m2{ .bits = f8e5m2_encode(v, false) }; }
+        compile_time run_time static f8e5m2 saturate(f32 v) { return f8e5m2{ .bits = f8e5m2_encode(v, true) }; }
+        compile_time run_time static f8e5m2 from_bits(u8 bits) { return f8e5m2{ .bits = bits }; }
+        compile_time run_time static f8e5m2 max() { return f8e5m2{ .bits = 0x7B }; }
+        compile_time run_time static f8e5m2 min() { return f8e5m2{ .bits = 0xFB }; }
+        compile_time run_time static f8e5m2 epsilon() { return f8e5m2{ .bits = 0x34 }; }
+        compile_time run_time static f8e5m2 min_positive() { return f8e5m2{ .bits = 0x01 }; }
+        compile_time run_time static f8e5m2 infinity() { return f8e5m2{ .bits = 0x7C }; }
+        compile_time run_time static f8e5m2 nan() { return f8e5m2{ .bits = 0x7E }; }
+
+        // The top byte of an f16.
+        compile_time run_time f32 to_f32() { return cast<f32>(this.to_f16()); }
+        compile_time run_time f16 to_f16() { return std::bit_cast<f16>(cast<u16>(this.bits) << 8); }
+        compile_time run_time bool is_nan() { return (this.bits & 0x7F) > 0x7C; }
+        compile_time run_time bool is_infinite() { return (this.bits & 0x7F) == 0x7C; }
+        compile_time run_time std::ordering total_cmp(f8e5m2 other) { return f8_total_cmp(this.to_f32(), other.to_f32()); }
+
+        compile_time run_time f8e5m2 operator+(f8e5m2 other) { return f8e5m2::from_f32(this.to_f32() + other.to_f32()); }
+        compile_time run_time f8e5m2 operator-(f8e5m2 other) { return f8e5m2::from_f32(this.to_f32() - other.to_f32()); }
+        compile_time run_time f8e5m2 operator*(f8e5m2 other) { return f8e5m2::from_f32(this.to_f32() * other.to_f32()); }
+        compile_time run_time f8e5m2 operator/(f8e5m2 other) { return f8e5m2::from_f32(this.to_f32() / other.to_f32()); }
+        compile_time run_time f8e5m2 operator-() { return f8e5m2{ .bits = this.bits ^ 0x80 }; }
+        compile_time run_time bool operator==(f8e5m2& other) { return this.to_f32() == other.to_f32(); }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"{this.to_f32()}")); }
+    }
+
     template<type T>
     class nonzero {
     public:

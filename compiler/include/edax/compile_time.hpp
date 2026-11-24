@@ -32,6 +32,20 @@ namespace edax::ct {
 
 __extension__ typedef __int128 i128;
 
+// Exact f128 arithmetic for the evaluator (spec 34), on IEEE binary128 bit patterns. Implemented
+// with LLVM's APFloat in the backend, so the front end needs no 128-bit float of its own.
+namespace quad {
+u128        from_text(std::string_view decimal);
+u128        from_double(double v);
+u128        from_integer(u128 bits, bool is_signed, int width);
+double      to_double(u128 q);
+u128        apply(char op, u128 a, u128 b);   // + - * / %
+int         compare(u128 a, u128 b);          // -1, 0, 1, or 2 when unordered
+std::string to_text(u128 q);                  // the shortest text that reads back exactly
+// Toward zero into an integer of `width` bits; false when NaN or out of range. `exact`: no fraction.
+bool        to_integer(u128 q, bool is_signed, int width, u128& out, bool& exact);
+} // namespace quad
+
 struct Value {
     enum class Kind { void_, integer, floating, boolean, character, string, type, aggregate, enumeration, list, field, alternative, function, parameter, file };
 
@@ -39,6 +53,9 @@ struct Value {
     const types::Type* type      = nullptr;   // the Edax type of the value
     u128               integer   = 0;         // integers: two's complement, masked to the type's width
     double             floating  = 0.0;
+    // f128: the exact IEEE binary128 bits (`floating` then holds the nearest double, for the
+    // code that only reads doubles). Unset: the value is exactly `floating`.
+    std::optional<u128> quad;
     bool               boolean   = false;
     char32_t           character = 0;
     std::string        string;                 // strings: the bytes
@@ -56,6 +73,9 @@ struct Value {
     // The integer as a signed 128-bit number (sign-extended from the type's width when signed).
     [[nodiscard]] i128 as_signed() const;
 };
+
+// The f128 bits of a floating value: exact when it has them, else from its double.
+inline u128 quad_of(const Value& v) { return v.quad ? *v.quad : quad::from_double(v.floating); }
 
 // What build.ed describes (spec 25): filled in by the methods of `std::build::graph` while
 // the interpreter runs `build(g)`.

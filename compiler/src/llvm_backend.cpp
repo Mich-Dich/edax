@@ -1819,7 +1819,7 @@ private:
         if (!t) unsupported(cur_, "values of an unknown type");
         switch (t->kind) {
         case Kind::int_: return llvm::IntegerType::get(ctx_, static_cast<unsigned>(t->bits));
-        case Kind::float_: return t->bits == 16 ? llvm::Type::getHalfTy(ctx_) : t->bits == 32 ? llvm::Type::getFloatTy(ctx_) : llvm::Type::getDoubleTy(ctx_);
+        case Kind::float_: return t->bits == 16 ? llvm::Type::getHalfTy(ctx_) : t->bits == 32 ? llvm::Type::getFloatTy(ctx_) : t->bits == 128 ? llvm::Type::getFP128Ty(ctx_) : llvm::Type::getDoubleTy(ctx_);
         case Kind::bool_: return llvm::Type::getInt1Ty(ctx_);
         case Kind::char_: return llvm::Type::getInt32Ty(ctx_);
         case Kind::void_:
@@ -2440,11 +2440,27 @@ private:
         return llvm::ConstantInt::get(ctx_, value);
     }
 
+    // A compile-time float: f128 values keep their exact binary128 bits.
+    llvm::Constant* float_constant(const ct::Value& v, llvm::Type* lt) {
+        if (lt->isFP128Ty()) {
+            u128          q        = ct::quad_of(v);
+            std::uint64_t words[2] = {static_cast<std::uint64_t>(q), static_cast<std::uint64_t>(q >> 64)};
+            return llvm::ConstantFP::get(ctx_, llvm::APFloat(llvm::APFloat::IEEEquad(), llvm::APInt(128, words)));
+        }
+        return llvm::ConstantFP::get(lt, v.floating);
+    }
+
     llvm::Value* float_literal(const LiteralExpr& lit, const types::Type* t) {
         if (!t || !t->is_float()) unsupported(lit.span, "float literals of this type");
         std::string text;
         for (char c : lit.text) {
             if (c != '_') text += c;
+        }
+        if (t->bits == 128) {   // f128: the literal's full precision, not a double's
+            std::string digits = text.substr(0, text.find('f'));   // without the suffix
+            ct::Value   v;
+            v.quad = ct::quad::from_text(digits);
+            return float_constant(v, lower_type(t));
         }
         return llvm::ConstantFP::get(lower_type(t), std::strtod(text.c_str(), nullptr));
     }
@@ -2768,7 +2784,9 @@ private:
             case TokenKind::minus: return b_.CreateFSub(a, b);
             case TokenKind::star: return b_.CreateFMul(a, b);
             case TokenKind::slash: return b_.CreateFDiv(a, b);
-            case TokenKind::percent: return b_.CreateFRem(a, b);
+            case TokenKind::percent:
+                if (a->getType()->isFP128Ty()) return b_.CreateCall(libc("fmodf128", a->getType(), {a->getType(), a->getType()}), {a, b});
+                return b_.CreateFRem(a, b);
             default: unsupported(span, std::format("this operator on {}", types::to_string(t)));
             }
         }
@@ -3491,8 +3509,26 @@ private:
                 return b_.CreateFPTrunc(b_.CreateCall(libc(name32, f, params), args), ty);
             }
             std::vector<llvm::Type*> params(args.size(), ty);
+            if (t->bits == 128) return b_.CreateCall(libc((std::string(name64) + "f128").c_str(), ty, params), args);   // glibc's binary128 libm
             return b_.CreateCall(libc(f32 ? name32 : name64, ty, params), args);
         };
+        if (t->bits == 128) {
+            // f128: LLVM would call the x87 `long double` functions (`sqrtl`) on x86-64, so the
+            // binary128 functions are called by name (glibc's `sqrtf128`, ...).
+            static const std::map<std::string_view, std::pair<const char*, int>> quad = {
+                {"sqrt", {"sqrtf128", 1}},   {"floor", {"floorf128", 1}}, {"ceil", {"ceilf128", 1}},
+                {"round", {"roundf128", 1}}, {"trunc", {"truncf128", 1}}, {"sin", {"sinf128", 1}},
+                {"cos", {"cosf128", 1}},     {"exp", {"expf128", 1}},     {"exp2", {"exp2f128", 1}},
+                {"log", {"logf128", 1}},     {"log2", {"log2f128", 1}},   {"log10", {"log10f128", 1}},
+                {"pow", {"powf128", 2}},     {"min", {"fminf128", 2}},    {"max", {"fmaxf128", 2}},
+                {"mul_add", {"fmaf128", 3}}};
+            if (auto q = quad.find(name); q != quad.end()) {
+                std::vector<llvm::Value*> args{v};
+                for (int i = 1; i < q->second.second; ++i) args.push_back(arg(static_cast<std::size_t>(i - 1)));
+                std::vector<llvm::Type*> params(args.size(), ty);
+                return b_.CreateCall(libc(q->second.first, ty, params), args);
+            }
+        }
         if (name == "sqrt") return unary(llvm::Intrinsic::sqrt);
         if (name == "abs") return unary(llvm::Intrinsic::fabs);
         if (name == "floor") return unary(llvm::Intrinsic::floor);
@@ -3524,6 +3560,10 @@ private:
             llvm::Value* lo = arg(0);
             llvm::Value* hi = arg(1);
             check(b_.CreateFCmpOLE(lo, hi), c.span, "clamp with lo > hi (or a NaN bound)");
+            if (t->bits == 128) {   // no libcall needed: compares and selects
+                llvm::Value* up = b_.CreateSelect(b_.CreateFCmpOLT(v, lo), lo, v);
+                return b_.CreateSelect(b_.CreateFCmpOGT(up, hi), hi, up);
+            }
             return b_.CreateBinaryIntrinsic(llvm::Intrinsic::minnum, b_.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, v, lo), hi);
         }
         llvm::Value* inf = llvm::ConstantFP::getInfinity(ty);
@@ -5288,8 +5328,9 @@ private:
         } else if (t && t->is_float()) {
             bool single = t->bits <= 32;   // f16 prints through f32
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
-            b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
-                          {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
+            if (t->bits == 128) b_.CreateCall(runtime("edax_fmt_q", vd, {p, v->getType(), p}), {buf, v, spec});   // f128: its own digits
+            else b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), llvm::Type::getInt8Ty(ctx_), p}),
+                               {buf, d, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), static_cast<std::uint64_t>(t->bits)), spec});
         } else if (t && t->is(Kind::bool_)) {
             b_.CreateCall(runtime("edax_fmt_bool", vd, {p, i1, p}), {buf, v, spec});
         } else if (t && t->is(Kind::char_)) {
@@ -5410,8 +5451,9 @@ private:
         } else if (t->is_float()) {
             bool single = t->bits <= 32;   // f16 prints through f32
             llvm::Value* d = single ? b_.CreateFPExt(v, llvm::Type::getDoubleTy(ctx_)) : v;
-            b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), i1, p}),
-                          {buf, d, llvm::ConstantInt::getBool(ctx_, single), spec});
+            if (t->bits == 128) b_.CreateCall(runtime("edax_fmt_q", vd, {p, v->getType(), p}), {buf, v, spec});   // f128: its own digits
+            else b_.CreateCall(runtime("edax_fmt_f", vd, {p, llvm::Type::getDoubleTy(ctx_), llvm::Type::getInt8Ty(ctx_), p}),
+                               {buf, d, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), static_cast<std::uint64_t>(t->bits)), spec});
         } else if (t->is(Kind::bool_)) {
             b_.CreateCall(runtime("edax_fmt_bool", vd, {p, i1, p}), {buf, b_.CreateTrunc(v, i1), spec});
         } else if (t->is(Kind::char_)) {
@@ -5861,8 +5903,8 @@ private:
 
     // Float to integer with saturation: NaN gives 0, out-of-range values give the bounds.
     llvm::Value* saturate_float(llvm::Value* v, const types::Type* to) {
-        auto*    dt   = llvm::Type::getDoubleTy(ctx_);
-        llvm::Value* f = b_.CreateFPExt(v, dt);
+        llvm::Type*  dt = v->getType()->isFP128Ty() ? v->getType() : llvm::Type::getDoubleTy(ctx_);
+        llvm::Value* f  = v->getType() == dt ? v : b_.CreateFPExt(v, dt);
         unsigned bits = static_cast<unsigned>(to->bits);
         double   low  = to->is_signed ? -std::ldexp(1.0, static_cast<int>(bits) - 1) : 0.0;
         double   high = to->is_signed ? std::ldexp(1.0, static_cast<int>(bits) - 1) : std::ldexp(1.0, static_cast<int>(bits));
@@ -5992,7 +6034,7 @@ private:
             auto* lt = llvm::cast<llvm::IntegerType>(lower_type(t));
             return llvm::ConstantInt::get(ctx_, wide(v.integer, lt->getBitWidth()));
         }
-        case ct::Value::Kind::floating: return llvm::ConstantFP::get(lower_type(t), v.floating);
+        case ct::Value::Kind::floating: return float_constant(v, lower_type(t));
         case ct::Value::Kind::boolean: return llvm::ConstantInt::getBool(ctx_, v.boolean);
         case ct::Value::Kind::character:
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), static_cast<std::uint64_t>(v.character));
@@ -6034,7 +6076,7 @@ private:
         const types::Type* t = types::strip_ref(v.type);
         switch (v.kind) {
         case ct::Value::Kind::integer: return llvm::ConstantInt::get(ctx_, wide(v.integer, lt->getIntegerBitWidth()));
-        case ct::Value::Kind::floating: return llvm::ConstantFP::get(lt, v.floating);
+        case ct::Value::Kind::floating: return float_constant(v, lt);
         case ct::Value::Kind::boolean: return llvm::ConstantInt::getBool(ctx_, v.boolean);
         case ct::Value::Kind::character: return llvm::ConstantInt::get(lt, static_cast<std::uint64_t>(v.character));
         case ct::Value::Kind::string: return str_constant(v.string);
@@ -6312,9 +6354,10 @@ private:
         auto range_of = [&](const types::Type* it, llvm::Value* f) {
             double low  = it->is_signed ? -std::ldexp(1.0, it->bits - 1) : 0.0;
             double high = std::ldexp(1.0, it->is_signed ? it->bits - 1 : it->bits);
-            llvm::Value* wide = f->getType() == dt ? f : b_.CreateFPExt(f, dt);
-            return b_.CreateAnd(b_.CreateFCmpOGE(wide, llvm::ConstantFP::get(dt, low)),
-                                b_.CreateFCmpOLT(wide, llvm::ConstantFP::get(dt, high)));
+            llvm::Type*  wt   = f->getType()->isFP128Ty() ? f->getType() : dt;
+            llvm::Value* wide = f->getType() == wt ? f : b_.CreateFPExt(f, wt);
+            return b_.CreateAnd(b_.CreateFCmpOGE(wide, llvm::ConstantFP::get(wt, low)),
+                                b_.CreateFCmpOLT(wide, llvm::ConstantFP::get(wt, high)));
         };
         if (from->is_integer() && to->is_integer()) {
             converted = convert(v, from, to);
@@ -6341,7 +6384,9 @@ private:
             exact = phi;
         } else if (to->is_integer()) {     // float -> int: in range, and a whole number
             llvm::Value* in    = range_of(to, v);
-            llvm::Value* whole = b_.CreateFCmpOEQ(v, b_.CreateUnaryIntrinsic(llvm::Intrinsic::trunc, v));
+            llvm::Value* cut   = v->getType()->isFP128Ty() ? b_.CreateCall(libc("truncf128", v->getType(), {v->getType()}), {v})
+                                                               : b_.CreateUnaryIntrinsic(llvm::Intrinsic::trunc, v);
+            llvm::Value* whole = b_.CreateFCmpOEQ(v, cut);
             exact     = b_.CreateAnd(in, whole);
             llvm::Value* safe = b_.CreateSelect(exact, v, llvm::ConstantFP::get(v->getType(), 0.0));
             converted = convert(safe, from, to);
@@ -7536,7 +7581,7 @@ private:
         for (const auto& [s, fn] : fns_) fn_display_[fn] = display_name(s);
         for (const auto& [s, fn] : drop_fns_) fn_display_[fn] = "~" + types::qualified_name(tc_.user(s));
         // The runtime's buffer functions are only declared here; their bodies grow with realloc.
-        std::set<std::string> alloc_targets{"malloc", "realloc", "calloc", "edax_buf_put", "edax_fmt_u", "edax_fmt_i", "edax_fmt_f",
+        std::set<std::string> alloc_targets{"malloc", "realloc", "calloc", "edax_buf_put", "edax_fmt_u", "edax_fmt_i", "edax_fmt_f", "edax_fmt_q",
                                             "edax_fmt_str", "edax_fmt_bool", "edax_fmt_char"};
         reach(alloc_targets, next_alloc_);
         reach({"free"}, next_free_);
@@ -9240,3 +9285,98 @@ bool set_target_description(const TargetPlatform& description, std::string& erro
 bool target_is_host() { return g_target_triple.empty() || llvm::Triple(g_target_triple).getArch() == llvm::Triple(llvm::sys::getDefaultTargetTriple()).getArch(); }
 
 } // namespace edax
+
+namespace edax::ct::quad {
+namespace {
+llvm::APFloat make(u128 q) {
+    std::uint64_t words[2] = {static_cast<std::uint64_t>(q), static_cast<std::uint64_t>(q >> 64)};
+    return llvm::APFloat(llvm::APFloat::IEEEquad(), llvm::APInt(128, words));
+}
+u128 bits(const llvm::APFloat& f) {
+    llvm::APInt i = f.bitcastToAPInt();
+    return (static_cast<u128>(i.getRawData()[1]) << 64) | i.getRawData()[0];
+}
+} // namespace
+
+u128 from_text(std::string_view decimal) {
+    llvm::APFloat f(llvm::APFloat::IEEEquad());
+    auto r = f.convertFromString(decimal, llvm::APFloat::rmNearestTiesToEven);
+    if (!r) {
+        llvm::consumeError(r.takeError());
+        return from_double(std::strtod(std::string(decimal).c_str(), nullptr));
+    }
+    return bits(f);
+}
+
+u128 from_double(double v) {
+    llvm::APFloat f(v);
+    bool lost = false;
+    f.convert(llvm::APFloat::IEEEquad(), llvm::APFloat::rmNearestTiesToEven, &lost);
+    return bits(f);
+}
+
+u128 from_integer(u128 value, bool is_signed, int width) {
+    std::uint64_t words[2] = {static_cast<std::uint64_t>(value), static_cast<std::uint64_t>(value >> 64)};
+    llvm::APInt   i(128, words);
+    if (width < 128) i = is_signed ? i.trunc(static_cast<unsigned>(width)).sext(128) : i.trunc(static_cast<unsigned>(width)).zext(128);
+    llvm::APFloat f(llvm::APFloat::IEEEquad());
+    f.convertFromAPInt(i, is_signed, llvm::APFloat::rmNearestTiesToEven);
+    return bits(f);
+}
+
+double to_double(u128 q) {
+    llvm::APFloat f    = make(q);
+    bool          lost = false;
+    f.convert(llvm::APFloat::IEEEdouble(), llvm::APFloat::rmNearestTiesToEven, &lost);
+    return f.convertToDouble();
+}
+
+u128 apply(char op, u128 a, u128 b) {
+    llvm::APFloat x = make(a);
+    llvm::APFloat y = make(b);
+    auto          rm = llvm::APFloat::rmNearestTiesToEven;
+    switch (op) {
+    case '+': x.add(y, rm); break;
+    case '-': x.subtract(y, rm); break;
+    case '*': x.multiply(y, rm); break;
+    case '/': x.divide(y, rm); break;
+    case '%': x.mod(y); break;
+    default: break;
+    }
+    return bits(x);
+}
+
+int compare(u128 a, u128 b) {
+    switch (make(a).compare(make(b))) {
+    case llvm::APFloat::cmpLessThan: return -1;
+    case llvm::APFloat::cmpEqual: return 0;
+    case llvm::APFloat::cmpGreaterThan: return 1;
+    default: return 2;
+    }
+}
+
+bool to_integer(u128 q, bool is_signed, int width, u128& out, bool& exact) {
+    llvm::APFloat  f = make(q);
+    if (f.isNaN()) return false;
+    llvm::APSInt   i(static_cast<unsigned>(width), !is_signed);
+    bool           is_exact = false;
+    auto           st = f.convertToInteger(i, llvm::APFloat::rmTowardZero, &is_exact);
+    if (st & llvm::APFloat::opInvalidOp) return false;
+    exact            = is_exact;
+    llvm::APInt wide = is_signed ? i.sext(128) : i.zext(128);
+    out              = (static_cast<u128>(wide.getRawData()[1]) << 64) | wide.getRawData()[0];
+    if (width < 128) out &= (u128{1} << width) - 1;
+    return true;
+}
+
+std::string to_text(u128 q) {
+    llvm::APFloat f = make(q);
+    if (f.isNaN()) return "NaN";
+    if (f.isInfinity()) return f.isNegative() ? "-inf" : "inf";
+    llvm::SmallString<64> out;
+    f.toString(out, 0, 0, false);   // the shortest digits that read back exactly
+    std::string text(out.str());
+    if (text.find_first_of(".eEn") == std::string::npos) text += ".0";
+    return text;
+}
+} // namespace edax::ct::quad

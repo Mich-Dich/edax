@@ -57,7 +57,7 @@ EDAX_TYPE_KEYWORD(i8)      EDAX_TYPE_KEYWORD(i16)  EDAX_TYPE_KEYWORD(i32)  EDAX_
 EDAX_TYPE_KEYWORD(i128)    EDAX_TYPE_KEYWORD(isize)
 EDAX_TYPE_KEYWORD(u8)      EDAX_TYPE_KEYWORD(u16)  EDAX_TYPE_KEYWORD(u32)  EDAX_TYPE_KEYWORD(u64)
 EDAX_TYPE_KEYWORD(u128)    EDAX_TYPE_KEYWORD(usize)
-EDAX_TYPE_KEYWORD(f16)     EDAX_TYPE_KEYWORD(f32)     EDAX_TYPE_KEYWORD(f64)
+EDAX_TYPE_KEYWORD(f16)     EDAX_TYPE_KEYWORD(f32)     EDAX_TYPE_KEYWORD(f64)     EDAX_TYPE_KEYWORD(f128)
 
 // --- punctuation ----------------------------------------------------------------------------
 // Note: `>>` is one token. The parser splits it when it closes two template argument lists.

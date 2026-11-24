@@ -48,7 +48,7 @@ bool lossless(const Type* from, const Type* to) {
     }
     if (from->is_integer() && to->is_float()) {
         int bits = from->is_size ? 64 : from->bits;
-        return to->bits == 16 ? bits <= 8 : to->bits == 32 ? bits <= 16 : bits <= 32;
+        return to->bits == 16 ? bits <= 8 : to->bits == 32 ? bits <= 16 : to->bits == 64 ? bits <= 32 : bits <= 64;
     }
     if (from->is_float() && to->is_float()) return from->bits <= to->bits;
     if (from->is_user(SymbolKind::enum_) && to->is_integer()) {
@@ -2756,6 +2756,19 @@ private:
         v.kind = ct::Value::Kind::floating;
         v.type = t;
         bool f32 = t->bits == 32;
+        if (t->bits == 128) {   // f128: IEEE binary128, exact bits (the double is the nearest one)
+            u128 sign = u128{1} << 127;
+            u128 bits = 0;
+            if (name == "max" || name == "min") bits = (u128{0x7FFEFFFFFFFFFFFFull} << 64) | ~std::uint64_t{0};
+            else if (name == "infinity") bits = u128{0x7FFF000000000000ull} << 64;
+            else if (name == "nan") bits = u128{0x7FFF800000000000ull} << 64;
+            else if (name == "epsilon") bits = u128{0x3F8F000000000000ull} << 64;   // 2^-112
+            else return std::nullopt;
+            if (name == "min") bits |= sign;
+            v.quad     = bits;
+            v.floating = ct::quad::to_double(bits);
+            return v;
+        }
         if (t->bits == 16) {   // f16 (spec 34): IEEE binary16
             if (name == "max") v.floating = 65504.0;
             else if (name == "min") v.floating = -65504.0;

@@ -25,6 +25,7 @@ std::darray<small> history = default;   // a type value works wherever a type is
 ```
 - A type is written in an expression the same way as in a declaration: `u32`, `point`, `T`, `std::option<u32>`. Reference types (`T&`) cannot be written as values.
 - A type value is used **as a type through a name**: a `compile_time` constant, a template parameter, or a parameter of a `compile_time` function. To use a type stored somewhere else (like `f.type` below), give it a name first: `compile_time type ft = f.type;`.
+- **An alias names the type it was given** (`compile_time type vec2i32 = vec2<i32>;`). It builds values and reaches static members like the type itself: `vec2i32{ .x = 1, .y = 2 }`, `vec2i32::zero()`, `number::max` for `compile_time type number = u16;`. Aliases of aliases and aliases in namespaces (`geo::vec2u8{ ... }`) work the same way. The alias is looked up in the namespace it was declared in.
 - Type values support `==` and `!=`. `std::type_name<T>()` gives the spelling (see [Checks](../errors/checks.md)).
 - A template parameter `T` is a type value, so `T` can be passed to a `compile_time` function that takes a `type`.
 

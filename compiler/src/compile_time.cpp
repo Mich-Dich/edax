@@ -142,7 +142,9 @@ bool equal(const Value& a, const Value& b) {
     switch (a.kind) {
     case Value::Kind::void_: return true;
     case Value::Kind::integer: return a.integer == b.integer;
-    case Value::Kind::floating: return a.floating == b.floating;
+    case Value::Kind::floating:
+        if (a.quad || b.quad) return quad::compare(quad_of(a), quad_of(b)) == 0;
+        return a.floating == b.floating;
     case Value::Kind::boolean: return a.boolean == b.boolean;
     case Value::Kind::character: return a.character == b.character;
     case Value::Kind::string: return a.string == b.string;
@@ -378,6 +380,10 @@ struct Evaluator::Impl {
             v.type     = t;
             v.floating = std::stod(digits);
             if (t->bits <= 32) v.floating = round_float(v.floating, t->bits);
+            if (t->bits == 128) {   // f128: the literal's own precision
+                v.quad     = quad::from_text(digits);
+                v.floating = quad::to_double(*v.quad);
+            }
             return v;
         }
         case ExprKind::bool_literal: return Value::of_bool(e.as<LiteralExpr>().bool_value, tc.bool_());
@@ -596,8 +602,10 @@ struct Evaluator::Impl {
     Value unary(const UnaryExpr& u) {
         if (u.distinct_result) {   // `-d` on a distinct type (spec 34)
             Value v = eval(*u.operand);
-            if (v.kind == Value::Kind::floating) v.floating = -v.floating;
-            else if (v.kind == Value::Kind::integer) v = integer(u128{0} - v.integer, v.type);
+            if (v.kind == Value::Kind::floating) {
+                v.floating = -v.floating;
+                if (v.quad) *v.quad ^= u128{1} << 127;
+            } else if (v.kind == Value::Kind::integer) v = integer(u128{0} - v.integer, v.type);
             else unknown();
             Value out;
             out.kind = Value::Kind::aggregate;
@@ -618,6 +626,7 @@ struct Evaluator::Impl {
             if (t->is_float()) {
                 Value v = eval(*u.operand);
                 v.floating = -v.floating;
+                if (v.quad) *v.quad ^= u128{1} << 127;
                 return v;
             }
             if (!t->is_integer()) unknown();
@@ -716,13 +725,37 @@ struct Evaluator::Impl {
         if (op == TokenKind::bang_eq) return Value::of_bool(!equal(l, r), tc.bool_());
         if (op == TokenKind::spaceship) {   // numbers, chars and text (byte order)
             int sign = 0;
-            if (l.kind == Value::Kind::floating) sign = l.floating < r.floating ? -1 : l.floating > r.floating ? 1 : 0;
+            if (l.kind == Value::Kind::floating && (l.quad || r.quad)) {
+                int q = quad::compare(quad_of(l), quad_of(r));
+                sign  = q == 2 ? 0 : q;
+            } else if (l.kind == Value::Kind::floating) sign = l.floating < r.floating ? -1 : l.floating > r.floating ? 1 : 0;
             else if (l.kind == Value::Kind::character) sign = l.character < r.character ? -1 : l.character > r.character ? 1 : 0;
             else if (l.kind == Value::Kind::string) sign = l.string < r.string ? -1 : l.string > r.string ? 1 : 0;
             else if (l.kind == Value::Kind::integer && l.type && l.type->is_signed) sign = l.as_signed() < r.as_signed() ? -1 : l.as_signed() > r.as_signed() ? 1 : 0;
             else if (l.kind == Value::Kind::integer) sign = l.integer < r.integer ? -1 : l.integer > r.integer ? 1 : 0;
             else unknown();
             return ordering_of(sign, span);
+        }
+        if (l.kind == Value::Kind::floating && l.type && l.type->bits == 128) {   // f128: exact binary128
+            u128 a = quad_of(l), c = quad_of(r);
+            int  cmp = quad::compare(a, c);
+            char o   = 0;
+            switch (op) {
+            case TokenKind::less: return Value::of_bool(cmp == -1, tc.bool_());
+            case TokenKind::less_eq: return Value::of_bool(cmp == -1 || cmp == 0, tc.bool_());
+            case TokenKind::greater: return Value::of_bool(cmp == 1, tc.bool_());
+            case TokenKind::greater_eq: return Value::of_bool(cmp == 1 || cmp == 0, tc.bool_());
+            case TokenKind::plus: o = '+'; break;
+            case TokenKind::minus: o = '-'; break;
+            case TokenKind::star: o = '*'; break;
+            case TokenKind::slash: o = '/'; break;
+            case TokenKind::percent: o = '%'; break;
+            default: unknown();
+            }
+            Value v    = l;
+            v.quad     = quad::apply(o, a, c);
+            v.floating = quad::to_double(*v.quad);
+            return v;
         }
         if (l.kind == Value::Kind::floating) {
             double a = l.floating, c = r.floating, x = 0;
@@ -893,11 +926,21 @@ struct Evaluator::Impl {
             r.type     = to;
             r.floating = v.type->is_signed ? static_cast<double>(v.as_signed()) : static_cast<double>(v.integer);
             if (to->bits <= 32) r.floating = round_float(r.floating, to->bits);
+            if (to->bits == 128) {
+                r.quad     = quad::from_integer(v.integer, v.type->is_signed, v.type->is_size ? 64 : v.type->bits);
+                r.floating = quad::to_double(*r.quad);
+            }
             if (exact) {
                 std::optional<Value> back = convert(r, v.type, true);
                 if (!back || !equal(*back, v)) return std::nullopt;
             }
             return r;
+        }
+        if (v.kind == Value::Kind::floating && to->is_integer() && v.quad) {   // f128: exactly
+            u128 bits = 0;
+            bool whole = false;
+            if (!quad::to_integer(*v.quad, to->is_signed, to->is_size ? 64 : to->bits, bits, whole) || (exact && !whole)) return std::nullopt;
+            return integer(bits, to);
         }
         if (v.kind == Value::Kind::floating && to->is_integer()) {
             double f = std::trunc(v.floating);
@@ -912,6 +955,13 @@ struct Evaluator::Impl {
             Value r = v;
             r.type  = to;
             if (to->bits <= 32) r.floating = round_float(v.floating, to->bits);
+            if (to->bits == 128) {
+                r.quad = quad_of(v);
+            } else if (v.quad) {   // from f128: rounds to the narrower width
+                r.quad.reset();
+                if (exact && !std::isnan(v.floating) && quad::compare(quad::from_double(r.floating), *v.quad) != 0) return std::nullopt;
+                return r;
+            }
             if (exact && !std::isnan(v.floating) && r.floating != v.floating) return std::nullopt;
             return r;
         }
@@ -1199,6 +1249,16 @@ struct Evaluator::Impl {
         if (!to || !(to->is_integer() || to->is_float()) || !(x.kind == Value::Kind::integer || x.kind == Value::Kind::floating)) {
             not_constant(c.span, "std::bit_cast runs at compile time between numbers only", "not a number");
         }
+        if (to->bits == 128 || (x.type && x.type->bits == 128)) {   // f128 <-> u128/i128
+            u128 raw = x.kind == Value::Kind::floating ? quad_of(x) : x.integer;
+            if (to->is_integer()) return integer(raw, to);
+            Value v;
+            v.kind     = Value::Kind::floating;
+            v.type     = to;
+            v.quad     = raw;
+            v.floating = quad::to_double(raw);
+            return v;
+        }
         std::uint64_t bits = 0;
         if (x.kind == Value::Kind::floating) {
             if (x.type->bits == 16) bits = std::bit_cast<std::uint16_t>(static_cast<_Float16>(x.floating));
@@ -1238,6 +1298,24 @@ struct Evaluator::Impl {
             unknown();
         }
         if (o.kind != Value::Kind::floating) unknown();
+        if (o.type && o.type->bits == 128) {   // f128: only the exact methods run at compile time
+            u128 q   = quad_of(o);
+            auto out = [&](u128 bits) {
+                Value v    = o;
+                v.quad     = bits;
+                v.floating = quad::to_double(bits);
+                return v;
+            };
+            u128 sign = u128{1} << 127;
+            if (name == "abs") return out(q & ~sign);
+            if (name == "copysign") return out((q & ~sign) | (quad_of(a.at(0)) & sign));
+            if (name == "min") return out(quad::compare(quad_of(a.at(0)), q) == -1 ? quad_of(a[0]) : q);
+            if (name == "max") return out(quad::compare(q, quad_of(a.at(0))) == -1 ? quad_of(a[0]) : q);
+            if (name == "is_nan") return Value::of_bool(quad::compare(q, q) == 2, tc.bool_());
+            if (name == "is_infinite") return Value::of_bool(((q >> 112) & 0x7FFF) == 0x7FFF && (q << 16) == 0, tc.bool_());
+            if (name == "is_finite") return Value::of_bool(((q >> 112) & 0x7FFF) != 0x7FFF, tc.bool_());
+            unknown();   // the others run in the program, with the binary128 library
+        }
         bool   f32 = o.type && o.type->bits <= 32;
         double x   = o.floating;
         auto   num = [&](double r) {
@@ -1393,11 +1471,21 @@ struct Evaluator::Impl {
         }
         case Value::Kind::floating: {
             double f = v.floating;
-            if (std::isnan(f)) text = "NaN";
+            if (v.quad && spec.precision < 0) text = quad::to_text(*v.quad);
+            else if (std::isnan(f)) text = "NaN";
             else if (std::isinf(f)) text = f < 0 ? "-inf" : "inf";
             else if (spec.precision >= 0) text = std::format("{:.{}f}", f, spec.precision);
             else {
-                text = v.type && v.type->bits == 32 ? std::format("{}", static_cast<float>(f)) : std::format("{}", f);
+                if (v.type && v.type->bits == 16) {   // f16: the fewest digits that read back as the same f16
+                    auto h = static_cast<_Float16>(f);
+                    for (int p = 1; p <= 5; ++p) {
+                        text = std::format("{:.{}g}", f, p);
+                        if (static_cast<_Float16>(std::strtod(text.c_str(), nullptr)) == h) break;
+                    }
+                    if (std::fabs(f) >= 1.0 && f == std::trunc(f)) text = std::format("{}", f);   // whole: all digits
+                } else {
+                    text = v.type && v.type->bits == 32 ? std::format("{}", static_cast<float>(f)) : std::format("{}", f);
+                }
                 if (text.find_first_of(".en") == std::string::npos) text += ".0";
             }
             if (spec.plus && f >= 0 && !std::isnan(f)) text.insert(0, "+");

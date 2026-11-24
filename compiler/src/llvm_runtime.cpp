@@ -73,6 +73,9 @@ declare i64 @strlen(ptr)
 declare void @exit(i32) noreturn
 declare i32 @snprintf(ptr, i64, ptr, ...)
 declare double @strtod(ptr, ptr)
+declare i32 @strfromf128(ptr, i64, ptr, fp128)
+declare fp128 @strtof128(ptr, ptr)
+declare i64 @llvm.umin.i64(i64, i64)
 declare double @llvm.fabs.f64(double)
 declare double @llvm.floor.f64(double)
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
@@ -395,7 +398,8 @@ done:
 
 ; Floats: NaN, infinities, a fixed precision, or the shortest text that reads back exactly
 ; (with ".0" for whole numbers).
-define internal void @edax_fmt_f(ptr %b, double %v, i1 %is32, ptr %spec) {
+; %width: 16, 32 or 64 (the shortest text must read back as the same value of that width).
+define internal void @edax_fmt_f(ptr %b, double %v, i8 %width, ptr %spec) {
 entry:
   %tmp = alloca [512 x i8]
   %n = alloca i32
@@ -449,7 +453,13 @@ try:
   %vf = fptrunc double %v to float
   %eq32 = fcmp oeq float %backf, %vf
   %eq64 = fcmp oeq double %back, %v
-  %same = select i1 %is32, i1 %eq32, i1 %eq64
+  %backh = fptrunc double %back to half
+  %vh = fptrunc double %v to half
+  %eq16 = fcmp oeq half %backh, %vh
+  %is32 = icmp eq i8 %width, 32
+  %is16 = icmp eq i8 %width, 16
+  %same3264 = select i1 %is32, i1 %eq32, i1 %eq64
+  %same = select i1 %is16, i1 %eq16, i1 %same3264
   br i1 %same, label %found, label %next
 next:
   %p1 = add i32 %p, 1
@@ -480,6 +490,109 @@ keep:
 emit:
   %nn = load i32, ptr %n
   %nl = sext i32 %nn to i64
+  call void @edax_pad(ptr %b, ptr %tmp, i64 %nl, ptr %spec, i8 62)
+  ret void
+}
+
+; f128 (binary128): like edax_fmt_f, with glibc's strfromf128/strtof128. The shortest text that
+; reads back exactly needs at most 36 significant digits. NaN and infinities print like f64's.
+define internal void @edax_fmt_q(ptr %b, fp128 %v, ptr %spec) {
+entry:
+  %tmp = alloca [512 x i8]
+  %fmt = alloca [16 x i8]
+  %pv = alloca i32
+  %n = alloca i64
+  %prec = getelementptr inbounds %edax_spec, ptr %spec, i32 0, i32 3
+  %precv = load i32, ptr %prec
+  %plp = getelementptr inbounds %edax_spec, ptr %spec, i32 0, i32 1
+  %plus = load i1, ptr %plp
+  %bits = bitcast fp128 %v to i128
+  %expo = lshr i128 %bits, 112
+  %expm = and i128 %expo, 32767
+  %special = icmp eq i128 %expm, 32767
+  br i1 %special, label %specb, label %finite
+specb:
+  %d = fptrunc fp128 %v to double
+  call void @edax_fmt_f(ptr %b, double %d, i8 64, ptr %spec)
+  ret void
+finite:
+  %sgn = lshr i128 %bits, 127
+  %neg = trunc i128 %sgn to i1
+  %pos = xor i1 %neg, true
+  %addplus = and i1 %plus, %pos
+  %off = zext i1 %addplus to i64
+  store i8 43, ptr %tmp
+  %out = getelementptr i8, ptr %tmp, i64 %off
+  %room = sub i64 511, %off
+  %hasprec = icmp sge i32 %precv, 0
+  br i1 %hasprec, label %precb, label %shortb
+precb:
+  %pf0 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fmt, i64 16, ptr @edax_qfmt_f, i32 %precv)
+  %kp = call i32 @strfromf128(ptr %out, i64 %room, ptr %fmt, fp128 %v)
+  %kpw = sext i32 %kp to i64
+  %kpt = add i64 %kpw, %off
+  %kpc = call i64 @llvm.umin.i64(i64 %kpt, i64 511)
+  store i64 %kpc, ptr %n
+  br label %emit
+shortb:
+  ; Whole numbers below 2^112 print all their digits ("50.0", not "5e+01").
+  %e = sub i128 %expm, 16383
+  %big = icmp sge i128 %e, 112
+  %neg_e = icmp slt i128 %e, 0
+  %zero_bits = and i128 %bits, 170141183460469231731687303715884105727
+  %is_zero = icmp eq i128 %zero_bits, 0
+  %sh = sub i128 112, %e
+  %shc = select i1 %neg_e, i128 0, i128 %sh
+  %shm = select i1 %big, i128 0, i128 %shc
+  %one = shl i128 1, %shm
+  %low = sub i128 %one, 1
+  %frac = and i128 %bits, %low
+  %nofrac = icmp eq i128 %frac, 0
+  %mid = and i1 %nofrac, true
+  %w1 = select i1 %neg_e, i1 %is_zero, i1 %mid
+  %small = icmp slt i128 %e, 112
+  %plain = and i1 %w1, %small
+  %p0 = select i1 %plain, i32 36, i32 1
+  store i32 %p0, ptr %pv
+  br i1 %plain, label %found, label %search
+search:
+  %p = load i32, ptr %pv
+  %atEnd = icmp sge i32 %p, 36
+  br i1 %atEnd, label %found, label %try
+try:
+  %pf1 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fmt, i64 16, ptr @edax_qfmt_g, i32 %p)
+  %k = call i32 @strfromf128(ptr %out, i64 %room, ptr %fmt, fp128 %v)
+  %back = call fp128 @strtof128(ptr %out, ptr null)
+  %backbits = bitcast fp128 %back to i128
+  %same = icmp eq i128 %backbits, %bits
+  br i1 %same, label %found, label %next
+next:
+  %p1 = add i32 %p, 1
+  store i32 %p1, ptr %pv
+  br label %search
+found:
+  %pf = load i32, ptr %pv
+  %pf2 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fmt, i64 16, ptr @edax_qfmt_g, i32 %pf)
+  %k2 = call i32 @strfromf128(ptr %out, i64 %room, ptr %fmt, fp128 %v)
+  %k2w0 = sext i32 %k2 to i64
+  %k2t = add i64 %k2w0, %off
+  %k2w = call i64 @llvm.umin.i64(i64 %k2t, i64 509)
+  %needs = call i1 @edax_needs_point(ptr %tmp, i64 %k2w)
+  br i1 %needs, label %addpoint, label %keep
+addpoint:
+  %dotp = getelementptr i8, ptr %tmp, i64 %k2w
+  store i8 46, ptr %dotp
+  %k3 = add i64 %k2w, 1
+  %zerop = getelementptr i8, ptr %tmp, i64 %k3
+  store i8 48, ptr %zerop
+  %k4 = add i64 %k2w, 2
+  store i64 %k4, ptr %n
+  br label %emit
+keep:
+  store i64 %k2w, ptr %n
+  br label %emit
+emit:
+  %nl = load i64, ptr %n
   call void @edax_pad(ptr %b, ptr %tmp, i64 %nl, ptr %spec, i8 62)
   ret void
 }
@@ -796,6 +909,8 @@ std::string llvm_runtime_ir() {
     out += cstring_global("edax_cfmt_plus_g", "%+.*g");
     out += cstring_global("edax_cfmt_f", "%.*f");
     out += cstring_global("edax_cfmt_plus_f", "%+.*f");
+    out += cstring_global("edax_qfmt_g", "%%.%dg");   // a strfromf128 format: no '*', no flags
+    out += cstring_global("edax_qfmt_f", "%%.%df");
     out += bytes_global("edax_newline", "\n");
     out += bytes_global("edax_colon", ":");
     out += bytes_global("edax_panic_prefix", ": panic: ");

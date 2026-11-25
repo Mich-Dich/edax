@@ -1,9 +1,15 @@
 exit: 0
 --- stdout
-edaxc test: debug, 1 target
- ✓ build.ed       19 targets <t>
+edaxc test: debug, 2 targets
+ ✓ build.ed       25 targets <t>
+ ✓ ui_spike_test  7 units, 35.98 KiB <t>  %t/debug/ui_spike_test
+PASS ui_spike_test::a_click_is_a_press_and_a_release_on_the_same_widget
+PASS ui_spike_test::equal_labels_in_a_loop_are_different_widgets
+PASS ui_spike_test::a_dragged_field_slider_changes_the_value_within_its_range
+PASS ui_spike_test::own_widgets_get_the_call_site_of_their_caller
+PASS ui_spike_test::equal_labels_from_one_call_site_are_reported
  ✓ geometry_test  7 units, 1.91 KiB <t>  %t/debug/geometry_test
 PASS geometry_test
-built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
-1 of 1 tests passed
+built 2 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
+6 of 6 tests passed
 --- stderr

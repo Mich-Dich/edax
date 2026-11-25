@@ -1,0 +1,71 @@
+// Standard-library lesson 12: a job board shared by worker threads (solution).
+import std;
+
+// What the board holds: jobs waiting, and whether more will come.
+struct board {
+    std::darray<u32> waiting = default;
+    bool closed = false;
+}
+
+// The workers' shared state.
+struct shop {
+    std::mutex<board> jobs = std::mutex<board>::make(board{});
+    std::condition changed = default;
+    std::rw_mutex<u32> price_per_unit = std::rw_mutex<u32>::make(3);   // read by every job, written once
+    std::atomic<u32> done = default;
+    std::mutex<std::darray<u32>> receipts = std::mutex<std::darray<u32>>::make(default);
+}
+
+// Takes jobs until the board is closed and empty; each job's receipt is units * price.
+void work(shop& s) {
+    while (true) {
+        u32 units = {
+            mut std::mutex_guard<board> b = s.jobs.lock();
+            s.changed.wait(mut b, [](board& v) { return !v.waiting.is_empty() || v.closed; });
+            match (b->waiting.pop()) {
+                std::some(u) => u,
+                std::none => { return; },                 // closed and empty
+            }
+        };                                                // the board is unlocked here, before the work
+        u32 price = *s.price_per_unit.read();
+        s.receipts.lock()->push(units * price);
+        _ = s.done.fetch_wrapping_add(1, std::memory_order::relaxed);
+    }
+}
+
+void post(shop& s, u32 units) {
+    {
+        mut std::mutex_guard<board> b = s.jobs.lock();
+        b->waiting.push(units);
+    }                                                     // unlock first, then wake a worker
+    s.changed.notify_one();
+}
+
+void close(shop& s) {
+    {
+        mut std::mutex_guard<board> b = s.jobs.lock();
+        b->closed = true;
+    }
+    s.changed.notify_all();                               // every waiting worker must see it
+}
+
+i32 main() {
+    shop s = shop{};
+    *s.price_per_unit.write() = 5;                        // before any worker reads it
+    {
+        std::thread::scoped_handle<void> a = std::thread::spawn(std::thread::options{ .name = "worker-a" }, [&s]() { work(s); });
+        std::thread::scoped_handle<void> b = std::thread::spawn(std::thread::options{ .name = "worker-b" }, [&s]() { work(s); });
+        std::array<u32, 6> orders = [4, 1, 7, 2, 9, 3];
+        for (u32 units : orders) { post(s, units); }
+        close(s);
+        a.join();
+        b.join();
+    }
+    mut std::mutex_guard<std::darray<u32>> r = s.receipts.lock();
+    r->sort();
+    mut u32 total = 0;
+    for (u32 v : *r) { total += v; }
+    std::println(f"{s.done.load(std::memory_order::acquire)} jobs done, {r->len()} receipts");
+    std::println(f"smallest {(*r)[0]}, largest {(*r)[r->len() - 1]}, total {total}");
+    return 0;
+}

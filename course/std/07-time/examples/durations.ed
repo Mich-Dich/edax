@@ -1,0 +1,19 @@
+// std::time::duration: unsigned nanoseconds; every unit is written.
+import std;
+namespace t = std::time;
+
+compile_time t::duration timeout = t::duration::seconds(30);    // durations work at compile time
+
+i32 main() {
+    t::duration frame = t::duration::microseconds(16_667);
+    t::duration budget = t::duration::milliseconds(250);
+    std::println(f"{frame} {budget} {t::duration::seconds(135)} {t::duration::nanoseconds(250)}");
+    std::println(f"{(frame * 60).as_milliseconds()} ms for 60 frames, {budget / 4} each");
+    std::println(f"{frame < budget} {frame.as_seconds_f64():.4}");
+    std::println(f"timeout {timeout.as_milliseconds()} ms");
+    return 0;
+}
+//> 16.66ms 250ms 2m 15s 250ns
+//> 1000 ms for 60 frames, 62.5ms each
+//> true 0.0167
+//> timeout 30000 ms

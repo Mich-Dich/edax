@@ -30,6 +30,7 @@ namespace std::ui {
                 text_role::heading => this.heading,
                 text_role::display => this.display,
                 text_role::code    => this.code,
+                text_role::overline => this.overline,
             };
         }
     }
@@ -109,6 +110,60 @@ namespace std::ui {
             return t;
         }
 
+        static theme studio(color accent, brightness mode) {
+            mut theme t = theme::from_accent(accent, mode);
+            bool is_dark = mode == brightness::dark;
+            if (is_dark) {
+                t.colors.background = color::hex(0x09090b);
+                t.colors.surface = color::hex(0x141417);
+                t.colors.surface_raised = color::hex(0x1d1d21);
+                t.colors.surface_sunken = color::hex(0x0e0e11);
+                t.colors.border = color::hex(0x26262c);
+                t.colors.text = color::hex(0xededf0);
+                t.colors.text_muted = color::hex(0xa0a0ab);
+                t.colors.text_faint = color::hex(0x62626c);
+                t.colors.shadow = color::black();
+                t.shadow = elevation_scale{
+                    .level1 = shadow_style{ .offset_y = 1.0, .blur = 2.0, .opacity = 0.3 },
+                    .level2 = shadow_style{ .offset_y = 6.0, .blur = 18.0, .opacity = 0.5 },
+                    .level3 = shadow_style{ .offset_y = 12.0, .blur = 32.0, .opacity = 0.6 },
+                };
+            } else {
+                t.colors.background = color::hex(0xe4e4e8);
+                t.colors.surface = color::hex(0xf7f7f8);
+                t.colors.surface_raised = color::hex(0xffffff);
+                t.colors.surface_sunken = color::hex(0xededf0);
+                t.colors.border = color::hex(0xd4d4da);
+                t.colors.text = color::hex(0x1c1c20);
+                t.colors.text_muted = color::hex(0x5c5c66);
+                t.colors.text_faint = color::hex(0x9a9aa3);
+            }
+            t.colors.focus = t.colors.primary.with_alpha(0.6);
+            t.typography = type_scale{
+                .caption = type_style{ .size = 11.0, .line_height = 1.3 },
+                .body = type_style{ .size = 13.0, .line_height = 1.35 },
+                .label = type_style{ .face = font_face::semibold, .size = 12.0, .line_height = 1.3 },
+                .title = type_style{ .face = font_face::semibold, .size = 13.0, .line_height = 1.3 },
+                .heading = type_style{ .face = font_face::semibold, .size = 16.0, .line_height = 1.25 },
+                .display = type_style{ .face = font_face::semibold, .size = 24.0, .line_height = 1.15 },
+                .code = type_style{ .face = font_face::mono, .size = 12.0, .line_height = 1.4 },
+            };
+            t.space = spacing_scale{ .xs = 2.0, .s = 4.0, .m = 8.0, .l = 12.0, .xl = 16.0, .xxl = 24.0 };
+            t.radius = radius_scale{ .small = 4.0, .medium = 8.0, .large = 10.0, .full = 9999.0 };
+            t.motion = motion_scale{ .fast = 0.06, .normal = 0.12, .slow = 0.2 };
+            t.controls = controls_style{
+                .button = button_style{ .height = 24.0, .padding = 10.0, .raised = false, .gradient = false },
+                .slider = slider_style{ .track_height = 3.0, .knob_size = 12.0 },
+                .toggle = toggle_style{ .width = 26.0, .height = 15.0 },
+                .checkbox = checkbox_style{ .size = 14.0 },
+                .window = window_style{ .title_height = 30.0, .padding = 10.0, .elevation = 2, .separate_title = true, .tab_height = 34.0, .dock_gap = 6.0 },
+                .row_height = 24.0,
+                .gap = 4.0,
+                .boolean = bool_widget::checkbox,
+            };
+            return t;
+        }
+
         static theme dark() {
             return theme::from_accent(color::hex(0x4f7cff), brightness::dark);
         }
@@ -164,7 +219,7 @@ namespace std::ui {
 
         text_style style(text_role role, color c) {
             type_style s = this.typography.of(role);
-            return text_style{ .face = s.face, .size = s.size * this.density, .line_height = s.line_height, .color = c };
+            return text_style{ .face = s.face, .size = s.size * this.density, .line_height = s.line_height, .color = c, .tracking = s.tracking };
         }
 
         shadow_style elevation(u32 level) {
@@ -223,9 +278,12 @@ namespace std::ui {
             mut usize at = 0;
             while (at < text.len()) {
                 (char c, usize n) = char_at(text, at);
-                x += this.advance(style.face, previous, c, style.size);
+                x += this.advance(style.face, previous, c, style.size) + style.tracking * style.size;
                 previous = c;
                 at += n;
+            }
+            if (x > 0.0) {
+                x -= style.tracking * style.size;
             }
             return vec2{ .x = x, .y = this.line_height(style) };
         }
@@ -261,7 +319,7 @@ namespace std::ui {
                     has_break = false;
                     continue;
                 }
-                f32 step = this.advance(style.face, previous, c, style.size);
+                f32 step = this.advance(style.face, previous, c, style.size) + style.tracking * style.size;
                 if (c == ' ') {
                     break_at = at;
                     break_width = x;
@@ -421,6 +479,67 @@ namespace std::ui {
             add_box(mut this, r, top, bottom, radius, 0.0, 0.0);
         }
 
+        void fill_gradient_x(rect r, color left, color right, f32 radius) mut {
+            add_box_across(mut this, r, left, right, radius);
+        }
+
+        void glow(rect r, f32 radius, color c, f32 size) mut {
+            this.shadow(r, radius, shadow_style{ .offset_y = 0.0, .blur = size, .opacity = 1.0 }, c);
+        }
+
+        void fill_between_gradient(std::span<vec2> upper, std::span<vec2> lower, color top, color bottom) mut {
+            usize n = upper.len().min(lower.len());
+            if (n < 2) {
+                return;
+            }
+            use_command(mut this, texture{}, false);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 high = top.packed();
+            u32 low = bottom.packed();
+            for (usize i : 0..n) {
+                this.vertices.push(solid_vertex(upper[i], high));
+                this.vertices.push(solid_vertex(lower[i], low));
+            }
+            for (usize i : 0..n - 1) {
+                u32 a = base + cast::truncate<u32>(2 * i);
+                this.indices.push(a);
+                this.indices.push(a + 1);
+                this.indices.push(a + 2);
+                this.indices.push(a + 1);
+                this.indices.push(a + 3);
+                this.indices.push(a + 2);
+            }
+            count_indices(mut this, cast::truncate<u32>(6 * (n - 1)));
+        }
+
+        void dashed_line(vec2 from, vec2 to, f32 width, f32 dash, f32 gap, color c) mut {
+            vec2 d = to - from;
+            f32 length = d.length();
+            if (length <= 0.0 || dash <= 0.0) {
+                return;
+            }
+            vec2 u = d * (1.0 / length);
+            mut f32 at = 0.0;
+            while (at < length) {
+                f32 end = (at + dash).min(length);
+                this.line(from + u * at, from + u * end, width, c);
+                at = end + gap.max(0.5);
+            }
+        }
+
+        void bezier(vec2 a, vec2 b, vec2 c, vec2 d, f32 width, color tint) mut {
+            f32 reach = (b - a).length() + (c - b).length() + (d - c).length();
+            u32 steps = cast::saturate<u32>((reach / 6.0).ceil()).max(8).min(96);
+            mut vec2 last = a;
+            for (u32 i : 1..(steps + 1)) {
+                f32 t = whole_pixels(i) / whole_pixels(steps);
+                f32 s = 1.0 - t;
+                vec2 p = a * (s * s * s) + b * (3.0 * s * s * t) + c * (3.0 * s * t * t) + d * (t * t * t);
+                this.line(last, p, width, tint);
+                last = p;
+            }
+        }
+
         void stroke(rect r, color c, f32 radius, f32 width) mut {
             add_box(mut this, r, c, c, radius, width, 0.0);
         }
@@ -535,6 +654,30 @@ namespace std::ui {
             count_indices(mut this, cast::truncate<u32>(9 * n));
         }
 
+        void fill_between(std::span<vec2> upper, std::span<vec2> lower, color c) mut {
+            usize n = upper.len().min(lower.len());
+            if (n < 2) {
+                return;
+            }
+            use_command(mut this, texture{}, false);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 packed = c.packed();
+            for (usize i : 0..n) {
+                this.vertices.push(solid_vertex(upper[i], packed));
+                this.vertices.push(solid_vertex(lower[i], packed));
+            }
+            for (usize i : 0..n - 1) {
+                u32 a = base + cast::truncate<u32>(2 * i);
+                this.indices.push(a);
+                this.indices.push(a + 1);
+                this.indices.push(a + 2);
+                this.indices.push(a + 1);
+                this.indices.push(a + 3);
+                this.indices.push(a + 2);
+            }
+            count_indices(mut this, cast::truncate<u32>(6 * (n - 1)));
+        }
+
         void stroke_polygon(std::span<vec2> points, bool closed, f32 width, color c) mut {
             usize n = points.len();
             if (n < 2) {
@@ -546,6 +689,58 @@ namespace std::ui {
             if (closed && n > 2) {
                 this.line(points[n - 1], points[0], width, c);
             }
+        }
+
+        void polyline(std::span<vec2> points, f32 width, color c) mut {
+            // Drop points on top of the one before: they have no direction.
+            mut std::darray<vec2> path = std::darray<vec2>::with_capacity(points.len());
+            for (vec2 p : points) {
+                if (path.is_empty() || (p - path[path.len() - 1]).length() > 0.01) {
+                    path.push(p);
+                }
+            }
+            usize n = path.len();
+            if (n < 2) {
+                return;
+            }
+            // Thinner than a pixel: a pixel-wide line, fainter.
+            color tone = if (width < 1.0) { c.with_alpha(c.a * width.max(0.0)) } else { c };
+            f32 core = (width * 0.5 - 0.5).max(0.0);
+            f32 edge = width.max(1.0) * 0.5 + 0.5;
+            u32 inside = tone.packed();
+            u32 outside = tone.with_alpha(0.0).packed();
+            use_command(mut this, texture{}, false);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            for (usize i : 0..n) {
+                vec2 p = path[i];
+                vec2 before = if (i == 0) { (path[1] - path[0]).normalized() } else { (p - path[i - 1]).normalized() };
+                vec2 after = if (i == n - 1) { before } else { (path[i + 1] - p).normalized() };
+                vec2 left_before = vec2{ .x = -before.y, .y = before.x };
+                vec2 left_after = vec2{ .x = -after.y, .y = after.x };
+                vec2 sum = left_before + left_after;
+                vec2 m = if (sum.length() < 0.000001) { left_after } else { sum.normalized() };
+                // The miter, at most twice as long as the line is wide (sharp turns are cut short).
+                f32 reach = (1.0 / m.dot(left_after).max(0.5));
+                // Square ends half a width past the first and last point.
+                vec2 q = if (i == 0) { p - before * (width * 0.5) } else if (i == n - 1) { p + after * (width * 0.5) } else { p };
+                this.vertices.push(solid_vertex(q + m * (edge * reach), outside));
+                this.vertices.push(solid_vertex(q + m * (core * reach), inside));
+                this.vertices.push(solid_vertex(q - m * (core * reach), inside));
+                this.vertices.push(solid_vertex(q - m * (edge * reach), outside));
+            }
+            for (usize i : 0..(n - 1)) {
+                u32 a = base + cast::truncate<u32>(4 * i);
+                u32 b = a + 4;
+                for (u32 k : 0..3) {
+                    this.indices.push(a + k);
+                    this.indices.push(a + k + 1);
+                    this.indices.push(b + k + 1);
+                    this.indices.push(a + k);
+                    this.indices.push(b + k + 1);
+                    this.indices.push(b + k);
+                }
+            }
+            count_indices(mut this, cast::truncate<u32>(18 * (n - 1)));
         }
 
         void star(vec2 center, f32 outer, f32 inner, u32 points, f32 rotation, color c) mut {
@@ -574,6 +769,365 @@ namespace std::ui {
                 vec2{ .x = r.right(), .y = r.top() + r.height * 0.12 },
             ];
             this.stroke_polygon(stroke_points.as_span(), false, width, c);
+        }
+
+        void arc(vec2 center, f32 radius, f32 from, f32 to, f32 width, color c) mut {
+            f32 sweep = to - from;
+            u32 steps = cast::saturate<u32>((sweep.abs() / 12.0).ceil()).max(4);
+            mut vec2 last = on_circle(center, radius, from);
+            for (u32 i : 1..(steps + 1)) {
+                vec2 next = on_circle(center, radius, from + sweep * whole_pixels(i) / whole_pixels(steps));
+                this.line(last, next, width, c);
+                last = next;
+            }
+        }
+
+        void draw_icon(icon which, rect box, color c) mut {
+            f32 side = box.width.min(box.height);
+            rect q = rect{ .x = (box.x + (box.width - side) * 0.5).round(), .y = (box.y + (box.height - side) * 0.5).round(), .width = side, .height = side };
+            f32 s = side / 16.0;
+            f32 w = (1.5 * s).max(1.1);
+            match (which) {
+                icon::none => {},
+                icon::close => {
+                    icon_line(mut this, q, 4.0, 4.0, 12.0, 12.0, w, c);
+                    icon_line(mut this, q, 12.0, 4.0, 4.0, 12.0, w, c);
+                },
+                icon::plus => {
+                    icon_line(mut this, q, 8.0, 3.0, 8.0, 13.0, w, c);
+                    icon_line(mut this, q, 3.0, 8.0, 13.0, 8.0, w, c);
+                },
+                icon::minus => icon_line(mut this, q, 3.0, 8.0, 13.0, 8.0, w, c),
+                icon::checkmark => {
+                    std::array<f32, 6> a = [3.0, 8.5, 6.5, 12.0, 13.0, 4.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::chevron_right => {
+                    std::array<f32, 6> a = [6.0, 3.5, 10.5, 8.0, 6.0, 12.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::chevron_down => {
+                    std::array<f32, 6> a = [3.5, 6.0, 8.0, 10.5, 12.5, 6.0];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::chevron_left => {
+                    std::array<f32, 6> a = [10.0, 3.5, 5.5, 8.0, 10.0, 12.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::chevron_up => {
+                    std::array<f32, 6> a = [3.5, 10.0, 8.0, 5.5, 12.5, 10.0];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::search => {
+                    this.circle_stroke(grid(q, 7.0, 7.0), 4.5 * s, c, w);
+                    icon_line(mut this, q, 10.4, 10.4, 13.5, 13.5, w, c);
+                },
+                icon::filter => {
+                    std::array<f32, 12> a = [2.5, 3.5, 13.5, 3.5, 9.5, 8.5, 9.5, 13.0, 6.5, 11.5, 6.5, 8.5];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                },
+                icon::more => {
+                    this.circle(grid(q, 3.5, 8.0), 1.4 * s, c);
+                    this.circle(grid(q, 8.0, 8.0), 1.4 * s, c);
+                    this.circle(grid(q, 12.5, 8.0), 1.4 * s, c);
+                },
+                icon::menu => {
+                    icon_line(mut this, q, 3.0, 4.5, 13.0, 4.5, w, c);
+                    icon_line(mut this, q, 3.0, 8.0, 13.0, 8.0, w, c);
+                    icon_line(mut this, q, 3.0, 11.5, 13.0, 11.5, w, c);
+                },
+                icon::settings => {
+                    vec2 m = grid(q, 8.0, 8.0);
+                    this.circle_stroke(m, 2.1 * s, c, w);
+                    this.circle_stroke(m, 5.2 * s, c, w);
+                    for (u32 k : 0..8) {
+                        f32 a = whole_pixels(k) * 45.0 + 22.5;
+                        this.line(on_circle(m, 5.4 * s, a), on_circle(m, 7.0 * s, a), 2.0 * s, c);
+                    }
+                },
+                icon::play => {
+                    std::array<vec2, 3> t = [grid(q, 4.5, 2.8), grid(q, 13.2, 8.0), grid(q, 4.5, 13.2)];
+                    this.fill_polygon(t.as_span(), c);
+                },
+                icon::pause => {
+                    this.fill(icon_box(q, 4.0, 3.0, 2.8, 10.0), c, s);
+                    this.fill(icon_box(q, 9.2, 3.0, 2.8, 10.0), c, s);
+                },
+                icon::stop => this.fill(icon_box(q, 3.5, 3.5, 9.0, 9.0), c, 1.5 * s),
+                icon::step => {
+                    std::array<vec2, 3> t = [grid(q, 3.0, 3.0), grid(q, 10.0, 8.0), grid(q, 3.0, 13.0)];
+                    this.fill_polygon(t.as_span(), c);
+                    this.fill(icon_box(q, 11.0, 3.0, 2.2, 10.0), c, 0.8 * s);
+                },
+                icon::eye => {
+                    icon_eye(mut this, q, s, w, c);
+                },
+                icon::eye_off => {
+                    icon_eye(mut this, q, s, w, c);
+                    icon_line(mut this, q, 2.5, 13.5, 13.5, 2.5, w, c);
+                },
+                icon::lock => {
+                    this.stroke(icon_box(q, 3.0, 7.0, 10.0, 7.0), c, 1.5 * s, w);
+                    this.arc(grid(q, 8.0, 7.0), 3.0 * s, 180.0, 360.0, w, c);
+                    this.circle(grid(q, 8.0, 10.5), 1.1 * s, c);
+                },
+                icon::unlock => {
+                    this.stroke(icon_box(q, 3.0, 7.0, 10.0, 7.0), c, 1.5 * s, w);
+                    this.arc(grid(q, 8.0, 5.0), 3.0 * s, 180.0, 360.0, w, c);
+                    icon_line(mut this, q, 11.0, 5.0, 11.0, 7.0, w, c);
+                    this.circle(grid(q, 8.0, 10.5), 1.1 * s, c);
+                },
+                icon::folder => {
+                    std::array<f32, 12> a = [1.8, 3.5, 6.3, 3.5, 7.8, 5.2, 14.2, 5.2, 14.2, 12.8, 1.8, 12.8];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                },
+                icon::file => {
+                    std::array<f32, 10> a = [3.5, 2.0, 9.5, 2.0, 12.5, 5.0, 12.5, 14.0, 3.5, 14.0];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    std::array<f32, 6> b = [9.5, 2.0, 9.5, 5.0, 12.5, 5.0];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                },
+                icon::code => {
+                    std::array<f32, 6> a = [5.5, 4.5, 2.0, 8.0, 5.5, 11.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    std::array<f32, 6> b = [10.5, 4.5, 14.0, 8.0, 10.5, 11.5];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                    icon_line(mut this, q, 9.2, 3.0, 6.8, 13.0, w, c);
+                },
+                icon::cube => {
+                    std::array<f32, 12> a = [8.0, 1.8, 13.8, 5.0, 13.8, 11.0, 8.0, 14.2, 2.2, 11.0, 2.2, 5.0];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    icon_line(mut this, q, 2.2, 5.0, 8.0, 8.2, w, c);
+                    icon_line(mut this, q, 13.8, 5.0, 8.0, 8.2, w, c);
+                    icon_line(mut this, q, 8.0, 8.2, 8.0, 14.2, w, c);
+                },
+                icon::light => {
+                    vec2 m = grid(q, 8.0, 8.0);
+                    this.circle_stroke(m, 2.8 * s, c, w);
+                    for (u32 k : 0..8) {
+                        f32 a = whole_pixels(k) * 45.0;
+                        this.line(on_circle(m, 5.0 * s, a), on_circle(m, 6.6 * s, a), w, c);
+                    }
+                },
+                icon::camera => {
+                    this.stroke(icon_box(q, 1.5, 4.8, 13.0, 9.0), c, 1.8 * s, w);
+                    this.circle_stroke(grid(q, 8.0, 9.3), 2.4 * s, c, w);
+                    std::array<f32, 8> a = [5.2, 4.8, 6.3, 3.0, 9.7, 3.0, 10.8, 4.8];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::layers => {
+                    std::array<f32, 8> a = [8.0, 2.0, 14.2, 5.3, 8.0, 8.6, 1.8, 5.3];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    std::array<f32, 6> b = [1.8, 8.6, 8.0, 11.9, 14.2, 8.6];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                    std::array<f32, 6> d = [1.8, 11.4, 8.0, 14.6, 14.2, 11.4];
+                    icon_path(mut this, q, d.as_span(), false, w, c);
+                },
+                icon::grid => {
+                    this.stroke(icon_box(q, 2.0, 2.0, 5.2, 5.2), c, s, w);
+                    this.stroke(icon_box(q, 8.8, 2.0, 5.2, 5.2), c, s, w);
+                    this.stroke(icon_box(q, 2.0, 8.8, 5.2, 5.2), c, s, w);
+                    this.stroke(icon_box(q, 8.8, 8.8, 5.2, 5.2), c, s, w);
+                },
+                icon::list => {
+                    for (u32 k : 0..3) {
+                        f32 y = 4.5 + 3.5 * whole_pixels(k);
+                        this.circle(grid(q, 3.0, y), 1.1 * s, c);
+                        icon_line(mut this, q, 6.0, y, 13.5, y, w, c);
+                    }
+                },
+                icon::undo => {
+                    std::array<f32, 6> a = [5.5, 3.0, 2.5, 6.0, 5.5, 9.0];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    icon_line(mut this, q, 2.5, 6.0, 10.0, 6.0, w, c);
+                    this.arc(grid(q, 10.0, 9.5), 3.5 * s, 270.0, 450.0, w, c);
+                    icon_line(mut this, q, 10.0, 13.0, 6.0, 13.0, w, c);
+                },
+                icon::redo => {
+                    std::array<f32, 6> a = [10.5, 3.0, 13.5, 6.0, 10.5, 9.0];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    icon_line(mut this, q, 13.5, 6.0, 6.0, 6.0, w, c);
+                    this.arc(grid(q, 6.0, 9.5), 3.5 * s, 90.0, 270.0, w, c);
+                    icon_line(mut this, q, 6.0, 13.0, 10.0, 13.0, w, c);
+                },
+                icon::save => {
+                    std::array<f32, 10> a = [2.5, 2.5, 11.0, 2.5, 13.5, 5.0, 13.5, 13.5, 2.5, 13.5];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    std::array<f32, 8> b = [5.0, 2.5, 5.0, 5.8, 10.0, 5.8, 10.0, 2.5];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                    this.stroke(icon_box(q, 4.7, 9.0, 6.6, 4.5), c, 0.0, w);
+                },
+                icon::refresh => {
+                    vec2 m = grid(q, 8.0, 8.0);
+                    this.arc(m, 5.2 * s, 20.0, 300.0, w, c);
+                    icon_head(mut this, on_circle(m, 5.2 * s, 300.0), 30.0, 3.2 * s, w, c);
+                },
+                icon::trash => {
+                    icon_line(mut this, q, 2.5, 4.5, 13.5, 4.5, w, c);
+                    std::array<f32, 8> a = [6.0, 4.5, 6.0, 2.5, 10.0, 2.5, 10.0, 4.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    std::array<f32, 8> b = [3.8, 4.5, 4.8, 13.8, 11.2, 13.8, 12.2, 4.5];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                    icon_line(mut this, q, 6.8, 7.2, 6.8, 11.2, w, c);
+                    icon_line(mut this, q, 9.2, 7.2, 9.2, 11.2, w, c);
+                },
+                icon::copy => {
+                    this.stroke(icon_box(q, 5.5, 5.5, 8.5, 8.5), c, 1.5 * s, w);
+                    std::array<f32, 6> a = [2.5, 10.5, 2.5, 2.5, 10.5, 2.5];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::info => {
+                    this.circle_stroke(grid(q, 8.0, 8.0), 6.2 * s, c, w);
+                    icon_line(mut this, q, 8.0, 7.3, 8.0, 11.5, w, c);
+                    this.circle(grid(q, 8.0, 4.9), 1.0 * s, c);
+                },
+                icon::warning => {
+                    std::array<f32, 6> a = [8.0, 1.8, 14.6, 13.6, 1.4, 13.6];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    icon_line(mut this, q, 8.0, 6.2, 8.0, 9.4, w, c);
+                    this.circle(grid(q, 8.0, 11.6), 0.95 * s, c);
+                },
+                icon::error => {
+                    this.circle_stroke(grid(q, 8.0, 8.0), 6.2 * s, c, w);
+                    icon_line(mut this, q, 5.8, 5.8, 10.2, 10.2, w, c);
+                    icon_line(mut this, q, 10.2, 5.8, 5.8, 10.2, w, c);
+                },
+                icon::cursor => {
+                    std::array<f32, 14> a = [4.0, 2.0, 4.0, 13.0, 6.8, 10.4, 8.8, 14.2, 10.6, 13.3, 8.7, 9.6, 12.4, 9.4];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                },
+                icon::translate => {
+                    icon_line(mut this, q, 8.0, 1.8, 8.0, 14.2, w, c);
+                    icon_line(mut this, q, 1.8, 8.0, 14.2, 8.0, w, c);
+                    icon_head(mut this, grid(q, 8.0, 1.8), 270.0, 2.6 * s, w, c);
+                    icon_head(mut this, grid(q, 8.0, 14.2), 90.0, 2.6 * s, w, c);
+                    icon_head(mut this, grid(q, 1.8, 8.0), 180.0, 2.6 * s, w, c);
+                    icon_head(mut this, grid(q, 14.2, 8.0), 0.0, 2.6 * s, w, c);
+                },
+                icon::rotate => {
+                    vec2 m = grid(q, 8.0, 8.0);
+                    this.arc(m, 5.2 * s, 60.0, 340.0, w, c);
+                    icon_head(mut this, on_circle(m, 5.2 * s, 340.0), 70.0, 3.0 * s, w, c);
+                },
+                icon::scale => {
+                    this.stroke(icon_box(q, 2.0, 7.0, 7.0, 7.0), c, s, w);
+                    icon_line(mut this, q, 7.0, 9.0, 13.8, 2.2, w, c);
+                    icon_head(mut this, grid(q, 13.8, 2.2), 315.0, 3.2 * s, w, c);
+                },
+                icon::terminal => {
+                    this.stroke(icon_box(q, 1.2, 2.5, 13.6, 11.0), c, 1.8 * s, w);
+                    std::array<f32, 6> a = [4.2, 6.0, 6.6, 8.0, 4.2, 10.0];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    icon_line(mut this, q, 8.0, 10.5, 11.8, 10.5, w, c);
+                },
+                icon::chart => {
+                    icon_line(mut this, q, 2.0, 14.0, 14.0, 14.0, w, c);
+                    this.fill(icon_box(q, 3.0, 8.0, 2.6, 4.8), c, 0.6 * s);
+                    this.fill(icon_box(q, 6.7, 3.5, 2.6, 9.3), c, 0.6 * s);
+                    this.fill(icon_box(q, 10.4, 6.0, 2.6, 6.8), c, 0.6 * s);
+                },
+                icon::history => {
+                    this.circle_stroke(grid(q, 8.0, 8.0), 6.2 * s, c, w);
+                    std::array<f32, 6> a = [8.0, 4.4, 8.0, 8.0, 10.6, 9.6];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                },
+                icon::pin => {
+                    vec2 m = grid(q, 8.0, 6.5);
+                    this.arc(m, 4.7 * s, 150.0, 390.0, w, c);
+                    icon_line(mut this, q, 3.93, 8.85, 8.0, 14.5, w, c);
+                    icon_line(mut this, q, 12.07, 8.85, 8.0, 14.5, w, c);
+                    this.circle_stroke(m, 1.7 * s, c, w);
+                },
+                icon::maximize => {
+                    std::array<f32, 6> a = [2.2, 6.0, 2.2, 2.2, 6.0, 2.2];
+                    icon_path(mut this, q, a.as_span(), false, w, c);
+                    std::array<f32, 6> b = [10.0, 2.2, 13.8, 2.2, 13.8, 6.0];
+                    icon_path(mut this, q, b.as_span(), false, w, c);
+                    std::array<f32, 6> d = [13.8, 10.0, 13.8, 13.8, 10.0, 13.8];
+                    icon_path(mut this, q, d.as_span(), false, w, c);
+                    std::array<f32, 6> e = [6.0, 13.8, 2.2, 13.8, 2.2, 10.0];
+                    icon_path(mut this, q, e.as_span(), false, w, c);
+                },
+                icon::layout => {
+                    this.stroke(icon_box(q, 1.5, 2.2, 13.0, 11.6), c, 1.5 * s, w);
+                    icon_line(mut this, q, 6.2, 2.6, 6.2, 13.4, w, c);
+                    icon_line(mut this, q, 6.2, 8.0, 14.0, 8.0, w, c);
+                },
+                icon::car => {
+                    std::array<f32, 16> a = [1.4, 11.0, 1.4, 8.4, 4.0, 7.8, 5.8, 4.8, 10.6, 4.8, 12.6, 7.8, 14.6, 8.6, 14.6, 11.0];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                    this.circle(grid(q, 4.8, 11.4), 1.9 * s, c);
+                    this.circle(grid(q, 11.2, 11.4), 1.9 * s, c);
+                },
+                icon::globe => {
+                    vec2 m = grid(q, 8.0, 8.0);
+                    this.circle_stroke(m, 6.2 * s, c, w);
+                    icon_line(mut this, q, 2.0, 8.0, 14.0, 8.0, w, c);
+                    mut std::darray<vec2> meridian = default;
+                    for (u32 k : 0..25) {
+                        f32 a = whole_pixels(k) * 15.0 * std::math::pi / 180.0;
+                        meridian.push(vec2{ .x = m.x + a.cos() * 2.7 * s, .y = m.y + a.sin() * 6.2 * s });
+                    }
+                    this.stroke_polygon(meridian.as_span(), false, w, c);
+                },
+                icon::bolt => {
+                    std::array<f32, 12> a = [9.5, 1.5, 3.2, 9.2, 7.6, 9.2, 6.4, 14.5, 12.8, 6.8, 8.4, 6.8];
+                    icon_path(mut this, q, a.as_span(), true, w, c);
+                },
+            }
+        }
+
+        void insert(u32 at, draw_list& other) mut {
+            u32 shift = cast::truncate<u32>(this.vertices.len());
+            u32 added = cast::truncate<u32>(other.indices.len());
+            u32 total = cast::truncate<u32>(this.indices.len());
+            if (added == 0) {
+                return;
+            }
+            if (at >= total) {
+                this.append(other);
+                return;
+            }
+            for (vertex v : other.vertices) {
+                this.vertices.push(v);
+            }
+            mut std::darray<u32> merged = std::darray<u32>::with_capacity(this.indices.len() + other.indices.len());
+            for (u32 i : 0..at) {
+                merged.push(this.indices[cast<usize>(i)]);
+            }
+            for (u32 i : other.indices) {
+                merged.push(i + shift);
+            }
+            for (u32 i : at..total) {
+                merged.push(this.indices[cast<usize>(i)]);
+            }
+            this.indices = move merged;
+            // The commands: those before the mark, the inserted ones, then the rest moved back; a
+            // command across the mark is split in two.
+            mut std::darray<draw_command> rebuilt = default;
+            mut bool placed = false;
+            for (draw_command c : this.commands) {
+                u32 end = c.first_index + c.index_count;
+                if (end <= at) {
+                    rebuilt.push(c);
+                    continue;
+                }
+                if (!placed) {
+                    if (c.first_index < at) {
+                        rebuilt.push(draw_command{ .clip = c.clip, .image = c.image, .first_index = c.first_index, .index_count = at - c.first_index });
+                    }
+                    for (draw_command o : other.commands) {
+                        rebuilt.push(draw_command{ .clip = o.clip, .image = o.image, .first_index = o.first_index + at, .index_count = o.index_count });
+                    }
+                    placed = true;
+                    if (c.first_index < at) {
+                        rebuilt.push(draw_command{ .clip = c.clip, .image = c.image, .first_index = at + added, .index_count = end - at });
+                        continue;
+                    }
+                }
+                rebuilt.push(draw_command{ .clip = c.clip, .image = c.image, .first_index = c.first_index + added, .index_count = c.index_count });
+            }
+            this.commands = move rebuilt;
         }
 
         void append(draw_list& other) mut {
@@ -618,9 +1172,12 @@ namespace std::ui {
                     this.vertices.push(vertex{ .x = x0, .y = y1, .u = g.x, .v = g.y + g.height, .color = packed, .kind = kind });
                     add_indices(mut this, base);
                 }
-                x += f.advance(style.face, '\0', c, style.size);
+                x += f.advance(style.face, '\0', c, style.size) + style.tracking * style.size;
                 previous = c;
                 index += n;
+            }
+            if (x > at.x) {
+                x -= style.tracking * style.size;
             }
             return x - at.x;
         }
@@ -682,6 +1239,55 @@ namespace std::ui {
         return vec2{ .x = center.x + a.sin() * radius, .y = center.y - a.cos() * radius };
     }
 
+    // A point on the circle around `center`: 0 degrees is right, 90 down.
+    private vec2 on_circle(vec2 center, f32 radius, f32 degrees) {
+        f32 a = degrees * std::math::pi / 180.0;
+        return vec2{ .x = center.x + a.cos() * radius, .y = center.y + a.sin() * radius };
+    }
+
+    // A point of an icon's 16 × 16 design grid in the square `q`.
+    private vec2 grid(rect q, f32 x, f32 y) {
+        return vec2{ .x = q.x + x * q.width / 16.0, .y = q.y + y * q.height / 16.0 };
+    }
+
+    private rect icon_box(rect q, f32 x, f32 y, f32 width, f32 height) {
+        f32 s = q.width / 16.0;
+        return rect{ .x = q.x + x * s, .y = q.y + y * s, .width = width * s, .height = height * s };
+    }
+
+    private void icon_line(mut draw_list& l, rect q, f32 x0, f32 y0, f32 x1, f32 y1, f32 w, color c) {
+        l.line(grid(q, x0, y0), grid(q, x1, y1), w, c);
+    }
+
+    // A polyline through the grid points x0, y0, x1, y1, ...
+    private void icon_path(mut draw_list& l, rect q, std::span<f32> xy, bool closed, f32 w, color c) {
+        mut std::darray<vec2> points = std::darray<vec2>::with_capacity(xy.len() / 2);
+        for (usize i : 0..(xy.len() / 2)) {
+            points.push(grid(q, xy[2 * i], xy[2 * i + 1]));
+        }
+        l.stroke_polygon(points.as_span(), closed, w, c);
+    }
+
+    // An arrow head at `tip` pointing towards `degrees`.
+    private void icon_head(mut draw_list& l, vec2 tip, f32 degrees, f32 size, f32 w, color c) {
+        l.line(tip, on_circle(tip, size, degrees + 145.0), w, c);
+        l.line(tip, on_circle(tip, size, degrees - 145.0), w, c);
+    }
+
+    private void icon_eye(mut draw_list& l, rect q, f32 s, f32 w, color c) {
+        mut std::darray<vec2> outline = default;
+        for (u32 k : 0..13) {
+            f32 t = whole_pixels(k) / 12.0;
+            outline.push(grid(q, 1.8 + 12.4 * t, 8.0 - 4.6 * (t * std::math::pi).sin()));
+        }
+        for (u32 k : 1..12) {
+            f32 t = 1.0 - whole_pixels(k) / 12.0;
+            outline.push(grid(q, 1.8 + 12.4 * t, 8.0 + 4.6 * (t * std::math::pi).sin()));
+        }
+        l.stroke_polygon(outline.as_span(), true, w, c);
+        l.circle(grid(q, 8.0, 8.0), 2.2 * s, c);
+    }
+
     // `count` more indices in the last command.
     private void count_indices(mut draw_list& list, u32 count) {
         usize last = list.commands.len() - 1;
@@ -701,6 +1307,44 @@ namespace std::ui {
     }
 
     // A box quad, one pixel larger than the box (blur: larger by the blur) for the edge.
+    // A filled box whose colour goes from `left` to `right`.
+    private void add_box_across(mut draw_list& list, rect r, color left, color right, f32 radius) {
+        if (r.width <= 0.0 || r.height <= 0.0) {
+            return;
+        }
+        use_command(mut list, texture{}, false);
+        u32 base = cast::truncate<u32>(list.vertices.len());
+        vec2 center = r.center();
+        vec2 half = r.size() * 0.5;
+        f32 rr = radius.min(half.x.min(half.y)).max(0.0);
+        rect e = r.expanded(1.0);
+        u32 l = left.packed();
+        u32 g = right.packed();
+        list.vertices.push(box_corner(e.left(), e.top(), center, half, l, rr, 0.0, 0.0, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.right(), e.top(), center, half, g, rr, 0.0, 0.0, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.right(), e.bottom(), center, half, g, rr, 0.0, 0.0, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.left(), e.bottom(), center, half, l, rr, 0.0, 0.0, shape_kind::box, 0.0, 0.0));
+        add_indices(mut list, base);
+    }
+
+    std::string upper(std::str text) {
+        std::str capitals = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        mut std::string out = std::string::with_capacity(text.len());
+        mut usize i = 0;
+        while (i < text.len()) {
+            (_, usize n) = char_at(text, i);
+            u8 b = text.byte(i);
+            if (n == 1 && b >= 97 && b <= 122) {
+                usize k = cast<usize>(b - 97);
+                out.push_str(capitals.slice(k, k + 1));
+            } else {
+                out.push_str(text.slice(i, i + n));
+            }
+            i += n;
+        }
+        return out;
+    }
+
     private void add_box(mut draw_list& list, rect r, color top, color bottom, f32 radius, f32 width, f32 blur) {
         if (r.width <= 0.0 || r.height <= 0.0) {
             return;
@@ -770,7 +1414,43 @@ namespace std::ui {
                 .radio = [](mut painter& p, check_part& r) { paint::radio(mut p, r); },
                 .table_header = [](mut painter& p, table_header_part& h) { paint::table_header(mut p, h); },
                 .table_row = [](mut painter& p, table_row_part& r) { paint::table_row(mut p, r); },
+                .dock_tab = [](mut painter& p, dock_tab_part& t) { paint::dock_tab(mut p, t); },
+                .dock_bar = [](mut painter& p, tabs_part& b) { paint::dock_bar(mut p, b); },
+                .dock_stack = [](mut painter& p, dock_stack_part& s) { paint::dock_stack(mut p, s); },
+                .divider = [](mut painter& p, divider_part& d) { paint::divider(mut p, d); },
+                .drop_target = [](mut painter& p, drop_target_part& d) { paint::drop_target(mut p, d); },
             };
+        }
+
+        static skin studio() {
+            mut skin k = skin::standard();
+            k.button = [](mut painter& p, button_part& b) { paint::studio::button(mut p, b); };
+            k.checkbox = [](mut painter& p, check_part& c) { paint::studio::checkbox(mut p, c); };
+            k.toggle = [](mut painter& p, toggle_part& t) { paint::studio::toggle(mut p, t); };
+            k.slider_track = [](mut painter& p, slider_part& s) { paint::studio::slider_track(mut p, s); };
+            k.slider_knob = [](mut painter& p, slider_part& s) { paint::studio::slider_knob(mut p, s); };
+            k.progress = [](mut painter& p, progress_part& g) { paint::studio::progress(mut p, g); };
+            k.section_header = [](mut painter& p, header_part& h) { paint::studio::section_header(mut p, h); };
+            k.window = [](mut painter& p, window_part& w) { paint::studio::window(mut p, w); };
+            k.card = [](mut painter& p, card_part& c) { paint::studio::card(mut p, c); };
+            k.tree_node = [](mut painter& p, header_part& h) { paint::studio::tree_node(mut p, h); };
+            k.field = [](mut painter& p, field_part& f) { paint::studio::field(mut p, f); };
+            k.popup = [](mut painter& p, popup_part& u) { paint::studio::popup(mut p, u); };
+            k.list_item = [](mut painter& p, item_part& i) { paint::studio::list_item(mut p, i); };
+            k.tooltip = [](mut painter& p, tooltip_part& t) { paint::studio::tooltip(mut p, t); };
+            k.scrollbar = [](mut painter& p, scrollbar_part& s) { paint::studio::scrollbar(mut p, s); };
+            k.segments = [](mut painter& p, segments_part& s) { paint::studio::segments(mut p, s); };
+            k.tab = [](mut painter& p, item_part& t) { paint::studio::tab(mut p, t); };
+            k.tab_bar = [](mut painter& p, tabs_part& t) { paint::studio::tab_bar(mut p, t); };
+            k.radio = [](mut painter& p, check_part& r) { paint::studio::radio(mut p, r); };
+            k.table_header = [](mut painter& p, table_header_part& h) { paint::studio::table_header(mut p, h); };
+            k.table_row = [](mut painter& p, table_row_part& r) { paint::studio::table_row(mut p, r); };
+            k.dock_tab = [](mut painter& p, dock_tab_part& t) { paint::studio::dock_tab(mut p, t); };
+            k.dock_bar = [](mut painter& p, tabs_part& b) { paint::studio::dock_bar(mut p, b); };
+            k.dock_stack = [](mut painter& p, dock_stack_part& s) { paint::studio::dock_stack(mut p, s); };
+            k.divider = [](mut painter& p, divider_part& d) { paint::studio::divider(mut p, d); };
+            k.drop_target = [](mut painter& p, drop_target_part& d) { paint::studio::drop_target(mut p, d); };
+            return k;
         }
     }
 
@@ -1103,6 +1783,94 @@ namespace std::ui {
             }
         }
 
+        void dock_tab(mut painter& p, dock_tab_part& t) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.small;
+            if (t.active) {
+                p.list.fill(rect{ .x = t.bounds.x, .y = t.bounds.y, .width = t.bounds.width, .height = t.bounds.height + radius }, colors.surface, radius);
+                if (t.stack_focused) {
+                    p.list.fill(rect{ .x = t.bounds.x + radius, .y = t.bounds.y, .width = t.bounds.width - 2.0 * radius, .height = 2.0 }, colors.primary, 1.0);
+                }
+            } else if (t.state.hover > 0.0) {
+                p.list.fill(t.bounds.expanded(-2.0), colors.text.with_alpha(0.06 * t.state.hover), radius);
+            }
+            text_style style = p.tokens.style(text_role::label, if (t.active) { colors.text } else { colors.text_muted });
+            f32 room = if (t.closable) { t.close.x - t.bounds.x } else { t.bounds.width };
+            vec2 size = p.measure(t.title, style);
+            f32 icon_size = if (t.symbol == icon::none) { 0.0 } else { 14.0 };
+            f32 group = size.x + if (icon_size > 0.0) { icon_size + 6.0 } else { 0.0 };
+            mut f32 x = t.bounds.x + ((room - group) * 0.5).max(8.0);
+            if (icon_size > 0.0) {
+                p.list.draw_icon(t.symbol, rect{ .x = x.round(), .y = (t.bounds.y + (t.bounds.height - icon_size) * 0.5).round(), .width = icon_size, .height = icon_size }, style.color);
+                x += icon_size + 6.0;
+            }
+            _ = p.text(vec2{ .x = x.round(), .y = (t.bounds.y + (t.bounds.height - size.y) * 0.5).round() }, t.title, style);
+            if (t.closable) {
+                vec2 c = t.close.center();
+                if (t.close_hover > 0.0) {
+                    p.list.circle(c, t.close.width * 0.5, colors.text.with_alpha(0.12 * t.close_hover));
+                }
+                f32 arm = t.close.width * 0.2;
+                color mark = colors.text_muted.mix(colors.text, t.close_hover);
+                p.list.line(vec2{ .x = c.x - arm, .y = c.y - arm }, vec2{ .x = c.x + arm, .y = c.y + arm }, 1.3, mark);
+                p.list.line(vec2{ .x = c.x - arm, .y = c.y + arm }, vec2{ .x = c.x + arm, .y = c.y - arm }, 1.3, mark);
+            }
+        }
+
+        void dock_stack(mut painter& p, dock_stack_part& s) {
+            palette colors = p.tokens.colors;
+            if (s.floating) {
+                f32 radius = p.tokens.radius.medium;
+                p.list.shadow(s.bounds, radius, p.tokens.elevation(3), colors.shadow);
+                p.list.fill(s.bounds, colors.surface, radius);
+                p.list.stroke(s.bounds, colors.border, radius, 1.0);
+                return;
+            }
+            p.list.fill(s.content, colors.surface, 0.0);
+        }
+
+        void dock_bar(mut painter& p, tabs_part& b) {
+            palette colors = p.tokens.colors;
+            p.list.fill(b.bar, colors.background, 0.0);
+            p.list.fill(rect{ .x = b.bar.x, .y = b.bar.bottom() - 1.0, .width = b.bar.width, .height = 1.0 }, colors.border, 0.0);
+        }
+
+        void divider(mut painter& p, divider_part& d) {
+            palette colors = p.tokens.colors;
+            f32 amount = d.state.hover.max(d.state.press);
+            if (amount <= 0.0) {
+                return;
+            }
+            rect line = if (d.vertical) {
+                rect{ .x = d.bounds.center().x - 1.0, .y = d.bounds.y, .width = 2.0, .height = d.bounds.height }
+            } else {
+                rect{ .x = d.bounds.x, .y = d.bounds.center().y - 1.0, .width = d.bounds.width, .height = 2.0 }
+            };
+            p.list.fill(line, colors.primary.with_alpha(0.7 * amount), 1.0);
+        }
+
+        void drop_target(mut painter& p, drop_target_part& d) {
+            palette colors = p.tokens.colors;
+            if (d.hovered) {
+                p.list.fill(d.preview, colors.primary.with_alpha(0.18), p.tokens.radius.small);
+                p.list.stroke(d.preview, colors.primary.with_alpha(0.8), p.tokens.radius.small, 2.0);
+            }
+            p.list.shadow(d.bounds, p.tokens.radius.small, p.tokens.elevation(2), colors.shadow);
+            p.list.fill(d.bounds, colors.surface_raised, p.tokens.radius.small);
+            p.list.stroke(d.bounds, if (d.hovered) { colors.primary } else { colors.border }, p.tokens.radius.small, 1.0);
+            // A small window showing the side: the whole of it for the centre.
+            rect inner = d.bounds.expanded(-d.bounds.width * 0.22);
+            rect part = match (d.side) {
+                1 => rect{ .x = inner.x, .y = inner.y, .width = inner.width * 0.45, .height = inner.height },
+                2 => rect{ .x = inner.right() - inner.width * 0.45, .y = inner.y, .width = inner.width * 0.45, .height = inner.height },
+                3 => rect{ .x = inner.x, .y = inner.y, .width = inner.width, .height = inner.height * 0.45 },
+                4 => rect{ .x = inner.x, .y = inner.bottom() - inner.height * 0.45, .width = inner.width, .height = inner.height * 0.45 },
+                _ => inner,
+            };
+            p.list.stroke(inner, colors.text_muted, 2.0, 1.0);
+            p.list.fill(part, if (d.hovered) { colors.primary } else { colors.text_muted.with_alpha(0.7) }, 2.0);
+        }
+
         void segments(mut painter& p, segments_part& s) {
             palette colors = p.tokens.colors;
             f32 radius = p.tokens.radius.small.min(s.track.height * 0.5);
@@ -1125,6 +1893,372 @@ namespace std::ui {
                 p.list.fill(s.track, colors.text.with_alpha(0.05 * s.state.hover), p.tokens.radius.full);
             }
             p.list.fill(thumb, colors.text_faint.with_alpha(0.45 + 0.4 * s.state.hover + 0.15 * s.state.press), p.tokens.radius.full);
+        }
+
+        namespace studio {
+            void button(mut painter& p, button_part& b) {
+                palette colors = p.tokens.colors;
+                button_colors k = colors_of(p.tokens, b.kind);
+                f32 radius = p.tokens.radius.small;
+                rect r = b.bounds;
+                color fill = enabled(k.fill.mix(k.hover, b.state.hover).mix(k.pressed, b.state.press), b.state);
+                if (b.kind == variant::primary && !b.state.disabled) {
+                    p.list.glow(r, radius, colors.primary.with_alpha(0.22 + 0.2 * b.state.hover), 12.0);
+                }
+                if (fill.a > 0.0) {
+                    p.list.fill(r, fill, radius);
+                }
+                if (k.edge.a > 0.0) {
+                    p.list.stroke(r, enabled(k.edge.mix(colors.text_faint, 0.5 * b.state.hover), b.state), radius, 1.0);
+                }
+                if (b.state.focused) {
+                    p.list.stroke(r.expanded(2.0), colors.focus, radius + 2.0, 1.5);
+                }
+                p.centered_text(r, b.label, p.tokens.style(text_role::label, enabled(k.label, b.state)));
+            }
+
+            void checkbox(mut painter& p, check_part& c) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.small.min(c.bounds.width * 0.3);
+                p.list.fill(c.bounds, enabled(colors.surface_sunken, c.state), radius);
+                p.list.stroke(c.bounds, enabled(colors.border.mix(colors.text_faint, c.state.hover), c.state), radius, 1.0);
+                if (c.amount > 0.0) {
+                    p.list.fill(c.bounds, enabled(colors.primary.with_alpha(c.amount), c.state), radius);
+                    color mark = enabled(colors.on_primary.with_alpha(c.amount), c.state);
+                    f32 size = c.bounds.width;
+                    match (p.tokens.controls.checkbox.mark) {
+                        tick_shape::tick => p.list.tick(c.bounds.shrunk(size * 0.25), (size * 0.12).max(1.4), mark),
+                        tick_shape::cross => p.list.draw_icon(icon::close, c.bounds.shrunk(size * 0.08), mark),
+                        tick_shape::square => p.list.fill(c.bounds.shrunk(size * 0.3), mark, radius * 0.5),
+                        tick_shape::dot => p.list.circle(c.bounds.center(), size * 0.2, mark),
+                    }
+                }
+                if (c.state.focused) {
+                    p.list.stroke(c.bounds.expanded(2.0), colors.focus, radius + 2.0, 1.5);
+                }
+            }
+
+            void toggle(mut painter& p, toggle_part& t) {
+                palette colors = p.tokens.colors;
+                rect r = t.bounds;
+                f32 radius = r.height * 0.5;
+                color off = colors.border.mix(colors.text_faint, 0.4 * t.state.hover);
+                p.list.fill(r, enabled(off.mix(colors.primary, t.amount), t.state), radius);
+                f32 inset = 2.0;
+                f32 knob = r.height - 2.0 * inset;
+                f32 x = std::math::lerp(r.x + inset, r.right() - inset - knob, t.amount);
+                p.list.circle(vec2{ .x = x + knob * 0.5, .y = r.y + r.height * 0.5 }, knob * 0.5, enabled(color::white().mix(colors.text_muted, 0.25 * (1.0 - t.amount)), t.state));
+                if (t.state.focused) {
+                    p.list.stroke(r.expanded(2.0), colors.focus, radius + 2.0, 1.5);
+                }
+            }
+
+            void slider_track(mut painter& p, slider_part& s) {
+                palette colors = p.tokens.colors;
+                f32 h = p.tokens.controls.slider.track_height;
+                rect track = rect{ .x = s.bounds.x, .y = (s.bounds.y + (s.bounds.height - h) * 0.5).round(), .width = s.bounds.width, .height = h };
+                p.list.fill(track, enabled(colors.border, s.state), h * 0.5);
+                if (p.tokens.controls.slider.fill_track) {
+                    rect done = rect{ .x = track.x, .y = track.y, .width = track.width * s.fraction.clamp(0.0, 1.0), .height = h };
+                    p.list.fill(done, enabled(colors.primary, s.state), h * 0.5);
+                }
+            }
+
+            void slider_knob(mut painter& p, slider_part& s) {
+                palette colors = p.tokens.colors;
+                slider_style style = p.tokens.controls.slider;
+                vec2 at = s.knob_center();
+                f32 r = style.knob_size * 0.5;
+                if (s.state.hover > 0.0 || s.state.press > 0.0) {
+                    p.list.circle(at, r + 4.0 * s.state.hover.max(s.state.press), colors.primary.with_alpha(0.22));
+                }
+                if (style.knob == knob_shape::circle) {
+                    p.list.circle(at, r, enabled(colors.primary, s.state));
+                    p.list.circle(at, r - 2.5, enabled(color::white(), s.state));
+                } else {
+                    knob(mut p, style.knob, at, style.knob_size, enabled(color::white(), s.state), enabled(colors.primary, s.state));
+                }
+                if (s.state.focused) {
+                    p.list.circle_stroke(at, r + 3.0, colors.focus, 1.5);
+                }
+            }
+
+            void progress(mut painter& p, progress_part& g) {
+                palette colors = p.tokens.colors;
+                f32 radius = g.bounds.height * 0.5;
+                p.list.fill(g.bounds, colors.border, radius);
+                f32 fraction = g.fraction.clamp(0.0, 1.0);
+                if (fraction > 0.0) {
+                    rect done = rect{ .x = g.bounds.x, .y = g.bounds.y, .width = (g.bounds.width * fraction).max(g.bounds.height.min(g.bounds.width)), .height = g.bounds.height };
+                    p.list.glow(done, radius, colors.primary.with_alpha(0.25), 8.0);
+                    p.list.fill_gradient_x(done, colors.primary.mix(colors.surface, 0.35), colors.primary.lighter(0.06), radius);
+                }
+            }
+
+            void section_header(mut painter& p, header_part& h) {
+                palette colors = p.tokens.colors;
+                if (h.state.hover > 0.0) {
+                    p.list.fill(h.bounds, colors.text.with_alpha(0.035 * h.state.hover), p.tokens.radius.small);
+                }
+                f32 size = (h.bounds.height * 0.42).round();
+                rect mark = rect{ .x = h.bounds.x + 2.0, .y = h.bounds.y + ((h.bounds.height - size) * 0.5).round(), .width = size, .height = size };
+                color ink = colors.text_muted.mix(colors.text, h.state.hover);
+                p.list.draw_icon(if (h.amount > 0.5) { icon::chevron_down } else { icon::chevron_right }, mark, ink);
+                text_style style = p.tokens.style(text_role::overline, ink);
+                f32 height = p.faces.line_height(style);
+                std::string caps = upper(h.label);
+                f32 used = p.text(vec2{ .x = mark.right() + 6.0, .y = h.bounds.y + ((h.bounds.height - height) * 0.5).round() }, caps.as_str(), style);
+                f32 line_x = mark.right() + 6.0 + used + 10.0;
+                if (line_x < h.bounds.right() - 4.0) {
+                    p.list.fill(rect{ .x = line_x, .y = (h.bounds.y + h.bounds.height * 0.5).round(), .width = h.bounds.right() - line_x, .height = 1.0 }, colors.border, 0.0);
+                }
+                if (h.state.focused) {
+                    p.list.stroke(h.bounds.expanded(1.0), colors.focus, p.tokens.radius.small + 1.0, 1.5);
+                }
+            }
+
+            void window(mut painter& p, window_part& w) {
+                palette colors = p.tokens.colors;
+                window_style style = p.tokens.controls.window;
+                f32 radius = p.tokens.radius.medium;
+                p.list.shadow(w.bounds, radius, p.tokens.elevation(style.elevation), colors.shadow);
+                p.list.fill(w.bounds, colors.surface, radius);
+                p.list.fill(w.title_bar, colors.surface_raised, radius);
+                f32 corner = radius.min(w.title_bar.height * 0.5);
+                p.list.fill(rect{ .x = w.title_bar.x, .y = w.title_bar.bottom() - corner, .width = w.title_bar.width, .height = corner }, colors.surface_raised, 0.0);
+                p.list.fill(rect{ .x = w.title_bar.x, .y = w.title_bar.bottom() - 1.0, .width = w.title_bar.width, .height = 1.0 }, colors.border, 0.0);
+                p.list.stroke(w.bounds, colors.border, radius, 1.0);
+                text_style title = p.tokens.style(text_role::label, colors.text);
+                f32 height = p.faces.line_height(title);
+                _ = p.text(vec2{ .x = w.title_bar.x + style.padding + 2.0, .y = w.title_bar.y + ((w.title_bar.height - height) * 0.5).round() }, w.title, title);
+                color grip = colors.text_faint.with_alpha(0.3 + 0.7 * w.grip.hover);
+                vec2 corner_at = vec2{ .x = w.bounds.right() - 3.0, .y = w.bounds.bottom() - 3.0 };
+                for (u32 i : 1..3) {
+                    f32 d = 4.0 * cast<f32>(cast::truncate<u16>(i));
+                    p.list.line(vec2{ .x = corner_at.x - d, .y = corner_at.y }, vec2{ .x = corner_at.x, .y = corner_at.y - d }, 1.0, grip);
+                }
+            }
+
+            void card(mut painter& p, card_part& c) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.medium;
+                p.list.fill(c.bounds, colors.surface_sunken, radius);
+                p.list.stroke(c.bounds, colors.border, radius, 1.0);
+            }
+
+            void tree_node(mut painter& p, header_part& h) {
+                palette colors = p.tokens.colors;
+                if (h.state.hover > 0.0) {
+                    p.list.fill(h.bounds, colors.text.with_alpha(0.05 * h.state.hover), p.tokens.radius.small);
+                }
+                f32 size = (h.bounds.height * 0.5).round();
+                rect mark = rect{ .x = h.bounds.x + 2.0, .y = h.bounds.y + ((h.bounds.height - size) * 0.5).round(), .width = size, .height = size };
+                p.list.draw_icon(if (h.amount > 0.5) { icon::chevron_down } else { icon::chevron_right }, mark, colors.text_faint.mix(colors.text, h.state.hover));
+                text_style style = p.tokens.style(text_role::body, colors.text);
+                f32 height = p.faces.line_height(style);
+                _ = p.text(vec2{ .x = mark.right() + 5.0, .y = h.bounds.y + ((h.bounds.height - height) * 0.5).round() }, h.label, style);
+                if (h.state.focused) {
+                    p.list.stroke(h.bounds.expanded(1.0), colors.focus, p.tokens.radius.small + 1.0, 1.5);
+                }
+            }
+
+            void field(mut painter& p, field_part& f) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.small.min(f.bounds.height * 0.5);
+                p.list.fill(f.bounds, enabled(colors.surface_sunken, f.state), radius);
+                color edge = if (f.editing) { colors.primary } else { colors.border.mix(colors.text_faint, 0.6 * f.state.hover) };
+                p.list.stroke(f.bounds, enabled(edge, f.state), radius, 1.0);
+                if (f.editing) {
+                    p.list.stroke(f.bounds.expanded(2.0), colors.primary.with_alpha(0.25), radius + 2.0, 2.0);
+                } else if (f.state.focused) {
+                    p.list.stroke(f.bounds.expanded(2.0), colors.focus, radius + 2.0, 1.5);
+                }
+            }
+
+            void popup(mut painter& p, popup_part& u) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.medium;
+                p.list.shadow(u.bounds, radius, p.tokens.elevation(2), colors.shadow);
+                p.list.fill(u.bounds, colors.surface_raised, radius);
+                p.list.stroke(u.bounds, colors.border.lighter(0.04), radius, 1.0);
+            }
+
+            void list_item(mut painter& p, item_part& i) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.small;
+                if (i.state.hover > 0.0) {
+                    p.list.fill(i.bounds, colors.primary.with_alpha(0.22 * i.state.hover), radius);
+                }
+                text_style style = p.tokens.style(text_role::body, colors.text);
+                f32 height = p.faces.line_height(style);
+                _ = p.text(vec2{ .x = i.bounds.x + 8.0, .y = i.bounds.y + ((i.bounds.height - height) * 0.5).round() }, i.label, style);
+                if (i.selected) {
+                    f32 size = 12.0;
+                    p.list.draw_icon(icon::checkmark, rect{ .x = i.bounds.right() - 8.0 - size, .y = i.bounds.y + ((i.bounds.height - size) * 0.5).round(), .width = size, .height = size }, colors.primary);
+                }
+            }
+
+            void tooltip(mut painter& p, tooltip_part& t) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.small;
+                p.list.shadow(t.bounds, radius, p.tokens.elevation(2), colors.shadow);
+                p.list.fill(t.bounds, colors.surface_raised.lighter(0.03), radius);
+                p.list.stroke(t.bounds, colors.border.lighter(0.04), radius, 1.0);
+                p.centered_text(t.bounds, t.text, p.tokens.style(text_role::caption, colors.text));
+            }
+
+            void scrollbar(mut painter& p, scrollbar_part& s) {
+                palette colors = p.tokens.colors;
+                f32 width = 4.0 + 2.0 * s.state.hover.max(s.state.press);
+                rect thumb = rect{ .x = s.thumb.right() - width - 1.0, .y = s.thumb.y + 1.0, .width = width, .height = (s.thumb.height - 2.0).max(width) };
+                p.list.fill(thumb, colors.text_faint.with_alpha(0.4 + 0.35 * s.state.hover + 0.2 * s.state.press), width * 0.5);
+            }
+
+            void segments(mut painter& p, segments_part& s) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.small.min(s.track.height * 0.5);
+                p.list.fill(s.track, colors.surface_sunken, radius);
+                p.list.stroke(s.track, colors.border.mix(colors.text_faint, s.state.hover * 0.5), radius, 1.0);
+                rect thumb = s.thumb.shrunk(2.0);
+                p.list.fill(thumb, colors.primary, (radius - 1.0).max(0.0));
+                if (s.state.focused) {
+                    p.list.stroke(s.track.expanded(2.0), colors.focus, radius + 2.0, 1.5);
+                }
+            }
+
+            void tab(mut painter& p, item_part& t) {
+                palette colors = p.tokens.colors;
+                if (t.state.hover > 0.0 && !t.selected) {
+                    p.list.fill(t.bounds.shrunk(2.0), colors.text.with_alpha(0.05 * t.state.hover), p.tokens.radius.small);
+                }
+                color c = if (t.selected) { colors.text } else { colors.text_muted.mix(colors.text, 0.6 * t.state.hover) };
+                p.centered_text(t.bounds, t.label, p.tokens.style(text_role::label, c));
+                if (t.state.focused) {
+                    p.list.stroke(t.bounds.shrunk(1.0), colors.focus, p.tokens.radius.small, 1.5);
+                }
+            }
+
+            void tab_bar(mut painter& p, tabs_part& t) {
+                palette colors = p.tokens.colors;
+                p.list.fill(rect{ .x = t.bar.x, .y = t.bar.bottom() - 1.0, .width = t.bar.width, .height = 1.0 }, colors.border, 0.0);
+                p.list.fill(rect{ .x = t.indicator.x, .y = t.bar.bottom() - 2.0, .width = t.indicator.width, .height = 2.0 }, colors.primary, 1.0);
+            }
+
+            void radio(mut painter& p, check_part& r) {
+                palette colors = p.tokens.colors;
+                vec2 center = r.bounds.center();
+                f32 radius = r.bounds.width * 0.5;
+                p.list.circle(center, radius, enabled(colors.border.mix(colors.text_faint, r.state.hover).mix(colors.primary, r.amount), r.state));
+                p.list.circle(center, radius - 1.0, enabled(colors.surface_sunken, r.state));
+                if (r.amount > 0.0) {
+                    p.list.circle(center, radius * 0.45 * r.amount, enabled(colors.primary, r.state));
+                }
+                if (r.state.focused) {
+                    p.list.circle_stroke(center, radius + 2.5, colors.focus, 1.5);
+                }
+            }
+
+            void table_header(mut painter& p, table_header_part& h) {
+                palette colors = p.tokens.colors;
+                p.list.fill(h.bounds, colors.surface_raised.with_alpha(0.6), 0.0);
+                p.list.fill(rect{ .x = h.bounds.x, .y = h.bounds.bottom() - 1.0, .width = h.bounds.width, .height = 1.0 }, colors.border, 0.0);
+            }
+
+            void table_row(mut painter& p, table_row_part& r) {
+                palette colors = p.tokens.colors;
+                if (r.index % 2 == 1) {
+                    p.list.fill(r.bounds, colors.text.with_alpha(0.018), 0.0);
+                }
+                if (r.state.hover > 0.0) {
+                    p.list.fill(r.bounds, colors.text.with_alpha(0.05 * r.state.hover), 0.0);
+                }
+                if (r.selected) {
+                    p.list.fill(r.bounds, colors.primary.with_alpha(0.24), 0.0);
+                }
+            }
+
+            void dock_tab(mut painter& p, dock_tab_part& t) {
+                palette colors = p.tokens.colors;
+                if (t.active) {
+                    color line = if (t.stack_focused) { colors.primary } else { colors.text_faint.with_alpha(0.7) };
+                    rect under = rect{ .x = t.bounds.x + 6.0, .y = t.bounds.bottom() - 2.0, .width = t.bounds.width - 12.0, .height = 2.0 };
+                    if (t.stack_focused) {
+                        p.list.glow(under, 1.0, colors.primary.with_alpha(0.45), 6.0);
+                    }
+                    p.list.fill(under, line, 1.0);
+                } else if (t.state.hover > 0.0) {
+                    p.list.fill(t.bounds.shrunk(3.0), colors.text.with_alpha(0.045 * t.state.hover), p.tokens.radius.small);
+                }
+                color ink = if (t.active) { colors.text } else { colors.text_muted.mix(colors.text, 0.5 * t.state.hover) };
+                text_style style = p.tokens.style(text_role::label, ink);
+                vec2 size = p.measure(t.title, style);
+                mut f32 x = t.bounds.x + 10.0;
+                if (t.symbol != icon::none) {
+                    color tint = if (t.active && t.stack_focused) { colors.primary } else if (t.active) { colors.text_muted } else { colors.text_faint.mix(colors.text_muted, t.state.hover) };
+                    p.list.draw_icon(t.symbol, rect{ .x = x, .y = (t.bounds.y + (t.bounds.height - 14.0) * 0.5).round(), .width = 14.0, .height = 14.0 }, tint);
+                    x += 20.0;
+                }
+                _ = p.text(vec2{ .x = x, .y = (t.bounds.y + (t.bounds.height - size.y) * 0.5).round() }, t.title, style);
+                if (t.closable) {
+                    if (t.close_hover > 0.0) {
+                        p.list.fill(t.close, colors.text.with_alpha(0.1 * t.close_hover), p.tokens.radius.small);
+                    }
+                    p.list.draw_icon(icon::close, t.close.shrunk(2.0), colors.text_faint.mix(colors.text, t.close_hover.max(if (t.active) { 0.3 } else { 0.0 })));
+                }
+            }
+
+            void dock_bar(mut painter& p, tabs_part& b) {
+                palette colors = p.tokens.colors;
+                p.list.fill(rect{ .x = b.bar.x + 1.0, .y = b.bar.bottom() - 1.0, .width = b.bar.width - 2.0, .height = 1.0 }, colors.border, 0.0);
+            }
+
+            void dock_stack(mut painter& p, dock_stack_part& s) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.large;
+                if (s.floating) {
+                    p.list.shadow(s.bounds, radius, p.tokens.elevation(3), colors.shadow);
+                }
+                p.list.fill(s.bounds, colors.surface, radius);
+                color edge = if (s.focused) { colors.border.mix(colors.primary, 0.35) } else { colors.border };
+                p.list.stroke(s.bounds, edge, radius, 1.0);
+            }
+
+            void divider(mut painter& p, divider_part& d) {
+                palette colors = p.tokens.colors;
+                f32 amount = d.state.hover.max(d.state.press);
+                if (amount <= 0.0) {
+                    return;
+                }
+                rect line = if (d.vertical) {
+                    rect{ .x = (d.bounds.center().x - 1.0).round(), .y = d.bounds.y, .width = 2.0, .height = d.bounds.height }
+                } else {
+                    rect{ .x = d.bounds.x, .y = (d.bounds.center().y - 1.0).round(), .width = d.bounds.width, .height = 2.0 }
+                };
+                p.list.fill(line, colors.primary.with_alpha(0.85 * amount), 0.0);
+            }
+
+            void drop_target(mut painter& p, drop_target_part& d) {
+                palette colors = p.tokens.colors;
+                f32 radius = p.tokens.radius.medium;
+                if (d.hovered) {
+                    p.list.glow(d.preview, p.tokens.radius.large, colors.primary.with_alpha(0.2), 14.0);
+                    p.list.fill(d.preview, colors.primary.with_alpha(0.14), p.tokens.radius.large);
+                    p.list.stroke(d.preview, colors.primary.with_alpha(0.85), p.tokens.radius.large, 1.5);
+                }
+                p.list.shadow(d.bounds, radius, p.tokens.elevation(2), colors.shadow);
+                p.list.fill(d.bounds, colors.surface_raised, radius);
+                p.list.stroke(d.bounds, if (d.hovered) { colors.primary } else { colors.border.lighter(0.06) }, radius, 1.0);
+                rect inner = d.bounds.expanded(-d.bounds.width * 0.24);
+                rect part = match (d.side) {
+                    1 => rect{ .x = inner.x, .y = inner.y, .width = inner.width * 0.45, .height = inner.height },
+                    2 => rect{ .x = inner.right() - inner.width * 0.45, .y = inner.y, .width = inner.width * 0.45, .height = inner.height },
+                    3 => rect{ .x = inner.x, .y = inner.y, .width = inner.width, .height = inner.height * 0.45 },
+                    4 => rect{ .x = inner.x, .y = inner.bottom() - inner.height * 0.45, .width = inner.width, .height = inner.height * 0.45 },
+                    _ => inner,
+                };
+                p.list.stroke(inner, colors.text_faint, 2.0, 1.0);
+                p.list.fill(part, if (d.hovered) { colors.primary } else { colors.text_muted.with_alpha(0.6) }, 2.0);
+            }
         }
     }
 

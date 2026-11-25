@@ -1,0 +1,58 @@
+// Standard-library lesson 9: logging an asset import (solution).
+import std;
+
+struct asset {
+    std::static_str name;
+    u32 bytes = 0;
+}
+
+compile_time std::array<asset, 5> assets = [
+    asset{ .name = "rock.png", .bytes = 2048 },
+    asset{ .name = "tree.png", .bytes = 0 },
+    asset{ .name = "theme.ogg", .bytes = 90000 },
+    asset{ .name = "level1.map", .bytes = 512 },
+    asset{ .name = "huge.png", .bytes = 70000000 },
+];
+
+// The console shows the level and the message; the problems panel only the message.
+private compile_time std::log::pattern console_pattern = std::log::pattern::from("{level:<5} {message}");
+private compile_time std::log::pattern panel_pattern = std::log::pattern::from("{function_name}: {message}");
+
+// Imports one asset; false when it can't be used. Its chatty debug lines are removed at compile
+// time: nothing below `warn` exists in this function.
+@std::log::level_override{ .level = std::log::level::warn }
+bool import_asset(asset& a) {
+    std::log::debug(f"checking {a.name}");
+    std::log::validate(a.bytes > 0, f"{a.name} is empty") else { return false; }
+    if (a.bytes > 64 * 1024 * 1024) {
+        std::log::warn(f"{a.name} is {a.bytes / (1024 * 1024)} MiB, importing anyway");
+    }
+    return true;
+}
+
+i32 main() {
+    std::log::history problems = std::log::history::make(10);
+    mut u32 imported = 0;
+    {
+        mut std::log::session logs = std::log::start(std::log::options{});
+        _ = logs.add(std::log::console::make_with(std::log::colors::off), std::log::sink_options{
+            .min_level = std::log::level::info,
+            .pattern = console_pattern,
+        });
+        _ = logs.add(std::log::memory::make(problems), std::log::sink_options{
+            .min_level = std::log::level::warn,
+            .pattern = panel_pattern,
+        });
+        std::log::info(f"importing {assets.len()} assets");
+        mut std::log::status progress = logs.status();
+        for (usize i : 0..assets.len()) {
+            progress.set(f"importing [{i + 1}/{assets.len()}] {assets[i].name}");
+            if (import_asset(assets[i])) { imported += 1; }
+        }
+        progress.finish(f"imported {imported} of {assets.len()} assets");
+        logs.flush();
+    }
+    std::println(f"problems panel ({problems.snapshot().len()}):");
+    for (std::string& line : problems.snapshot()) { std::println(f"  {line}"); }
+    return 0;
+}

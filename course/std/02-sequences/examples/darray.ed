@@ -1,0 +1,36 @@
+// std::darray: growing, inserting, removing, and what each costs.
+import std;
+
+void show(std::str label, std::darray<u32>& xs) {
+    mut std::string line = default;
+    for (u32 x : xs) {
+        if (!line.is_empty()) { line.push_str(" "); }
+        line.push_str(std::format(f"{x}"));
+    }
+    std::println(f"{label}: [{line}]");
+}
+
+i32 main() {
+    mut std::darray<u32> xs = std::darray<u32>::with_capacity(8);   // one allocation, room for 8
+    std::println(f"len {xs.len()}, capacity {xs.capacity()}");
+    mut std::darray<u32> ys = std::darray<u32>::from([5, 1, 4, 2, 3]);
+    show("from", ys);
+    ys.insert(1, 9);                       // O(n): shifts the tail
+    show("insert", ys);
+    u32 removed = ys.remove(0);            // O(n): keeps the order
+    u32 swapped = ys.swap_remove(0);       // O(1): the last element takes its place
+    std::println(f"removed {removed}, swap-removed {swapped}");
+    show("after", ys);
+    ys.truncate(2);
+    ys.resize(4, 7);
+    show("truncate+resize", ys);
+    std::println(f"pop {ys.pop().value_or(0)}, contains 7: {ys.contains(7)}, get(9): {ys.get(9).is_some()}");
+    return 0;
+}
+//> len 0, capacity 8
+//> from: [5 1 4 2 3]
+//> insert: [5 9 1 4 2 3]
+//> removed 5, swap-removed 9
+//> after: [3 1 4 2]
+//> truncate+resize: [3 1 7 7]
+//> pop 7, contains 7: true, get(9): false

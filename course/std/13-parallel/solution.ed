@@ -1,0 +1,78 @@
+// Standard-library lesson 13: a measurement pipeline (solution).
+import std;
+
+compile_time std::static_str raw = "12.5\n13.0\nbad\n11.5\n14.0\n12.0\n\n15.5\noops\n13.5\n";
+
+// Stage 1 and 2: a reader thread sends lines, two parser threads send numbers (or count rejects).
+// Returns the parsed values in any order and how many lines were rejected.
+(std::darray<f32>, u32) parse_all(std::static_str text) {
+    std::channel<std::str> lines = std::channel<std::str>::bounded(4);
+    std::channel<f32> values = std::channel<f32>::unbounded();
+    std::atomic<u32> rejected = default;
+    mut std::darray<std::thread::scoped_handle<void>> parsers = default;
+    for (u32 i : 0..2) {
+        std::channel_receiver<std::str> input = lines.receiver();
+        std::channel_sender<f32> output = values.sender();
+        parsers.push(std::thread::spawn([move input, move output, &rejected]() {
+            for (std::str line : input) {
+                match (line.trim().parse<f32>()) {
+                    std::some(v) => { _ = output.send(v); },
+                    std::none => { _ = rejected.fetch_wrapping_add(1, std::memory_order::relaxed); },
+                }
+            }
+        }));
+    }
+    std::channel_sender<std::str> reader = lines.sender();
+    std::thread::scoped_handle<void> reading = std::thread::spawn([move reader, text]() {
+        for (std::str line : text.split('\n')) {
+            if (!line.trim().is_empty()) { _ = reader.send(line); }
+        }
+    });                                                   // a channel of views: a scoped thread
+    reading.join();
+    lines.close();                                        // closing ends the parsers' loops
+    while (parsers.pop() is std::some(p)) { p.join(); }
+    values.close();
+    mut std::darray<f32> out = default;
+    std::channel_receiver<f32> collect = values.receiver();
+    for (f32 v : collect) { out.push(v); }
+    return (move out, rejected.load(std::memory_order::acquire));
+}
+
+i32 main() {
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 3, .name = "calc" });
+
+    (mut std::darray<f32> values, u32 rejected) = parse_all(raw);
+    std::parallel::sort(pool, values.as_mut_span());     // arrival order varies: sort first
+    std::println(f"{values.len()} values, {rejected} rejected, smallest {values[0]}, largest {values[values.len() - 1]}");
+
+    // Stage 3: min and max in one deterministic reduction.
+    (f32, f32) range = pool.reduce_chunks(values.as_span(), 2, (f32::max, f32::min),
+        [](std::span<f32> part) {
+            mut f32 lo = f32::max;
+            mut f32 hi = f32::min;
+            for (f32 v : part) {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            return (lo, hi);
+        },
+        []((f32, f32) a, (f32, f32) b) { return (a.0.min(b.0), a.1.max(b.1)); });
+    std::println(f"range {range.0} to {range.1}");
+
+    // Stage 4: the deviations from the mean, computed in place, chunk by chunk.
+    f32 sum = pool.reduce_chunks(values.as_span(), 2, 0.0,
+        [](std::span<f32> part) {
+            mut f32 s = 0.0;
+            for (f32 v : part) { s += v; }
+            return s;
+        },
+        [](f32 a, f32 b) { return a + b; });
+    f32 mean = sum / cast<f32>(cast::truncate<u16>(values.len()));
+    pool.for_chunks(values.as_mut_span(), 2, [mean](std::span<mut f32> part) {
+        for (mut f32& v : part) { v -= mean; }
+    });
+    std::println(f"mean {mean:.2}, deviations from {values[0]:.2} to {values[values.len() - 1]:.2}");
+    std::option<usize> first_above = std::parallel::find(pool, values.as_span(), [](f32& v) { return v > 0.0; });
+    std::println(f"first value above the mean is number {first_above.value_or(0) + 1}");
+    return 0;
+}

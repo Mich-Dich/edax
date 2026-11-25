@@ -13,6 +13,6 @@ gcd(1071, 462) = 21
 sum of squares 1..10 = 385
 --- stderr
 edaxc run: debug, 1 target
- ✓ build.ed       19 targets <t>
+ ✓ build.ed       25 targets <t>
  ✓ hello          5 units, 2.15 KiB <t>  %t/debug/hello
 built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

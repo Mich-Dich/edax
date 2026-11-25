@@ -60,7 +60,27 @@ DURATION = re.compile(r"[ \t]+\d+\.\d+ s\b")
 
 
 def normalize_times(text: str) -> str:
-    return DURATION.sub(" <t>", text)
+    return normalize_std_lines(DURATION.sub(" <t>", text))
+
+
+# Diagnostics that show a place in the standard library (`::: <std>/ui.ed:1401:17` and the
+# snippet under it) would otherwise change with every edit of that file: its line numbers are
+# recorded as `<n>`.
+STD_PLACE = re.compile(r"(<std>/[^\s:]+):\d+:\d+")
+GUTTER = re.compile(r"^(\s*)\d+( \|)")
+
+
+def normalize_std_lines(text: str) -> str:
+    out = []
+    in_std = False
+    for line in text.split("\n"):
+        if "--> " in line or "::: " in line:
+            in_std = "<std>/" in line
+            line = STD_PLACE.sub(r"\1:<n>", line)
+        elif in_std:
+            line = GUTTER.sub(lambda m: m.group(1) + "<n>".rjust(len(m.group(0)) - len(m.group(1)) - 2) + m.group(2), line)
+        out.append(line)
+    return "\n".join(out)
 
 
 RUN_LINE = re.compile(r"^\s*//\s*RUN:\s*(?P<cmd>.+?)\s*$")

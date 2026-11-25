@@ -1,0 +1,19 @@
+// Rectangles: top-left corner and size, y down, half-open edges.
+import std;
+namespace m = std::math;
+
+i32 main() {
+    m::rect r = m::rect{ .x = 10.0, .y = 10.0, .width = 100.0, .height = 40.0 };
+    m::rect s = m::rect::from_corners(m::vec2{ .x = 90.0, .y = 0.0 }, m::vec2{ .x = 60.0, .y = 30.0 });
+    std::println(f"{s}");
+    std::println(f"right {r.right()}, bottom {r.bottom()}, center {r.center()}");
+    std::println(f"contains top-left {r.contains(r.origin())}, bottom-right {r.contains(m::vec2{ .x = 110.0, .y = 50.0 })}");
+    std::println(f"overlap {r.overlaps(s)}: {r.intersection(s)}");
+    std::println(f"inner {r.shrunk(4.0)}, empty {r.shrunk(50.0).is_empty()}");
+    return 0;
+}
+//> std::math::rect { x: 60.0, y: 0.0, width: 30.0, height: 30.0 }
+//> right 110.0, bottom 50.0, center std::math::vec2 { x: 60.0, y: 30.0 }
+//> contains top-left true, bottom-right false
+//> overlap true: std::math::rect { x: 60.0, y: 10.0, width: 30.0, height: 20.0 }
+//> inner std::math::rect { x: 14.0, y: 14.0, width: 92.0, height: 32.0 }, empty true

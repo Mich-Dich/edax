@@ -1,0 +1,32 @@
+// Copy types are copied; everything else is moved or cloned, visibly.
+import std;
+
+struct point {                  // only numbers, no destructor: a copy type
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+struct named {                  // owns a std::string: not a copy type
+    std::string name;
+    u32 uses = 0;
+}
+
+i32 main() {
+    point a = point{ .x = 1.0 };
+    point b = a;                                   // a copy, like an int; `a` stays usable
+    std::println(f"{a.x} {b.x}");
+
+    std::string first = std::string::from("rope");
+    std::string second = first.clone();            // a visible copy: it allocates
+    std::string third = move first;                // ownership moves; `first` is gone
+    std::println(f"{second} {third}");
+
+    mut named n = named{ .name = std::string::from("lamp"), .uses = 2 };
+    std::string taken = std::take(mut n.name);     // take a field's value, leave its default behind
+    std::string old = std::replace(mut n.name, std::string::from("torch"));   // swap a new one in
+    std::println(f"took '{taken}', replaced '{old}', now '{n.name}'");
+    return 0;
+}
+//> 1.0 1.0
+//> rope rope
+//> took 'lamp', replaced '', now 'torch'

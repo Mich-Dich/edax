@@ -80,6 +80,9 @@ namespace std::ui {
         heading,
         display,
         code,
+        // Small capitals above a group: "ENGINE", "TRIGGER SETTINGS" (letter-spaced; the text is
+        // written in capitals with ui::upper).
+        overline,
     }
 
     // A face, a size in pixels and a line height (a multiple of the size).
@@ -88,6 +91,8 @@ namespace std::ui {
         font_face face = font_face::regular;
         f32 size = 14.0;
         f32 line_height = 1.4;
+        // Extra space after each character, in ems (0.08: letter-spaced capitals).
+        f32 tracking = 0.0;
     }
 
     @std::derive::formattable
@@ -99,6 +104,7 @@ namespace std::ui {
         type_style heading = type_style{ .face = font_face::semibold, .size = 22.0, .line_height = 1.25 };
         type_style display = type_style{ .face = font_face::semibold, .size = 32.0, .line_height = 1.15 };
         type_style code = type_style{ .face = font_face::mono, .size = 13.0, .line_height = 1.45 };
+        type_style overline = type_style{ .face = font_face::semibold, .size = 11.0, .line_height = 1.3, .tracking = 0.08 };
 
         type_style of(text_role role);
     }
@@ -174,6 +180,65 @@ namespace std::ui {
         checkbox,
     }
 
+    // A line icon of the library's set, drawn as vectors (`draw_list::draw_icon`): sharp at any size,
+    // coloured like text. Designed on a 16 × 16 grid with 1.5 px strokes.
+    enum icon : u8 {
+        // Draws nothing (an item without an icon).
+        none,
+        close,
+        plus,
+        minus,
+        checkmark,
+        chevron_right,
+        chevron_down,
+        chevron_left,
+        chevron_up,
+        search,
+        filter,
+        more,
+        menu,
+        settings,
+        play,
+        pause,
+        stop,
+        step,
+        eye,
+        eye_off,
+        lock,
+        unlock,
+        folder,
+        file,
+        code,
+        cube,
+        light,
+        camera,
+        layers,
+        grid,
+        list,
+        undo,
+        redo,
+        save,
+        refresh,
+        trash,
+        copy,
+        info,
+        warning,
+        error,
+        cursor,
+        translate,
+        rotate,
+        scale,
+        terminal,
+        chart,
+        history,
+        pin,
+        maximize,
+        layout,
+        car,
+        globe,
+        bolt,
+    }
+
     // A button's kind (draft 35 §3.2).
     enum variant : u8 {
         primary,
@@ -223,6 +288,10 @@ namespace std::ui {
         u32 elevation = 2;
         // The title bar in `surface_raised`; otherwise it is part of the window.
         bool separate_title = false;
+        // The height of a docked stack's tab bar (std::ui::dock), before the density.
+        f32 tab_height = 30.0;
+        // The gap between the parts of a dockspace's splits, in pixels.
+        f32 dock_gap = 4.0;
     }
 
     // The sizes and shapes of the controls (the component tokens of a theme).
@@ -263,6 +332,10 @@ namespace std::ui {
         // 1 comfortable, 0.8 compact (tools), 1.2 touch.
         f32             density = 1.0;
 
+        // A dense theme for tools and editors: neutral (untinted) greys, `accent` only for what is
+        // chosen, active or focused; 13 px text, 24 px rows, small radii, flat buttons, no
+        // gradients. Goes with `skin::studio()`.
+        static theme studio(color accent, brightness mode);
         // A whole theme from one colour: surfaces are tinted with its hue, `primary` is it at a
         // lightness that reads well on them, text colours keep WCAG AA contrast. Computed in OKLCH.
         static theme from_accent(color accent, brightness mode);
@@ -288,7 +361,12 @@ namespace std::ui {
         f32 size = 14.0;
         f32 line_height = 1.4;
         color color = default;
+        // Extra space after each character, in ems.
+        f32 tracking = 0.0;
     }
+
+    // `text` with the ASCII letters in capitals (overline labels).
+    std::string upper(std::str text);
 
     // The pixel size glyphs' distance fields are rendered at, and how far they reach (pixels at
     // that size). One atlas then serves every text size.
@@ -440,6 +518,10 @@ namespace std::ui {
         void fill(rect r, color c, f32 radius) mut;
         // A box with a vertical gradient from `top` to `bottom`.
         void fill_gradient(rect r, color top, color bottom, f32 radius) mut;
+        // A box with a horizontal gradient from `left` to `right`.
+        void fill_gradient_x(rect r, color left, color right, f32 radius) mut;
+        // A soft light of colour `c` around a box, `size` pixels wide (active and accent elements).
+        void glow(rect r, f32 radius, color c, f32 size) mut;
         // The outline of a box, `width` pixels wide, inside `r`.
         void stroke(rect r, color c, f32 radius, f32 width) mut;
         // The drop shadow of a box: offset, blurred and coloured by `s` in colour `c`.
@@ -456,6 +538,18 @@ namespace std::ui {
         void fill_polygon(std::span<vec2> points, color c) mut;
         // The outline of a polygon or polyline, `width` pixels wide, with round joints.
         void stroke_polygon(std::span<vec2> points, bool closed, f32 width, color c) mut;
+        // The band between two polylines of equal length (upper[i] above lower[i]), filled without
+        // seams and without anti-aliased edges: the area under a plotted line.
+        void fill_between(std::span<vec2> upper, std::span<vec2> lower, color c) mut;
+        // The same, coloured `top` along `upper` and `bottom` along `lower` (areas that fade out).
+        void fill_between_gradient(std::span<vec2> upper, std::span<vec2> lower, color top, color bottom) mut;
+        // A polyline `width` pixels wide with mitred joints (sharp turns cut short) and square ends,
+        // in one piece: translucent colours don't darken where segments meet.
+        void polyline(std::span<vec2> points, f32 width, color c) mut;
+        // A dashed line: dashes `dash` pixels long with `gap` pixels between them.
+        void dashed_line(vec2 from, vec2 to, f32 width, f32 dash, f32 gap, color c) mut;
+        // A cubic Bézier curve from `a` to `d` with the control points `b` and `c` (graph wires).
+        void bezier(vec2 a, vec2 b, vec2 c, vec2 d, f32 width, color tint) mut;
         // A star of `points` points between radii `inner` and `outer`, the first point at
         // `rotation` degrees from straight up.
         void star(vec2 center, f32 outer, f32 inner, u32 points, f32 rotation, color c) mut;
@@ -463,9 +557,16 @@ namespace std::ui {
         void regular_polygon(vec2 center, f32 radius, u32 sides, f32 rotation, color c) mut;
         // A tick mark filling `r`.
         void tick(rect r, f32 width, color c) mut;
+        // The icon `which` fitted into the square centred in `box`, in colour `c`.
+        void draw_icon(icon which, rect box, color c) mut;
+        // An arc of a circle from `from` to `to` degrees (0 is right, 90 down), `width` wide.
+        void arc(vec2 center, f32 radius, f32 from, f32 to, f32 width, color c) mut;
 
         // Appends `other`'s triangles and commands after this list's.
         void append(draw_list& other) mut;
+        // Puts `other`'s triangles before the ones from index `at` on (a mark taken earlier as
+        // `indices.len()`), so they are drawn under what was drawn since (links under nodes).
+        void insert(u32 at, draw_list& other) mut;
 
         // One line of text with its top-left corner at `at`; returns the width.
         f32 text(mut fonts& f, vec2 at, std::str content, text_style style) mut;
@@ -607,6 +708,48 @@ namespace std::ui {
         rect indicator = default;
     }
 
+    // A tab of a dock stack (std::ui::dock): its title, whether it is the stack's shown window, a
+    // close button (`close`, shown when `closable`).
+    view struct dock_tab_part {
+        rect        bounds;
+        std::str    title;
+        // Shown before the title (icon::none: no icon; workspace::set_icon).
+        icon        symbol;
+        bool        active;
+        // The stack holds the window the mouse last pressed in.
+        bool        stack_focused;
+        interaction state;
+        rect        close;
+        bool        closable;
+        f32         close_hover;
+    }
+
+    // A stack of docked windows: its whole rectangle, its tab bar and its content; the stack has
+    // the focus (the mouse last pressed in it); floating stacks lie over the docked ones.
+    struct dock_stack_part {
+        rect bounds = default;
+        rect bar = default;
+        rect content = default;
+        bool focused = false;
+        bool floating = false;
+    }
+
+    // The handle between the two parts of a split; `vertical`: the parts are side by side.
+    struct divider_part {
+        rect        bounds = default;
+        bool        vertical = true;
+        interaction state = default;
+    }
+
+    // A drop target while a dock tab is dragged: the button (`bounds`) for `side` (0 centre, 1 left,
+    // 2 right, 3 top, 4 bottom), and when it is hovered, where the window would go (`preview`).
+    struct drop_target_part {
+        rect bounds = default;
+        u8   side = 0;
+        bool hovered = false;
+        rect preview = default;
+    }
+
     // A table's header and its rows (the widget draws the cells' text).
     view struct table_header_part {
         rect     bounds;
@@ -642,6 +785,10 @@ namespace std::ui {
     public:
         // The library's painters.
         static skin standard();
+        // Flat, crisp painters for dense tools and editors (with `theme::studio`): hairline borders,
+        // chevrons and icons from the icon set, accent underlines on active tabs, no shadows on
+        // controls.
+        static skin studio();
 
         std::function<void(mut painter&, button_part&)>   button;
         std::function<void(mut painter&, check_part&)>    checkbox;
@@ -664,6 +811,12 @@ namespace std::ui {
         std::function<void(mut painter&, check_part&)>    radio;
         std::function<void(mut painter&, table_header_part&)> table_header;
         std::function<void(mut painter&, table_row_part&)> table_row;
+        std::function<void(mut painter&, dock_tab_part&)> dock_tab;
+        std::function<void(mut painter&, tabs_part&)>     dock_bar;
+        // The background of a stack: behind its tab bar and its content (which has none of its own).
+        std::function<void(mut painter&, dock_stack_part&)> dock_stack;
+        std::function<void(mut painter&, divider_part&)>  divider;
+        std::function<void(mut painter&, drop_target_part&)> drop_target;
     }
 
     // The library's painters, by widget: what skin::standard() uses. They read the theme's tokens
@@ -690,8 +843,43 @@ namespace std::ui {
         void radio(mut painter& p, check_part& r);
         void table_header(mut painter& p, table_header_part& h);
         void table_row(mut painter& p, table_row_part& r);
+        void dock_tab(mut painter& p, dock_tab_part& t);
+        void dock_bar(mut painter& p, tabs_part& b);
+        void dock_stack(mut painter& p, dock_stack_part& s);
+        void divider(mut painter& p, divider_part& d);
+        void drop_target(mut painter& p, drop_target_part& d);
         // A knob of `shape` at `center` with diameter `size`.
         void knob(mut painter& p, knob_shape shape, vec2 center, f32 size, color fill, color edge);
+
+        // The painters of skin::studio(); the others are the standard ones.
+        namespace studio {
+            void button(mut painter& p, button_part& b);
+            void checkbox(mut painter& p, check_part& c);
+            void toggle(mut painter& p, toggle_part& t);
+            void slider_track(mut painter& p, slider_part& s);
+            void slider_knob(mut painter& p, slider_part& s);
+            void progress(mut painter& p, progress_part& g);
+            void section_header(mut painter& p, header_part& h);
+            void window(mut painter& p, window_part& w);
+            void card(mut painter& p, card_part& c);
+            void tree_node(mut painter& p, header_part& h);
+            void field(mut painter& p, field_part& f);
+            void popup(mut painter& p, popup_part& u);
+            void list_item(mut painter& p, item_part& i);
+            void tooltip(mut painter& p, tooltip_part& t);
+            void scrollbar(mut painter& p, scrollbar_part& s);
+            void segments(mut painter& p, segments_part& s);
+            void tab(mut painter& p, item_part& t);
+            void tab_bar(mut painter& p, tabs_part& t);
+            void radio(mut painter& p, check_part& r);
+            void table_header(mut painter& p, table_header_part& h);
+            void table_row(mut painter& p, table_row_part& r);
+            void dock_tab(mut painter& p, dock_tab_part& t);
+            void dock_bar(mut painter& p, tabs_part& b);
+            void dock_stack(mut painter& p, dock_stack_part& s);
+            void divider(mut painter& p, divider_part& d);
+            void drop_target(mut painter& p, drop_target_part& d);
+        }
     }
 
     // ---- sizes ------------------------------------------------------------------------------------------
@@ -744,6 +932,9 @@ namespace std::ui {
         x,
         y,
         z,
+        // Node editors: fit (F) and duplicate (Ctrl+D).
+        d,
+        f,
     }
 
     // A key that went down (or repeated) this frame.
@@ -761,6 +952,16 @@ namespace std::ui {
         bool mouse_down = false;
         bool mouse_pressed = false;
         bool mouse_released = false;
+        // The right and the middle button.
+        bool right_down = false;
+        bool right_pressed = false;
+        bool right_released = false;
+        bool middle_down = false;
+        bool middle_pressed = false;
+        // Modifier keys held this frame.
+        bool shift = false;
+        bool control = false;
+        bool alt = false;
         // Wheel steps this frame, positive away from the user.
         f32  scroll = 0.0;
         // Seconds since the last frame; 0: the context measures it.

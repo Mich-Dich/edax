@@ -1,0 +1,9 @@
+save at 0ns: saved
+save at 1s: skipped
+save at 4.99s: skipped
+save at 5s: saved
+save at 12s: saved
+mean frame 20ms, 50 fps
+launch 2026-09-21 14:13 UTC
+launch 2026-09-21 23:13 in Asia/Tokyo
+30 hours later 2026-09-22 20:13 UTC

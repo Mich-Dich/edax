@@ -1,0 +1,77 @@
+// Standard-library lesson 8: a settings file (solution).
+import std;
+namespace fs = std::filesystem;
+
+// One "key = value" line.
+struct setting {
+    std::string key;
+    std::string value;
+}
+
+// Reads every "key = value" line of the file; lines without '=' and comments ('#') are skipped.
+std::result<std::darray<setting>, std::io_error> load(fs::path& p) {
+    mut std::file f = std::file::open(p)?;
+    mut std::darray<setting> out = default;
+    for (std::str line : f.lines()) {
+        std::str t = line.trim();
+        if (t.is_empty() || t.starts_with("#")) { continue; }
+        if (t.find("=") is std::some(at)) {
+            out.push(setting{
+                .key = std::string::from(t.slice(0, at).trim()),
+                .value = std::string::from(t.slice(at + 1, t.len()).trim()),
+            });
+        }
+    }
+    return std::ok(move out);
+}
+
+// Writes the settings, one per line, with a comment on top.
+std::result<void, std::io_error> save(fs::path& p, std::span<setting> settings) {
+    mut std::file f = std::file::create(p)?;
+    _ = f.write("# written by lesson s8\n")?;
+    for (setting& s : settings) { _ = f.write(std::format(f"{s.key} = {s.value}\n"))?; }
+    f.flush()?;
+    return std::ok();
+}
+
+// The settings in the file, or the defaults (saved first) when there is no file yet.
+std::result<std::darray<setting>, std::io_error> load_or_create(fs::path& p) {
+    match (load(p)) {
+        std::ok(s) => { return std::ok(move s); },
+        std::error(std::io_error::not_found) => {
+            std::println("no settings yet: writing the defaults");
+            mut std::darray<setting> defaults = default;
+            defaults.push(setting{ .key = std::string::from("volume"), .value = std::string::from("80") });
+            defaults.push(setting{ .key = std::string::from("language"), .value = std::string::from("en") });
+            save(p, defaults.as_span())?;
+            return std::ok(move defaults);
+        },
+        std::error(e) => { return std::error(e); },
+    }
+}
+
+i32 main() {
+    fs::path dir = fs::executable_dir() / "config";
+    fs::create_directories(dir).expect("can't create the config directory");
+    fs::path file = dir / "settings.txt";
+
+    mut std::darray<setting> settings = load_or_create(file).expect("can't read the settings");
+    std::println(f"{settings.len()} settings");
+    for (mut setting& s : settings) {
+        if (s.key.as_str() == "volume") { s.value = std::string::from("55"); }
+    }
+    save(file, settings.as_span()).expect("can't save");
+
+    std::darray<setting> again = load_or_create(file).expect("can't read the settings");
+    for (setting& s : again) { std::println(f"{s.key} = {s.value}"); }
+
+    mut std::file raw = std::file::open(file).expect("can't open");
+    std::string text = raw.read_all().expect("can't read");
+    std::println(f"{file.file_name()}: {text.len()} bytes, {text.as_str().split('\n').len() - 1} lines");
+
+    match (load(dir / "missing.txt")) {
+        std::ok(_) => std::println("unexpected"),
+        std::error(e) => std::println(f"missing.txt: {e}"),
+    }
+    return 0;
+}

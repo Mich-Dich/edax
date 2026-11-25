@@ -1,0 +1,18 @@
+// RUN: edaxc check %s
+import std;
+struct cell {
+    u32 n = 0;
+    void bump() mut { this.n += 1; }
+}
+void touch(mut cell& c) { c.n = 9; }
+void main() {
+    mut std::darray<cell> cells = default;
+    cells.push(cell{});
+    mut std::span<cell> s = cells.as_span();
+    s[0].bump();
+    mut cell& r = s[0];
+    touch(mut s[0]);
+    mut std::span<mut cell> m = cells.as_mut_span();
+    m[0].bump();
+    std::println(f"{cells[0].n}");
+}

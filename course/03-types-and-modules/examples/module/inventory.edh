@@ -1,0 +1,21 @@
+// The module `inventory`: everything importers may use. Declarations only, no bodies.
+import std;
+
+namespace shop {
+    // A struct: all fields are public, so they are all here, with their defaults.
+    struct price {
+        u32 cents = 0;
+
+        std::string text();
+    }
+
+    // A class: only the public part. The private fields are in inventory.ed.
+    class stock {
+    public:
+        static stock make();
+        void add(std::str name, price p) mut;
+        usize len();
+        price total();
+        ~stock();
+    }
+}

@@ -1,0 +1,23 @@
+// Colours: sRGB with straight alpha; OKLCH for shades that look evenly spaced.
+import std;
+namespace m = std::math;
+
+
+i32 main() {
+    m::color accent = m::color::hex(0x4F7CFF);
+    m::color same = m::color::rgb8(0x4F, 0x7C, 0xFF);
+    std::println(f"{accent == same} packed {accent.packed():x}");
+    m::oklch c = accent.to_oklch();
+    std::println(f"l {c.l:.3} c {c.c:.3} h {c.h:.0}");
+    m::color hover = m::color::from_oklch(m::oklch{ .l = c.l + 0.1, .c = c.c, .h = c.h }, 1.0);
+    std::println(f"hover lighter: {hover.to_oklch().l > c.l}, same hue: {(hover.to_oklch().h - c.h).abs() < 1.0}");
+    std::println(f"contrast with white {m::color::white().contrast(accent):.2}, with black {m::color::black().contrast(accent):.2}");
+    m::color mid = m::color::black().mix(m::color::white(), 0.5);
+    std::println(f"middle grey r {mid.r:.2}, half alpha {accent.with_alpha(0.5).a}");
+    return 0;
+}
+//> true packed ffff7c4f
+//> l 0.625 c 0.201 h 266
+//> hover lighter: true, same hue: true
+//> contrast with white 3.71, with black 5.66
+//> middle grey r 0.39, half alpha 0.5

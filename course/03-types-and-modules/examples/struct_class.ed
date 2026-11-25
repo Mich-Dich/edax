@@ -1,0 +1,42 @@
+// A struct (all public, plain data) and a class (encapsulated, with a destructor).
+import std;
+
+struct vec2 {
+    f32 x = 0.0;
+    f32 y = 0.0;
+
+    vec2 operator+(vec2& other) { return vec2{ .x = x + other.x, .y = y + other.y }; }
+    bool operator==(vec2& other) = default;    // == is opt-in
+    f32 length() { return (x * x + y * y).sqrt(); }
+}
+
+class counter {
+public:
+    // No constructors: a static factory method builds the value.
+    static counter named(std::str name) { return counter{ .label = std::string::from(name) }; }
+
+    void hit() mut { hits += 1; }              // `mut`: this method changes the object
+    u32 count() { return hits; }               // members are named bare, like in C++
+    std::str name() { return label; }
+    ~counter() { std::println(f"{label} counted {hits}"); }
+
+private:
+    std::string label;
+    u32 hits = 0;
+}
+
+i32 main() {
+    vec2 a = vec2{ .x = 3.0, .y = 4.0 };       // designated fields, any order
+    vec2 b = vec2{ .y = 1.0 };                 // x takes its default
+    vec2 sum = a + b;
+    std::println(f"{sum.x} {sum.y} {a.length()} {a == b}");
+
+    mut counter clicks = counter::named("clicks");
+    clicks.hit();
+    clicks.hit();
+    std::println(f"{clicks.name()}: {clicks.count()}");
+    return 0;
+}
+//> 3.0 5.0 5.0 false
+//> clicks: 2
+//> clicks counted 2

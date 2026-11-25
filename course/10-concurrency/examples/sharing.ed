@@ -1,0 +1,25 @@
+// Sharing state: atomics and a mutex that owns its data.
+import std;
+
+i32 main() {
+    std::atomic<u32> hits = default;
+    std::mutex<std::darray<u32>> log = std::mutex<std::darray<u32>>::make(default);
+    {
+        // [&hits] and [&log], not `mut &`: synchronized types change through immutable references.
+        std::thread::scoped_handle<void> a = std::thread::spawn([&hits, &log]() {
+            for (u32 i : 0..100) { _ = hits.fetch_wrapping_add(1, std::memory_order::relaxed); }
+            log.lock()->push(1);                     // the guard unlocks at the end of the statement
+        });
+        std::thread::scoped_handle<void> b = std::thread::spawn([&hits, &log]() {
+            for (u32 i : 0..100) { _ = hits.fetch_wrapping_add(1, std::memory_order::relaxed); }
+            log.lock()->push(2);
+        });
+        a.join();
+        b.join();
+    }
+    mut std::mutex_guard<std::darray<u32>> entries = log.lock();
+    entries->sort();
+    std::println(f"hits {hits.load(std::memory_order::acquire)}, log {entries->len()}: {(*entries)[0]} {(*entries)[1]}");
+    return 0;
+}
+//> hits 200, log 2: 1 2

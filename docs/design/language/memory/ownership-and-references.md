@@ -69,9 +69,11 @@ The aliasing rule is about **places**. A place is a local (or `this`) followed b
 ```edax
 integrate(mut w.positions, w.velocities);   // OK: two fields of w
 w.positions.push(w.velocities[0]);          // OK
-w.positions.push(w.positions[0]);           // ERROR: w.positions is borrowed mutably by push
+w.positions.push(w.positions[0]);           // OK: the value is copied before push starts
+integrate(mut w.positions, w.positions);    // ERROR: w.positions is borrowed mutably and shared
 swap(mut xs[i], mut xs[j]);                 // ERROR: one place; use xs.swap(i, j)
 ```
+- **Value arguments are read first (two-phase).** An argument that binds to a value parameter (not a reference, and not a `view` type) is copied before the call starts, so it may read the place that the call's receiver or a `mut` argument borrows: `v.push(v[0])`, `ctx.state_of(ctx.open_menu)`, `bump(mut c, c.hits)`. A reference argument still may not overlap a mutable one.
 - Inside one function, the borrow of a place is tracked by its fields: a reference parameter's fields (`mut w.a, w.b` with `mut world& w`), local references to fields, and loops (`for (f32& v : w.b) { w.a.push(v); }` borrows only `w.b`). Across a call, a `mut` method borrows all of `this`; to hand out several fields at once, return them together (below).
 - Containers hand out several elements with methods that check at run time: `split_at`, `chunks`, `get_many_mut([a, b])` (none when two handles are equal).
 

@@ -1,0 +1,22 @@
+// The aliasing rule is about places: different fields can be borrowed at the same time.
+import std;
+
+struct world {
+    std::darray<f32> positions = default;
+    std::darray<f32> velocities = default;
+}
+
+void integrate(mut std::darray<f32>& pos, std::darray<f32>& vel, f32 dt) {
+    for (usize i : 0..pos.len()) { pos[i] += vel[i] * dt; }
+}
+
+i32 main() {
+    mut world w = default;
+    w.positions.push(0.0);
+    w.velocities.push(2.0);
+    integrate(mut w.positions, w.velocities, 0.5);   // two fields of w: two places
+    w.positions.push(w.positions[0]);                // a value argument is read before push starts
+    std::println(f"{w.positions[0]} {w.positions[1]}");
+    return 0;
+}
+//> 1.0 1.0

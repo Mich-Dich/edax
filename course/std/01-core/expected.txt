@@ -1,0 +1,10 @@
+spend 40: true, left 60
+spend 50: true, left 10
+spend 30: false, left 10
+spend 10: true, left 0
+user has 2 permissions, root has 4
+lowest of root without read: write, of nothing: none
+order: cpu:3, gpu:3, disk:1
+same hash for equal keys: true
+draft -> final, left ''
+level +10: saturated 255, wrapped 4

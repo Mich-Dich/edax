@@ -1,0 +1,33 @@
+// std::span: views of contiguous elements, slices, chunks, and two halves at once.
+import std;
+
+u32 sum(std::span<u32> xs) {
+    mut u32 s = 0;
+    for (u32 x : xs) { s += x; }
+    return s;
+}
+
+void double_all(std::span<mut u32> xs) {        // mutable elements, immutable span
+    for (mut u32& x : xs) { x *= 2; }
+}
+
+i32 main() {
+    mut std::darray<u32> xs = std::darray<u32>::from([1, 2, 3, 4, 5, 6, 7]);
+    std::println(f"all {sum(xs.as_span())}, middle {sum(xs.as_span().slice(2, 5))}");
+    for (std::span<u32> part : xs.as_span().chunks(3)) { std::println(f"chunk of {part.len()}: {sum(part)}"); }
+
+    (std::span<mut u32> left, std::span<mut u32> right) = xs.as_mut_span().split_at(3);
+    double_all(left);                           // both halves can change at once: they never overlap
+    right[0] = 100;
+    std::println(f"{xs[0]} {xs[2]} {xs[3]} {xs[6]}");
+
+    xs.as_mut_span().slice(0, 4).sort();        // sorting a part of the darray in place
+    std::println(f"{xs[0]} {xs[3]}");
+    return 0;
+}
+//> all 28, middle 12
+//> chunk of 3: 6
+//> chunk of 3: 15
+//> chunk of 1: 7
+//> 2 6 100 7
+//> 2 100

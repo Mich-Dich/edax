@@ -1,0 +1,32 @@
+// Compile-time functions and constants; a type chosen by a compile-time function.
+import std;
+
+compile_time u64 factorial(u64 n) {                     // consteval: only the compiler runs it
+    mut u64 r = 1;
+    for (u64 i : 2..=n) { r *= i; }
+    return r;
+}
+
+compile_time run_time u32 square(u32 x) { return x * x; }   // constexpr: both
+
+compile_time std::array<u32, 5> squares() {
+    mut std::array<u32, 5> out = default;
+    for (usize i : 0..5) { out[i] = square(cast::truncate<u32>(i)); }
+    return out;
+}
+
+compile_time u64 f10 = factorial(10);                   // computed while compiling
+compile_time std::array<u32, 5> table = squares();      // stored read-only, no startup code
+
+compile_time type counter_for(u64 max) {                // types are values at compile time
+    return if (max <= 255) { u8 } else { u32 };
+}
+compile_time type small = counter_for(100);
+
+i32 main() {
+    u32 n = 7;                                          // an immutable local is a run-time value
+    small c = 200;                                      // a u8
+    std::println(f"{f10} {table[4]} {square(n)} {c}");
+    return 0;
+}
+//> 3628800 16 49 200

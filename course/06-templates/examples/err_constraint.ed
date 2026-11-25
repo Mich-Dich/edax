@@ -1,0 +1,17 @@
+// A constrained template refuses a type at the call, naming what's missing.
+import std;
+
+struct point {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+template<type T : std::comparable>
+T larger(T a, T b) {
+    return if (a < b) { b } else { a };
+}
+
+i32 main() {
+    point p = larger(point{}, point{ .x = 1.0 });   //~ error[E4161]
+    return 0;
+}

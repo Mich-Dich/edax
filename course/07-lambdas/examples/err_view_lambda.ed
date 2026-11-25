@@ -1,0 +1,16 @@
+// A lambda that captures a reference is a view: it can be passed down, but not stored.
+import std;
+
+class bus {
+public:
+    void on(std::function<void(u32)> handler) mut { handlers.push(move handler); }
+private:
+    std::darray<std::function<void(u32)>> handlers = default;
+}
+
+i32 main() {
+    mut u32 total = 0;
+    mut bus b = default;
+    b.on([mut &total](u32 v) { total += v; });   //~ error[E5015]
+    return 0;
+}

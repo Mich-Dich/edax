@@ -1,0 +1,28 @@
+exit: 0
+--- stdout
+insert: 3 commands, 18 of 18 indices, middle clip 50.0
+polyline: 12 vertices, 36 indices
+pins 4, nodes 3, duplicates 0
+created 1: 11 -> 20
+links drawn 2, linked pins 4
+link clicks: 1, then with Shift 2
+moved: x 70.0, selected 1 (node 1)
+dropped from 21 at 600.0, 500.0
+box selected 2 nodes, 2 links, changed false
+deleted nodes 2, links 2, selection after 0 + 0
+thin box: 0 nodes, 1 link
+metro: 8 directions true, 12 corners and pins, rounded has more points true
+menu asked true
+zoom true, the point under the cursor stays true
+order 1 2 3
+cycle at node 3
+body slider: value changed true, node at 280.0, 40.0, selected 0
+inline widget: moved while unlinked true, the node stayed true; once linked it is gone: value kept true, the press moved the node to 220.0
+collapsed: height 64.0 -> 30.0, pin at the header's middle true
+open again: height 64.0
+reroute added: 1 point, where clicked true, reported 1, panned false
+reroute moved by 40.0, 1 drawn, link passes it true
+reroute removed: 0 left
+aligned tops: 20.0 20.0, moved 2
+spread down: equal gaps true
+--- stderr

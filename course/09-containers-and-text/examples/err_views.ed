@@ -1,0 +1,15 @@
+// A view can't outlive what it borrows.
+import std;
+
+view struct field {
+    std::str name;
+}
+
+class registry {
+public:
+    std::darray<field> fields = default;     //~ error[E5011]
+}
+
+i32 main() {
+    return 0;
+}

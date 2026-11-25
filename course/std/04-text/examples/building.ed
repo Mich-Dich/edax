@@ -1,0 +1,27 @@
+// Building text: std::string grows; std::format makes a new one; nothing else allocates.
+import std;
+
+std::string csv_line(std::span<u32> values) {
+    mut std::string out = std::string::with_capacity(values.len() * 4);   // room before writing
+    for (usize i : 0..values.len()) {
+        if (i > 0) { out.push(','); }                                     // a char
+        out.push_str(std::format(f"{values[i]}"));
+    }
+    return out;
+}
+
+i32 main() {
+    std::array<u32, 4> xs = [3, 14, 15, 92];
+    std::string line = csv_line(xs.as_span());
+    std::println(f"{line} ({line.len()} bytes)");
+    mut std::string copy = line.clone();          // copies are always visible
+    copy.clear();
+    std::println(f"[{copy}] {copy.is_empty()} [{line}]");
+    std::static_str literal = "lives forever";    // a literal is a std::static_str: storable anywhere
+    std::str view = line;                         // std::string -> std::str: free
+    std::println(f"{literal} {view.len()}");
+    return 0;
+}
+//> 3,14,15,92 (10 bytes)
+//> [] true [3,14,15,92]
+//> lives forever 10

@@ -1,0 +1,29 @@
+// Every capture is named, and says whether it copies, moves or borrows.
+import std;
+
+template<type F>
+u32 call_with(F f, u32 x) { return f(x); }     // a template parameter: nothing is stored
+
+i32 main() {
+    u32 threshold = 10;
+    std::string name = std::string::from("score");
+    mut u32 counter = 0;
+    std::darray<u32> list = default;
+
+    auto add = [threshold](u32 x) { return x + threshold; };          // a copy (copy types only)
+    auto label = [move name](u32 x) { return std::format(f"{name}: {x}"); };   // owns name now
+    auto peek = [&list]() { return list.len(); };                      // an immutable reference
+    auto init = [base = 5u32](u32 x) -> u32 { return x + base; };      // a new variable
+    {
+        auto inc = [mut &counter]() { counter += 1; };                 // a mutable reference
+        inc();
+        inc();
+    }
+    mut auto next = [mut n = 0u32]() { n += 1; return n; };            // state the lambda changes
+    u32 first = next();
+    u32 second = next();
+
+    std::println(f"{call_with(add, 1)} {label(7)} {peek()} {init(1)} {counter} {first} {second}");
+    return 0;
+}
+//> 11 score: 7 0 6 2 1 2

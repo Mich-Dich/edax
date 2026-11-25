@@ -1,0 +1,22 @@
+// Channels: send work to threads; a receiver loop ends when the channel is closed and empty.
+import std;
+
+i32 main() {
+    std::channel<u32> jobs = std::channel<u32>::bounded(2);
+    std::channel<u32> results = std::channel<u32>::unbounded();
+    std::channel_receiver<u32> input = jobs.receiver();
+    std::channel_sender<u32> output = results.sender();
+    std::thread::handle<void> worker = std::thread::spawn([move input, move output]() {
+        for (u32 j : input) { _ = output.send(j * j); }
+    });
+    std::channel_sender<u32> submit = jobs.sender();
+    for (u32 i : 1..=4) { _ = submit.send(i); }
+    jobs.close();                                    // without this, the worker waits forever
+    worker.join();
+    std::channel_receiver<u32> collect = results.receiver();
+    mut u32 sum = 0;
+    for (u32 i : 0..4) { sum += collect.receive().expect("a result"); }
+    std::println(f"sum of squares {sum}");
+    return 0;
+}
+//> sum of squares 30

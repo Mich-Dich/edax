@@ -1,0 +1,338 @@
+// The Edax standard library: module std::ui::debug (see debug.edh).
+
+namespace std::ui::debug {
+    struct frame_stats {
+        void record(std::ui::immediate::context& ctx) mut {
+            this.record_seconds(ctx.dt);
+            this.vertices = ctx.output.vertices.len();
+            this.draw_calls = ctx.output.commands.len();
+        }
+
+        void record_seconds(f32 seconds) mut {
+            f32 ms = seconds * 1000.0;
+            this.frame_ms.push(ms);
+            if (seconds > 0.0) {
+                this.fps.push(1.0 / seconds);
+            }
+            this.frames += 1;
+        }
+
+        void record_work(f32 milliseconds) mut {
+            this.work_ms.push(milliseconds);
+        }
+    }
+
+    // ---- the log -----------------------------------------------------------------------------------------
+
+    private usize level_index(std::log::level l) {
+        return match (l) {
+            std::log::level::trace => 0,
+            std::log::level::debug => 1,
+            std::log::level::info => 2,
+            std::log::level::warn => 3,
+            std::log::level::error => 4,
+            std::log::level::fatal => 5,
+            std::log::level::off => 6,
+        };
+    }
+
+    class log_feed {
+    public:
+        std::darray<log_line> snapshot() {
+            mut std::darray<log_line> out = default;
+            std::mutex_guard<log_lines> g = this.shared->lock();
+            usize n = g->lines.len();
+            for (usize i : 0..n) {
+                log_line& l = g->lines[(g->next + i) % n];
+                if (l.number > g->cleared_below) {
+                    out.push(log_line{ .level = l.level, .text = l.text.clone(), .number = l.number });
+                }
+            }
+            return out;
+        }
+
+        std::array<u64, 7> counts() {
+            std::mutex_guard<log_lines> g = this.shared->lock();
+            return g->per_level;
+        }
+
+        void clear() {
+            mut std::mutex_guard<log_lines> g = this.shared->lock();
+            g->cleared_below = g->total;
+        }
+
+        log_feed clone() {
+            return log_feed{ .shared = this.shared.clone() };
+        }
+    }
+
+    class log_sink {
+    public:
+        static (std::unique_ptr<log_sink>, log_feed) create(usize capacity) {
+            log_feed feed = log_feed{
+                .shared = std::shared_ptr<std::mutex<log_lines>>::make(std::mutex<log_lines>::make(log_lines{ .capacity = capacity.max(1) })),
+            };
+            return (std::unique_ptr<log_sink>::make(log_sink{ .feed = feed.clone() }), move feed);
+        }
+
+        bool colored() override {
+            return false;
+        }
+
+        void write(std::log::record& r, std::str line) mut override {
+            mut std::mutex_guard<log_lines> g = this.feed.shared->lock();
+            g->total += 1;
+            g->per_level[level_index(r.level)] += 1;
+            log_line entry = log_line{ .level = r.level, .text = std::string::from(line), .number = g->total };
+            if (g->lines.len() < g->capacity) {
+                g->lines.push(move entry);
+            } else {
+                usize at = g->next;
+                g->lines[at] = move entry;
+                g->next = (at + 1) % g->capacity;
+            }
+        }
+
+        void flush() mut override {
+        }
+    }
+
+    std::ui::color level_color(std::ui::theme& t, std::log::level l) {
+        return match (l) {
+            std::log::level::trace => t.colors.text_faint,
+            std::log::level::debug => t.colors.text_muted,
+            std::log::level::info => t.colors.text,
+            std::log::level::warn => t.colors.warning,
+            std::log::level::error => t.colors.danger,
+            std::log::level::fatal => t.colors.danger,
+            std::log::level::off => t.colors.text,
+        };
+    }
+
+    private std::log::level level_of(log_filter s) {
+        return match (s) {
+            log_filter::trace => std::log::level::trace,
+            log_filter::debug => std::log::level::debug,
+            log_filter::info => std::log::level::info,
+            log_filter::warn => std::log::level::warn,
+            log_filter::error => std::log::level::error,
+        };
+    }
+
+    private log_filter shown_of(f64 stored) {
+        u32 i = cast::saturate<u32>(stored);
+        if (i == 0) {
+            return log_filter::trace;
+        }
+        if (i == 1) {
+            return log_filter::debug;
+        }
+        if (i == 3) {
+            return log_filter::warn;
+        }
+        if (i == 4) {
+            return log_filter::error;
+        }
+        return log_filter::info;
+    }
+
+    private f64 stored_of(log_filter s) {
+        return match (s) {
+            log_filter::trace => 0.0,
+            log_filter::debug => 1.0,
+            log_filter::info => 2.0,
+            log_filter::warn => 3.0,
+            log_filter::error => 4.0,
+        };
+    }
+
+    // Whether `text` contains `part`, ignoring ASCII case.
+    private bool contains_folded(std::str text, std::str part) {
+        if (part.is_empty()) {
+            return true;
+        }
+        if (part.len() > text.len()) {
+            return false;
+        }
+        for (usize i : 0..text.len() - part.len() + 1) {
+            mut bool same = true;
+            for (usize k : 0..part.len()) {
+                if (fold(text.byte(i + k)) != fold(part.byte(k))) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private u8 fold(u8 c) {
+        if (c >= 65 && c <= 90) {
+            return c + 32;
+        }
+        return c;
+    }
+
+    // The slots of a log panel's storage numbers: the level filter, how far the list is scrolled up
+    // from the bottom (in pixels), and the dragged scroll bar's grip.
+    private compile_time usize slot_level = 0;
+    private compile_time usize slot_scroll = 1;
+    private compile_time usize slot_count = 2;
+
+    private void draw_log(mut std::ui::immediate::scope& s, mut log_feed& feed, f32 height, u64 panel) {
+        if (!s.open()) {
+            return;
+        }
+        std::ui::theme t = s.theme();
+        mut log_filter min_level = log_filter::info;
+        mut std::string search = default;
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(panel);
+            if (st.numbers.len() < slot_count) {
+                st.numbers.resize(slot_count, 0.0);
+                st.numbers[slot_level] = 2.0;
+            }
+            min_level = shown_of(st.numbers[slot_level]);
+            search = std::take(mut st.text);
+        }
+        std::array<u64, 7> counts = feed.counts();
+        // One toolbar: the search, the lowest level shown, the warning and error counts, Clear.
+        {
+            mut std::ui::immediate::scope bar = s.row();
+            bar.icon(std::ui::icon::search, t.colors.text_faint);
+            bar.placeholder("Filter the log…");
+            _ = bar.width(std::ui::fill(1.0)).input_text("", mut search);
+            std::array<std::str, 5> names = ["Trace", "Debug", "Info", "Warn", "Error"];
+            for (usize i : 0..5) {
+                mut std::ui::immediate::scope item = bar.id(i);
+                bool chosen = cast::saturate<usize>(stored_of(min_level)) == i;
+                if (item.button(names[i], if (chosen) { std::ui::variant::secondary } else { std::ui::variant::ghost })) {
+                    min_level = shown_of(cast::round<f64>(i));
+                }
+            }
+            bar.bar_separator();
+            bar.badge(std::ui::icon::warning, std::format(f"{counts[3]}").as_str(), t.colors.warning);
+            bar.badge(std::ui::icon::error, std::format(f"{counts[4] + counts[5]}").as_str(), t.colors.danger);
+            if (bar.icon_button(std::ui::icon::trash, "Clear the log")) {
+                feed.clear();
+            }
+        }
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(panel);
+            st.numbers[slot_level] = stored_of(min_level);
+            st.text = move search;
+        }
+        std::darray<log_line> all = feed.snapshot();
+        std::string filter = s.storage(panel).text.clone();
+        std::log::level floor = level_of(min_level);
+        mut std::darray<usize> shown = std::darray<usize>::with_capacity(all.len());
+        for (usize i : 0..all.len()) {
+            if (level_index(all[i].level) >= level_index(floor) && contains_folded(all[i].text.as_str(), filter.as_str())) {
+                shown.push(i);
+            }
+        }
+        std::ui::text_style code = t.style(std::ui::text_role::code, t.colors.text);
+        f32 row = (code.size * code.line_height).round();
+        f32 wanted = if (height > 0.0) { height * t.density } else { s.available_height().max(60.0) };
+        std::ui::rect r = s.allocate(std::ui::vec2{ .x = s.available_width(), .y = wanted });
+        f32 content = row * cast::round<f32>(shown.len());
+        f32 most = (content - r.height + 8.0).max(0.0);
+        // Scrolled up from the bottom: 0 stays at the newest line.
+        mut f32 up = 0.0;
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(panel);
+            up = cast::round<f32>(st.numbers[slot_scroll]).min(most).max(0.0);
+        }
+        std::ui::immediate::response resp = s.interact(panel, r);
+        if (resp.state.hovered && s.ctx.in.scroll != 0.0 && s.scroll_unused()) {
+            s.take_scroll();
+            up = (up + s.ctx.in.scroll * row * 3.0).min(most).max(0.0);
+        }
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(panel);
+            st.numbers[slot_scroll] = cast<f64>(up);
+        }
+        mut std::ui::painter g = s.painter();
+        g.list.fill(r, t.colors.surface_sunken, t.radius.small);
+        g.list.push_clip(r);
+        f32 top = r.bottom() - 4.0 - content + up;
+        f32 pad = t.space.s;
+        for (usize k : 0..shown.len()) {
+            f32 y = top + row * cast::round<f32>(k);
+            if (y + row < r.y || y > r.bottom()) {
+                continue;
+            }
+            log_line& l = all[shown[k]];
+            std::ui::text_style style = t.style(std::ui::text_role::code, level_color(t, l.level));
+            if (l.level == std::log::level::error || l.level == std::log::level::fatal) {
+                g.list.fill(std::ui::rect{ .x = r.x, .y = y, .width = r.width, .height = row }, t.colors.danger.with_alpha(0.08), 0.0);
+            }
+            _ = g.text(std::ui::vec2{ .x = r.x + pad, .y = y }, l.text.as_str(), style);
+        }
+        g.list.pop_clip();
+        if (most > 0.0) {
+            // The scroll bar: where the view is in the whole list.
+            f32 track = r.height - 8.0;
+            f32 grip = (track * r.height / content).max(16.0);
+            f32 at = (track - grip) * (1.0 - up / most);
+            g.list.fill(std::ui::rect{ .x = r.right() - 6.0, .y = r.y + 4.0 + at, .width = 3.0, .height = grip }, t.colors.text_muted.with_alpha(0.5), 1.5);
+        }
+    }
+
+    private void draw_perf(mut std::ui::immediate::scope& s, mut frame_stats& stats) {
+        if (!s.open()) {
+            return;
+        }
+        std::ui::theme t = s.theme();
+        f64 fps = if (stats.fps.is_empty()) { 0.0 } else { stats.fps.mean() };
+        f64 frame = if (stats.frame_ms.is_empty()) { 0.0 } else { stats.frame_ms.mean() };
+        {
+            mut std::ui::immediate::scope cards = s.grid(2);
+            cards.stat("FPS", fps, stats.fps.as_span(), std::ui::plot::stat_options{ .decimals = 0 });
+            cards.stat("Frame", frame, stats.frame_ms.as_span(), std::ui::plot::stat_options{ .unit = "ms", .decimals = 2, .warn_above = std::some(16.7) });
+        }
+        {
+            mut std::ui::plot::scope p = s.plot("", 120.0);
+            p.legend(!stats.work_ms.is_empty());
+            p.axis_y(std::ui::plot::axis{ .label = "ms", .min = std::some(0.0) });
+            p.area("frame", stats.frame_ms.as_span());
+            if (!stats.work_ms.is_empty()) {
+                p.line("work", stats.work_ms.as_span());
+            }
+            p.hline("60", 16.67, p.theme().colors.success);
+            p.hline("30", 33.33, p.theme().colors.warning);
+        }
+        s.muted(f"max {std::ui::plot::format_number(stats.frame_ms.max(), 2)} ms, {stats.vertices} vertices, {stats.draw_calls} draw calls, frame {stats.frames}");
+    }
+
+    implement frame_tools for std::ui::immediate::frame {
+        void perf_overlay(mut frame_stats& stats, implicit compile_time std::call_site where) mut override {
+            f32 width = 340.0;
+            f32 x = (this.ctx.frame_size.x - width - 16.0).max(0.0);
+            mut std::ui::immediate::scope w = this.window("Performance", std::ui::rect{ .x = x, .y = 16.0, .width = width }, where);
+            draw_perf(mut w, mut stats);
+        }
+
+        void log_view(std::str title, mut log_feed& feed, std::ui::rect start, implicit compile_time std::call_site where) mut override {
+            // The window is as high as its content: the list takes what the controls leave.
+            f32 height = if (start.height > 0.0) { (start.height - 170.0).max(80.0) } else { 260.0 };
+            mut std::ui::immediate::scope w = this.window(title, std::ui::rect{ .x = start.x, .y = start.y, .width = start.width }, where);
+            u64 log_id = w.make_id(title, where);
+            draw_log(mut w, mut feed, height, log_id);
+        }
+    }
+
+    implement scope_tools for std::ui::immediate::scope {
+        void perf_panel(mut frame_stats& stats, implicit compile_time std::call_site where) mut override {
+            draw_perf(mut this, mut stats);
+        }
+
+        void log_panel(mut log_feed& feed, f32 height, implicit compile_time std::call_site where) mut override {
+            u64 panel = this.make_id("log", where);
+            draw_log(mut this, mut feed, height, panel);
+        }
+    }
+}

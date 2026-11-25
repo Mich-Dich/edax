@@ -1,0 +1,26 @@
+// A struct that holds a view is a `view struct`: it follows the reference rules.
+import std;
+
+view struct field {
+    std::str name;              // points into the text it was parsed from
+    std::str value;
+}
+
+std::darray<field> parse(std::str text) {               // returns views into its one view parameter
+    mut std::darray<field> out = default;
+    for (std::str pair : text.split(';')) {
+        std::darray<std::str> kv = pair.split('=');
+        if (kv.len() == 2) { out.push(field{ .name = kv[0].trim(), .value = kv[1].trim() }); }
+    }
+    return out;
+}
+
+i32 main() {
+    std::string config = std::string::from("width = 640; height = 480; title = demo");
+    std::darray<field> fields = parse(config);
+    for (field& f : fields) { std::println(f"{f.name} -> {f.value}"); }
+    return 0;
+}
+//> width -> 640
+//> height -> 480
+//> title -> demo

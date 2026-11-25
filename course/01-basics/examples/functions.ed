@@ -1,0 +1,36 @@
+// Functions: references are marked at the call, tuples return several values.
+import std;
+
+void bump(mut u32& counter) { counter += 1; }      // a mutable reference parameter
+
+(u32, u32) min_max(std::span<u32> values) {         // two results as a tuple
+    mut u32 low = u32::max;
+    mut u32 high = u32::min;
+    for (u32 v : values) {
+        low = low.min(v);
+        high = high.max(v);
+    }
+    return (low, high);
+}
+
+// A function that returns text it doesn't borrow returns a literal (std::static_str)...
+std::static_str sign(i32 x) {
+    return if (x < 0) { "negative" } else { "not negative" };
+}
+
+// ...or a new std::string.
+std::string repeat(std::str word, usize times) {
+    mut std::string out = default;
+    for (usize i : 0..times) { out.push_str(word); }
+    return out;
+}
+
+i32 main() {
+    mut u32 clicks = 0;
+    bump(mut clicks);                                // `mut` at the call: you see what changes
+    std::array<u32, 4> values = [7, 3, 9, 4];
+    (u32 low, u32 high) = min_max(values.as_span()); // std::array -> std::span: .as_span()
+    std::println(f"{clicks} {low} {high} {sign(-3)} {repeat("ab", 3)}");
+    return 0;
+}
+//> 1 3 9 negative ababab

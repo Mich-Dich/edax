@@ -1,5 +1,6 @@
 // feature 12/34: different fields of one value are different places; a call may borrow one
-// mutably and another immutably. Elements of a container are one place.
+// mutably and another immutably. Elements of a container are one place. A value argument is
+// copied before the call starts, so it may read the place the call borrows mutably.
 import std;
 
 struct world {
@@ -13,7 +14,7 @@ void step(mut world& w) {
     integrate(mut w.positions, w.velocities);
     w.positions.push(w.velocities[0]);
     integrate(mut w.positions, w.positions);     //~ error[E5020]: 'w.positions' is passed as a mutable reference
-    w.positions.push(w.positions[0]);            //~ error[E5020]: 'w.positions'
+    w.positions.push(w.positions[0]);
 }
 
 void whole(mut world& w, world& other) { }

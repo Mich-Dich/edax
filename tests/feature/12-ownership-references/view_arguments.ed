@@ -1,0 +1,27 @@
+// Views made for a call borrow their source for the call: a mutable one and another one of the
+// same container can't be passed together.
+import std;
+
+void copy_into(std::span<mut u32> to, std::span<u32> from) {
+    for (usize i : 0..to.len()) { to[i] = from[i]; }
+}
+
+void fill(std::span<mut u32> to, usize v) {
+    for (mut u32& x : to) { x = cast::truncate<u32>(v); }
+}
+
+void swap_first(std::span<mut u32> a, std::span<mut u32> b) {
+    u32 t = a[0];
+    a[0] = b[0];
+    b[0] = t;
+}
+
+void main() {
+    mut std::darray<u32> xs = std::darray<u32>::from([1, 2, 3, 4]);
+    mut std::darray<u32> ys = std::darray<u32>::from([5, 6, 7, 8]);
+    copy_into(xs.as_mut_span(), xs.as_span());          //~ error[E5020]
+    copy_into(xs.as_mut_span(), ys.as_span());          // two containers: fine
+    fill(xs.as_mut_span(), xs.len());                   // a value argument is read first: fine
+    (std::span<mut u32> left, std::span<mut u32> right) = xs.as_mut_span().split_at(2);
+    swap_first(left, right);                            // two halves: fine
+}

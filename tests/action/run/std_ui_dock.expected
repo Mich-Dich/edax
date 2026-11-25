@@ -1,0 +1,36 @@
+exit: 0
+--- stdout
+edax-dock 1
+split_x 0.2 0.2
+  tabs 0 1 "Outliner"
+  split_x 0.75 0.75
+    split_y 0.7 0.7
+      central 0 1 "Scene"
+      tabs 0 2 "Console" "Frame time"
+    tabs 0 2 "Inspector" "Theme"
+end
+closed three: 3 windows left, closed list 3
+reopened in their places: true
+workspaces 2, active Layout, Theme back true
+loaded: same layout true, workspaces 2, active Layout
+not a layout: true
+stacks 4, windows shown 4, duplicates 0
+drops 180, consistent after all true, layouts changed true
+edax-dock 1
+split_x 0.2 0.2
+  tabs 0 1 "Outliner"
+  split_x 0.75 0.75
+    split_y 0.7 0.7
+      split_x 0.5 0.5
+        tabs 0 1 "Console"
+        central 0 1 "Scene"
+      tabs 0 1 "Frame time"
+    tabs 0 2 "Inspector" "Theme"
+end
+floating: 1, moved by (100, 50) after the drag's start: true
+closed by its button: true, floating stacks 0
+reopened floating: 1
+divider: dragged to true, double-click back to 0.2
+duplicates 0, changed true
+split in a window: 0.3, dragged wider true, duplicates 0
+--- stderr

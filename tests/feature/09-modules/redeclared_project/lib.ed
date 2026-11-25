@@ -1,0 +1,11 @@
+namespace lib {
+    u32 twice(u32 x);                  //~ error[E3013]: declared again in the .ed
+
+    class box {
+    public:
+        u32 size();                    //~ error[E3013]: declared again in the .ed
+        u32 width() { return 1; }
+    private:
+        u32 n = 0;
+    }
+}

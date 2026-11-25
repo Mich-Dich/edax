@@ -1,0 +1,27 @@
+// The checks on inheritance.
+import std;
+
+class closed {
+public:
+    u32 x = 0;
+}
+
+class derived : closed {                          //~ error[E3040]
+public:
+    u32 y = 0;
+}
+
+open class base {
+public:
+    virtual u32 value() { return 1; }
+}
+
+class child : base {
+public:
+    u32 value() { return 2; }                     //~ error[E3044]
+    u32 other() override { return 3; }            //~ error[E3043]
+}
+
+i32 main() {
+    return 0;
+}

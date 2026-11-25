@@ -1,0 +1,16 @@
+// Format specs: alignment, width, precision, radix, sign, and literal braces.
+import std;
+
+i32 main() {
+    u32 n = 255;
+    f64 pi = 3.14159265;
+    std::println(f"[{n:<6}] [{n:>6}] [{n:^7}]");
+    std::println(f"{n:x} {n:b} {n:o} {n:+}");
+    std::println(f"{pi:.3} [{pi:>8.2}] {-pi:.1}");
+    std::println(f"{{literal braces}} {"text":>6}|");
+    return 0;
+}
+//> [255   ] [   255] [  255  ]
+//> ff 11111111 377 +255
+//> 3.142 [    3.14] -3.1
+//> {literal braces}   text|

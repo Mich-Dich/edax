@@ -21,10 +21,11 @@ A `ui::theme` is a plain struct of **design tokens**; widgets ask it for a role 
 | `radius` | `radius_scale` | `small` 4, `medium` 8, `large` 12, `full`; presets `rounded()`, `subtle()` (2/3/4/5), `sharp()` (all 0) |
 | `shadow` | `elevation_scale` | `level1` (cards), `level2` (popups), `level3` (dialogs): offset, blur, opacity |
 | `motion` | `motion_scale` | `fast`, `normal`, `slow` in seconds |
-| `controls` | `controls_style` | The component tokens: sizes and shapes of controls (below) |
+| `controls` | `controls_style` | The component tokens: sizes and shapes of controls (below); `controls.window.tab_height` and `dock_gap` size docked stacks |
 | `density` | `f32` | 1 comfortable, 0.8 compact, 1.2 touch; scales text sizes |
 
 - **`theme::from_accent(color, brightness)`** derives every colour from one accent in OKLCH: surfaces tinted with its hue, `primary` at a lightness that reads on them, `text_muted` raised until it has WCAG AA contrast (4.5:1) on `surface`, `on_primary` white or near-black by contrast. `theme::dark()` and `light()` use the library's blue.
+- **`theme::studio(color, brightness)`** is the dense theme for tools and editors: neutral (untinted) greys, the accent only for state, 13 px text, 24 px rows. It goes with `skin::studio()` ([tools and editors](studio.md)).
 - **`theme::mix(a, b, t)`** interpolates two themes (colours in OKLab, sizes and radii linearly; the shapes in `controls` switch at `t = 0.5`): an animated switch between light and dark, or from rounded to sharp corners.
 - `t.style(role, color)` gives the `text_style` of a role; `t.elevation(level)` the shadow of level 1-3.
 
@@ -63,7 +64,7 @@ s.slider_knob = [](mut ui::painter& p, ui::slider_part& k) {
 `ui::length` says how wide a widget is along a layout: `ui::px(n)`, `ui::fit`, `ui::fill(weight)`, `ui::percent(p)` (draft 35 §4; used by `scope.width`, see [immediate.md](immediate.md)).
 
 ### Input and text editing
-- `ui::input` is one frame of input as plain data (see [immediate.md](immediate.md)); `in.pressed(key)` and `in.pressed_with_control(key)` look for a key. `ui::key` has only the keys the UI uses (Tab, Enter, Escape, Space, Backspace, Delete, arrows, Home, End, Page Up/Down, and A C V X Y Z for shortcuts); `std::ui::platform`'s `key_of` maps a window's key to it.
+- `ui::input` is one frame of input as plain data (see [immediate.md](immediate.md)); `in.pressed(key)` and `in.pressed_with_control(key)` look for a key. `ui::key` has only the keys the UI uses (Tab, Enter, Escape, Space, Backspace, Delete, arrows, Home, End, Page Up/Down, and A C D F V X Y Z for shortcuts); `std::ui::platform`'s `key_of` maps a window's key to it. Besides the left button (`mouse_down`, `mouse_pressed`, `mouse_released`) it has `right_down`/`right_pressed`/`right_released`, `middle_down`/`middle_pressed`, and the held modifiers `shift`, `control`, `alt`.
 - `ui::text_edit` is the editing state of a one-line field: `cursor` and `anchor` (byte offsets on character boundaries; the selection lies between them), undo and redo steps (the text before each change, at most 100), and the field's scroll. `apply(mut text, input, mut clipboard)` applies a frame's keys and typed text and returns whether the text changed; Enter, Escape and Tab are left to the widget. It is independent of the immediate layer, so a retained text box can use it too.
 
 ### Text: `ui::fonts`
@@ -81,15 +82,21 @@ s.slider_knob = [](mut ui::painter& p, ui::slider_part& k) {
 | `begin(size)`, `clear()` | A new frame (capacity is kept: a frame like the last one doesn't allocate) |
 | `push_clip(r)`, `pop_clip()`, `current_clip()` | Clipping to the intersection of the pushed rectangles |
 | `fill(r, color, radius)` | A box with rounded corners (radius 0: square; `radius.full`: a pill) |
-| `fill_gradient(r, top, bottom, radius)` | A box with a vertical gradient |
+| `fill_gradient(r, top, bottom, radius)`, `fill_gradient_x(r, left, right, radius)` | A box with a vertical or a horizontal gradient |
+| `glow(r, radius, color, size)` | A soft light around a box (a shadow without offset) |
 | `stroke(r, color, radius, width)` | The outline of a box, inside it |
 | `shadow(r, radius, shadow_style, color)` | A soft drop shadow of a box |
 | `circle(center, radius, color)`, `circle_stroke(...)` | |
 | `line(from, to, width, color)` | A line with round caps |
 | `image(texture, r, uv, tint, radius)` | A texture, optionally with rounded corners |
 | `fill_polygon(points, color)`, `stroke_polygon(points, closed, width, color)` | Convex and star-shaped polygons (fanned from the centroid, edges anti-aliased by a fringe of transparent vertices); outlines with round joints |
+| `fill_between(upper, lower, color)`, `fill_between_gradient(upper, lower, top, bottom)` | The band between two polylines; the second fades from `top` to `bottom` |
+| `dashed_line(from, to, width, dash, gap, color)`, `arc(center, radius, from, to, width, color)`, `bezier(a, b, c, d, width, color)` | Dashes, arcs (degrees, 0 right, 90 down), cubic curves |
+| `draw_icon(icon, box, color)` | One of the 52 line icons of `ui::icon` ([tools and editors](studio.md)) |
 | `star(center, outer, inner, points, rotation, color)`, `regular_polygon(center, radius, sides, rotation, color)`, `tick(r, width, color)` | Stars, triangles, diamonds, hexagons, check marks |
 | `append(other)` | Another list's commands after this list's (windows stacked by the immediate layer) |
+| `insert(at, other)` | Another list's triangles before index `at` (a mark taken earlier), so they are drawn under what came after it (node links) |
+| `polyline(points, width, c)` | A polyline in one piece: mitred joints (sharp turns cut short), square ends, anti-aliased; translucent colours don't darken where segments meet (node links) |
 | `text(mut fonts, at, text, style)` | One line; returns its width |
 | `paragraph(mut fonts, at, width, text, style)` | Wrapped text; returns the height |
 

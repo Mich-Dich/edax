@@ -1,0 +1,12 @@
+// A shared_ptr gives read-only access: shared and mutable at once is where races come from.
+import std;
+
+struct counter {
+    u32 n = 0;
+}
+
+i32 main() {
+    std::shared_ptr<counter> c = std::shared_ptr<counter>::make(counter{});
+    c->n += 1;                                            //~ error[E4020]
+    return 0;
+}

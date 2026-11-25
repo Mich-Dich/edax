@@ -1,6 +1,6 @@
 exit: 0
 --- stdout
-100 000 rows, 1607 vertices (only the rows in view), duplicates 0
+100 000 rows, 1621 vertices (only the rows in view), duplicates 0
 page: audio
 clicked row 76321: health 99.9 (the most)
 down: health 99.9 <= 99.9: true

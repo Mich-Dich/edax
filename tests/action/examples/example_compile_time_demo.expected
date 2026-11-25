@@ -12,7 +12,7 @@ levels: low critical
 sensor has 4 fields and takes 32 bytes
 --- stderr
 edaxc run: debug, 1 target
- ✓ build.ed       19 targets <t>
+ ✓ build.ed       25 targets <t>
 warning[W4210]: old_api() is going away; call set_pin() instead
    --> example/compile_time_demo.ed:111:5
     |

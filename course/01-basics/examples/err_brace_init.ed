@@ -1,0 +1,7 @@
+// `=` is the only way to initialize.
+import std;
+
+i32 main() {
+    u32 d{5};                 //~ error[E2011]
+    return 0;
+}

@@ -191,6 +191,7 @@ struct FunctionState {
     bool                is_compile_time = false;
     bool                generic = false;   // the generic check of a template (parameters unknown)
     bool                deducing = false;  // a lambda without '->', or a `deduce` function: result from `return`
+    bool                lambda   = false;  // the body of a lambda
     const Type*         deduced  = nullptr;
     std::string         name;
     const FunctionDecl* decl = nullptr;   // the function being checked (not for lambdas)
@@ -1079,6 +1080,10 @@ private:
             note(e, "integers convert to bool only in conditions; write 'x != 0'");
         } else if (f->is(Kind::user) && t->is(Kind::user) && is_ancestor(f->symbol, t->symbol)) {
             note(e, "copying a derived object into a base value would slice it; use a reference");
+        } else if ((is_std_instance(f, "array") || is_std_instance(f, "darray")) &&
+                   (is_std_instance(t, "span") || is_std_instance(t, "span_mut"))) {
+            note(e, is_std_instance(t, "span") ? "a container doesn't turn into a span by itself; pass '.as_span()'"
+                                               : "a container doesn't turn into a span by itself; pass '.as_mut_span()'");
         }
     }
 
@@ -1119,6 +1124,18 @@ private:
 
     // Whether `t` (references removed) is an instance of the std template `name`: `std::option<u32>`.
     static bool is_std_instance(const Type* t, std::string_view name) { return types::is_std_instance(t, name); }
+
+    // The Edax name of a method a C++ programmer reaches for out of habit ("" when there is none).
+    static std::string_view cpp_method_name(std::string_view name) {
+        static constexpr std::pair<std::string_view, std::string_view> names[] = {
+            {"size", "len"},       {"length", "len"},  {"empty", "is_empty"}, {"push_back", "push"},
+            {"emplace_back", "push"}, {"pop_back", "pop"}, {"at", "get"},       {"append", "push_str"},
+        };
+        for (const auto& [cpp, edax] : names) {
+            if (cpp == name) return edax;
+        }
+        return {};
+    }
 
     // `r?` (spec 11): unwraps `ok`/`some`, or returns the error / `none` from the function.
     const Type* infer_try(TryExpr& t) {
@@ -2718,7 +2735,10 @@ private:
     void check_return(ReturnExpr& r) {
         if (r.value) infer(*r.value);
         if (!fn_.result && fn_.deducing) {   // the first `return` decides the result type (spec 15, 18)
-            if (fn_.generic) return;   // decided per instance
+            // A function's is decided per instance. A lambda's is decided here too: callees taking it
+            // (`retain`, `sort_by`) are instantiated with its signature, and a result that depends on
+            // the template's parameters is simply unknown until the instance.
+            if (fn_.generic && !fn_.lambda) return;
             if (!r.value) {
                 if (!fn_.deduced) fn_.deduced = tc_.void_();
                 return;
@@ -2882,7 +2902,9 @@ private:
         case SymbolKind::function:
         case SymbolKind::method:
             note(error(DiagCode::E4073, pe.span, std::format("'{}' is a function; call it", s->name), "not called"),
-                 std::format("write '{}(...)'", ast::to_string(pe.path)));
+                 std::format("write '{0}(...)'; a function is not a value: to pass it on, wrap it in a lambda, "
+                             "'[](...) {{ {0}(...); }}'",
+                             ast::to_string(pe.path)));
             return set(pe, tc_.error());
         default: return set(pe, tc_.error());
         }
@@ -5008,6 +5030,8 @@ private:
                                           "unknown method");
                     if (name == "clone" && t->is_user(SymbolKind::class_)) {
                         note(d, "classes implement 'clone()' themselves (interface std::cloneable); structs get it automatically");
+                    } else if (std::string_view edax = cpp_method_name(name); !edax.empty() && !find_methods(t->symbol, std::string(edax)).empty()) {
+                        note(d, std::format("'{}' is the C++ name; in Edax it is '{}'", name, edax));
                     }
                 }
                 return set(c, tc_.error());
@@ -5891,6 +5915,7 @@ private:
         fn_.deducing        = !l.result;
         fn_.deduced         = nullptr;
         fn_.in_function     = true;
+        fn_.lambda          = true;
         fn_.name            = "lambda";
         for (Capture& cap : l.captures) {
             if (cap.init) {
@@ -6604,6 +6629,20 @@ private:
             if (t->is_numeric() || t->is(Kind::char_) || t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) return true;
             if (t->is(Kind::user) && find_operator("<=>", t, t)) return true;
             why = std::format("{} has no 'operator<=>'", quoted(t));
+            return false;
+        }
+        if (name == "std::equatable") {   // `==` works: built-in, or an `operator==` (`= default` counts)
+            if (t->is_numeric() || t->is(Kind::bool_) || t->is(Kind::char_) || t->is(Kind::static_str) || t->is(Kind::pointer) ||
+                (t->is(Kind::external) && t->name == "std::str")) {
+                return true;
+            }
+            if (t->is(Kind::user) && find_operator("==", t, t)) return true;
+            if (t->is(Kind::user) && t->symbol->kind == SymbolKind::enum_ &&   // a simple enum compares its tags
+                std::none_of(t->symbol->member_order.begin(), t->symbol->member_order.end(),
+                             [](const Symbol* a) { return a->alternative && a->alternative->payload; })) {
+                return true;
+            }
+            why = std::format("{} has no 'operator=='", quoted(t));
             return false;
         }
         if (name == "std::cloneable") {

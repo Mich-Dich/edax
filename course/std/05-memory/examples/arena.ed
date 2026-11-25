@@ -1,0 +1,23 @@
+// An arena: one block, handed out front to back, freed all at once. Containers take it as a parameter.
+import std;
+
+struct vertex {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+i32 main() {
+    mut std::arena frame = std::arena::make(64 * 1024);     // one heap block of 64 KiB
+    {
+        mut std::darray<vertex, std::arena_allocator> verts = std::darray<vertex, std::arena_allocator>::with_allocator(frame.allocator());
+        for (u32 i : 0..100) { verts.push(vertex{ .x = 1.0 }); }
+        mut std::string_with<std::arena_allocator> label = std::string_with<std::arena_allocator>::with_allocator(frame.allocator());
+        label.push_str("frame 1");
+        std::println(f"{verts.len()} vertices, label '{label}'");
+    }                                                       // the containers are gone...
+    frame.reset();                                          // ...so the whole arena can be reused
+    std::println("reset");
+    return 0;
+}
+//> 100 vertices, label 'frame 1'
+//> reset

@@ -1,0 +1,16 @@
+// Without the assumptions, @std::no_checks_left lists the checks that survive.
+//! build error: E6004
+import std;
+
+@std::no_checks_left
+void add_into(mut std::darray<f32>& out, std::darray<f32>& a, std::darray<f32>& b) {
+    for (usize i : 0..out.len()) { out[i] = a[i] + b[i]; }
+}
+
+i32 main() {
+    mut std::darray<f32> out = default;
+    std::darray<f32> a = default;
+    std::darray<f32> b = default;
+    add_into(mut out, a, b);
+    return 0;
+}

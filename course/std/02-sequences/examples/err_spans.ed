@@ -1,0 +1,12 @@
+// Two mutable views of one darray at once are refused; split_at is the way.
+import std;
+
+void copy_into(std::span<mut u32> to, std::span<u32> from) {
+    for (usize i : 0..to.len()) { to[i] = from[i]; }
+}
+
+i32 main() {
+    mut std::darray<u32> xs = std::darray<u32>::from([1, 2, 3, 4]);
+    copy_into(xs.as_mut_span(), xs.as_span());          //~ error[E5020]
+    return 0;
+}

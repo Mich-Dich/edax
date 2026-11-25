@@ -80,6 +80,7 @@ namespace std::ui::immediate {
                 }
             };
             this.last_frame_at = std::some(now);
+            this.clock += cast<f64>(this.dt);
             if (this.fade < 1.0) {
                 f32 seconds = this.fade_to.motion.slow;
                 this.fade = if (seconds <= 0.0) { 1.0 } else { (this.fade + this.dt / seconds).min(1.0) };
@@ -462,6 +463,38 @@ namespace std::ui::immediate {
             return scope{ .ctx = this.ctx, .id_base = wid, .visible = true, .kind = 2, .layer_index = index, .window = wid, .owner = wid };
         }
 
+        scope panel(u64 id, std::ui::rect bounds, u64 order) mut {
+            this.ctx.touch(id);
+            usize index = this.ctx.layers.len();
+            this.ctx.layers.push(layer{ .window = id, .order = order, .bounds = bounds });
+            this.ctx.layers[index].list.begin(this.ctx.frame_size);
+            ui::theme t = this.ctx.look;
+            this.ctx.layers[index].list.fill(bounds, t.colors.surface, 0.0);
+            return open_region(mut this.ctx, id, bounds, t.controls.window.padding * t.density, index, id);
+        }
+
+        scope panel(u64 id, std::ui::rect bounds, u64 order, f32 inset, bool filled) mut {
+            this.ctx.touch(id);
+            usize index = this.ctx.layers.len();
+            this.ctx.layers.push(layer{ .window = id, .order = order, .bounds = bounds });
+            this.ctx.layers[index].list.begin(this.ctx.frame_size);
+            if (filled) {
+                ui::theme t = this.ctx.look;
+                this.ctx.layers[index].list.fill(bounds, t.colors.surface, 0.0);
+            }
+            return open_region(mut this.ctx, id, bounds, inset, index, id);
+        }
+
+        scope panel(u64 id, std::ui::rect bounds, u64 order, f32 inset) mut {
+            this.ctx.touch(id);
+            usize index = this.ctx.layers.len();
+            this.ctx.layers.push(layer{ .window = id, .order = order, .bounds = bounds });
+            this.ctx.layers[index].list.begin(this.ctx.frame_size);
+            ui::theme t = this.ctx.look;
+            this.ctx.layers[index].list.fill(bounds, t.colors.surface, 0.0);
+            return open_region(mut this.ctx, id, bounds, inset, index, id);
+        }
+
         void finish() move {
             // Stack the windows: lowest order first.
             mut std::darray<usize> stacking = default;
@@ -516,6 +549,242 @@ namespace std::ui::immediate {
             return this.ctx.place(size.x, size.y);
         }
 
+        f32 available_height() mut {
+            if (!this.visible) {
+                return 0.0;
+            }
+            flow l = this.ctx.top();
+            f32 y = if (l.row) { l.top } else { l.cursor_y };
+            usize n = this.ctx.layouts.len();
+            for (usize k : 0..n) {
+                f32 limit = this.ctx.layouts[n - 1 - k].limit;
+                if (limit > 0.0) {
+                    return (limit - y).max(0.0);
+                }
+            }
+            return 0.0;
+        }
+
+        bool icon_button(std::ui::icon symbol, std::str hint, implicit compile_time std::call_site where) mut {
+            return icon_press(mut this, symbol, hint, this.make_id(hint, where), false);
+        }
+
+        bool icon_toggle(std::ui::icon symbol, mut bool& on, std::str hint, implicit compile_time std::call_site where) mut {
+            bool clicked = icon_press(mut this, symbol, hint, this.make_id(hint, where), on);
+            if (clicked) {
+                on = !on;
+            }
+            return clicked;
+        }
+
+        bool icon_label_button(std::ui::icon symbol, std::str label, std::ui::variant look, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            ui::color ink = match (look) {
+                ui::variant::primary => t.colors.on_primary,
+                ui::variant::danger => ui::color::white(),
+                ui::variant::success => ui::color::black(),
+                ui::variant::outline => t.colors.primary,
+                _ => t.colors.text,
+            };
+            ui::text_style style = t.style(ui::text_role::label, ink);
+            f32 height = (t.controls.button.height * t.density).round();
+            f32 size = (height * 0.58).round();
+            f32 padding = t.controls.button.padding * t.density;
+            f32 label_width = this.ctx.faces.measure(label, style).x;
+            ui::rect r = this.ctx.place((padding * 2.0 + size + t.space.s + label_width).round(), height);
+            response resp = this.interact(wid, r);
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.button(mut p, ui::button_part{ .bounds = r, .label = "", .kind = look, .state = resp.state });
+                ui::rect box = ui::rect{ .x = (r.x + padding).round(), .y = (r.y + (height - size) * 0.5).round(), .width = size, .height = size };
+                p.list.draw_icon(symbol, box, ink);
+                f32 line = p.faces.line_height(style);
+                _ = p.text(ui::vec2{ .x = box.right() + t.space.s, .y = (r.y + (height - line) * 0.5).round() }, label, style);
+            }
+            return resp.clicked;
+        }
+
+        bool chip(std::str label, mut bool& on, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            f32 line_box = (t.controls.button.height * t.density).round();
+            f32 height = (line_box - 4.0).max(16.0);
+            ui::text_style style = t.style(ui::text_role::label, if (on) { t.colors.on_primary } else { t.colors.text_muted });
+            f32 span = (this.ctx.faces.measure(label, style).x + 2.0 * t.space.m + 2.0).round();
+            ui::rect r = this.ctx.place(span, line_box);
+            ui::rect body = ui::rect{ .x = r.x, .y = (r.y + (line_box - height) * 0.5).round(), .width = span, .height = height };
+            response resp = this.interact(wid, body);
+            if (resp.clicked) {
+                on = !on;
+            }
+            f32 amount = this.animate(wid, 0, if (on) { 1.0 } else { 0.0 });
+            mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+            f32 radius = t.radius.small;
+            if (amount > 0.0) {
+                p.list.glow(body, radius, t.colors.primary.with_alpha(0.25 * amount), 8.0);
+            }
+            ui::color off = t.colors.surface_raised.mix(t.colors.text, 0.06 * resp.state.hover);
+            p.list.fill(body, off.mix(t.colors.primary, amount), radius);
+            if (amount < 1.0) {
+                p.list.stroke(body, t.colors.border.with_alpha(1.0 - amount), radius, 1.0);
+            }
+            ui::text_style shown = t.style(ui::text_role::label, t.colors.text_muted.mix(t.colors.text, resp.state.hover).mix(t.colors.on_primary, amount));
+            p.centered_text(body, label, shown);
+            if (resp.state.focused) {
+                p.list.stroke(body.expanded(2.0), t.colors.focus, radius + 2.0, 1.5);
+            }
+            return resp.clicked;
+        }
+
+        void icon(std::ui::icon symbol, std::ui::color tint) mut {
+            if (!this.visible) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            f32 height = (t.controls.row_height * t.density).round();
+            f32 size = (height * 0.6).round();
+            ui::rect r = this.ctx.place(size, height);
+            this.ctx.layers[this.layer_index].list.draw_icon(symbol, ui::rect{ .x = r.x, .y = (r.y + (height - size) * 0.5).round(), .width = size, .height = size }, tint);
+        }
+
+        void badge(std::ui::icon symbol, std::str content, std::ui::color tint) mut {
+            if (!this.visible) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            f32 height = (t.controls.row_height * t.density).round();
+            f32 pill = (height * 0.75).round();
+            ui::text_style style = t.style(ui::text_role::caption, tint.mix(t.colors.text, 0.35));
+            f32 size = (pill * 0.66).round();
+            bool has_icon = symbol != ui::icon::none;
+            f32 text_width = this.ctx.faces.measure(content, style).x;
+            f32 pad = 6.0 * t.density;
+            f32 span = (2.0 * pad + text_width + if (has_icon) { size + 4.0 } else { 0.0 }).round();
+            ui::rect r = this.ctx.place(span, height);
+            ui::rect body = ui::rect{ .x = r.x, .y = (r.y + (height - pill) * 0.5).round(), .width = span, .height = pill };
+            mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+            p.list.fill(body, tint.with_alpha(0.16), pill * 0.5);
+            mut f32 x = body.x + pad;
+            if (has_icon) {
+                p.list.draw_icon(symbol, ui::rect{ .x = x, .y = (body.y + (pill - size) * 0.5).round(), .width = size, .height = size }, tint);
+                x += size + 4.0;
+            }
+            f32 line = p.faces.line_height(style);
+            _ = p.text(ui::vec2{ .x = x, .y = (body.y + (pill - line) * 0.5).round() }, content, style);
+        }
+
+        void placeholder(std::str hint) mut {
+            if (this.visible) {
+                this.ctx.next_hint = std::string::from(hint);
+            }
+        }
+
+        void spacer() mut {
+            if (!this.visible) {
+                return;
+            }
+            this.ctx.next_width = std::some(ui::fill(1.0));
+            _ = this.ctx.place(0.0, 1.0);
+        }
+
+        void bar_separator() mut {
+            if (!this.visible) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            f32 height = (t.controls.row_height * t.density).round();
+            ui::rect r = this.ctx.place(1.0 + 2.0 * t.space.s, height);
+            f32 x = (r.x + r.width * 0.5).round();
+            this.ctx.layers[this.layer_index].list.fill(ui::rect{ .x = x, .y = r.y + 5.0, .width = 1.0, .height = height - 10.0 }, t.colors.border, 0.0);
+        }
+
+        scope menu(std::str label, implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id(label, where);
+            if (!this.visible) {
+                return scope{ .ctx = this.ctx, .id_base = wid, .visible = false, .kind = 0, .layer_index = this.layer_index, .window = this.window };
+            }
+            ui::theme t = this.ctx.look;
+            ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+            f32 height = (t.controls.button.height * t.density).round();
+            f32 span = (this.ctx.faces.measure(label, style).x + 2.0 * t.space.m).round();
+            ui::rect r = this.ctx.place(span, height);
+            response resp = this.interact(wid, r);
+            if (resp.clicked) {
+                this.ctx.open_popup = if (this.ctx.open_popup == wid) { 0 } else { wid };
+                this.ctx.popup_is_menu = true;
+            } else if (resp.state.hovered && this.ctx.popup_is_menu && this.ctx.open_popup != 0 && this.ctx.open_popup != wid) {
+                this.ctx.open_popup = wid;
+            }
+            u64 body = std::hash_combine(wid, 0x6d656e75);
+            widget_state last = this.ctx.state_of(body);
+            ui::rect box = ui::rect{ .x = r.x, .y = r.bottom() + 2.0, .width = last.size.x.max(180.0 * t.density), .height = last.size.y };
+            if (this.ctx.open_popup == wid && !resp.clicked) {
+                bool elsewhere = this.ctx.in.mouse_pressed && !box.contains(this.ctx.in.cursor) && !r.contains(this.ctx.in.cursor);
+                if (elsewhere || this.ctx.in.pressed(ui::key::escape)) {
+                    this.ctx.open_popup = 0;
+                }
+            }
+            bool is_open = this.ctx.open_popup == wid;
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                mut ui::interaction shown = resp.state;
+                if (is_open) {
+                    shown.hover = 1.0;
+                }
+                this.ctx.painters.button(mut p, ui::button_part{ .bounds = r, .label = "", .kind = ui::variant::ghost, .state = shown });
+                p.centered_text(r, label, style);
+            }
+            if (!is_open) {
+                return scope{ .ctx = this.ctx, .id_base = wid, .visible = false, .kind = 0, .layer_index = this.layer_index, .window = this.window };
+            }
+            usize oi = this.ctx.overlay_layer();
+            ui::rect seen = this.ctx.layers[oi].bounds;
+            this.ctx.layers[oi].bounds = if (seen.width <= 0.0) { box } else { seen.united(box) };
+            if (box.height > 0.0) {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[oi].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.popup(mut p, ui::popup_part{ .bounds = box });
+            }
+            f32 pad = 2.0 * t.space.xs;
+            this.ctx.layers[oi].list.push_clip(box);
+            this.ctx.state_of(body).natural_width = 0.0;
+            this.ctx.open_menu = body;
+            f32 top = box.y + pad;
+            this.ctx.layouts.push(flow{
+                .left = box.x + pad, .top = top, .width = (box.width - 2.0 * pad).max(0.0),
+                .cursor_x = box.x + pad, .cursor_y = top, .bottom = top, .right = box.x + pad, .gap = 0.0,
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = true, .kind = 10, .layer_index = oi, .window = overlay_window, .owner = body, .inset = pad };
+        }
+
+        bool menu_item(std::ui::icon symbol, std::str label, std::str shortcut, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            response resp = menu_entry(mut this, this.make_id(label, where), symbol, label, shortcut, false);
+            if (resp.clicked) {
+                this.ctx.open_popup = 0;
+            }
+            return resp.clicked;
+        }
+
+        bool menu_check(std::str label, mut bool& on, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            response resp = menu_entry(mut this, this.make_id(label, where), ui::icon::none, label, "", on);
+            if (resp.clicked) {
+                on = !on;
+            }
+            return resp.clicked;
+        }
+
         response interact(u64 widget, std::ui::rect r) mut {
             ui::rect clip = this.ctx.layers[this.layer_index].list.current_clip();
             return this.ctx.respond(widget, r, this.window, clip, true);
@@ -528,6 +797,18 @@ namespace std::ui::immediate {
 
         mut widget_state& state(u64 widget) mut {
             return this.ctx.state_of(widget);
+        }
+
+        mut widget_storage& storage(u64 widget) mut {
+            return this.ctx.storages.get_or_insert(widget, widget_storage{});
+        }
+
+        bool scroll_unused() {
+            return !this.ctx.scroll_used;
+        }
+
+        void take_scroll() mut {
+            this.ctx.scroll_used = true;
         }
 
         std::ui::painter painter() mut {
@@ -711,7 +992,8 @@ namespace std::ui::immediate {
             (ui::rect area, f32 height) = labelled_row(mut this, label);
             response resp = this.interact(wid, area);
             bool start = (resp.state.pressed && this.ctx.in.mouse_pressed) || (resp.has_focus && (this.ctx.focus_visible || resp.clicked) && this.ctx.editing != wid);
-            (bool changed, bool done) = text_field(mut this, wid, mut content, area, resp, start);
+            std::string hint = std::take(mut this.ctx.next_hint);
+            (bool changed, bool done) = text_field(mut this, wid, mut content, area, resp, start, hint.as_str());
             return changed;
         }
 
@@ -749,7 +1031,8 @@ namespace std::ui::immediate {
                 _ = p.text(ui::vec2{ .x = area.x + t.space.s, .y = area.y + ((area.height - line) * 0.5).round() }, items[selected], style);
                 p.list.pop_clip();
                 f32 turn = this.ctx.ease(std::hash_combine(wid, 3), if (is_open) { 1.0 } else { 0.0 }, t.motion.fast);
-                p.list.regular_polygon(ui::vec2{ .x = area.right() - 14.0, .y = area.y + area.height * 0.5 }, 4.5, 3, 180.0 * (1.0 - turn), t.colors.text_muted);
+                f32 mark = (area.height * 0.5).round();
+                p.list.draw_icon(if (turn > 0.5) { ui::icon::chevron_up } else { ui::icon::chevron_down }, ui::rect{ .x = area.right() - mark - 6.0, .y = (area.y + (area.height - mark) * 0.5).round(), .width = mark, .height = mark }, t.colors.text_muted);
             }
             if (!is_open) {
                 return changed;
@@ -792,15 +1075,22 @@ namespace std::ui::immediate {
 
         template<type E>
         bool choice(std::str label, mut E& value, implicit compile_time std::call_site where) mut {
-            mut std::darray<std::str> names = default;
+            mut std::darray<std::string> labels = default;
             mut usize index = 0;
             for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
                 if compile_time (!a.has_payload) {
                     if (a.is(value)) {
-                        index = names.len();
+                        index = labels.len();
                     }
-                    names.push(a.name);
+                    match (a.annotation<std::ui::label>()) {
+                        std::some(given) => labels.push(std::string::from(given.text)),
+                        std::none        => labels.push(std::ui::label_of(a.name)),
+                    }
                 }
+            }
+            mut std::darray<std::str> names = std::darray<std::str>::with_capacity(labels.len());
+            for (std::string& l : labels) {
+                names.push(l.as_str());
             }
             if (!this.combo(label, mut index, names.as_span(), where)) {
                 return false;
@@ -924,6 +1214,20 @@ namespace std::ui::immediate {
                 .left = area.x, .top = top, .width = (area.width - bar).max(0.0), .cursor_x = area.x, .cursor_y = top, .bottom = top, .right = area.x, .gap = gap,
             });
             return scope{ .ctx = this.ctx, .id_base = wid, .visible = true, .kind = 6, .layer_index = this.layer_index, .window = this.window, .owner = wid };
+        }
+
+        scope region(u64 region_id, std::ui::rect area, f32 space) mut {
+            if (!this.visible) {
+                this.ctx.layouts.push(this.ctx.top());
+                return scope{ .ctx = this.ctx, .id_base = region_id, .visible = false, .kind = 4, .layer_index = this.layer_index, .window = this.window, .owner = region_id };
+            }
+            this.ctx.touch(region_id);
+            return open_region(mut this.ctx, region_id, area, space, this.layer_index, this.window);
+        }
+
+        scope hidden_region(u64 region_id) mut {
+            this.ctx.layouts.push(this.ctx.top());
+            return scope{ .ctx = this.ctx, .id_base = region_id, .visible = false, .kind = 4, .layer_index = this.layer_index, .window = this.window, .owner = region_id };
         }
 
         scope width(std::ui::length size) mut {
@@ -1264,7 +1568,7 @@ namespace std::ui::immediate {
             if (this.kind == 6) {
                 widget_state s = this.ctx.state_of(this.owner);
                 ui::rect area = ui::rect{ .x = s.position.x, .y = s.position.y, .width = s.size.x, .height = s.size.y };
-                finish_scroll(mut this.ctx, this.owner, area, inner.bottom - inner.top, this.layer_index, this.window);
+                finish_scroll(mut this.ctx, this.owner, area, inner.bottom - inner.top + 2.0 * this.inset, this.layer_index, this.window);
                 this.ctx.layers[this.layer_index].list.pop_clip();
                 return;
             }
@@ -1280,6 +1584,15 @@ namespace std::ui::immediate {
                 this.ctx.state_of(this.owner).size = ui::vec2{ .x = span, .y = height };
                 this.ctx.next_width = this.own_width;
                 _ = this.ctx.place(span, height);
+                return;
+            }
+            if (this.kind == 10) {
+                {
+                    mut widget_state& s = this.ctx.state_of(this.owner);
+                    s.size = ui::vec2{ .x = (s.natural_width + 2.0 * this.inset).round(), .y = (inner.bottom - inner.top + 2.0 * this.inset).round() };
+                }
+                this.ctx.open_menu = 0;
+                this.ctx.layers[this.layer_index].list.pop_clip();
                 return;
             }
             if (this.kind == 4) {
@@ -1326,6 +1639,70 @@ namespace std::ui::immediate {
         usize lines = s.ctx.faces.wrap(content, style, room).len();
         std::ui::rect r = s.ctx.place(room, line * cast::round<f32>(lines));
         _ = s.ctx.layers[s.layer_index].list.paragraph(mut s.ctx.faces, r.origin(), room, content, style);
+    }
+
+    // A square icon button with the id `wid`, pressed-looking while `on`; true when clicked.
+    private bool icon_press(mut scope& s, std::ui::icon symbol, std::str hint, u64 wid, bool on) {
+        if (!s.visible) {
+            return false;
+        }
+        std::ui::theme t = s.ctx.look;
+        f32 side = (t.controls.button.height * t.density).round();
+        std::ui::rect r = s.ctx.place(side, side);
+        response resp = s.interact(wid, r);
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            if (on) {
+                p.list.fill(r, t.colors.primary.with_alpha(0.2), t.radius.small);
+            }
+            s.ctx.painters.button(mut p, std::ui::button_part{ .bounds = r, .label = "", .kind = std::ui::variant::ghost, .state = resp.state });
+            f32 size = (side * 0.6).round();
+            std::ui::rect box = std::ui::rect{ .x = r.x + ((side - size) * 0.5).round(), .y = r.y + ((side - size) * 0.5).round(), .width = size, .height = size };
+            std::ui::color tint = if (on) { t.colors.primary } else { t.colors.text_muted.mix(t.colors.text, resp.state.hover) };
+            p.list.draw_icon(symbol, box, tint);
+        }
+        if (!hint.is_empty()) {
+            s.tooltip(hint);
+        }
+        return resp.clicked;
+    }
+
+    // A row of an open menu: icon, label, shortcut (or a check mark while `checked`).
+    private response menu_entry(mut scope& s, u64 wid, std::ui::icon symbol, std::str label, std::str shortcut, bool checked) {
+        std::ui::theme t = s.ctx.look;
+        f32 height = (t.controls.row_height * t.density).round();
+        std::ui::rect r = s.ctx.place(s.ctx.room(), height);
+        std::ui::rect clip = s.ctx.layers[s.layer_index].list.current_clip();
+        response resp = s.ctx.respond(wid, r, s.window, clip, false);
+        std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text);
+        std::ui::text_style faint = t.style(std::ui::text_role::body, t.colors.text_faint);
+        f32 size = (height * 0.58).round();
+        f32 pad = t.space.m;
+        f32 label_x = r.x + pad + size + pad;
+        f32 label_width = s.ctx.faces.measure(label, style).x;
+        f32 shortcut_width = if (shortcut.is_empty()) { 0.0 } else { s.ctx.faces.measure(shortcut, faint).x + 32.0 };
+        f32 natural = label_x - r.x + label_width + shortcut_width + pad + 4.0;
+        u64 menu_record = s.ctx.open_menu;
+        if (menu_record != 0) {
+            mut widget_state& m = s.ctx.state_of(menu_record);
+            m.natural_width = m.natural_width.max(natural);
+        }
+        mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+        s.ctx.painters.list_item(mut p, std::ui::item_part{ .bounds = r, .label = "", .selected = false, .state = resp.state });
+        std::ui::rect box = std::ui::rect{ .x = r.x + pad, .y = (r.y + (height - size) * 0.5).round(), .width = size, .height = size };
+        if (checked) {
+            p.list.draw_icon(std::ui::icon::checkmark, box, t.colors.primary);
+        } else {
+            p.list.draw_icon(symbol, box, t.colors.text_muted.mix(t.colors.text, resp.state.hover));
+        }
+        f32 line = p.faces.line_height(style);
+        f32 y = (r.y + (height - line) * 0.5).round();
+        _ = p.text(std::ui::vec2{ .x = label_x, .y = y }, label, style);
+        if (!shortcut.is_empty()) {
+            f32 w = p.faces.measure(shortcut, faint).x;
+            _ = p.text(std::ui::vec2{ .x = (r.right() - pad - w).round(), .y = y }, shortcut, faint);
+        }
+        return resp;
     }
 
     // A button of `look` with the id `wid`; true when clicked.
@@ -1456,8 +1833,35 @@ namespace std::ui::immediate {
         return is_open;
     }
 
-    // The width of a form row's label column: 30 % of the row, more for a longer label (up to half).
+    // Whether the names of E's alternatives fit side by side in a form row labelled `label` (else
+    // a combo is clearer than squeezed segments).
+    private template<type E>
+    bool segments_fit(mut scope& s, std::str label) {
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(std::ui::text_role::label, t.colors.text);
+        f32 row = s.ctx.room();
+        f32 field = row - label_column(mut s, label, row);
+        mut f32 widest = 0.0;
+        mut f32 count = 0.0;
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if compile_time (!a.has_payload) {
+                std::string shown = match (a.annotation<std::ui::label>()) {
+                    std::some(given) => std::string::from(given.text),
+                    std::none        => std::ui::label_of(a.name),
+                };
+                widest = widest.max(s.ctx.faces.measure(shown.as_str(), style).x);
+                count += 1.0;
+            }
+        }
+        return (widest + 2.0 * t.space.m) * count <= field;
+    }
+
+    // The width of a form row's label column: 30 % of the row, more for a longer label (up to half);
+    // none for an empty label (the field takes the whole row).
     private f32 label_column(mut scope& s, std::str label, f32 row_width) {
+        if (label.is_empty()) {
+            return 0.0;
+        }
         std::ui::theme t = s.ctx.look;
         f32 wanted = s.ctx.faces.measure(label, t.style(std::ui::text_role::body, t.colors.text)).x + t.space.m;
         return (row_width * 0.3).max(wanted).min(row_width * 0.5).round();
@@ -1496,7 +1900,7 @@ namespace std::ui::immediate {
     // A one-line text field in `field`: starts typing when `start`, edits `text` with the frame's
     // keys while typing, and draws the field, the selection, the text and the caret. Returns
     // (changed, Enter pressed).
-    private (bool, bool) text_field(mut scope& s, u64 wid, mut std::string& text, std::ui::rect field, response resp, bool start) {
+    private (bool, bool) text_field(mut scope& s, u64 wid, mut std::string& text, std::ui::rect field, response resp, bool start, std::str hint) {
         std::ui::theme t = s.ctx.look;
         std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text);
         f32 pad = t.space.s;
@@ -1572,6 +1976,9 @@ namespace std::ui::immediate {
                 f32 to = caret_x.max(anchor_x) - scroll;
                 p.list.fill(std::ui::rect{ .x = inner.x + from, .y = text_y, .width = to - from, .height = line }, t.colors.primary.with_alpha(0.3), 2.0);
             }
+            if (text.is_empty() && !hint.is_empty()) {
+                _ = p.text(std::ui::vec2{ .x = inner.x, .y = text_y }, hint, t.style(std::ui::text_role::body, t.colors.text_faint));
+            }
             _ = p.text(std::ui::vec2{ .x = inner.x - scroll, .y = text_y }, text.as_str(), style);
             if (caret_shown && phase < 0.6) {
                 f32 x = (inner.x + caret_x - scroll).round() + 0.5;
@@ -1599,7 +2006,7 @@ namespace std::ui::immediate {
         if (s.ctx.editing == wid) {
             // Typing a number: Enter takes it, Escape (in the context) drops it.
             mut std::string typed = std::take(mut s.ctx.number_text);
-            (bool edited, bool done) = text_field(mut s, wid, mut typed, field, resp, false);
+            (bool edited, bool done) = text_field(mut s, wid, mut typed, field, resp, false, "");
             if (done) {
                 match (typed.as_str().trim().parse<f64>()) {
                     std::some(v) => { value = if (bounded) { v.clamp(low, high) } else { v }; },
@@ -1668,6 +2075,25 @@ namespace std::ui::immediate {
     // The end of a scroll area (or of a window of a fixed height) showing `area` of content
     // `content` pixels high: the wheel over it (if no inner area used it), the bar on its right
     // (dragging its thumb), the offset kept in range.
+    // A scroll area (kind 6) at `area` in layer `index`: clipped, its content `padding` inside.
+    private scope open_region(mut context& c, u64 id, std::ui::rect area, f32 padding, usize index, u64 window) {
+        f32 offset = {
+            mut widget_state& s = c.state_of(id);
+            s.position = area.origin();
+            s.size = area.size();
+            s.scroll
+        };
+        c.layers[index].list.push_clip(area);
+        ui::theme t = c.look;
+        f32 top = area.y + padding - offset;
+        c.layouts.push(flow{
+            .left = area.x + padding, .top = top, .width = (area.width - 2.0 * padding).max(0.0),
+            .cursor_x = area.x + padding, .cursor_y = top, .bottom = top, .right = area.x + padding,
+            .gap = t.controls.gap * t.density, .limit = area.bottom() - padding,
+        });
+        return scope{ .ctx = c, .id_base = id, .visible = true, .kind = 6, .layer_index = index, .window = window, .owner = id, .inset = padding };
+    }
+
     private void finish_scroll(mut context& c, u64 owner, std::ui::rect area, f32 content, usize layer_index, u64 window) {
         mut f32 offset = c.state_of(owner).scroll;
         f32 most = (content - area.height).max(0.0);
@@ -1960,7 +2386,7 @@ namespace std::ui::immediate {
                     read_only_row(mut s, name, std::meta::name_of(value));
                 } else {
                     mut scope keyed = s.id(path);
-                    bool few = alternative_count<V>() <= cast<usize>(set.segment_limit);
+                    bool few = alternative_count<V>() <= cast<usize>(set.segment_limit) && segments_fit<V>(mut keyed, name);
                     bool automatic = spec.widget == std::ui::widget_kind::automatic;
                     if (automatic && set.radio_buttons && alternative_count<V>() <= 8) {
                         changed = keyed.radio(name, mut value);
@@ -2519,20 +2945,158 @@ namespace std::ui::immediate {
         return result;
     }
 
-    // The table of scope.table: the header (a click sorts), the rows in view, the scroll bar.
+    // `text`, or as much of it as fits in `width` followed by "…".
+    private std::string shortened(mut std::ui::fonts& faces, std::string text, std::ui::text_style style, f32 width) {
+        if (faces.measure(text.as_str(), style).x <= width) {
+            return text;
+        }
+        f32 dots = faces.measure("…", style).x;
+        mut usize end = text.len();
+        while (end > 0) {
+            end = previous_char(text.as_str(), end);
+            if (faces.measure(text.as_str().slice(0, end), style).x + dots <= width) {
+                break;
+            }
+        }
+        mut std::string out = std::string::from(text.as_str().slice(0, end));
+        out.push_str("…");
+        return out;
+    }
+
+    // The start of the character before byte `at`.
+    private usize previous_char(std::str text, usize at) {
+        if (at == 0) {
+            return 0;
+        }
+        mut usize i = at - 1;
+        while (i > 0 && (text.byte(i) & 0xc0) == 0x80) {
+            i -= 1;
+        }
+        return i;
+    }
+
+    // Whether a table's column of type V is right-aligned (numbers).
+    private template<type V>
+    compile_time bool right_aligned() {
+        return std::is_integer<V>() || std::is_float<V>();
+    }
+
+    // The table of scope.table: the header (a click sorts), the rows in view, the scroll bar. Each
+    // column is as wide as its title and the widest cell seen so far, and the columns share what
+    // the table's width leaves (or shrink together); numbers are right-aligned, bools a check mark.
     private template<type T>
     std::option<usize> draw_table(mut scope& s, u64 wid, std::span<T> rows, f32 height) {
         std::ui::theme t = s.ctx.look;
         usize columns = column_count<T>();
-        f32 row_height = (t.controls.row_height - 2.0) * t.density;
+        f32 row_height = ((t.controls.row_height - 2.0) * t.density).round();
         f32 header_height = row_height + 2.0;
-        std::ui::rect whole = s.ctx.place(s.ctx.room(), height.max(header_height + row_height));
-        f32 column_width = (whole.width - 12.0) / cast::round<f32>(columns.max(1));
+        f32 wanted = if (height > 0.0) { height } else { s.available_height() };
+        std::ui::rect whole = s.ctx.place(s.ctx.room(), wanted.max(header_height + row_height));
         std::ui::rect header = std::ui::rect{ .x = whole.x, .y = whole.y, .width = whole.width, .height = header_height };
         std::ui::rect body = std::ui::rect{ .x = whole.x, .y = header.bottom(), .width = whole.width, .height = whole.height - header_height };
         std::ui::rect clip = s.ctx.layers[s.layer_index].list.current_clip();
         std::ui::text_style head_style = t.style(std::ui::text_role::label, t.colors.text_muted);
         std::ui::text_style cell_style = t.style(std::ui::text_role::body, t.colors.text);
+        f32 pad = t.space.s.max(6.0);
+
+        // The order of the rows.
+        widget_state now = s.ctx.state_of(wid);
+        mut std::darray<usize> order = std::darray<usize>::with_capacity(rows.len());
+        for (usize i : 0..rows.len()) {
+            order.push(i);
+        }
+        if (now.sort_column > 0) {
+            usize column = now.sort_column - 1;
+            bool descending = now.descending;
+            order.sort_by([rows, column, descending](usize a, usize b) {
+                i32 c = compare_rows<T>(rows[a], rows[b], column);
+                bool before = if (descending) { c > 0 } else { c < 0 };
+                return before;
+            });
+        }
+
+        // The rows in view.
+        u64 body_id = std::hash_combine(wid, 999);
+        u64 rows_id = std::hash_combine(wid, 998);
+        s.ctx.touch(body_id);
+        f32 offset = s.ctx.state_of(body_id).scroll;
+        usize first = cast::saturate<usize>((offset / row_height).floor()).min(order.len());
+        usize visible = cast::saturate<usize>((body.height / row_height).ceil()) + 1;
+        usize last = (first + visible).min(order.len());
+
+        // The columns' widths: what their titles need and what the cells in view need, never
+        // narrower than before. When the table is too narrow for both, titles are shortened
+        // before cells are.
+        mut std::darray<f32> heads = std::darray<f32>::with_capacity(columns);
+        mut std::darray<f32> cells = std::darray<f32>::with_capacity(columns);
+        {
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (!f.has<std::ui::hidden>()) {
+                    mut std::string title = std::ui::label_of(f.name);
+                    std::option<std::ui::label> named = f.annotation<std::ui::label>();
+                    match (named) {
+                        std::some(given) => { title = std::string::from(given.text); },
+                        std::none        => {},
+                    }
+                    heads.push(s.ctx.faces.measure(title.as_str(), head_style).x + 2.0 * pad + 14.0);
+                    cells.push(row_height * 0.5 + 2.0 * pad);
+                }
+            }
+            for (usize position : first..last) {
+                usize index = order[position];
+                mut usize c = 0;
+                for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                    if compile_time (!f.has<std::ui::hidden>()) {
+                        compile_time type ft = f.type;
+                        if compile_time (!std::is_same<ft, bool>()) {
+                            std::string text = cell_text<ft>(f.get(rows[index]));
+                            cells[c] = cells[c].max(s.ctx.faces.measure(text.as_str(), cell_style).x + 2.0 * pad);
+                        }
+                        c += 1;
+                    }
+                }
+            }
+        }
+        {
+            mut widget_storage& kept = s.storage(wid);
+            if (kept.numbers.len() != 2 * columns) {
+                kept.numbers.resize(2 * columns, 0.0);
+            }
+            for (usize c : 0..columns) {
+                heads[c] = heads[c].max(cast::round<f32>(kept.numbers[c]));
+                cells[c] = cells[c].max(cast::round<f32>(kept.numbers[columns + c]));
+                kept.numbers[c] = cast<f64>(heads[c]);
+                kept.numbers[columns + c] = cast<f64>(cells[c]);
+            }
+        }
+        f32 room = (whole.width - 12.0).max(1.0);
+        mut f32 needed = 0.0;
+        mut f32 least = 0.0;
+        for (usize c : 0..columns) {
+            needed += heads[c].max(cells[c]);
+            least += cells[c];
+        }
+        mut std::darray<f32> widths = std::darray<f32>::with_capacity(columns);
+        for (usize c : 0..columns) {
+            f32 need = heads[c].max(cells[c]);
+            f32 w = if (needed <= room) {
+                need * room / needed.max(1.0)
+            } else if (least <= room) {
+                cells[c] + (need - cells[c]) * (room - least) / (needed - least).max(1.0)
+            } else {
+                cells[c] * room / least.max(1.0)
+            };
+            widths.push(w);
+        }
+        mut std::darray<f32> lefts = std::darray<f32>::with_capacity(columns + 1);
+        {
+            mut f32 x = whole.x;
+            for (usize c : 0..columns) {
+                lefts.push(x.round());
+                x += widths[c];
+            }
+            lefts.push(x.round());
+        }
 
         // The header: a click sorts by the column, again the other way, a third time not at all.
         {
@@ -2543,7 +3107,8 @@ namespace std::ui::immediate {
         mut usize k = 0;
         for compile_time (std::meta::field f : std::meta::fields<T>()) {
             if compile_time (!f.has<std::ui::hidden>()) {
-                std::ui::rect cell = std::ui::rect{ .x = header.x + column_width * cast::round<f32>(k), .y = header.y, .width = column_width, .height = header_height };
+                compile_time type ft = f.type;
+                std::ui::rect cell = std::ui::rect{ .x = lefts[k], .y = header.y, .width = lefts[k + 1] - lefts[k], .height = header_height };
                 response r = s.ctx.respond(std::hash_combine(wid, cast<u64>(k) + 1), cell, s.window, clip, false);
                 if (r.clicked) {
                     mut widget_state& st = s.ctx.state_of(wid);
@@ -2563,33 +3128,27 @@ namespace std::ui::immediate {
                     std::none        => {},
                 }
                 widget_state st = s.ctx.state_of(wid);
-                std::ui::text_style shown = if (r.state.hover > 0.0) { t.style(std::ui::text_role::label, t.colors.text) } else { head_style };
+                bool sorted_here = st.sort_column == k + 1;
+                std::ui::text_style shown = if (r.state.hover > 0.0 || sorted_here) { t.style(std::ui::text_role::label, t.colors.text) } else { head_style };
                 f32 line = s.ctx.faces.line_height(shown);
+                title = shortened(mut s.ctx.faces, move title, shown, cell.width - 2.0 * pad);
+                f32 used = s.ctx.faces.measure(title.as_str(), shown).x;
+                f32 arrow = 10.0;
+                bool at_right = right_aligned<ft>();
+                f32 text_x = if (at_right && used + 2.0 * pad <= cell.width) { cell.right() - pad - used } else { cell.x + pad };
                 s.ctx.layers[s.layer_index].list.push_clip(cell);
-                f32 used = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = cell.x + t.space.s, .y = cell.y + ((header_height - line) * 0.5).round() }, title.as_str(), shown);
-                if (st.sort_column == k + 1) {
-                    std::ui::vec2 at = std::ui::vec2{ .x = cell.x + t.space.s + used + 8.0, .y = cell.y + header_height * 0.5 };
-                    s.ctx.layers[s.layer_index].list.regular_polygon(at, 4.0, 3, if (st.descending) { 180.0 } else { 0.0 }, t.colors.primary);
+                _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = text_x.round(), .y = cell.y + ((header_height - line) * 0.5).round() }, title.as_str(), shown);
+                if (sorted_here) {
+                    f32 ax = if (at_right) { text_x - arrow - 3.0 } else { text_x + used + 3.0 };
+                    std::ui::rect mark = std::ui::rect{ .x = ax.round(), .y = (cell.y + (header_height - arrow) * 0.5).round(), .width = arrow, .height = arrow };
+                    s.ctx.layers[s.layer_index].list.draw_icon(if (st.descending) { std::ui::icon::chevron_down } else { std::ui::icon::chevron_up }, mark, t.colors.primary);
                 }
                 s.ctx.layers[s.layer_index].list.pop_clip();
+                if (k > 0) {
+                    s.ctx.layers[s.layer_index].list.fill(std::ui::rect{ .x = cell.x, .y = cell.y + 6.0, .width = 1.0, .height = header_height - 12.0 }, t.colors.border, 0.0);
+                }
                 k += 1;
             }
-        }
-
-        // The order of the rows.
-        widget_state now = s.ctx.state_of(wid);
-        mut std::darray<usize> order = std::darray<usize>::with_capacity(rows.len());
-        for (usize i : 0..rows.len()) {
-            order.push(i);
-        }
-        if (now.sort_column > 0) {
-            usize column = now.sort_column - 1;
-            bool descending = now.descending;
-            order.sort_by([rows, column, descending](usize a, usize b) {
-                i32 c = compare_rows<T>(rows[a], rows[b], column);
-                bool before = if (descending) { c > 0 } else { c < 0 };
-                return before;
-            });
         }
 
         // Up and down move the selection while the table has the focus.
@@ -2607,7 +3166,7 @@ namespace std::ui::immediate {
                 position = if (selected == 0) { 0 } else { (position + 1).min(order.len() - 1) };
                 selected = order[position] + 1;
                 clicked = std::some(order[position]);
-                mut widget_state& body_state = s.ctx.state_of(std::hash_combine(wid, 999));
+                mut widget_state& body_state = s.ctx.state_of(body_id);
                 f32 top = cast::round<f32>(position) * row_height;
                 if (top + row_height > body_state.scroll + body.height) {
                     body_state.scroll = top + row_height - body.height;
@@ -2616,7 +3175,7 @@ namespace std::ui::immediate {
                 position = if (position > 0) { position - 1 } else { 0 };
                 selected = order[position] + 1;
                 clicked = std::some(order[position]);
-                mut widget_state& body_state = s.ctx.state_of(std::hash_combine(wid, 999));
+                mut widget_state& body_state = s.ctx.state_of(body_id);
                 f32 top = cast::round<f32>(position) * row_height;
                 if (top < body_state.scroll) {
                     body_state.scroll = top;
@@ -2624,16 +3183,9 @@ namespace std::ui::immediate {
             }
         }
 
-        // The rows in view only.
-        u64 body_id = std::hash_combine(wid, 999);
-        u64 rows_id = std::hash_combine(wid, 998);
-        s.ctx.touch(body_id);
-        f32 offset = s.ctx.state_of(body_id).scroll;
-        usize first = cast::saturate<usize>((offset / row_height).floor());
-        usize visible = cast::saturate<usize>((body.height / row_height).ceil()) + 1;
-        usize last = (first + visible).min(order.len());
         s.ctx.layers[s.layer_index].list.push_clip(body);
         f32 line = s.ctx.faces.line_height(cell_style);
+        f32 mark_size = (row_height * 0.5).round();
         for (usize position : first..last) {
             usize index = order[position];
             std::ui::rect row_rect = std::ui::rect{ .x = body.x, .y = body.y + cast::round<f32>(position) * row_height - offset, .width = body.width - 12.0, .height = row_height };
@@ -2651,11 +3203,19 @@ namespace std::ui::immediate {
             for compile_time (std::meta::field f : std::meta::fields<T>()) {
                 if compile_time (!f.has<std::ui::hidden>()) {
                     compile_time type ft = f.type;
-                    std::string text = cell_text<ft>(f.get(rows[index]));
-                    std::ui::rect cell = std::ui::rect{ .x = row_rect.x + column_width * cast::round<f32>(c), .y = row_rect.y, .width = column_width, .height = row_height };
-                    s.ctx.layers[s.layer_index].list.push_clip(cell);
-                    _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = cell.x + t.space.s, .y = cell.y + ((row_height - line) * 0.5).round() }, text.as_str(), cell_style);
-                    s.ctx.layers[s.layer_index].list.pop_clip();
+                    std::ui::rect cell = std::ui::rect{ .x = lefts[c], .y = row_rect.y, .width = lefts[c + 1] - lefts[c], .height = row_height };
+                    if compile_time (std::is_same<ft, bool>()) {
+                        if (f.get(rows[index])) {
+                            std::ui::rect mark = std::ui::rect{ .x = cell.x + pad, .y = (cell.y + (row_height - mark_size) * 0.5).round(), .width = mark_size, .height = mark_size };
+                            s.ctx.layers[s.layer_index].list.draw_icon(std::ui::icon::checkmark, mark, t.colors.primary);
+                        }
+                    } else {
+                        std::string text = shortened(mut s.ctx.faces, cell_text<ft>(f.get(rows[index])), cell_style, cell.width - 2.0 * pad);
+                        f32 x = if compile_time (right_aligned<ft>()) { cell.right() - pad - s.ctx.faces.measure(text.as_str(), cell_style).x } else { cell.x + pad };
+                        s.ctx.layers[s.layer_index].list.push_clip(cell);
+                        _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = x.round(), .y = cell.y + ((row_height - line) * 0.5).round() }, text.as_str(), cell_style);
+                        s.ctx.layers[s.layer_index].list.pop_clip();
+                    }
                     c += 1;
                 }
             }

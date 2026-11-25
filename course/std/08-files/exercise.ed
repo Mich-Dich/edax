@@ -1,0 +1,58 @@
+// Standard-library lesson 8: a settings file. Fill in the TODOs until
+//     python3 course/check.py s8
+// says done. It builds as it is and prints wrong values.
+import std;
+namespace fs = std::filesystem;
+
+// One "key = value" line.
+struct setting {
+    std::string key;
+    std::string value;
+}
+
+// Reads every "key = value" line of the file; lines without '=' and comments ('#') are skipped.
+std::result<std::darray<setting>, std::io_error> load(fs::path& p) {
+    // TODO: open the file (`?` passes the io_error up), read its lines, skip empty lines and
+    // comments, and split the others at '=' (trim both sides).
+    return std::ok(default);
+}
+
+// Writes the settings, one per line, with a comment on top.
+std::result<void, std::io_error> save(fs::path& p, std::span<setting> settings) {
+    // TODO: create the file, write "# written by lesson s8" and one "key = value" line per
+    // setting, then flush.
+    return std::ok();
+}
+
+// The settings in the file, or the defaults (saved first) when there is no file yet.
+std::result<std::darray<setting>, std::io_error> load_or_create(fs::path& p) {
+    // TODO: load; on not_found, print "no settings yet: writing the defaults", save the defaults
+    // volume = 80 and language = en, and return them; pass any other error up.
+    return load(p);
+}
+
+i32 main() {
+    fs::path dir = fs::executable_dir() / "config";
+    fs::create_directories(dir).expect("can't create the config directory");
+    fs::path file = dir / "settings.txt";
+
+    mut std::darray<setting> settings = load_or_create(file).expect("can't read the settings");
+    std::println(f"{settings.len()} settings");
+    for (mut setting& s : settings) {
+        if (s.key.as_str() == "volume") { s.value = std::string::from("55"); }
+    }
+    save(file, settings.as_span()).expect("can't save");
+
+    std::darray<setting> again = load_or_create(file).expect("can't read the settings");
+    for (setting& s : again) { std::println(f"{s.key} = {s.value}"); }
+
+    mut std::file raw = std::file::open(file).expect("can't open");
+    std::string text = raw.read_all().expect("can't read");
+    std::println(f"{file.file_name()}: {text.len()} bytes, {text.as_str().split('\n').len() - 1} lines");
+
+    match (load(dir / "missing.txt")) {
+        std::ok(_) => std::println("unexpected"),
+        std::error(e) => std::println(f"missing.txt: {e}"),
+    }
+    return 0;
+}

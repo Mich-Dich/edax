@@ -1,0 +1,8 @@
+// The log calls check their messages at compile time.
+import std;
+
+private compile_time std::log::pattern bad = std::log::pattern::from("{levle} {message}");   //~ error[E4210]
+
+i32 main() {
+    return 0;
+}

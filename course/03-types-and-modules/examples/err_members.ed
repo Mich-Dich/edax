@@ -1,0 +1,16 @@
+// Nothing can hide a member: no parameter or local may take a member's name.
+import std;
+
+class account {
+public:
+    void deposit(u32 balance) mut {            //~ error[E3028]
+        total += balance;
+    }
+private:
+    u32 balance = 0;
+    u32 total = 0;
+}
+
+i32 main() {
+    return 0;
+}

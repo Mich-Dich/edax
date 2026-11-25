@@ -54,6 +54,17 @@ namespace std::ui::immediate {
         f32         fixed_width = 0.0;
         f32         fill_weight = 0.0;
         u32         items = 0;
+        // Menus: the widest item this frame (its popup is as wide as the widest of the last frame).
+        f32         natural_width = 0.0;
+    }
+
+    // What an own widget keeps between frames besides widget_state (plots: their view and their
+    // series' points). Kept until the context ends; its buffers are reused, so a widget that clears
+    // and refills them each frame doesn't allocate once they are large enough.
+    struct widget_storage {
+        std::darray<f64> numbers = default;
+        std::string      text = default;
+        std::darray<std::ui::vec2> points = default;
     }
 
     // Where the next widget goes: a column (down) or a row (right).
@@ -83,6 +94,9 @@ namespace std::ui::immediate {
         f32  last_fixed = 0.0;
         f32  last_weights = 0.0;
         u32  last_items = 0;
+        // The bottom edge of the area the flow is shown in (panels, regions); 0: not known. Flows
+        // inside keep it.
+        f32  limit = 0.0;
     }
 
     // One window's drawing in a frame; the frame stacks them by `order`.
@@ -172,8 +186,13 @@ namespace std::ui::immediate {
         f32             dt = 0.0;
         std::option<std::time::instant> last_frame_at = std::none;
         u64             frame_number = 0;
-        u64             next_order = 0;
+        // Seconds since the context was made: the sum of the frames' dt.
+        f64             clock = 0.0;
+        // Windows' stacking orders start above `docked_order` (and the overlay's is the largest):
+        // docked panels lie below every window.
+        u64             next_order = 16;
         std::hash_map<u64, widget_state> states = default;
+        std::hash_map<u64, widget_storage> storages = default;
         std::hash_map<u64, f32> animations = default;
         std::darray<flow> layouts = default;
         std::darray<layer> layers = default;
@@ -206,8 +225,14 @@ namespace std::ui::immediate {
         // Dragging numbers: where the press was and the value then.
         std::ui::vec2   press_at = default;
         f64             drag_start = 0.0;
-        // The combo whose list is open.
+        // The combo or menu whose list is open, and whether it is a menu (hovering another menu's
+        // button then opens that one).
         u64             open_popup = 0;
+        bool            popup_is_menu = false;
+        // The placeholder of the next text field (scope.placeholder).
+        std::string     next_hint = default;
+        // The open menu's size record while its items are laid out (0: none).
+        u64             open_menu = 0;
         // The overlay (popups, tooltips): drawn over every window; an index into `layers`.
         std::option<usize> overlay = std::none;
         // The last widget that called interact (for tooltips), whether it is hovered, and the
@@ -275,6 +300,21 @@ namespace std::ui::immediate {
         @std::must_use
         scope window(std::str title, std::ui::rect start, implicit compile_time std::call_site where) mut;
 
+        // A window without a title bar at `bounds` (docked panels, own window managers): its own
+        // layer stacked by `order` (below 16: under every window; take ctx.next_order + 1 to come
+        // to the front), the surface colour behind it, its content clipped and scrolled. `id` is
+        // the window's id: widgets in it are hovered only when it is in front under the cursor.
+        @std::must_use
+        scope panel(u64 id, std::ui::rect bounds, u64 order) mut;
+        // The same with `inset` pixels around the content instead of the window padding (menu
+        // bars, toolbars, status bars, viewports).
+        @std::must_use
+        scope panel(u64 id, std::ui::rect bounds, u64 order, f32 inset) mut;
+        // The same without a background when `filled` is false (the caller drew one, such as a
+        // docked stack's card).
+        @std::must_use
+        scope panel(u64 id, std::ui::rect bounds, u64 order, f32 inset, bool filled) mut;
+
         // Ends the frame; ctx.draw_data() is then what it drew.
         void finish() move;
 
@@ -305,10 +345,59 @@ namespace std::ui::immediate {
         f32 animate(u64 widget, u32 slot, f32 target) mut;
         // The widget's state between frames.
         mut widget_state& state(u64 widget) mut;
+        // The widget's own numbers and text between frames.
+        mut widget_storage& storage(u64 widget) mut;
+        // Whether the wheel over this scope's widgets is still unused this frame; take_scroll() uses
+        // it (an inner scroll area or a plot takes it before its parents).
+        bool scroll_unused();
+        void take_scroll() mut;
         // Draws into this scope's window with the current theme.
         std::ui::painter painter() mut;
 
         // ---- widgets ----
+
+        // The height left below the next widget in the panel or region this scope is in (0 in
+        // windows sized by their content): for a list or a table that fills the rest of a panel.
+        f32 available_height() mut;
+
+        // ---- icons, toolbars and menus ----
+
+        // A square button showing `symbol`, flat until hovered; `hint` is its tooltip and its id.
+        // True in the frame it was clicked.
+        @std::must_use
+        bool icon_button(std::ui::icon symbol, std::str hint, implicit compile_time std::call_site where) mut;
+        // The same that stays pressed while `on` is true (a tool, a view option); a click flips `on`.
+        bool icon_toggle(std::ui::icon symbol, mut bool& on, std::str hint, implicit compile_time std::call_site where) mut;
+        // A button with `symbol` before its label.
+        @std::must_use
+        bool icon_label_button(std::ui::icon symbol, std::str label, std::ui::variant look, implicit compile_time std::call_site where) mut;
+        // A small rounded toggle with a label ("Grid", "Wireframe"): filled with the accent while
+        // `on`; a click flips `on`. True in the frame it was clicked.
+        bool chip(std::str label, mut bool& on, implicit compile_time std::call_site where) mut;
+        // `symbol` in the flow, as high as a row, in `tint`.
+        void icon(std::ui::icon symbol, std::ui::color tint) mut;
+        // A small pill with `symbol` (icon::none for none) and `content` in `tint`: counts and states.
+        void badge(std::ui::icon symbol, std::str content, std::ui::color tint) mut;
+        // A faint text shown in the next text field while it is empty: "Search…", "Filter chats (Ctrl+K)".
+        void placeholder(std::str hint) mut;
+        // In a row: takes the room the row's other widgets leave, so what follows sits at its end.
+        void spacer() mut;
+        // In a row: a thin vertical line between groups of buttons.
+        void bar_separator() mut;
+
+        // A menu: a flat button (in a menu bar, or anywhere) that opens a popup below it. The
+        // scope holds the menu's items and is open while the popup is; while one menu is open,
+        // hovering another menu's button opens that one.
+        //
+        //     { mut im::scope file = bar.menu("File"); if (file.menu_item(ui::icon::save, "Save", "Ctrl+S")) { ... } }
+        @std::must_use
+        scope menu(std::str label, implicit compile_time std::call_site where) mut;
+        // An item of a menu: an icon (icon::none for none), its label and a shortcut text (may
+        // be empty) at the right. True when clicked; the menu closes.
+        @std::must_use
+        bool menu_item(std::ui::icon symbol, std::str label, std::str shortcut, implicit compile_time std::call_site where) mut;
+        // An item with a check mark while `on`; a click flips `on` (the menu stays open).
+        bool menu_check(std::str label, mut bool& on, implicit compile_time std::call_site where) mut;
 
         // A line of text, in the body style; `muted` in text_muted; `heading` in the title style.
         void text(std::format_args message) mut;
@@ -362,10 +451,12 @@ namespace std::ui::immediate {
         template<type E>
         bool radio(std::str label, mut E& value, implicit compile_time std::call_site where) mut;
 
-        // A table of `rows`, `height` pixels high: one column per field (not @ui::hidden, labels
-        // as in inspect), sorted by a click on a header (again: the other way), a row selected by
-        // a click or by up and down while focused. Only the rows in view are drawn, so a hundred
-        // thousand cost what twenty do. Returns the row (an index into `rows`) clicked this frame.
+        // A table of `rows`, `height` pixels high (0: the rest of the panel, available_height()):
+        // one column per field (not @ui::hidden, labels as in inspect), sorted by a click on a
+        // header (again: the other way), a row selected by a click or by up and down while
+        // focused. Columns are as wide as their content; numbers are right-aligned and bools show
+        // a check mark. Only the rows in view are drawn, so a hundred thousand cost what twenty
+        // do. Returns the row (an index into `rows`) clicked this frame.
         template<type T>
         std::option<usize> table(std::str label, std::span<T> rows, f32 height, implicit compile_time std::call_site where) mut;
         // The row last selected in the table `label` made at `where`.
@@ -437,10 +528,19 @@ namespace std::ui::immediate {
         // Its widgets in `columns` equal columns, left to right, then down.
         @std::must_use
         scope grid(u32 columns, implicit compile_time std::call_site where) mut;
+        // A part at `area` (inside this scope's window, not placed in its flow) whose content is
+        // clipped to it and scrolls: the panes of splits and docked windows. `space` around the
+        // content.
+        @std::must_use
+        scope region(u64 region_id, std::ui::rect area, f32 space) mut;
         // A part `height` pixels high whose content scrolls: the wheel over it, or the bar on its
         // right.
         @std::must_use
         scope scroll(f32 height, implicit compile_time std::call_site where) mut;
+        // A scope whose widgets do nothing and draw nothing, in place of a region that isn't shown
+        // (a collapsed node's body, the inline widget of a linked pin).
+        @std::must_use
+        scope hidden_region(u64 region_id) mut;
         // This scope, with the next widget's width given: `ui::px(120)`, `ui::fit`, `ui::fill(1)`,
         // `ui::percent(50)`. `bar.width(ui::fill(1.0)).input_text("Filter", mut filter)`.
         @std::must_use
@@ -467,5 +567,7 @@ namespace std::ui::immediate {
         // Cards and rows: their own width from the parent's width() (the parent places them at
         // their end).
         std::option<std::ui::length> own_width = std::none;
+        // Regions and panels: the space around their content (scrolling counts it).
+        f32 inset = 0.0;
     }
 }

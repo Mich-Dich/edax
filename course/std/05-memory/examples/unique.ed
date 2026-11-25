@@ -1,0 +1,35 @@
+// std::unique_ptr: one owner on the heap, never null; "maybe" is an option.
+import std;
+
+open class shape {
+public:
+    virtual f32 area() abstract;
+}
+
+class circle : shape {
+public:
+    f32 radius = 0.0;
+    f32 area() override { return 3.0 * radius * radius; }
+    ~circle() { std::println(f"circle {radius} freed"); }
+}
+
+class node {
+public:
+    u32 value = 0;
+    std::option<std::unique_ptr<node>> next = std::none;   // a linked list: "maybe a next node"
+}
+
+i32 main() {
+    mut std::unique_ptr<circle> c = std::unique_ptr<circle>::make(circle{ .radius = 1.0 });
+    c->radius = 2.0;                                      // a mut unique_ptr allows changes
+    std::unique_ptr<shape> s = move c;                    // an upcast: unique_ptr<circle> -> unique_ptr<shape>
+    std::println(f"area {s->area()}");
+
+    std::unique_ptr<node> tail = std::unique_ptr<node>::make(node{ .value = 2 });
+    std::unique_ptr<node> head = std::unique_ptr<node>::make(node{ .value = 1, .next = std::some(move tail) });
+    if (head->next is std::some(n)) { std::println(f"{head->value} -> {n->value}"); }
+    return 0;
+}
+//> area 12.0
+//> 1 -> 2
+//> circle 2.0 freed

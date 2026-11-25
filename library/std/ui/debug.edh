@@ -1,0 +1,113 @@
+// The Edax standard library: module std::ui::debug, debug tools for immediate-mode UIs (draft 35
+// §9: perf_overlay, log_view).
+//
+//     namespace dbg = std::ui::debug;
+//
+//     mut dbg::frame_stats stats = default;
+//     (std::unique_ptr<dbg::log_sink> sink, dbg::log_feed feed) = dbg::log_sink::create(2000);
+//     _ = session.add(move sink, std::log::sink_options{});     // std::log::start(...)
+//     while (...) {
+//         stats.record(ctx);                                   // after the frame is finished
+//         mut im::frame f = ctx.begin_frame(...);
+//         f.perf_overlay(mut stats);                           // FPS, frame times, draw calls
+//         f.log_view("Log", mut feed, ui::rect{ ... });        // the program's log, filtered
+//         f.finish();
+//     }
+//
+// Loaded for programs that name std::ui::debug; it brings std::ui::plot and std::log.
+
+namespace std::ui::debug {
+    // ---- frame statistics --------------------------------------------------------------------------------
+
+    // The last 300 frames' times and the draw data of the last one: what perf_overlay shows.
+    struct frame_stats {
+        std::ui::plot::history<f32, 300> frame_ms = default;
+        // Time the program measured for its own work in a frame (record_work), if it does.
+        std::ui::plot::history<f32, 300> work_ms = default;
+        std::ui::plot::history<f32, 120> fps = default;
+        u64 frames = 0;
+        usize vertices = 0;
+        usize draw_calls = 0;
+
+        // Takes the frame time (ctx's dt) and the last frame's draw data from `ctx`.
+        void record(std::ui::immediate::context& ctx) mut;
+        // Takes a frame of `seconds` (when the program measures frames itself).
+        void record_seconds(f32 seconds) mut;
+        // The program's own work in this frame, in milliseconds.
+        void record_work(f32 milliseconds) mut;
+    }
+
+    // ---- the log -----------------------------------------------------------------------------------------
+
+    // One record as the log view shows it: its level and its line (rendered with the sink's
+    // pattern), numbered from 1 since the program started.
+    struct log_line {
+        std::log::level level = std::log::level::info;
+        std::string     text = default;
+        u64             number = 0;
+    }
+
+    // The records a log_sink keeps: the newest `capacity`, and how many of each level arrived.
+    struct log_lines {
+        std::darray<log_line> lines = default;
+        usize capacity = 0;
+        // Where the oldest line is once the ring is full.
+        usize next = 0;
+        u64   total = 0;
+        std::array<u64, 7> per_level = default;
+        // Lines removed by clear() are not shown again.
+        u64   cleared_below = 0;
+    }
+
+    // The panel's end of a log_sink: copies of it read the same lines from any thread.
+    class log_feed : unsafe std::sendable, unsafe std::shareable {
+    public:
+        // The lines kept, oldest first (a copy, taken under the lock).
+        std::darray<log_line> snapshot();
+        // The numbers of lines of each level (indexed by the level) since the program started.
+        std::array<u64, 7> counts();
+        // Hides the lines received so far.
+        void clear();
+        log_feed clone();
+
+        std::shared_ptr<std::mutex<log_lines>> shared;
+    }
+
+    // A std::log sink that keeps the newest lines for log_view.
+    class log_sink : std::log::sink {
+    public:
+        // A sink keeping `capacity` lines and the feed the panel reads them from.
+        static (std::unique_ptr<log_sink>, log_feed) create(usize capacity);
+        bool colored() override;
+        void write(std::log::record& r, std::str line) mut override;
+        void flush() mut override;
+
+        log_feed feed;
+    }
+
+    // The lowest level a log view shows (its segmented control).
+    enum log_filter : u8 { trace, debug, info, warn, error }
+
+    // The colour of a level's text in a theme.
+    std::ui::color level_color(std::ui::theme& t, std::log::level l);
+
+    // ---- the tools as widgets ------------------------------------------------------------------------------
+
+    // The tools in their own windows: `f.perf_overlay(mut stats)`.
+    interface frame_tools {
+        // A small window in the top-right corner: frames per second, frame times (with the 60 and
+        // 30 fps lines), the program's work, and the last frame's vertices and draw calls.
+        void perf_overlay(mut frame_stats& stats, implicit compile_time std::call_site where) mut;
+        // A window with the log: a minimum level, a search field, the lines in the levels'
+        // colours (newest at the bottom; it stays there unless scrolled up), and a clear button.
+        void log_view(std::str title, mut log_feed& feed, std::ui::rect start, implicit compile_time std::call_site where) mut;
+    }
+
+    // The same tools inside a window of the program: `w.perf_panel(mut stats)`.
+    interface scope_tools {
+        void perf_panel(mut frame_stats& stats, implicit compile_time std::call_site where) mut;
+        // The log in a part `height` pixels high (0: the rest of the panel), under one toolbar:
+        // search, lowest level shown, warning and error counts, Clear.
+        void log_panel(mut log_feed& feed, f32 height, implicit compile_time std::call_site where) mut;
+    }
+}

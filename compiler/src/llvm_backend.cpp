@@ -30,10 +30,12 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -8297,6 +8299,57 @@ yes:
 
 
 namespace {
+// Appends what identifies `c` (its kind, type and contents; other globals by name) to `key`:
+// equal keys are equal constants. Hashing the raw data instead of the printed IR keeps large
+// constants (embedded data) cheap.
+void constant_key(const llvm::Constant* c, std::map<const llvm::Type*, std::string>& types, std::string& key) {
+    auto add_raw = [&](const void* data, std::size_t size) { key.append(static_cast<const char*>(data), size); };
+    auto add_int = [&](std::uint64_t v) { add_raw(&v, sizeof v); };
+    auto add_type = [&](const llvm::Type* t) {
+        auto [it, fresh] = types.try_emplace(t);
+        if (fresh) {
+            llvm::raw_string_ostream out(it->second);
+            t->print(out);
+        }
+        key += it->second;
+        key += ';';
+    };
+    auto add_apint = [&](const llvm::APInt& v) {
+        add_int(v.getBitWidth());
+        add_raw(v.getRawData(), v.getNumWords() * sizeof(std::uint64_t));
+    };
+    add_int(c->getValueID());
+    add_type(c->getType());
+    if (const auto* g = llvm::dyn_cast<llvm::GlobalValue>(c); g && g->hasName()) {
+        key += g->getName();
+        key += ';';
+    } else if (const auto* d = llvm::dyn_cast<llvm::ConstantDataSequential>(c)) {
+        llvm::StringRef raw = d->getRawDataValues();
+        add_int(raw.size());
+        key += raw;
+    } else if (const auto* i = llvm::dyn_cast<llvm::ConstantInt>(c)) {
+        add_apint(i->getValue());
+    } else if (const auto* f = llvm::dyn_cast<llvm::ConstantFP>(c)) {
+        add_apint(f->getValueAPF().bitcastToAPInt());
+    } else if (llvm::isa<llvm::ConstantAggregate>(c) || llvm::isa<llvm::ConstantExpr>(c)) {
+        if (const auto* e = llvm::dyn_cast<llvm::ConstantExpr>(c)) {
+            add_int(e->getOpcode());
+            add_int(e->getRawSubclassOptionalData());
+            if (const auto* gep = llvm::dyn_cast<llvm::GEPOperator>(e)) add_type(gep->getSourceElementType());
+        }
+        add_int(c->getNumOperands());
+        for (const llvm::Use& op : c->operands()) constant_key(llvm::cast<llvm::Constant>(op.get()), types, key);
+    } else if (!llvm::isa<llvm::ConstantAggregateZero>(c) && !llvm::isa<llvm::ConstantPointerNull>(c) &&
+               !llvm::isa<llvm::UndefValue>(c)) {
+        std::string text;   // the rest (block addresses, unnamed globals, ...): as printed
+        llvm::raw_string_ostream out(text);
+        c->print(out);
+        out.flush();
+        key += text;
+        key += ';';
+    }
+}
+
 // Private constants (string literals, messages, format specs, source locations) are named after
 // their contents: `.str.<hash>` instead of `.str.17`, so that a function's IR text doesn't change
 // when another function adds a string (the object cache, build_executable). Equal constants are
@@ -8323,6 +8376,7 @@ void name_constants_by_content(llvm::Module& mod) {
         return false;
     };
     std::map<std::string, llvm::GlobalVariable*> by_name;
+    std::map<const llvm::Type*, std::string>     type_names;
     bool progress = true;
     while (!pending.empty() && progress) {
         progress = false;
@@ -8333,12 +8387,8 @@ void name_constants_by_content(llvm::Module& mod) {
                 continue;
             }
             std::string text;
-            llvm::raw_string_ostream out(text);
-            g->getValueType()->print(out);
-            out << ' ';
-            g->getInitializer()->print(out);
-            out << (g->hasGlobalUnnamedAddr() ? " u" : "") << ' ' << g->getAlign().valueOrOne().value();
-            out.flush();
+            constant_key(g->getInitializer(), type_names, text);
+            text += std::format("{} {}", g->hasGlobalUnnamedAddr() ? "u" : "", g->getAlign().valueOrOne().value());
             std::string base = g->getName().str();
             while (!base.empty() && (std::isdigit(static_cast<unsigned char>(base.back())) || base.back() == '.' || base.back() == '_')) {
                 base.pop_back();
@@ -8896,6 +8946,16 @@ struct Units {
 // Makes the module of one unit: its own functions and globals, declarations of what it uses from
 // other units, copies of the private constants it uses. The compile unit of the debug info gets
 // the unit's first file and no list of all enums, so that it doesn't depend on the rest.
+// A unit's module as bitcode: the key of its cached object, and what a worker parses into its own
+// context. Writing bitcode is several times faster than printing the IR as text.
+std::string unit_bitcode(const llvm::Module& part) {
+    std::string bytes;
+    llvm::raw_string_ostream out(bytes);
+    llvm::WriteBitcodeToFile(part, out);
+    out.flush();
+    return bytes;
+}
+
 std::unique_ptr<llvm::Module> unit_module(llvm::Module& whole, const Units& units, const std::string& unit) {
     llvm::ValueToValueMapTy map;
     const std::set<const llvm::Function*>* imported = nullptr;
@@ -9009,15 +9069,13 @@ bool compile_units(llvm::Module& mod, const llvm::Target* target, const std::str
     for (const auto& [unit, members] : units.members) {
         std::unique_ptr<llvm::Module> part = unit_module(mod, units, unit);
         std::string level = highest_level(*part, default_level);
-        std::string text;
-        llvm::raw_string_ostream out(text);
-        part->print(out, nullptr);
-        out.flush();
+        std::string text = unit_bitcode(*part);
         if (const char* dump = std::getenv("EDAX_CACHE_DUMP"); dump && *dump) {   // each unit's IR, to see why one changed
             std::string name = unit;
             std::replace_if(name.begin(), name.end(), [](char c) { return c == '/' || c == ':'; }, '_');
             std::error_code dump_ec;
-            llvm::raw_fd_ostream(std::string(dump) + "/" + name + ".ll", dump_ec) << text;
+            llvm::raw_fd_ostream dump_out(std::string(dump) + "/" + name + ".ll", dump_ec);
+            part->print(dump_out, nullptr);
         }
         llvm::BLAKE3 hasher;
         hasher.update(object_cache_salt(triple_name, level, asan, tsan));
@@ -9042,7 +9100,7 @@ bool compile_units(llvm::Module& mod, const llvm::Target* target, const std::str
             llvm::LLVMContext ctx;
             llvm::SMDiagnostic err;
             std::unique_ptr<llvm::Module> part =
-                llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(m.text.data(), m.text.size()), "edax-unit.ll"), err, ctx);
+                llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(m.text.data(), m.text.size()), "edax-unit.bc"), err, ctx);
             if (!part) {
                 std::string text;
                 llvm::raw_string_ostream os(text);
@@ -9141,9 +9199,7 @@ bool compile_thin(llvm::Module& mod, const llvm::Target* target, const std::stri
     for (const auto& [unit, members] : units.members) {
         std::unique_ptr<llvm::Module> part = unit_module(mod, units, unit);
         Part p;
-        llvm::raw_string_ostream out(p.text);
-        part->print(out, nullptr);
-        out.flush();
+        p.text = unit_bitcode(*part);
         llvm::BLAKE3 hasher;
         hasher.update(salt);
         hasher.update(p.text);

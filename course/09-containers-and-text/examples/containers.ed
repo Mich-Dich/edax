@@ -1,0 +1,26 @@
+// The containers: darray, array, maps; indexing panics, get() asks.
+import std;
+
+i32 main() {
+    mut std::darray<u32> xs = default;
+    std::array<u32, 3> start = [5, 3, 8];               // a list literal needs a type to be iterated
+    for (u32 v : start) { xs.push(v); }
+    xs.sort();
+    std::println(f"{xs.len()} {xs[0]} {xs.contains(8)} {xs.get(10).is_some()}");
+
+    mut std::tree_map<std::str, u32> stock = default;     // ordered by key, like std::map
+    stock.insert("tea", 3);
+    stock.insert("cup", 1);
+    stock.get_or_insert("tea", 0) += 2;                   // a mut reference is a place: += works
+    stock.get_or_insert("pot", 0) += 1;
+    for (std::map_entry<std::str, u32> e : stock.entries()) { std::println(f"{e.key}={e.value}"); }
+    if (stock.get("cup") is std::some(n)) { std::println(f"cups: {n}"); }
+    std::println(f"spoons: {stock.get("spoon").value_or(0)}");
+    return 0;
+}
+//> 3 3 true false
+//> cup=1
+//> pot=1
+//> tea=5
+//> cups: 1
+//> spoons: 0

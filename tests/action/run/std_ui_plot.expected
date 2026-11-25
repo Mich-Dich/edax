@@ -1,0 +1,21 @@
+exit: 0
+--- stdout
+history: 4 values, oldest 2.0, newest 5.0, min 2.0, max 5.0, mean 3.5
+ticks 0..33.3: 7 from 0 by 5.0, last 30
+ticks -0.013..0.021: -0.01 0.00 .. 0.02 (2 decimals)
+numbers: 1.23e9 -1.2e-5 2.50 0.00
+reduced 100000 to 301 (at most 400), spike 9.0, first x 0.0, last x 99999.0
+range 1.5..3.5 of 6 points: 4 points, x 1.0 .. 4.0
+clamp: 0.0..5.0 0.0..10.0 4.0..6.0
+limited fit: x from 0.0 (data from -5), y up to 0.0 (data up to 2), fit true true
+dragged past the limits: x_min 0.0, y_max 0.0, width kept true, moved true
+zoomed out: x_min >= 0 true, y_max <= 0 true, wider true
+reset: fit true true, same as before true
+fit: x 0.0 .. 999999.0, fit true true
+area true true, duplicates 0
+hovered x near the middle: true
+zoomed: following false, narrower true
+panned left: true
+fitted again: true true, x 0.0 .. 999999.0, y top above the spike true
+vertices true
+--- stderr

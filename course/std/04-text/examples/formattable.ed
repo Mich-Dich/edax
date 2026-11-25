@@ -1,0 +1,33 @@
+// Making your own types printable: generated, or written with std::formatter.
+import std;
+
+@std::derive::formattable
+struct point {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+struct money {
+    i64 cents = 0;
+
+    void format(mut std::formatter& out) {               // the method f-strings call
+        i64 whole = cents / 100;
+        i64 rest = (cents % 100).abs();
+        std::static_str pad = if (rest < 10) { "0" } else { "" };   // there is no zero-padding spec
+        out.write(std::format(f"{whole}.{pad}{rest} EUR"));
+    }
+}
+
+enum light : u8 { red, yellow, green }                   // simple enums print their name
+
+i32 main() {
+    point p = point{ .x = 1.5, .y = -2.0 };
+    money m = money{ .cents = 123456 };
+    std::println(f"{p}");
+    std::println(f"[{m}] [{m:>14}]");                  // alignment is applied around format()
+    std::println(f"{light::yellow}");
+    return 0;
+}
+//> point { x: 1.5, y: -2.0 }
+//> [1234.56 EUR] [   1234.56 EUR]
+//> yellow

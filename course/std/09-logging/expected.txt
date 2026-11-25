@@ -1,0 +1,6 @@
+INFO  importing 5 assets
+WARN  huge.png is 66 MiB, importing anyway
+INFO  imported 4 of 5 assets
+problems panel (2):
+  import_asset: tree.png is empty
+  import_asset: huge.png is 66 MiB, importing anyway

@@ -16,6 +16,7 @@ u32 low = both.0;                                   // elements by position
 - **Type:** `(A, B, ...)` with **two or more** element types. `(x)` is just `x` in parentheses; there are no one-element or empty tuples (`void` means "nothing").
 - **Value:** `(a, b, ...)`. Unsuffixed literals take their types from context, like everywhere (see [Built-in Types and Conversions](types.md)).
 - **Elements:** `t.0`, `t.1`, ... (a compile-time index).
+- **Destructuring assignment:** `(r.lo, r.hi) = split(x);` assigns a tuple's elements to places that exist already, left to right; the elements are moved in, and `_` skips one. `(a, b) = (b, a);` swaps.
 - **Destructuring declaration:** `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`. Each name may be `mut`: `(mut u32 lo, u32 hi) = ...`. Destructuring **consumes** the tuple, so its elements are moved into the new variables; this is how a function hands back two owned or two mutable things at once.
 - `_` skips an element: `(u32 lo, _) = min_max(values);`.
 - A tuple is a **copy type** if all its elements are, and a **view** if any element is (see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)).

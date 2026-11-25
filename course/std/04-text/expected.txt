@@ -1,0 +1,7 @@
+item       qty   price    total
+coffee       2    3.50     7.00
+croissant    1    2.05     2.05
+water        4    1.00     4.00
+-------------------------------
+sum                       13.05
+3 lines, 1 rejected.

@@ -1,0 +1,14 @@
+// RUN: edaxc check %s
+// The checks of @plot::x and @plot::series: number fields only.
+import std;
+namespace plot = std::ui::plot;
+
+struct reading {
+    @plot::x std::string when = default;
+    @plot::series bool ok = false;
+    @plot::series f32 value = 0.0;
+}
+
+void show(std::span<reading> rows) {
+    _ = rows;
+}

@@ -1,0 +1,36 @@
+// Standard-library lesson 10: a crash report (solution).
+import std;
+namespace fs = std::filesystem;
+
+// The panic hook: a short report on stdout, and the same report in crash.txt next to the program.
+// It runs on the panicking thread, once; it must not panic itself.
+void report(std::panic_info& info) {
+    std::str message = info.message.split('\n')[0];
+    std::string text = std::format(f"crash report\n  what:   {message}\n  where:  {info.function}\n  thread: {info.thread_name}\n");
+    std::print(text);
+    if (std::file::create(fs::executable_dir() / "crash.txt") is std::ok(f)) {
+        mut std::file out = move f;
+        _ = out.write(text);
+    }
+}
+
+// A level is a grid of tiles; reading outside the grid is a bug.
+struct level {
+    std::array<u8, 6> tiles = [1, 1, 2, 0, 3, 1];
+    usize width = 3;
+
+    u8 tile(usize x, usize y) { return tiles[y * width + x]; }
+}
+
+i32 main() {
+    std::thread::set_current_name("main");
+    _ = std::set_panic_hook([](std::panic_info& info) { report(info); });
+
+    level l = level{};
+    std::println(f"tile (2, 1) is {l.tile(2, 1)}");
+    std::thread::handle<u8> loader = std::thread::spawn(std::thread::options{ .name = "loader" }, [move l]() {
+        return l.tile(1, 2);                     // row 2 doesn't exist: index 7 of 6
+    });
+    std::println(f"loaded {loader.join()}");
+    return 0;
+}

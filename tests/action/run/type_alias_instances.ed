@@ -1,0 +1,31 @@
+// RUN: edaxc run %s
+// `compile_time type` aliases of class template instances (user and std) used as types.
+import std;
+
+template<type T, usize N>
+class box {
+public:
+    void put(T v) mut { count += 1; }
+    usize len() { return count; }
+private:
+    usize count = 0;
+}
+
+compile_time type box3 = box<u32, 3>;
+compile_time type list = std::darray<u32>;
+
+list make() {
+    mut list xs = default;
+    xs.push(4);
+    xs.push(5);
+    return xs;
+}
+
+i32 main() {
+    mut box3 b = default;
+    b.put(1);
+    b.put(2);
+    list xs = make();
+    std::println(f"{b.len()} {xs.len()} {xs[1]}");
+    return 0;
+}

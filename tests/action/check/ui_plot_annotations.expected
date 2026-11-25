@@ -1,0 +1,26 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: @plot::x works on number fields; 'when' is a std::string
+   --> tests/action/check/ui_plot_annotations.ed:7:5
+    |
+  7 |     @plot::x std::string when = default;
+    |     ^^^^^^^^ check failed
+   ::: <std>/ui/plot.ed:<n>
+    |
+<n> |                 std::compile_error(f"@plot::x works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+    |                 -----------------------------------------------------------------------------------------------------
+    = note: reported by this check
+
+error[E4210]: @plot::series works on number fields; 'ok' is a bool
+   --> tests/action/check/ui_plot_annotations.ed:8:5
+    |
+  8 |     @plot::series bool ok = false;
+    |     ^^^^^^^^^^^^^ check failed
+   ::: <std>/ui/plot.ed:<n>
+    |
+<n> |                 std::compile_error(f"@plot::series works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+    |                 ----------------------------------------------------------------------------------------------------------
+    = note: reported by this check
+
+2 errors, 0 warnings

@@ -151,3 +151,13 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 | `example/` | Showcase programs (`--target examples`) |
 | `bench/` | Standard library benchmarks against C++ STL / Abseil / Boost |
 | `docs/design/` | Language and standard library design (`language/`, `stdlib/`, `build/`) |
+
+
+
+
+
+
+# NOTES:
+- std::darray::len is a wired way to get the number of elements, I dont want to use auch wired abriviations in the standart lib, it should be length or size. And the API should be uniform with other containers as well!
+- Why can class members be declared without mut?
+- 

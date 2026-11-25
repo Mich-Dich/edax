@@ -1,0 +1,22 @@
+// std::take, std::replace and std::swap: moving values in and out of places.
+import std;
+
+struct slot {
+    std::string label;
+    u32 uses = 0;
+}
+
+i32 main() {
+    mut slot s = slot{ .label = std::string::from("first"), .uses = 2 };
+    std::string old = std::take(mut s.label);                          // s.label is "" now
+    std::string before = std::replace(mut s.label, std::string::from("second"));
+    std::println(f"took '{old}', replaced '{before}', now '{s.label}'");
+
+    mut std::string a = std::string::from("left");
+    mut std::string b = std::string::from("right");
+    std::swap(mut a, mut b);
+    std::println(f"{a} {b}");
+    return 0;
+}
+//> took 'first', replaced '', now 'second'
+//> right left

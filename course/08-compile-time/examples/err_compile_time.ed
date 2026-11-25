@@ -1,0 +1,14 @@
+// A compile_time function only takes compile-time values.
+import std;
+
+compile_time u64 factorial(u64 n) {
+    mut u64 r = 1;
+    for (u64 i : 2..=n) { r *= i; }
+    return r;
+}
+
+i32 main() {
+    u64 n = 5;
+    u64 f = factorial(n);                               //~ error[E4200]
+    return 0;
+}

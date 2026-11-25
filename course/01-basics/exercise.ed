@@ -1,67 +1,51 @@
 // Lesson 1: a temperature report. Fill in the TODOs until
 //     python3 course/check.py 1
-// says done. It has one compile error on purpose (`describe`); once that is fixed it builds and
-// prints the wrong numbers
+// says done. It starts with one compile error on purpose (`describe`); once that is fixed it
+// builds and prints the wrong numbers until the TODOs are done.
 import std;
 
-// The readings of one day, in tenths of a degree (i16: -3276.8 to 3276.7 degrees)
+// The readings of one day, in tenths of a degree (i16: -3276.8 to 3276.7 degrees).
 compile_time std::array<i16, 8> readings = [-35, -12, 4, 31, 87, 122, 96, 18];
 
-// Smallest and largest reading, as a tuple
+// Smallest and largest reading, as a tuple.
 (i16, i16) min_max(std::span<i16> values) {
-
-    mut i16 low = i16::max;
-    mut i16 high = i16::min;
-    for (i16 value : values) {
-        low = low.min(value);
-        high = high.max(value);
-    }
-    return (low, high);
+    // TODO: start `low` at the largest possible i16 and `high` at the smallest (i16::max,
+    // i16::min), then walk the values. The number methods `a.min(b)` and `a.max(b)` help.
+    return (0, 0);
 }
 
-// The mean in degrees. The sum doesn't fit in i16: add the values up as i64
+// The mean in degrees. The sum of i16 values doesn't fit in an i16: add them up as i64.
 f64 mean_degrees(std::span<i16> values) {
-    mut i64 sum = 0;
-    for (i16 value : values) {
-        sum += cast<i64>(value);
-    }
-    // TODO: sum, then convert to f64. Which casts are lossless, and which have to say how?
-    return cast::round<f64>(sum) / cast::round<f64>(values.len()) / 10.0;
+    // TODO: the sum, then divide as f64 (not as integers). values.len() is a usize.
+    // Which casts are lossless (plain `cast<...>`), and which have to say how they may lose data?
+    return 0.0;
 }
 
-// Counts the readings at or above `threshold`, and adds to `below_zero` the readings below zero
+// Counts the readings at or above `threshold`, and adds to `below_zero` the readings below zero.
 usize count_at_least(std::span<i16> values, i16 threshold, mut usize& below_zero) {
-
-    mut usize count = 0;
-    for (i16 value : values) {
-        if (value >= threshold) { count += 1; }
-        if (value < 0) { below_zero += 1; }
-    }
-    return count;
+    // TODO
+    return 0;
 }
 
-// "freezing" below 0.0, "cold" below 5.0, else "mild": write it as one `if` expression
-// TODO: this returns std::str, which doesn't compile - see "Returning text" in the lesson
-std::static_str describe(f64 mean) {
-    return if (mean < 0.0) { "freezing" }
-        else if (mean < 5.0) { "cold" }
-        else { "mild" };
+// "freezing" below 0.0, "cold" below 5.0, else "mild": write it as one `if` expression.
+// TODO: this returns std::str, which doesn't compile - see "Returning text" in the lesson.
+std::str describe(f64 mean) {
+    return "mild";
 }
-
 
 i32 main() {
-
-    // TODO: an std::array isn't a span; pass readings.as_span()
-    (i16 low, i16 high) = min_max(readings.as_span());
-    f64 mean = mean_degrees(readings.as_span());
+    // TODO: call min_max, mean_degrees and count_at_least (threshold 5.0 degrees is 50 tenths).
+    // An std::array isn't an std::span: pass readings.as_span().
+    (i16 low, i16 high) = (0, 0);
+    f64 mean = 0.0;
     mut usize frosty = 0;
-    usize warm = count_at_least(readings.as_span(), 50, mut frosty);
+    usize warm = 0;
     std::println(f"low {low}, high {high}, span {high - low} tenths");
     std::println(f"mean {mean:.2} degrees: {describe(mean)}");
     std::println(f"{warm} readings at 5.0 or above, {frosty} below zero");
-    // TODO: `level` is `high` clamped into a u8; `wrapped` is level + 200 wrapping around
-    u8 level = cast::saturate<u8>(high);
-    u8 wrapped = level +% 200;
+    // TODO: `level` is `high` clamped into a u8; `wrapped` is level + 200, wrapping around.
+    u8 level = 0;
+    u8 wrapped = 0;
     std::println(f"saturated {level}, wrapped {wrapped}");
     return 0;
 }

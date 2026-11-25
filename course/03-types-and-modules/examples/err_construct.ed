@@ -1,0 +1,12 @@
+// Every field without a default must be given.
+import std;
+
+struct span2 {
+    u32 from;
+    u32 to = 0;
+}
+
+i32 main() {
+    span2 a = span2{ .to = 4 };                //~ error[E3035]
+    return 0;
+}

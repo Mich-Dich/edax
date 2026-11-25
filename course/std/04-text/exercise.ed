@@ -1,0 +1,68 @@
+// Standard-library lesson 4: an invoice from a text order. Fill in the TODOs until
+//     python3 course/check.py s4
+// says done. It builds as it is and prints wrong values.
+import std;
+
+// An amount of money in cents; prints as "12.30".
+struct money {
+    i64 cents = 0;
+
+    void format(mut std::formatter& out) {
+        // TODO: write "<whole>.<two digits>" with out.write(...). There is no zero-padding spec.
+        out.write("?");
+    }
+}
+
+// One line of the order: "<quantity> x <name> @ <price>", the price with two decimals.
+view struct line {
+    std::str name;
+    u32 quantity = 0;
+    money price;
+}
+
+// Reads "12.30" as 1230 cents.
+std::option<money> parse_money(std::str text) {
+    // TODO: split at '.', require exactly two digits after it, parse both parts. `?` on an
+    // std::option returns none from this function when there is no value.
+    return std::none;
+}
+
+std::option<line> parse_line(std::str text) {
+    // TODO: find " x " and " @ ", slice the three parts, trim and parse them. The name is a
+    // view into `text`: no copy.
+    return std::none;
+}
+
+compile_time std::static_str order = "2 x coffee @ 3.50\n1 x croissant @ 2.05\nthree x tea @ 2.00\n4 x water @ 1.00\n";
+
+i32 main() {
+    mut std::darray<line> lines = default;
+    mut u32 rejected = 0;
+    for (std::str text : order.split('\n')) {
+        if (text.trim().is_empty()) { continue; }
+        match (parse_line(text)) {
+            std::some(l) => lines.push(l),
+            std::none => {
+                rejected += 1;
+                std::eprintln(f"rejected: {text}");
+            },
+        }
+    }
+
+    // TODO: the header and the rows: name left in 10 columns, then quantity (3), price (7) and
+    // total (8), right-aligned and separated by one space.
+    std::println(f"item qty price total");
+    mut money sum = money{};
+    for (line& l : lines) {
+        money total = money{ .cents = l.price.cents * cast<i64>(l.quantity) };
+        sum.cents += total.cents;
+        std::println(f"{l.name} {l.quantity} {l.price} {total}");
+    }
+    std::println("-------------------------------");
+    std::println(f"sum {sum}");
+
+    // TODO: "<n> lines", then ", <n> rejected" only when something was rejected, then '.'.
+    mut std::string summary = default;
+    std::println(summary);
+    return 0;
+}

@@ -1,0 +1,22 @@
+// std::parallel: ready-made algorithms on a pool, with the same results as the sequential ones.
+import std;
+
+i32 main() {
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });
+    mut std::darray<u32> xs = default;
+    for (u32 i : 0..100000) { xs.push((i * 7919) % 100003); }
+    std::parallel::sort(pool, xs.as_mut_span());
+    std::println(f"sorted: {xs[0]} {xs[1]} ... {xs[99999]}");
+    std::option<usize> at = std::parallel::find(pool, xs.as_span(), [](u32& v) { return v > 50000; });
+    std::println(f"first above 50000 at {at.value_or(0)}");
+    std::println(f"any 7? {std::parallel::any(pool, xs.as_span(), [](u32& v) { return v == 7; })}, all below 200000? {std::parallel::all(pool, xs.as_span(), [](u32& v) { return v < 200000; })}");
+    mut std::darray<u64> squares = default;
+    squares.resize(xs.len(), 0);
+    std::parallel::transform(pool, xs.as_span(), squares.as_mut_span(), [](u32& v) { return cast<u64>(v) * cast<u64>(v); });
+    std::println(f"last square {squares[99999]}");
+    return 0;
+}
+//> sorted: 0 1 ... 100002
+//> first above 50000 at 50001
+//> any 7? true, all below 200000? true
+//> last square 10000400004

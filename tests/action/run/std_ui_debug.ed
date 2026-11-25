@@ -1,0 +1,39 @@
+// RUN: edaxc run %s
+// std::ui::debug without a window: the log sink keeps the newest lines with their levels, the
+// panel's feed counts and clears them; perf_overlay and log_view draw with frame statistics.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace dbg = std::ui::debug;
+
+void frame_of(mut im::context& ctx, mut dbg::frame_stats& stats, mut dbg::log_feed& feed, ui::input in) {
+    mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 1000.0, .y = 700.0 });
+    f.perf_overlay(mut stats);
+    f.log_view("Log", mut feed, ui::rect{ .x = 10.0, .y = 10.0, .width = 560.0, .height = 380.0 });
+    f.finish();
+}
+
+void main() {
+    mut std::log::session session = std::log::start(std::log::options{});
+    (std::unique_ptr<dbg::log_sink> sink, dbg::log_feed feed0) = dbg::log_sink::create(100);
+    mut dbg::log_feed feed = feed0.clone();
+    _ = session.add(move sink, std::log::sink_options{ .pattern = std::log::pattern::from("[{level}] {message}") });
+    for (u32 i : 0..150) {
+        if (i % 50 == 7) { std::log::error(f"failure {i}"); } else if (i % 10 == 3) { std::log::warn(f"careful {i}"); } else { std::log::info(f"step {i}"); }
+    }
+    session.flush();
+    std::darray<dbg::log_line> lines = feed.snapshot();
+    std::array<u64, 7> counts = feed.counts();
+    std::println(f"kept {lines.len()}, first #{lines[0].number}, last {lines[lines.len() - 1].text}, warn {counts[3]}, error {counts[4]}");
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut dbg::frame_stats stats = default;
+    for (u32 i : 0..5) {
+        frame_of(mut ctx, mut stats, mut feed, ui::input{ .dt = 0.016 });
+        stats.record(ctx);
+    }
+    std::println(f"frames {stats.frames}, fps {stats.fps.mean() > 60.0}, vertices {stats.vertices > 100}, draw calls {stats.draw_calls}, duplicates {ctx.duplicate_ids()}");
+    feed.clear();
+    std::log::info(f"after clear");
+    session.flush();
+    std::println(f"after clear: {feed.snapshot().len()}");
+}

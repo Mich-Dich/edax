@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+left 4, first 5, over 2: 2
+--- stderr

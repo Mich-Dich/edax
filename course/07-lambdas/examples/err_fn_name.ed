@@ -1,0 +1,9 @@
+// A function's name is not a value.
+import std;
+
+void shout(u32 v) { std::println(f"{v}"); }
+
+i32 main() {
+    std::fn_ptr<void(u32)> f = shout;           //~ error[E4073]
+    return 0;
+}

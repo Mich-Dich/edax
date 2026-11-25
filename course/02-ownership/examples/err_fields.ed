@@ -1,0 +1,15 @@
+// A field can't be moved out with `move`: only locals and by-value parameters can.
+import std;
+
+struct item {
+    std::string name;
+    u32 weight = 0;
+}
+
+std::string name_of(mut item& it) {
+    return move it.name;                                       //~ error[E3032]
+}
+
+i32 main() {
+    return 0;
+}

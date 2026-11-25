@@ -33,7 +33,7 @@ target_include_directories(edax PUBLIC include)
 # filesystem.*. The first one is the core module.
 set(EDAX_STD_MODULES std filesystem env build build/mode thread time meta derive log parallel
     graphics windowing/core windowing/bindings windowing/x11 windowing
-    math image text/font ui ui/opengl ui/immediate ui/platform ui/routing)
+    math image text/font ui ui/opengl ui/immediate ui/platform ui/routing ui/plot ui/debug ui/dock ui/nodes)
 set(EDAX_STD_ENTRIES "")
 set(EDAX_STD_TEXTS "")
 # A text becomes a function that joins pieces of at most 60000 characters at startup: C++ only

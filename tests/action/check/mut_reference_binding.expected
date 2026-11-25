@@ -1,0 +1,24 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4020]: cannot borrow mutably 'x': it is not mutable
+ --> tests/action/check/mut_reference_binding.ed:6:18
+  |
+6 |     mut u32& r = x;
+  |                  ^ immutable
+  |
+5 |     u32 x = 1;
+  |         -
+  = note: declare it 'mut u32 x'
+
+error[E4020]: cannot borrow mutably 'c.n': it is not mutable
+ --> tests/action/check/mut_reference_binding.ed:9:19
+  |
+9 |     mut u32& rn = c.n;
+  |                   ^^^ immutable
+  |
+8 |     cell c = default;
+  |          -
+  = note: declare it 'mut cell c'
+
+2 errors, 0 warnings

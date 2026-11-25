@@ -1,0 +1,19 @@
+// std::shared_ptr: shared, reference-counted, read-only; std::weak_ptr observes without owning.
+import std;
+
+struct config {
+    std::string name;
+    u32 retries = 0;
+}
+
+i32 main() {
+    std::shared_ptr<config> a = std::shared_ptr<config>::make(config{ .name = std::string::from("prod"), .retries = 3 });
+    std::shared_ptr<config> b = a.clone();               // the count goes up; nothing is copied
+    std::println(f"{b->name} {b->retries}, owners {a.owners()}");
+
+    std::weak_ptr<config> watcher = a.weak();
+    if (watcher.lock() is std::some(p)) { std::println(f"still alive: {p->name}, owners {a.owners()}"); }
+    return 0;
+}
+//> prod 3, owners 2
+//> still alive: prod, owners 3

@@ -1,0 +1,66 @@
+// Standard-library lesson 3: a warehouse index (solution).
+import std;
+
+// Where an item is stored.
+@std::derive::hashable
+struct location {
+    u8 aisle = 0;
+    u8 shelf = 0;
+    bool operator==(location& other) = default;
+}
+
+// One delivery: an item, its category, how many, and where it went.
+struct delivery {
+    std::static_str item;
+    std::static_str category;
+    u32 count = 0;
+    location at;
+}
+
+compile_time std::array<delivery, 7> deliveries = [
+    delivery{ .item = "bolt", .category = "hardware", .count = 200, .at = location{ .aisle = 1, .shelf = 1 } },
+    delivery{ .item = "nut", .category = "hardware", .count = 150, .at = location{ .aisle = 1, .shelf = 2 } },
+    delivery{ .item = "glue", .category = "chemicals", .count = 12, .at = location{ .aisle = 3, .shelf = 1 } },
+    delivery{ .item = "bolt", .category = "hardware", .count = 50, .at = location{ .aisle = 1, .shelf = 1 } },
+    delivery{ .item = "paint", .category = "chemicals", .count = 30, .at = location{ .aisle = 3, .shelf = 2 } },
+    delivery{ .item = "tape", .category = "office", .count = 40, .at = location{ .aisle = 2, .shelf = 1 } },
+    delivery{ .item = "nut", .category = "hardware", .count = 25, .at = location{ .aisle = 1, .shelf = 3 } },
+];
+
+i32 main() {
+    mut std::hash_map<std::str, u32> totals = default;                         // item -> count
+    mut std::tree_map<std::str, std::darray<std::str>> by_category = default;   // sorted categories
+    mut std::hash_map<location, std::str> shelves = default;                    // where -> item
+
+    for (delivery& d : deliveries) {
+        if (!totals.contains(d.item)) {                                         // the item's first delivery
+            by_category.get_or_insert(d.category, default).push(d.item);
+        }
+        totals.get_or_insert(d.item, 0) += d.count;
+        if (shelves.insert(d.at, d.item) is std::some(before)) {
+            std::println(f"shelf {d.at.aisle}/{d.at.shelf} already held {before}");
+        }
+    }
+
+    // A hash_map has no order: collect the entries and sort them. The entries borrow `totals`,
+    // so the ranking lives in a block of its own.
+    {
+        mut std::darray<std::map_entry<std::str, u32>> ranking = default;
+        for (std::map_entry<std::str, u32> e : totals.entries()) { ranking.push(e); }
+        ranking.sort_by([](std::map_entry<std::str, u32>& a, std::map_entry<std::str, u32>& b) {
+            if (a.value != b.value) { return a.value > b.value; }
+            return a.key < b.key;
+        });
+        for (std::map_entry<std::str, u32>& e : ranking) { std::println(f"{e.key:<6} {e.value:>4}"); }
+    }
+
+    for (std::map_entry<std::str, std::darray<std::str>> e : by_category.entries()) {
+        std::println(f"{e.key}: {e.value.len()} items");
+    }
+
+    std::println(f"at 1/2: {shelves.get(location{ .aisle = 1, .shelf = 2 }).value_or("nothing")}");
+    std::println(f"at 9/9: {shelves.get(location{ .aisle = 9, .shelf = 9 }).value_or("nothing")}");
+    u32 sold = totals.remove("glue").value_or(0);
+    std::println(f"sold all {sold} glue, {totals.len()} items left");
+    return 0;
+}

@@ -1,0 +1,14 @@
+// A check in a type body runs when the type is compiled.
+import std;
+
+struct header {
+    u16 id = 0;
+    u8  kind = 0;
+    u32 length = 0;
+    u8  flags = 0;                // a new field: the header grows
+    compile_time check (std::size_of<header>() == 8) else f"header is {std::size_of<header>()} bytes";   //~ error[E4210]
+}
+
+i32 main() {
+    return 0;
+}

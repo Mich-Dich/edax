@@ -1,0 +1,8 @@
+// The text mistakes the compiler catches.
+import std;
+
+i32 main() {
+    std::string a = std::string::from("a");
+    std::string b = a + "b";                             //~ error[E4011]
+    return 0;
+}

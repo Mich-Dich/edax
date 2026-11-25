@@ -1,0 +1,8 @@
+// A module-local (`private`) function can't be called from another module.
+import std;
+import inventory;
+
+i32 main() {
+    u32 s = shop::sum_of([shop::price{}]);          //~ error[E3024]
+    return 0;
+}

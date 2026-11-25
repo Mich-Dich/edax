@@ -1,0 +1,12 @@
+// `T(...)` is a call, and a type isn't a function: there are no constructors.
+import std;
+
+struct span2 {
+    u32 from = 0;
+    u32 to = 0;
+}
+
+i32 main() {
+    span2 c = span2(1, 4);                     //~ error[E3022]
+    return 0;
+}

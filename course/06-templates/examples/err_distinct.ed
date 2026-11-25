@@ -1,0 +1,15 @@
+// Distinct types don't mix, which is their point.
+import std;
+
+distinct type meters = f32;
+distinct type seconds = f32;
+
+meters walk(meters speed_per_s, seconds t) {
+    return cast<meters>(cast<f32>(speed_per_s) * cast<f32>(t));
+}
+
+i32 main() {
+    seconds t = cast<seconds>(4.0);
+    meters d = walk(t, t);                    //~ error[E4010]
+    return 0;
+}

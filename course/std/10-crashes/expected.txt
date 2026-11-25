@@ -1,0 +1,5 @@
+tile (2, 1) is 1
+crash report
+  what:   index 7 out of bounds (length 6)
+  where:  level::tile
+  thread: loader

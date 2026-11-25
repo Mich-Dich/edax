@@ -1,0 +1,31 @@
+// Templates: type and value parameters, constraints, deduction from arguments.
+import std;
+
+// A constraint: T must implement std::comparable. The body is checked once, here.
+template<type T : std::comparable>
+T larger(T a, T b) {
+    return if (a < b) { b } else { a };
+}
+
+// A type parameter and a compile-time value parameter.
+template<type T, usize N>
+struct fixed_stack {
+    std::array<T, N> items = default;
+    usize count = 0;
+
+    void push(T value) mut {
+        items[count] = value;
+        count += 1;
+    }
+}
+
+i32 main() {
+    std::println(f"{larger(3u32, 9)} {larger<f64>(2.5, 1.0)} {larger("ab", "b")}");
+    mut fixed_stack<u32, 4> s = default;    // type arguments are always written out
+    s.push(7);
+    s.push(8);
+    std::println(f"{s.count} of {s.items.len()}");
+    return 0;
+}
+//> 9 2.5 b
+//> 2 of 4

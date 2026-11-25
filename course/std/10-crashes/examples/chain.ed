@@ -1,0 +1,25 @@
+// There is one panic hook. std::log::start installs its own, so install yours after it and call
+// the one it replaced, or the log is no longer flushed on a panic.
+import std;
+
+private static mut std::option<std::fn_ptr<void(std::panic_info&)>> log_hook = std::none;
+
+void mine(std::panic_info& info) {
+    std::println("my hook ran first");
+    unsafe {
+        if (log_hook is std::some(h)) { h(info); }       // then the log writes and flushes its queue
+    }
+}
+
+i32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make_with(std::log::colors::off), std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
+    unsafe { log_hook = std::set_panic_hook([](std::panic_info& info) { mine(info); }); }
+    std::log::info("queued before the panic");
+    std::option<u32> missing = std::none;
+    std::println(f"{missing.expect("the value is there")}");
+    return 0;
+}
+//> my hook ran first
+//> INFO queued before the panic
+//! panic: the value is there

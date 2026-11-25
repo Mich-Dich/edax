@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+view 3, camera view 2, check true, width 640
+--- stderr

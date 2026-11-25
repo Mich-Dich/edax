@@ -1,0 +1,12 @@
+// No int, no implicit conversions, and literals take their type from where they are used.
+import std;
+
+i32 main() {
+    u32 a = 200;
+    u64 wide = a + 1;         //~ error[E4010]
+    f64 half = 0;             //~ error[E4003]
+    u8 small = 300;           //~ error[E4002]
+    i32 mixed = a;            //~ error[E4010]
+    bool any = a;             //~ error[E4010]
+    return 0;
+}

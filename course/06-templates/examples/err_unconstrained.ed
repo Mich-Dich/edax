@@ -1,0 +1,17 @@
+// An unconstrained template is checked per instance: the error points into the template.
+import std;
+
+struct point {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+template<type T>
+T larger(T a, T b) {
+    return if (a < b) { b } else { a };       //~ error[E4013]
+}
+
+i32 main() {
+    point p = larger(point{}, point{ .x = 1.0 });
+    return 0;
+}

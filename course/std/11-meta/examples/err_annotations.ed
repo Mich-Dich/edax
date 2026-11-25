@@ -1,0 +1,18 @@
+// An annotation's check fails at the annotation, in your code.
+import std;
+
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+
+    compile_time check (annotation.min <= annotation.max)
+        else f"@range: min ({annotation.min}) is larger than max ({annotation.max})";
+}
+
+struct audio_settings {
+    @range{ .min = 100, .max = 0 } u32 volume = 80;     //~ error[E4210]
+}
+
+i32 main() {
+    return 0;
+}

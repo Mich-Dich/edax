@@ -937,12 +937,14 @@ namespace std {
     // The size of a cache line of the target in bytes.
     compile_time usize cache_line_size = 64;
 
-    // `T` padded so that values written by different threads never share a cache line ("false
-    // sharing", spec 27). Access with `*x` / `x->`.
+    // `T` aligned and padded to a cache line, so that values written by different threads never
+    // share one ("false sharing", spec 27). Access with `*x` / `x->`.
+    // (The alignment is written as a literal: a constant such as cache_line_size in @std::layout is
+    // not evaluated yet.)
     template<type T>
+    @std::layout{ .align = 64 }
     struct cache_aligned {
         T value;
-        std::raw::array<u8, cache_line_size> padding = default;
 
         static cache_aligned<T> make(T value);
         T& operator*();

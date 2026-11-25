@@ -27,6 +27,7 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 | `tree_map` | `tree_map<u32, u32>`: 1M random inserts, 2M lookups, ordered walk |
 | `vec_push_sum` | `darray`: push 20M integers, sum by index and by `for` |
 | `particles` | 200k particles in SoA columns, 1000 steps of gravity, drag and a bounce (spec 34) |
+| `plot_decimate` | `std::ui::plot::decimate_indexed`: 1M `f32` reduced to 1000 pixel columns, 200 times (C++: the same algorithm, a plain loop) |
 
 ## Results (spec 34, x86-64 baseline, GCC 13 `-O2` for C++)
 
@@ -38,6 +39,7 @@ installed there, so the comparison is against libstdc++ only; the earlier table 
 | hash_int | 0.260 | 0.795 | 0.33x | |
 | hash_words | 0.077 | 0.154 | 0.50x | |
 | particles | 0.135 | 0.247 | 0.55x | alias scopes for owned memory, conditional stores as selects: vectorized (was 1.37x) |
+| plot_decimate | 0.278 | 0.879 | 0.32x | a column of an index-x series is a slice (1.4 ms per million points) |
 | sort | 0.024 | 0.125 | 0.19x | radix sort for integers (was 1.12x) |
 | sort_by_key | 0.006 | 0.038 | 0.16x | radix sort for integer keys (was 1.20x) |
 | string_build | 0.014 | 0.017 | 0.82x | |

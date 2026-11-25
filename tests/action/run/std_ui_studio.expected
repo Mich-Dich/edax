@@ -1,0 +1,15 @@
+exit: 0
+--- stdout
+studio: row 24.0, tabs 34.0, gap 6.0, body 13.0 px, bools as checkbox, gradient false
+neutral: surface true, primary bluish true
+icons: 53, drawing nothing: 1
+upper: TRIGGER SETTINGS · ä, tracking widens true
+gradient area 6 vertices, 10 dashes true, curve and gradient box true
+spacer: the last widget ends at 792.0 of 792, height left true, duplicates 0
+toggle: grid true
+file menu open: true
+hovering Edit keeps a menu open: true
+snap: grid false, still open true
+save clicked: true, open after false
+closed by a press elsewhere: true
+--- stderr

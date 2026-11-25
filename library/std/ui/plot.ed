@@ -1,0 +1,1752 @@
+// The Edax standard library: module std::ui::plot (see plot.edh).
+
+namespace std::ui::plot {
+    // A number of any type as f64 (exactly when it fits).
+    private template<type T>
+    f64 number(T v) {
+        if compile_time (std::is_same<T, f64>()) {
+            return v;
+        } else if compile_time (std::is_same<T, f32>() || std::is_same<T, f16>() || std::is_same<T, i8>() || std::is_same<T, i16>() ||
+                                std::is_same<T, i32>() || std::is_same<T, u8>() || std::is_same<T, u16>() || std::is_same<T, u32>()) {
+            return cast<f64>(v);
+        } else {
+            return cast::round<f64>(v);
+        }
+    }
+
+    private f64 of_usize(usize v) {
+        return cast::round<f64>(v);
+    }
+
+    private f32 narrow(f64 v) {
+        return cast::round<f32>(v);
+    }
+
+    // ---- history ---------------------------------------------------------------------------------------
+
+    template<type T, usize N>
+    struct history {
+        void push(T value) mut {
+            mut usize at = 0;
+            if (this.count < N) {
+                at = (this.start + this.count) % N;
+                this.count += 1;
+            } else {
+                at = this.start;
+                this.start = (this.start + 1) % N;
+            }
+            this.values[at] = value;
+            this.values[at + N] = value;
+        }
+
+        void clear() mut {
+            this.start = 0;
+            this.count = 0;
+        }
+
+        usize len() {
+            return this.count;
+        }
+
+        bool is_empty() {
+            return this.count == 0;
+        }
+
+        std::span<T> as_span() {
+            return this.values.as_span().slice(this.start, this.start + this.count);
+        }
+
+        T last() {
+            run_time check (this.count > 0) else "std::ui::plot::history::last: the history is empty";
+            return this.values[this.start + this.count - 1];
+        }
+
+        f64 min() {
+            mut f64 m = 0.0;
+            std::span<T> all = this.as_span();
+            for (usize i : 0..all.len()) {
+                f64 v = number<T>(all[i]);
+                if (i == 0 || v < m) {
+                    m = v;
+                }
+            }
+            return m;
+        }
+
+        f64 max() {
+            mut f64 m = 0.0;
+            std::span<T> all = this.as_span();
+            for (usize i : 0..all.len()) {
+                f64 v = number<T>(all[i]);
+                if (i == 0 || v > m) {
+                    m = v;
+                }
+            }
+            return m;
+        }
+
+        f64 mean() {
+            std::span<T> all = this.as_span();
+            if (all.is_empty()) {
+                return 0.0;
+            }
+            mut f64 sum = 0.0;
+            for (usize i : 0..all.len()) {
+                sum += number<T>(all[i]);
+            }
+            return sum / of_usize(all.len());
+        }
+    }
+
+    // ---- annotations: their checks -----------------------------------------------------------------
+
+    struct x {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@plot::x works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct series {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@plot::series works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    // ---- ticks and numbers -----------------------------------------------------------------------------
+
+    struct ticks {
+        static ticks for_range(f64 low, f64 high, u32 target) {
+            mut f64 span = high - low;
+            if (!(span > 0.0) || span.is_infinite()) {
+                return ticks{ .first = low, .step = 1.0, .count = 1, .decimals = 0 };
+            }
+            f64 raw = span / cast<f64>(target.max(1));
+            f64 power = (10.0f64).pow(raw.log10().floor());
+            f64 norm = raw / power;
+            f64 nice = if (norm < 1.5) { 1.0 } else if (norm < 3.0) { 2.0 } else if (norm < 7.0) { 5.0 } else { 10.0 };
+            f64 step = nice * power;
+            f64 first = (low / step).ceil() * step;
+            f64 n = ((high - first) / step + 1e-9).floor() + 1.0;
+            u32 count = if (n < 1.0) { 0 } else { cast::saturate<u32>(n) };
+            f64 digits = -(step.log10().floor());
+            u32 decimals = if (digits > 0.0) { cast::saturate<u32>(digits) } else { 0 };
+            return ticks{ .first = first, .step = step, .count = count.min(64), .decimals = decimals };
+        }
+
+        f64 at(u32 i) {
+            f64 v = this.first + cast<f64>(i) * this.step;
+            // -0.0 and values like 1e-17 next to 0 print as 0.
+            if (v.abs() < this.step * 1e-9) {
+                return 0.0;
+            }
+            return v;
+        }
+
+        std::string label(u32 i) {
+            return format_number(this.at(i), this.decimals);
+        }
+    }
+
+    std::string format_number(f64 value, u32 decimals) {
+        if (value.is_nan()) {
+            return std::string::from("NaN");
+        }
+        if (value.is_infinite()) {
+            if (value < 0.0) {
+                return std::string::from("-inf");
+            }
+            return std::string::from("inf");
+        }
+        f64 magnitude = value.abs();
+        if (magnitude >= 1e7 || (magnitude > 0.0 && magnitude < 1e-4)) {
+            // Powers of ten: one to two decimals of the mantissa.
+            mut f64 exponent = magnitude.log10().floor();
+            mut f64 mantissa = value / (10.0f64).pow(exponent);
+            if (mantissa.abs() >= 9.995) {
+                mantissa = mantissa / 10.0;
+                exponent += 1.0;
+            }
+            std::string head = format_number(mantissa, 2);
+            i64 e = cast::saturate<i64>(exponent);
+            return std::format(f"{trim_zeros(head.as_str())}e{e}");
+        }
+        u32 places = decimals.min(9);
+        f64 scale = (10.0f64).pow(cast<f64>(places));
+        u64 scaled = cast::saturate<u64>(magnitude * scale + 0.5);
+        u64 unit = cast::saturate<u64>(scale);
+        u64 whole = scaled / unit;
+        u64 part = scaled % unit;
+        std::str sign = if (value < 0.0 && scaled > 0) { "-" } else { "" };
+        if (places == 0) {
+            return std::format(f"{sign}{whole}");
+        }
+        mut std::string digits = std::format(f"{part}");
+        while (digits.len() < cast<usize>(places)) {
+            digits = std::format(f"0{digits}");
+        }
+        return std::format(f"{sign}{whole}.{digits}");
+    }
+
+    // "1.50" -> "1.5", "2.00" -> "2".
+    private std::string trim_zeros(std::str text) {
+        mut bool has_point = false;
+        for (usize i : 0..text.len()) {
+            if (text.byte(i) == 46) {
+                has_point = true;
+            }
+        }
+        if (!has_point) {
+            return std::string::from(text);
+        }
+        mut usize end = text.len();
+        while (end > 0 && text.byte(end - 1) == 48) {
+            end -= 1;
+        }
+        if (end > 0 && text.byte(end - 1) == 46) {
+            end -= 1;
+        }
+        return std::string::from(text.slice(0, end));
+    }
+
+    // ---- decimation ------------------------------------------------------------------------------------
+
+    // The column of x in [low, high] split into `columns`.
+    private i64 column_of(f64 x, f64 low, f64 width) {
+        return cast::saturate<i64>(((x - low) / width).floor());
+    }
+
+    // Appends the reduction of the points (x(i), y(i)) for i in 0..n; `x_at` and `y_at` read them.
+    private template<type G>
+    usize reduce(usize n, G point, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out) {
+        if (n == 0) {
+            return 0;
+        }
+        usize before = out.len();
+        f64 width = if (x_high > x_low) { (x_high - x_low) / cast<f64>(columns.max(1)) } else { 1.0 };
+        // Few points: all of them (in range, and the neighbours of the range).
+        mut usize in_range = 0;
+        for (usize i : 0..n) {
+            (f64 x, f64 _y) = point(i);
+            if (x >= x_low && x <= x_high) {
+                in_range += 1;
+            }
+        }
+        bool reduce_columns = in_range > 4 * cast<usize>(columns);
+        mut bool have = false;
+        mut i64 current = 0;
+        // first, lowest, highest, last of the current column: indices
+        mut usize first = 0;
+        mut usize low_i = 0;
+        mut usize high_i = 0;
+        mut usize last = 0;
+        mut f64 low_y = 0.0;
+        mut f64 high_y = 0.0;
+        mut bool left_kept = false;
+        for (usize i : 0..n) {
+            (f64 x, f64 y) = point(i);
+            if (x < x_low) {
+                // Only the last point before the range: it starts the line at the left edge.
+                bool next_inside = i + 1 < n && point(i + 1).0 >= x_low;
+                if (next_inside) {
+                    out.push(x);
+                    out.push(y);
+                    left_kept = true;
+                }
+                continue;
+            }
+            if (x > x_high) {
+                if (have) {
+                    emit_column(mut out, point, first, low_i, high_i, last);
+                    have = false;
+                }
+                // The first point after the range ends the line at the right edge.
+                out.push(x);
+                out.push(y);
+                break;
+            }
+            if (!reduce_columns) {
+                out.push(x);
+                out.push(y);
+                continue;
+            }
+            i64 c = column_of(x, x_low, width);
+            if (!have || c != current) {
+                if (have) {
+                    emit_column(mut out, point, first, low_i, high_i, last);
+                }
+                have = true;
+                current = c;
+                first = i;
+                low_i = i;
+                high_i = i;
+                low_y = y;
+                high_y = y;
+            }
+            if (y < low_y) {
+                low_y = y;
+                low_i = i;
+            }
+            if (y > high_y) {
+                high_y = y;
+                high_i = i;
+            }
+            last = i;
+        }
+        if (have) {
+            emit_column(mut out, point, first, low_i, high_i, last);
+        }
+        _ = left_kept;
+        return (out.len() - before) / 2;
+    }
+
+    // The distinct indices of a column in index order.
+    private template<type G>
+    void emit_column(mut std::darray<f64>& out, G point, usize first, usize low_i, usize high_i, usize last) {
+        usize a = low_i.min(high_i);
+        usize b = low_i.max(high_i);
+        std::array<usize, 4> order = [first, a, b, last];
+        mut usize previous = 0;
+        for (usize k : 0..4) {
+            usize i = order[k];
+            if (k > 0 && i == previous) {
+                continue;
+            }
+            (f64 x, f64 y) = point(i);
+            out.push(x);
+            out.push(y);
+            previous = i;
+        }
+    }
+
+    template<type X, type Y>
+    usize decimate(std::span<X> xs, std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out) {
+        usize n = xs.len().min(ys.len());
+        return reduce(n, [&xs, &ys](usize i) -> (f64, f64) { return (number<X>(xs[i]), number<Y>(ys[i])); }, x_low, x_high, columns, mut out);
+    }
+
+    template<type Y>
+    usize decimate_indexed(std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out) {
+        usize n = ys.len();
+        f64 last_index = of_usize(n.max(1) - 1);
+        bool usable = n > 0 && x_high > x_low && x_high >= 0.0 && x_low <= last_index;
+        usize first_in = if (!usable || x_low <= 0.0) { 0 } else { cast::saturate<usize>(x_low.ceil()) };
+        usize last_in = if (!usable || x_high >= last_index) { n.max(1) - 1 } else { cast::saturate<usize>(x_high.floor()) };
+        if (!usable || first_in > last_in || last_in - first_in + 1 <= 4 * cast<usize>(columns)) {
+            // Few points, or none in range: the general reduction (cheap then).
+            return reduce(n, [&ys](usize i) -> (f64, f64) { return (of_usize(i), number<Y>(ys[i])); }, x_low, x_high, columns, mut out);
+        }
+        // x is the index, so the points of a column are a slice: no per-point division, and the
+        // lowest and highest point of a slice are found in one tight loop.
+        usize before = out.len();
+        if (first_in > 0) {
+            out.push(of_usize(first_in - 1));
+            out.push(number<Y>(ys[first_in - 1]));
+        }
+        f64 width = (x_high - x_low) / cast<f64>(columns.max(1));
+        mut usize i = first_in;
+        while (i <= last_in) {
+            i64 c = column_of(of_usize(i), x_low, width);
+            mut usize stop = cast::saturate<usize>((x_low + cast::round<f64>(c + 1) * width).ceil()).max(i + 1).min(last_in + 1);
+            while (stop <= last_in && column_of(of_usize(stop), x_low, width) == c) {
+                stop += 1;
+            }
+            while (stop > i + 1 && column_of(of_usize(stop - 1), x_low, width) != c) {
+                stop -= 1;
+            }
+            mut Y low = ys[i];
+            mut Y high = ys[i];
+            mut usize low_i = i;
+            mut usize high_i = i;
+            for (usize k : i + 1..stop) {
+                Y y = ys[k];
+                if (y < low) {
+                    low = y;
+                    low_i = k;
+                }
+                if (y > high) {
+                    high = y;
+                    high_i = k;
+                }
+            }
+            emit_column(mut out, [&ys](usize k) -> (f64, f64) { return (of_usize(k), number<Y>(ys[k])); }, i, low_i, high_i, stop - 1);
+            i = stop;
+        }
+        if (last_in + 1 < n) {
+            out.push(of_usize(last_in + 1));
+            out.push(number<Y>(ys[last_in + 1]));
+        }
+        return (out.len() - before) / 2;
+    }
+
+    // ---- colours -----------------------------------------------------------------------------------------
+
+    std::ui::color palette_color(std::ui::theme& t, usize n) {
+        std::math::oklch base = t.colors.primary.to_oklch();
+        f32 turn = cast<f32>(cast::truncate<u16>(n % 64)) * 137.508;
+        mut f32 hue = base.h + turn;
+        while (hue >= 360.0) {
+            hue -= 360.0;
+        }
+        f32 chroma = base.c.max(0.11);
+        f32 lightness = base.l.max(0.55).min(0.8);
+        return std::ui::color::from_oklch(std::math::oklch{ .l = lightness, .c = chroma, .h = hue }, 1.0);
+    }
+
+    // ---- the stored view -----------------------------------------------------------------------------------
+
+    // The slots of a plot's storage numbers.
+    private compile_time usize slot_x_min = 0;
+    private compile_time usize slot_x_max = 1;
+    private compile_time usize slot_y_min = 2;
+    private compile_time usize slot_y_max = 3;
+    private compile_time usize slot_fit_x = 4;
+    private compile_time usize slot_fit_y = 5;
+    private compile_time usize slot_drag_x = 6;
+    private compile_time usize slot_drag_y = 7;
+    private compile_time usize slot_dragging = 8;
+    private compile_time usize slot_last_click = 9;
+    private compile_time usize slot_hidden = 10;
+    // The hover box: its width (it only grows while the cursor stays on the plot) and its side
+    // (0: right of the cursor, 1: left), so changing values don't make it jump.
+    private compile_time usize slot_hover_width = 11;
+    private compile_time usize slot_hover_side = 12;
+    private compile_time usize slot_count = 13;
+
+    private void ensure_slots(mut std::darray<f64>& numbers) {
+        if (numbers.len() < slot_count) {
+            numbers.clear();
+            numbers.resize(slot_count, 0.0);
+            numbers[slot_x_max] = 1.0;
+            numbers[slot_y_max] = 1.0;
+            numbers[slot_fit_x] = 1.0;
+            numbers[slot_fit_y] = 1.0;
+            numbers[slot_last_click] = -10.0;
+        }
+    }
+
+    // The view of plot `id` with its x range from `x_owner`.
+    private view_range stored_view(mut std::ui::immediate::scope& s, u64 id, u64 x_owner) {
+        mut view_range v = default;
+        {
+            mut std::darray<f64>& own = s.storage(id).numbers;
+            ensure_slots(mut own);
+            v.y_min = own[slot_y_min];
+            v.y_max = own[slot_y_max];
+            v.fit_y = own[slot_fit_y] != 0.0;
+            v.x_min = own[slot_x_min];
+            v.x_max = own[slot_x_max];
+            v.fit_x = own[slot_fit_x] != 0.0;
+        }
+        if (x_owner != id) {
+            mut std::darray<f64>& shared = s.storage(x_owner).numbers;
+            ensure_slots(mut shared);
+            v.x_min = shared[slot_x_min];
+            v.x_max = shared[slot_x_max];
+            v.fit_x = shared[slot_fit_x] != 0.0;
+        }
+        return v;
+    }
+
+    private void store_view(mut std::ui::immediate::scope& s, u64 id, u64 x_owner, view_range v) {
+        {
+            mut std::darray<f64>& own = s.storage(id).numbers;
+            ensure_slots(mut own);
+            own[slot_y_min] = v.y_min;
+            own[slot_y_max] = v.y_max;
+            own[slot_fit_y] = if (v.fit_y) { 1.0 } else { 0.0 };
+            own[slot_x_min] = v.x_min;
+            own[slot_x_max] = v.x_max;
+            own[slot_fit_x] = if (v.fit_x) { 1.0 } else { 0.0 };
+        }
+        if (x_owner != id) {
+            mut std::darray<f64>& shared = s.storage(x_owner).numbers;
+            ensure_slots(mut shared);
+            shared[slot_x_min] = v.x_min;
+            shared[slot_x_max] = v.x_max;
+            shared[slot_fit_x] = if (v.fit_x) { 1.0 } else { 0.0 };
+        }
+    }
+
+    private u32 hidden_mask(mut std::ui::immediate::scope& s, u64 id) {
+        mut std::darray<f64>& own = s.storage(id).numbers;
+        ensure_slots(mut own);
+        return cast::saturate<u32>(own[slot_hidden]);
+    }
+
+    // The storage of a plot's points this frame.
+    private u64 points_id(u64 id) {
+        return std::hash_combine(id, 0x706f696e7473);
+    }
+
+    // ---- the plot scope ------------------------------------------------------------------------------------
+
+    view class scope {
+    public:
+        void axis_x(axis a) mut {
+            this.x_axis = a;
+        }
+
+        void axis_y(axis a) mut {
+            this.y_axis = a;
+        }
+
+        void link_x(std::str group) mut {
+            u64 owner = std::hash_combine(std::hash(group), 0x6c696e6b);
+            if (owner == this.x_owner) {
+                return;
+            }
+            // The plot's own x range moves to the group (the group keeps its range when it has one).
+            this.x_owner = owner;
+            view_range v = stored_view(mut this.parent, this.id, owner);
+            this.shown.x_min = v.x_min;
+            this.shown.x_max = v.x_max;
+            this.shown.fit_x = v.fit_x;
+        }
+
+        void legend(bool on) mut {
+            this.show_legend = on;
+        }
+
+        void color(std::ui::color c) mut {
+            this.next_color = std::some(c);
+        }
+
+        template<type Y>
+        void line(std::str name, std::span<Y> ys) mut {
+            this.add_indexed<Y>(name, kind::line, ys);
+        }
+
+        template<type X, type Y>
+        void line(std::str name, std::span<X> xs, std::span<Y> ys) mut {
+            this.add_pairs<X, Y>(name, kind::line, xs, ys);
+        }
+
+        template<type T, type F>
+        void line_of(std::str name, std::span<T> rows, F value) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::line, mut at)) {
+                return;
+            }
+            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(rows.len().max(1) - 1));
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            usize n = reduce(rows.len(), [&rows, &value](usize i) -> (f64, f64) { return (of_usize(i), number(value(rows[i]))); }, low, high, this.columns, mut out);
+            this.finish_entry(at, from, n);
+        }
+
+        template<type Y>
+        void area(std::str name, std::span<Y> ys) mut {
+            this.add_indexed<Y>(name, kind::area, ys);
+        }
+
+        template<type X, type Y>
+        void area(std::str name, std::span<X> xs, std::span<Y> ys) mut {
+            this.add_pairs<X, Y>(name, kind::area, xs, ys);
+        }
+
+        template<type Y>
+        void scatter(std::str name, std::span<Y> ys) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::scatter, mut at)) {
+                return;
+            }
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            for (usize i : 0..ys.len()) {
+                out.push(of_usize(i));
+                out.push(number<Y>(ys[i]));
+            }
+            this.finish_entry(at, from, ys.len());
+        }
+
+        template<type X, type Y>
+        void scatter(std::str name, std::span<X> xs, std::span<Y> ys) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::scatter, mut at)) {
+                return;
+            }
+            usize n = xs.len().min(ys.len());
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            for (usize i : 0..n) {
+                out.push(number<X>(xs[i]));
+                out.push(number<Y>(ys[i]));
+            }
+            this.finish_entry(at, from, n);
+        }
+
+        template<type Y>
+        void bars(std::str name, std::span<Y> ys) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::bars, mut at)) {
+                return;
+            }
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            for (usize i : 0..ys.len()) {
+                out.push(of_usize(i));
+                out.push(number<Y>(ys[i]));
+            }
+            this.entries[at].value = 0.7;
+            this.finish_entry(at, from, ys.len());
+            // Bars stand on 0 and reach half a bar past the first and last x.
+            this.include(-0.5, 0.0);
+            this.include(of_usize(ys.len()) - 0.5, 0.0);
+        }
+
+        template<type T>
+        void series(std::str name, std::span<T> rows) mut {
+            mut bool has_x = false;
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (f.annotation<x>().is_some()) {
+                    has_x = true;
+                }
+            }
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (f.annotation<std::ui::plot::series>().is_some()) {
+                    std::string label = if (name.is_empty()) { std::string::from(f.name) } else { std::format(f"{name}.{f.name}") };
+                    mut usize at = 0;
+                    if (this.begin_entry(label.as_str(), kind::line, mut at)) {
+                        // The field's values side by side with their x (scratch storage, reused).
+                        u64 scratch_id = std::hash_combine(points_id(this.id), 0x73637261);
+                        mut std::darray<f64> scratch = std::take(mut this.parent.storage(scratch_id).numbers);
+                        scratch.clear();
+                        for (usize i : 0..rows.len()) {
+                            scratch.push(if (has_x) { series_x<T>(rows[i]) } else { of_usize(i) });
+                        }
+                        for (usize i : 0..rows.len()) {
+                            scratch.push(number(f.get(rows[i])));
+                        }
+                        {
+                            std::span<f64> all = scratch.as_span();
+                            std::span<f64> xs = all.slice(0, rows.len());
+                            std::span<f64> ys = all.slice(rows.len(), 2 * rows.len());
+                            (f64 low, f64 high) = if (has_x) {
+                                this.reduce_range(series_x_min<T>(rows), series_x_max<T>(rows))
+                            } else {
+                                this.reduce_range(0.0, of_usize(rows.len().max(1) - 1))
+                            };
+                            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+                            usize from = out.len() / 2;
+                            usize n = decimate<f64, f64>(xs, ys, low, high, this.columns, mut out);
+                            this.finish_entry(at, from, n);
+                        }
+                        this.parent.storage(scratch_id).numbers = move scratch;
+                    }
+                    if compile_time (f.annotation<std::ui::plot::series>().value_or(std::ui::plot::series{}).unit != "") {
+                        if (this.y_axis.label.is_empty()) {
+                            this.y_axis.label = f.annotation<std::ui::plot::series>().value_or(std::ui::plot::series{}).unit;
+                        }
+                    }
+                }
+            }
+        }
+
+        void hline(std::str name, f64 y, std::ui::color c) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::hline, mut at)) {
+                return;
+            }
+            this.entries[at].value = y;
+            this.entries[at].color = c;
+            this.entries[at].own_color = true;
+            this.include_y(y);
+        }
+
+        void vline(std::str name, f64 x, std::ui::color c) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, kind::vline, mut at)) {
+                return;
+            }
+            this.entries[at].value = x;
+            this.entries[at].color = c;
+            this.entries[at].own_color = true;
+        }
+
+        std::ui::theme& theme() {
+            return this.parent.theme();
+        }
+
+        view_range range() {
+            return this.shown;
+        }
+
+        bool moved() {
+            return !this.shown.fit_x || !this.shown.fit_y;
+        }
+
+        void reset_view() mut {
+            this.shown.fit_x = true;
+            this.shown.fit_y = true;
+            mut view_range v = stored_view(mut this.parent, this.id, this.x_owner);
+            v.fit_x = true;
+            v.fit_y = true;
+            store_view(mut this.parent, this.id, this.x_owner, v);
+        }
+
+        std::option<std::ui::vec2> hovered() {
+            std::ui::rect box = this.inner;
+            std::ui::vec2 at = this.parent.ctx.in.cursor;
+            if (!box.contains(at) || this.parent.ctx.hover_window != this.parent.window) {
+                return std::none;
+            }
+            f64 x = this.shown.x_min + cast<f64>((at.x - box.x) / box.width) * (this.shown.x_max - this.shown.x_min);
+            f64 y = this.shown.y_max - cast<f64>((at.y - box.y) / box.height) * (this.shown.y_max - this.shown.y_min);
+            return std::some(std::ui::vec2{ .x = narrow(x), .y = narrow(y) });
+        }
+
+        ~scope() {
+            if (!this.parent.open()) {
+                return;
+            }
+            draw_plot(mut this);
+        }
+
+    private:
+        // Starts an entry named `name`; false when the plot is full or the series is hidden.
+        bool begin_entry(std::str name, kind what, mut usize& at) mut {
+            if (!this.parent.open() || this.entry_count >= max_entries) {
+                return false;
+            }
+            mut std::ui::immediate::widget_storage& names = this.parent.storage(points_id(this.id));
+            u32 from = cast::truncate<u32>(names.text.len());
+            names.text.push_str(name);
+            u32 to = cast::truncate<u32>(names.text.len());
+            at = this.entry_count;
+            this.entry_count += 1;
+            mut std::ui::color c = palette_color(this.parent.theme(), this.series_count);
+            bool own = this.next_color.is_some();
+            match (this.next_color) {
+                std::some(given) => { c = given; },
+                std::none => {},
+            }
+            this.next_color = std::none;
+            if (what != kind::hline && what != kind::vline) {
+                this.series_count += 1;
+            }
+            this.entries[at] = entry{ .what = what, .name_from = from, .name_to = to, .color = c, .own_color = own };
+            // A hidden series keeps its legend entry but brings no points.
+            return (this.hidden & (1u32 << cast::truncate<u32>(at))) == 0;
+        }
+
+        // The x range to reduce a series over: the visible range, or its own while x follows the
+        // data.
+        (f64, f64) reduce_range(f64 data_low, f64 data_high) {
+            if (this.shown.fit_x) {
+                return (data_low, data_high);
+            }
+            return (this.shown.x_min, this.shown.x_max);
+        }
+
+        void finish_entry(usize at, usize from, usize n) mut {
+            this.entries[at].first = cast::truncate<u32>(from);
+            this.entries[at].count = cast::truncate<u32>(n);
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            for (usize i : from..from + n) {
+                f64 x = out[2 * i];
+                f64 y = out[2 * i + 1];
+                bool x_visible = this.shown.fit_x || (x >= this.shown.x_min && x <= this.shown.x_max);
+                if (x_visible && !x.is_nan() && !y.is_nan() && !y.is_infinite() && !x.is_infinite()) {
+                    this.include(x, y);
+                }
+            }
+        }
+
+        void include(f64 x, f64 y) mut {
+            if (!this.has_data) {
+                this.data_x_min = x;
+                this.data_x_max = x;
+                this.data_y_min = y;
+                this.data_y_max = y;
+                this.has_data = true;
+                return;
+            }
+            this.data_x_min = this.data_x_min.min(x);
+            this.data_x_max = this.data_x_max.max(x);
+            this.data_y_min = this.data_y_min.min(y);
+            this.data_y_max = this.data_y_max.max(y);
+        }
+
+        void include_y(f64 y) mut {
+            if (!this.has_data) {
+                return;
+            }
+            this.data_y_min = this.data_y_min.min(y);
+            this.data_y_max = this.data_y_max.max(y);
+        }
+
+        template<type Y>
+        void add_indexed(std::str name, kind what, std::span<Y> ys) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, what, mut at)) {
+                return;
+            }
+            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(ys.len().max(1) - 1));
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            usize n = decimate_indexed<Y>(ys, low, high, this.columns, mut out);
+            this.finish_entry(at, from, n);
+            if (what == kind::area) {
+                this.include_y(0.0);
+            }
+        }
+
+        template<type X, type Y>
+        void add_pairs(std::str name, kind what, std::span<X> xs, std::span<Y> ys) mut {
+            mut usize at = 0;
+            if (!this.begin_entry(name, what, mut at)) {
+                return;
+            }
+            mut f64 low = 0.0;
+            mut f64 high = 0.0;
+            for (usize i : 0..xs.len()) {
+                f64 v = number<X>(xs[i]);
+                if (i == 0 || v < low) {
+                    low = v;
+                }
+                if (i == 0 || v > high) {
+                    high = v;
+                }
+            }
+            (f64 from_x, f64 to_x) = this.reduce_range(low, high);
+            mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
+            usize from = out.len() / 2;
+            usize n = decimate<X, Y>(xs, ys, from_x, to_x, this.columns, mut out);
+            this.finish_entry(at, from, n);
+            if (what == kind::area) {
+                this.include_y(0.0);
+            }
+        }
+    }
+
+    // The x value of a row: its @plot::x field.
+    private template<type T>
+    f64 series_x(T& row) {
+        mut f64 v = 0.0;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (f.annotation<x>().is_some()) {
+                v = number(f.get(row));
+            }
+        }
+        return v;
+    }
+
+    private template<type T>
+    f64 series_x_min(std::span<T> rows) {
+        mut f64 m = 0.0;
+        for (usize i : 0..rows.len()) {
+            f64 v = series_x<T>(rows[i]);
+            if (i == 0 || v < m) {
+                m = v;
+            }
+        }
+        return m;
+    }
+
+    private template<type T>
+    f64 series_x_max(std::span<T> rows) {
+        mut f64 m = 0.0;
+        for (usize i : 0..rows.len()) {
+            f64 v = series_x<T>(rows[i]);
+            if (i == 0 || v > m) {
+                m = v;
+            }
+        }
+        return m;
+    }
+
+    // ---- limits ------------------------------------------------------------------------------------------
+
+    (f64, f64) clamp_range(f64 low, f64 high, std::option<f64> limit_min, std::option<f64> limit_max) {
+        mut f64 lo = low;
+        mut f64 hi = high;
+        match (limit_min) {
+            std::some(m) => {
+                if (lo < m) {
+                    hi += m - lo;
+                    lo = m;
+                }
+            },
+            std::none => {},
+        }
+        match (limit_max) {
+            std::some(m) => {
+                if (hi > m) {
+                    lo -= hi - m;
+                    hi = m;
+                }
+            },
+            std::none => {},
+        }
+        // Wider than both limits allow: cut to them.
+        match (limit_min) {
+            std::some(m) => { lo = lo.max(m); },
+            std::none => {},
+        }
+        if (!(hi > lo)) {
+            hi = lo + 1e-9;
+        }
+        return (lo, hi);
+    }
+
+    // [low, high] with the parts beyond the limits cut off.
+    private (f64, f64) cut_range(f64 low, f64 high, std::option<f64> limit_min, std::option<f64> limit_max) {
+        f64 lo = match (limit_min) {
+            std::some(m) => low.max(m),
+            std::none => low,
+        };
+        f64 hi = match (limit_max) {
+            std::some(m) => high.min(m),
+            std::none => high,
+        };
+        if (hi > lo) {
+            return (lo, hi);
+        }
+        return (low, high);
+    }
+
+    // A view inside the axes' limits.
+    private view_range limited(view_range v, axis& x, axis& y) {
+        mut view_range out = v;
+        (f64 x_lo, f64 x_hi) = clamp_range(v.x_min, v.x_max, x.limit_min, x.limit_max);
+        (f64 y_lo, f64 y_hi) = clamp_range(v.y_min, v.y_max, y.limit_min, y.limit_max);
+        out.x_min = x_lo;
+        out.x_max = x_hi;
+        out.y_min = y_lo;
+        out.y_max = y_hi;
+        return out;
+    }
+
+    // ---- drawing -----------------------------------------------------------------------------------------
+
+    // The range a plot shows: fitted to the data (with a margin on y) or as stored, inside the
+    // axes' fixed limits when they are set and the plot fits.
+    private view_range final_view(mut scope& p) {
+        mut view_range v = p.shown;
+        if (v.fit_x) {
+            if (p.has_data) {
+                v.x_min = p.data_x_min;
+                v.x_max = p.data_x_max;
+            } else {
+                v.x_min = 0.0;
+                v.x_max = 1.0;
+            }
+            match (p.x_axis.min) {
+                std::some(m) => { v.x_min = m; },
+                std::none => {},
+            }
+            match (p.x_axis.max) {
+                std::some(m) => { v.x_max = m; },
+                std::none => {},
+            }
+        }
+        if (v.fit_y) {
+            if (p.has_data) {
+                f64 pad = (p.data_y_max - p.data_y_min) * 0.06;
+                v.y_min = p.data_y_min - pad;
+                v.y_max = p.data_y_max + pad;
+                // A range that starts at 0 stays there (bars, areas, times).
+                if (p.data_y_min >= 0.0 && v.y_min < 0.0) {
+                    v.y_min = 0.0;
+                }
+            } else {
+                v.y_min = 0.0;
+                v.y_max = 1.0;
+            }
+            match (p.y_axis.min) {
+                std::some(m) => { v.y_min = m; },
+                std::none => {},
+            }
+            match (p.y_axis.max) {
+                std::some(m) => { v.y_max = m; },
+                std::none => {},
+            }
+        }
+        // A fitted range is cut at the limits (moved ones are shifted back inside below).
+        if (v.fit_x) {
+            (f64 x_lo, f64 x_hi) = cut_range(v.x_min, v.x_max, p.x_axis.limit_min, p.x_axis.limit_max);
+            v.x_min = x_lo;
+            v.x_max = x_hi;
+        }
+        if (v.fit_y) {
+            (f64 y_lo, f64 y_hi) = cut_range(v.y_min, v.y_max, p.y_axis.limit_min, p.y_axis.limit_max);
+            v.y_min = y_lo;
+            v.y_max = y_hi;
+        }
+        if (!(v.x_max > v.x_min)) {
+            v.x_min -= 0.5;
+            v.x_max = v.x_min + 1.0;
+        }
+        if (!(v.y_max > v.y_min)) {
+            f64 middle = v.y_min;
+            v.y_min = middle - 0.5;
+            v.y_max = middle + 0.5;
+        }
+        return limited(v, p.x_axis, p.y_axis);
+    }
+
+    // A y tick's label: the value, or on a logarithmic axis the power of ten it stands for.
+    private std::string y_label_text(ticks& ty, u32 i, bool log_y) {
+        if (!log_y) {
+            return ty.label(i);
+        }
+        f64 power = ty.at(i);
+        u32 decimals = if (power < 0.0) { cast::saturate<u32>(-power) } else { 0 };
+        return format_number((10.0f64).pow(power), decimals);
+    }
+
+    // A logarithmic y axis: the plot's y values (and lines) become their logarithms; values <= 0
+    // become gaps. The data's y range is measured again.
+    private void to_log_space(mut scope& p) {
+        mut std::darray<f64>& points = p.parent.storage(points_id(p.id)).numbers;
+        mut bool any = false;
+        mut f64 low = 0.0;
+        mut f64 high = 0.0;
+        for (usize e : 0..p.entry_count) {
+            entry en = p.entries[e];
+            if (en.what == kind::hline) {
+                p.entries[e].value = if (en.value > 0.0) { en.value.log10() } else { f64::nan };
+                continue;
+            }
+            if (en.what == kind::vline) {
+                continue;
+            }
+            for (usize i : cast<usize>(en.first)..cast<usize>(en.first) + cast<usize>(en.count)) {
+                f64 y = points[2 * i + 1];
+                f64 l = if (y > 0.0) { y.log10() } else { f64::nan };
+                points[2 * i + 1] = l;
+                if (!l.is_nan()) {
+                    low = if (any) { low.min(l) } else { l };
+                    high = if (any) { high.max(l) } else { l };
+                    any = true;
+                }
+            }
+        }
+        if (any) {
+            p.data_y_min = low;
+            p.data_y_max = high;
+        }
+        match (p.y_axis.min) {
+            std::some(m) => { p.y_axis.min = if (m > 0.0) { std::some(m.log10()) } else { std::none }; },
+            std::none => {},
+        }
+        match (p.y_axis.max) {
+            std::some(m) => { p.y_axis.max = if (m > 0.0) { std::some(m.log10()) } else { std::none }; },
+            std::none => {},
+        }
+        match (p.y_axis.limit_min) {
+            std::some(m) => { p.y_axis.limit_min = if (m > 0.0) { std::some(m.log10()) } else { std::none }; },
+            std::none => {},
+        }
+        match (p.y_axis.limit_max) {
+            std::some(m) => { p.y_axis.limit_max = if (m > 0.0) { std::some(m.log10()) } else { std::none }; },
+            std::none => {},
+        }
+    }
+
+    // Where a plot value is on the screen.
+    private std::ui::vec2 to_screen(std::ui::rect area, view_range& v, f64 x, f64 y) {
+        f64 fx = (x - v.x_min) / (v.x_max - v.x_min);
+        f64 fy = (y - v.y_min) / (v.y_max - v.y_min);
+        return std::ui::vec2{ .x = area.x + narrow(fx.max(-4.0).min(5.0)) * area.width, .y = area.bottom() - narrow(fy.max(-4.0).min(5.0)) * area.height };
+    }
+
+    private void draw_plot(mut scope& p) {
+        std::ui::theme t = p.parent.theme();
+        bool log_y = p.y_axis.kind == scale::logarithmic;
+        if (log_y) {
+            to_log_space(mut p);
+        }
+        view_range v = final_view(mut p);
+        std::ui::rect b = p.bounds;
+        std::str title = p.title;
+        std::str x_label = p.x_axis.label;
+        std::str y_label = p.y_axis.label;
+        std::ui::text_style label_style = t.style(std::ui::text_role::caption, t.colors.text_muted);
+        std::ui::text_style title_style = t.style(std::ui::text_role::label, t.colors.text);
+        mut ticks ty = ticks::for_range(v.y_min, v.y_max, cast::saturate<u32>((b.height / (40.0 * t.density)).max(3.0)));
+        if (log_y) {
+            // Powers of ten only.
+            f64 step = ty.step.max(1.0).round();
+            ty = ticks{ .first = (v.y_min / step).ceil() * step, .step = step, .decimals = 0 };
+            ty.count = cast::saturate<u32>(((v.y_max - ty.first) / step + 1e-9).floor() + 1.0);
+        }
+        // The y labels' width decides where the plot area starts.
+        mut f32 label_width = 0.0;
+        {
+            mut std::ui::painter measure = p.parent.painter();
+            for (u32 i : 0..ty.count) {
+                std::string text = y_label_text(ty, i, log_y);
+                label_width = label_width.max(measure.measure(text.as_str(), label_style).x);
+            }
+        }
+        f32 pad = t.space.s;
+        f32 line = 12.0 * t.density;
+        mut f32 top = b.y + pad;
+        if (!title.is_empty() || !y_label.is_empty()) {
+            top += line + pad * 0.5;
+        }
+        f32 left = b.x + pad + label_width + pad;
+        f32 bottom = b.bottom() - pad - line - pad * 0.5 - if (x_label.is_empty()) { 0.0 } else { line };
+        std::ui::rect area = std::ui::rect{ .x = left.round(), .y = top.round(), .width = (b.right() - pad - left).max(8.0).round(), .height = (bottom - top).max(8.0).round() };
+        p.inner = area;
+        {
+            // The next frame reduces its series to this area's width.
+            mut std::ui::immediate::widget_state& st = p.parent.state(p.id);
+            st.position = area.origin();
+            st.size = area.size();
+        }
+        // As many x ticks as their labels leave room for.
+        mut u32 x_target = cast::saturate<u32>((area.width / (80.0 * t.density)).max(3.0));
+        mut ticks tx = ticks::for_range(v.x_min, v.x_max, x_target);
+        {
+            mut std::ui::painter measure = p.parent.painter();
+            while (x_target > 2) {
+                mut f32 widest = 0.0;
+                for (u32 i : 0..tx.count) {
+                    std::string text = tx.label(i);
+                    widest = widest.max(measure.measure(text.as_str(), label_style).x);
+                }
+                if ((widest + 18.0) * cast::round<f32>(tx.count) <= area.width) {
+                    break;
+                }
+                x_target -= 1;
+                tx = ticks::for_range(v.x_min, v.x_max, x_target);
+            }
+        }
+
+        // Input: pan, zoom, fit. They change the stored view for the next frame.
+        handle_input(mut p, area, v);
+
+        mut std::ui::immediate::widget_storage data = std::take(mut p.parent.storage(points_id(p.id)));
+        std::array<entry, 16> entries = p.entries;
+        usize count = p.entry_count;
+        u32 hidden = p.hidden;
+        mut std::darray<std::ui::vec2> path = std::take(mut p.parent.storage(points_id(p.id)).points);
+        mut std::darray<std::ui::vec2> under = std::take(mut p.parent.storage(p.id).points);
+        {
+            mut std::ui::painter g = p.parent.painter();
+            g.list.fill(b, t.colors.surface_sunken, t.radius.medium);
+            // The title, then the y axis' label (its unit) in the label colour.
+            mut f32 title_end = b.x + pad;
+            if (!title.is_empty()) {
+                title_end += g.text(std::ui::vec2{ .x = b.x + pad, .y = b.y + pad * 0.5 }, title, title_style) + pad;
+            }
+            if (!y_label.is_empty()) {
+                f32 ly = if (title.is_empty()) { b.y + pad * 0.5 } else { b.y + pad * 0.5 + 1.0 };
+                _ = g.text(std::ui::vec2{ .x = title_end, .y = ly }, y_label, label_style);
+            }
+            // Grid and tick labels.
+            std::ui::color grid = t.colors.border.with_alpha(0.55);
+            for (u32 i : 0..ty.count) {
+                f64 y = ty.at(i);
+                std::ui::vec2 at = to_screen(area, v, v.x_min, y);
+                if (at.y < area.y - 0.5 || at.y > area.bottom() + 0.5) {
+                    continue;
+                }
+                f32 yy = at.y.round() + 0.5;
+                g.list.line(std::ui::vec2{ .x = area.x, .y = yy }, std::ui::vec2{ .x = area.right(), .y = yy }, 1.0, grid);
+                std::string text = y_label_text(ty, i, log_y);
+                f32 w = g.measure(text.as_str(), label_style).x;
+                _ = g.text(std::ui::vec2{ .x = area.x - pad - w, .y = yy - line * 0.6 }, text.as_str(), label_style);
+            }
+            for (u32 i : 0..tx.count) {
+                f64 x = tx.at(i);
+                std::ui::vec2 at = to_screen(area, v, x, v.y_min);
+                if (at.x < area.x - 0.5 || at.x > area.right() + 0.5) {
+                    continue;
+                }
+                f32 xx = at.x.round() + 0.5;
+                g.list.line(std::ui::vec2{ .x = xx, .y = area.y }, std::ui::vec2{ .x = xx, .y = area.bottom() }, 1.0, grid);
+                std::string text = tx.label(i);
+                f32 w = g.measure(text.as_str(), label_style).x;
+                f32 lx = (xx - w * 0.5).max(b.x + pad).min(b.right() - pad - w);
+                _ = g.text(std::ui::vec2{ .x = lx, .y = area.bottom() + pad * 0.5 }, text.as_str(), label_style);
+            }
+            if (!x_label.is_empty()) {
+                f32 w = g.measure(x_label, label_style).x;
+                _ = g.text(std::ui::vec2{ .x = area.x + (area.width - w) * 0.5, .y = area.bottom() + pad * 0.5 + line }, x_label, label_style);
+            }
+            g.list.stroke(area, t.colors.border, 0.0, 1.0);
+
+            // The series, clipped to the area.
+            g.list.push_clip(area);
+            for (usize e : 0..count) {
+                if ((hidden & (1u32 << cast::truncate<u32>(e))) == 0) {
+                    draw_entry(mut g, area, v, entries[e], data.numbers, t, mut path, mut under);
+                }
+            }
+            g.list.pop_clip();
+
+            // Lines' labels at their end.
+            for (usize e : 0..count) {
+                entry en = entries[e];
+                if (en.what != kind::hline && en.what != kind::vline) {
+                    continue;
+                }
+                std::str name = data.text.as_str().slice(cast<usize>(en.name_from), cast<usize>(en.name_to));
+                std::ui::text_style s = t.style(std::ui::text_role::caption, en.color);
+                f32 w = g.measure(name, s).x;
+                if (en.what == kind::hline) {
+                    std::ui::vec2 at = to_screen(area, v, v.x_max, en.value);
+                    if (at.y >= area.y && at.y <= area.bottom()) {
+                        // Above the line, or below it when it runs along the top.
+                        f32 ly = if (at.y - line - 3.0 < area.y) { at.y + 3.0 } else { at.y - line - 3.0 };
+                        _ = g.text(std::ui::vec2{ .x = area.right() - w - pad * 0.5, .y = ly }, name, s);
+                    }
+                } else {
+                    std::ui::vec2 at = to_screen(area, v, en.value, v.y_max);
+                    if (at.x >= area.x && at.x <= area.right()) {
+                        _ = g.text(std::ui::vec2{ .x = at.x + 4.0, .y = area.y + 2.0 }, name, s);
+                    }
+                }
+            }
+        }
+        if (p.show_legend) {
+            draw_legend(mut p, area, t, entries, count, data.text.as_str());
+        }
+        draw_reset(mut p, area, t);
+        draw_hover(mut p, area, v, t, entries, count, data, log_y);
+        data.points = move path;
+        p.parent.storage(points_id(p.id)) = move data;
+        p.parent.storage(p.id).points = move under;
+    }
+
+    // Draws a line through `path` (and the area under it down to `ground` for areas); `under` is
+    // scratch for the area's lower edge.
+    private void stroke_path(mut std::ui::painter& g, std::span<std::ui::vec2> path, mut std::darray<std::ui::vec2>& under, entry en, f32 ground, f32 width) {
+        if (path.is_empty()) {
+            return;
+        }
+        if (path.len() == 1) {
+            g.list.circle(path[0], width * 1.5, en.color);
+            return;
+        }
+        if (en.what == kind::area) {
+            under.clear();
+            for (usize i : 0..path.len()) {
+                under.push(std::ui::vec2{ .x = path[i].x, .y = ground });
+            }
+            g.list.fill_between_gradient(path, under.as_span(), en.color.with_alpha(0.32), en.color.with_alpha(0.02));
+        }
+        g.list.stroke_polygon(path, false, width, en.color);
+    }
+
+    private void draw_entry(mut std::ui::painter& g, std::ui::rect area, view_range& v, entry en, std::darray<f64>& points, std::ui::theme& t,
+                            mut std::darray<std::ui::vec2>& path, mut std::darray<std::ui::vec2>& under) {
+        f32 width = 1.6 * t.density;
+        usize from = cast<usize>(en.first);
+        usize n = cast<usize>(en.count);
+        match (en.what) {
+            kind::hline => {
+                f32 y = to_screen(area, v, v.x_min, en.value).y.round() + 0.5;
+                g.list.line(std::ui::vec2{ .x = area.x, .y = y }, std::ui::vec2{ .x = area.right(), .y = y }, 1.2, en.color);
+            },
+            kind::vline => {
+                f32 x = to_screen(area, v, en.value, v.y_min).x.round() + 0.5;
+                g.list.line(std::ui::vec2{ .x = x, .y = area.y }, std::ui::vec2{ .x = x, .y = area.bottom() }, 1.2, en.color);
+            },
+            kind::scatter => {
+                for (usize i : from..from + n) {
+                    std::ui::vec2 at = to_screen(area, v, points[2 * i], points[2 * i + 1]);
+                    if (area.contains(at)) {
+                        g.list.circle(at, 2.5 * t.density, en.color);
+                    }
+                }
+            },
+            kind::bars => {
+                f64 half = en.value * 0.5;
+                f64 base = (0.0f64).max(v.y_min).min(v.y_max);
+                for (usize i : from..from + n) {
+                    f64 x = points[2 * i];
+                    f64 y = points[2 * i + 1];
+                    std::ui::vec2 a = to_screen(area, v, x - half, y.max(base));
+                    std::ui::vec2 c = to_screen(area, v, x + half, y.min(base));
+                    std::ui::rect r = std::ui::rect::from_corners(a, c);
+                    g.list.fill(r, en.color.with_alpha(0.85), (2.0f32).min(r.width * 0.25));
+                }
+            },
+            _ => {
+                if (n == 0) {
+                    return;
+                }
+                // The buffers are the plot's, kept between frames: no allocation once they are large.
+                f32 ground = to_screen(area, v, v.x_min, (0.0f64).max(v.y_min).min(v.y_max)).y;
+                path.clear();
+                for (usize i : from..from + n) {
+                    f64 y = points[2 * i + 1];
+                    if (y.is_nan()) {
+                        stroke_path(mut g, path.as_span(), mut under, en, ground, width);
+                        path.clear();
+                        continue;
+                    }
+                    path.push(to_screen(area, v, points[2 * i], y));
+                }
+                stroke_path(mut g, path.as_span(), mut under, en, ground, width);
+            },
+        }
+    }
+
+    // The ids of a plot's parts.
+    private u64 legend_id(u64 plot, usize entry_index) {
+        return std::hash_combine(std::hash_combine(plot, 0x6c6567), cast<u64>(entry_index));
+    }
+
+    private void draw_legend(mut scope& p, std::ui::rect area, std::ui::theme& t, std::array<entry, 16>& entries, usize count, std::str names) {
+        mut usize shown = 0;
+        for (usize e : 0..count) {
+            if (entries[e].what != kind::hline && entries[e].what != kind::vline) {
+                shown += 1;
+            }
+        }
+        if (shown < 2) {
+            return;
+        }
+        std::ui::text_style s = t.style(std::ui::text_role::caption, t.colors.text);
+        std::ui::text_style off = t.style(std::ui::text_role::caption, t.colors.text_faint);
+        f32 row = 16.0 * t.density;
+        f32 swatch = 9.0 * t.density;
+        f32 pad = 4.0 * t.density;
+        mut f32 widest = 0.0;
+        {
+            mut std::ui::painter g = p.parent.painter();
+            for (usize e : 0..count) {
+                entry en = entries[e];
+                if (en.what != kind::hline && en.what != kind::vline) {
+                    widest = widest.max(g.measure(names.slice(cast<usize>(en.name_from), cast<usize>(en.name_to)), s).x);
+                }
+            }
+        }
+        std::ui::rect box = std::ui::rect{
+            .x = area.x + pad * 2.0, .y = area.y + pad * 2.0,
+            .width = (swatch + pad * 3.0 + widest).round(), .height = (row * cast<f32>(cast::truncate<u16>(shown)) + pad * 2.0).round(),
+        };
+        {
+            mut std::ui::painter g = p.parent.painter();
+            g.list.fill(box, t.colors.surface.with_alpha(0.88), t.radius.small);
+            g.list.stroke(box, t.colors.border, t.radius.small, 1.0);
+        }
+        mut usize row_index = 0;
+        for (usize e : 0..count) {
+            entry en = entries[e];
+            if (en.what == kind::hline || en.what == kind::vline) {
+                continue;
+            }
+            std::ui::rect r = std::ui::rect{ .x = box.x + pad, .y = box.y + pad + row * cast<f32>(cast::truncate<u16>(row_index)), .width = box.width - pad * 2.0, .height = row };
+            row_index += 1;
+            std::ui::immediate::response resp = p.parent.interact(legend_id(p.id, e), r);
+            u32 mask_bit = 1u32 << cast::truncate<u32>(e);
+            if (resp.clicked) {
+                p.hidden = p.hidden ^ mask_bit;
+                mut std::darray<f64>& own = p.parent.storage(p.id).numbers;
+                ensure_slots(mut own);
+                own[slot_hidden] = cast<f64>(p.hidden);
+            }
+            bool is_hidden = (p.hidden & mask_bit) != 0;
+            mut std::ui::painter g = p.parent.painter();
+            if (resp.state.hovered) {
+                g.list.fill(r, t.colors.text.with_alpha(0.06), t.radius.small);
+            }
+            std::ui::rect sw = std::ui::rect{ .x = r.x, .y = (r.y + (row - swatch) * 0.5).round(), .width = swatch, .height = swatch };
+            if (is_hidden) {
+                g.list.stroke(sw, en.color, 2.0, 1.2);
+            } else {
+                g.list.fill(sw, en.color, 2.0);
+            }
+            std::str name = names.slice(cast<usize>(en.name_from), cast<usize>(en.name_to));
+            _ = g.text(std::ui::vec2{ .x = sw.right() + pad, .y = r.y + 1.0 }, name, if (is_hidden) { off } else { s });
+        }
+    }
+
+    // The button in the top-right corner that brings a moved view back to the data.
+    private void draw_reset(mut scope& p, std::ui::rect area, std::ui::theme& t) {
+        if (!p.moved()) {
+            return;
+        }
+        std::ui::text_style s = t.style(std::ui::text_role::caption, t.colors.text);
+        std::str label = "Reset";
+        f32 pad = 6.0 * t.density;
+        mut f32 w = 0.0;
+        {
+            mut std::ui::painter m = p.parent.painter();
+            w = m.measure(label, s).x;
+        }
+        f32 h = (18.0 * t.density).round();
+        std::ui::rect r = std::ui::rect{ .x = (area.right() - w - 2.0 * pad - 6.0).round(), .y = area.y + 6.0, .width = (w + 2.0 * pad).round(), .height = h };
+        std::ui::immediate::response resp = p.parent.interact(std::hash_combine(p.id, 0x7265736574), r);
+        if (resp.clicked) {
+            // Stores the fitted numbers too, so range() is right on the next frame.
+            p.reset_view();
+            mut view_range fitted = final_view(mut p);
+            fitted.fit_x = true;
+            fitted.fit_y = true;
+            store_view(mut p.parent, p.id, p.x_owner, fitted);
+        }
+        mut std::ui::painter g = p.parent.painter();
+        g.list.fill(r, t.colors.surface_raised.mix(t.colors.primary, 0.25 * resp.state.hover), t.radius.small);
+        g.list.stroke(r, t.colors.border, t.radius.small, 1.0);
+        g.centered_text(r, label, s);
+    }
+
+    // Pan with a drag, zoom with the wheel, fit with a double-click.
+    private void handle_input(mut scope& p, std::ui::rect area, view_range& drawn) {
+        std::ui::immediate::response resp = p.parent.interact(p.id, area);
+        std::ui::vec2 cursor = p.parent.ctx.in.cursor;
+        bool pressed_now = p.parent.ctx.in.mouse_pressed;
+        bool down = p.parent.ctx.in.mouse_down;
+        f32 wheel = p.parent.ctx.in.scroll;
+        mut view_range next = drawn;
+        mut bool changed = false;
+        mut std::darray<f64>& own = p.parent.storage(p.id).numbers;
+        ensure_slots(mut own);
+        f64 now = p.parent.ctx.clock;
+        if (resp.state.hovered && pressed_now) {
+            if (now - own[slot_last_click] < 0.35) {
+                next.fit_x = true;
+                next.fit_y = true;
+                changed = true;
+                own[slot_last_click] = -10.0;
+            } else {
+                own[slot_last_click] = now;
+            }
+            own[slot_drag_x] = cast<f64>(cursor.x);
+            own[slot_drag_y] = cast<f64>(cursor.y);
+            own[slot_dragging] = 1.0;
+        }
+        if (resp.state.pressed && own[slot_dragging] != 0.0 && !changed) {
+            f64 dx = cast<f64>(cursor.x) - own[slot_drag_x];
+            f64 dy = cast<f64>(cursor.y) - own[slot_drag_y];
+            if (dx != 0.0 || dy != 0.0) {
+                f64 per_x = (drawn.x_max - drawn.x_min) / cast<f64>(area.width);
+                f64 per_y = (drawn.y_max - drawn.y_min) / cast<f64>(area.height);
+                next.x_min = drawn.x_min - dx * per_x;
+                next.x_max = drawn.x_max - dx * per_x;
+                next.y_min = drawn.y_min + dy * per_y;
+                next.y_max = drawn.y_max + dy * per_y;
+                next.fit_x = false;
+                next.fit_y = false;
+                changed = true;
+                own[slot_drag_x] = cast<f64>(cursor.x);
+                own[slot_drag_y] = cast<f64>(cursor.y);
+            }
+        }
+        if (!down) {
+            own[slot_dragging] = 0.0;
+        }
+        if (resp.state.hovered && wheel != 0.0 && p.parent.scroll_unused()) {
+            p.parent.take_scroll();
+            f64 factor = (0.85f64).pow(cast<f64>(wheel));
+            f64 cx = drawn.x_min + cast<f64>((cursor.x - area.x) / area.width) * (drawn.x_max - drawn.x_min);
+            f64 cy = drawn.y_max - cast<f64>((cursor.y - area.y) / area.height) * (drawn.y_max - drawn.y_min);
+            next.x_min = cx - (cx - drawn.x_min) * factor;
+            next.x_max = cx + (drawn.x_max - cx) * factor;
+            next.y_min = cy - (cy - drawn.y_min) * factor;
+            next.y_max = cy + (drawn.y_max - cy) * factor;
+            next.fit_x = false;
+            next.fit_y = false;
+            changed = true;
+        }
+        if (!changed) {
+            // Following the data: the next frame reduces over the fitted range.
+            next = drawn;
+            next.fit_x = p.shown.fit_x;
+            next.fit_y = p.shown.fit_y;
+        } else {
+            // Pans stop at the limits; a zoom out stops at their width.
+            bool fit_x = next.fit_x;
+            bool fit_y = next.fit_y;
+            next = limited(next, p.x_axis, p.y_axis);
+            next.fit_x = fit_x;
+            next.fit_y = fit_y;
+        }
+        store_view(mut p.parent, p.id, p.x_owner, next);
+    }
+
+    // The value of every series at the cursor's x, in a box next to it, and a line at that x.
+    private void draw_hover(mut scope& p, std::ui::rect area, view_range& v, std::ui::theme& t, std::array<entry, 16>& entries, usize count,
+                            std::ui::immediate::widget_storage& data, bool log_y) {
+        std::ui::vec2 cursor = p.parent.ctx.in.cursor;
+        if (!area.contains(cursor) || p.parent.ctx.hover_window != p.parent.window || p.parent.ctx.in.mouse_down) {
+            mut std::darray<f64>& own = p.parent.storage(p.id).numbers;
+            ensure_slots(mut own);
+            own[slot_hover_width] = 0.0;
+            own[slot_hover_side] = 0.0;
+            return;
+        }
+        f64 x = v.x_min + cast<f64>((cursor.x - area.x) / area.width) * (v.x_max - v.x_min);
+        std::ui::text_style s = t.style(std::ui::text_role::caption, t.colors.text);
+        std::ui::text_style head = t.style(std::ui::text_role::caption, t.colors.text_muted);
+        mut std::array<usize, 16> which = default;
+        mut std::array<f64, 16> values = default;
+        mut std::array<f64, 16> at_x = default;
+        mut usize found = 0;
+        for (usize e : 0..count) {
+            entry en = entries[e];
+            if (en.what == kind::hline || en.what == kind::vline || en.count == 0) {
+                continue;
+            }
+            if ((p.hidden & (1u32 << cast::truncate<u32>(e))) != 0) {
+                continue;
+            }
+            usize from = cast<usize>(en.first);
+            mut usize best = from;
+            mut f64 best_d = (data.numbers[2 * from] - x).abs();
+            for (usize i : from..from + cast<usize>(en.count)) {
+                f64 d = (data.numbers[2 * i] - x).abs();
+                if (d < best_d) {
+                    best_d = d;
+                    best = i;
+                }
+            }
+            which[found] = e;
+            at_x[found] = data.numbers[2 * best];
+            values[found] = data.numbers[2 * best + 1];
+            found += 1;
+        }
+        if (found == 0) {
+            return;
+        }
+        std::str names = data.text.as_str();
+        usize oi = p.parent.ctx.overlay_layer();
+        mut std::ui::painter g = std::ui::painter{ .list = p.parent.ctx.layers[oi].list, .faces = p.parent.ctx.faces, .tokens = p.parent.ctx.look };
+        g.list.push_clip(area);
+        f32 xx = cursor.x.round() + 0.5;
+        g.list.line(std::ui::vec2{ .x = xx, .y = area.y }, std::ui::vec2{ .x = xx, .y = area.bottom() }, 1.0, t.colors.text_muted.with_alpha(0.5));
+        for (usize k : 0..found) {
+            std::ui::vec2 dot = to_screen(area, v, at_x[k], values[k]);
+            g.list.circle(dot, 3.5 * t.density, entries[which[k]].color);
+            g.list.circle_stroke(dot, 3.5 * t.density, t.colors.surface, 1.0);
+        }
+        g.list.pop_clip();
+        // The box: "x = ..." and one line per series.
+        f32 row = 16.0 * t.density;
+        f32 pad = t.space.s;
+        u32 y_decimals = decimals_for(v.y_max - v.y_min) + 1;
+        if (log_y) {
+            for (usize k : 0..found) {
+                values[k] = (10.0f64).pow(values[k]);
+            }
+        }
+        std::string head_text = std::format(f"x = {format_number(at_x[0], decimals_for(v.x_max - v.x_min))}");
+        mut f32 widest = g.measure(head_text.as_str(), head).x;
+        for (usize k : 0..found) {
+            entry en = entries[which[k]];
+            std::str name = names.slice(cast<usize>(en.name_from), cast<usize>(en.name_to));
+            std::string text = std::format(f"{name}: {format_number(values[k], y_decimals)}");
+            widest = widest.max(g.measure(text.as_str(), s).x + 14.0);
+        }
+        // The width only grows while the cursor stays on the plot (in steps of 8 px), and the box
+        // stays on its side while it fits there: changing values don't make it jump.
+        mut f32 width = ((widest + pad * 2.0) / 8.0).ceil() * 8.0;
+        mut bool on_left = false;
+        {
+            mut std::darray<f64>& own = p.parent.storage(p.id).numbers;
+            ensure_slots(mut own);
+            width = width.max(cast::round<f32>(own[slot_hover_width]));
+            own[slot_hover_width] = cast<f64>(width);
+            bool fits_right = cursor.x + 16.0 + width < area.right();
+            bool fits_left = cursor.x - 16.0 - width > area.x;
+            on_left = if (own[slot_hover_side] != 0.0) { fits_left || !fits_right } else { !fits_right && fits_left };
+            own[slot_hover_side] = if (on_left) { 1.0 } else { 0.0 };
+        }
+        f32 height = row * cast<f32>(cast::truncate<u16>(found + 1)) + pad;
+        f32 bx = if (on_left) { cursor.x - 16.0 - width } else { cursor.x + 16.0 };
+        f32 by = (cursor.y - height * 0.5).max(area.y).min(area.bottom() - height);
+        std::ui::rect box = std::ui::rect{ .x = bx.round(), .y = by.round(), .width = width.round(), .height = height.round() };
+        g.list.shadow(box, t.radius.small, t.elevation(2), t.colors.shadow);
+        g.list.fill(box, t.colors.surface_raised, t.radius.small);
+        g.list.stroke(box, t.colors.border, t.radius.small, 1.0);
+        _ = g.text(std::ui::vec2{ .x = box.x + pad, .y = box.y + pad * 0.5 }, head_text.as_str(), head);
+        for (usize k : 0..found) {
+            entry en = entries[which[k]];
+            f32 y = box.y + pad * 0.5 + row * cast<f32>(cast::truncate<u16>(k + 1));
+            g.list.fill(std::ui::rect{ .x = box.x + pad, .y = y + 4.0, .width = 8.0, .height = 8.0 }, en.color, 2.0);
+            std::str name = names.slice(cast<usize>(en.name_from), cast<usize>(en.name_to));
+            std::string text = std::format(f"{name}: {format_number(values[k], y_decimals)}");
+            _ = g.text(std::ui::vec2{ .x = box.x + pad + 14.0, .y = y }, text.as_str(), s);
+        }
+    }
+
+    // Decimals that tell values `span` apart at a glance.
+    private u32 decimals_for(f64 span) {
+        if (!(span > 0.0)) {
+            return 2;
+        }
+        f64 digits = 2.0 - span.log10().floor();
+        if (digits <= 0.0) {
+            return 0;
+        }
+        return cast::saturate<u32>(digits).min(6);
+    }
+
+    // ---- widgets -------------------------------------------------------------------------------------------
+
+    implement widgets for std::ui::immediate::scope {
+        scope plot(std::str title, f32 height, implicit compile_time std::call_site where) mut override {
+            u64 plot_id = this.make_id(title, where);
+            std::ui::rect bounds = if (this.open()) {
+                this.allocate(std::ui::vec2{ .x = this.available_width(), .y = height * this.theme().density })
+            } else {
+                std::ui::rect{}
+            };
+            mut u32 columns = cast::saturate<u32>(bounds.width.max(16.0));
+            mut std::ui::rect area = default;
+            {
+                // The area of the last frame: its width is the number of columns to reduce to.
+                mut std::ui::immediate::widget_state& st = this.state(plot_id);
+                area = std::ui::rect::at(st.position, st.size);
+            }
+            if (area.width > 0.0) {
+                columns = cast::saturate<u32>(area.width);
+            }
+            u32 hidden = hidden_mask(mut this, plot_id);
+            view_range shown = stored_view(mut this, plot_id, plot_id);
+            {
+                mut std::ui::immediate::widget_storage& points = this.storage(points_id(plot_id));
+                points.numbers.clear();
+                points.text.clear();
+            }
+            return scope{
+                .parent = this, .id = plot_id, .title = title, .bounds = bounds, .x_owner = plot_id, .shown = shown,
+                .columns = columns, .inner = area, .hidden = hidden,
+            };
+        }
+
+        void sparkline(std::span<f32> values, implicit compile_time std::call_site where) mut override {
+            if (!this.open()) {
+                return;
+            }
+            std::ui::theme t = this.theme();
+            f32 height = t.controls.row_height * t.density;
+            std::ui::rect r = this.allocate(std::ui::vec2{ .x = this.available_width(), .y = height });
+            draw_spark(mut this, this.make_id("sparkline", where), std::ui::rect{ .x = r.x, .y = r.y + 4.0, .width = r.width, .height = r.height - 8.0 }, values, t.colors.primary, false);
+        }
+
+        void gauge(std::str label, f64 fraction, std::str value, std::str caption, std::ui::color tint, implicit compile_time std::call_site where) mut override {
+            if (!this.open()) {
+                return;
+            }
+            std::ui::theme t = this.theme();
+            f32 span = this.available_width();
+            f32 radius = (span * 0.3).min(54.0 * t.density).max(28.0);
+            f32 thick = (radius * 0.12).max(4.0);
+            std::ui::text_style over = t.style(std::ui::text_role::overline, t.colors.text_muted);
+            std::ui::text_style big = t.style(std::ui::text_role::heading, t.colors.text);
+            std::ui::text_style small = t.style(std::ui::text_role::caption, tint);
+            f32 top_room = if (label.is_empty()) { 0.0 } else { 22.0 * t.density };
+            std::ui::rect r = this.allocate(std::ui::vec2{ .x = span, .y = (top_room + radius * 2.0 * 0.86 + thick).round() });
+            std::ui::vec2 c = std::ui::vec2{ .x = (r.x + span * 0.5).round(), .y = (r.y + top_room + radius + thick * 0.5).round() };
+            f32 from = 150.0;
+            f32 to = 390.0;
+            f32 f = cast::round<f32>(fraction.clamp(0.0, 1.0));
+            mut std::ui::painter p = this.painter();
+            if (!label.is_empty()) {
+                std::string caps = std::ui::upper(label);
+                _ = p.text(std::ui::vec2{ .x = r.x, .y = r.y }, caps.as_str(), over);
+            }
+            p.list.arc(c, radius, from, to, thick, t.colors.border);
+            if (f > 0.0) {
+                f32 end = from + (to - from) * f;
+                p.list.arc(c, radius, from, end, thick * 2.0, tint.with_alpha(0.1));
+                p.list.arc(c, radius, from, end, thick, tint);
+            }
+            std::ui::vec2 v = p.measure(value, big);
+            _ = p.text(std::ui::vec2{ .x = (c.x - v.x * 0.5).round(), .y = (c.y - v.y * 0.62).round() }, value, big);
+            std::ui::vec2 k = p.measure(caption, small);
+            _ = p.text(std::ui::vec2{ .x = (c.x - k.x * 0.5).round(), .y = (c.y + v.y * 0.42).round() }, caption, small);
+        }
+
+        void stat(std::str label, f64 value, std::span<f32> trend, stat_options options, implicit compile_time std::call_site where) mut override {
+            if (!this.open()) {
+                return;
+            }
+            std::ui::theme t = this.theme();
+            f32 pad = t.space.m;
+            std::ui::text_style label_style = t.style(std::ui::text_role::label, t.colors.text_muted);
+            bool warn = match (options.warn_above) {
+                std::some(limit) => value > limit,
+                std::none => false,
+            };
+            std::ui::color number_color = if (warn) { t.colors.warning } else { t.colors.text };
+            std::ui::text_style big = t.style(std::ui::text_role::display, number_color);
+            std::ui::text_style unit_style = t.style(std::ui::text_role::body, t.colors.text_muted);
+            f32 spark = if (trend.is_empty()) { 0.0 } else { 28.0 * t.density };
+            mut f32 big_height = 0.0;
+            {
+                mut std::ui::painter m = this.painter();
+                big_height = m.faces.line_height(big);
+            }
+            f32 label_height = 16.0 * t.density;
+            f32 height = pad * 2.0 + label_height + big_height + if (spark > 0.0) { spark + pad * 0.5 } else { 0.0 };
+            std::ui::rect r = this.allocate(std::ui::vec2{ .x = this.available_width(), .y = height.round() });
+            std::string number_text = format_number(value, options.decimals);
+            {
+                mut std::ui::painter g = this.painter();
+                g.list.shadow(r, t.radius.medium, t.elevation(1), t.colors.shadow);
+                g.list.fill(r, t.colors.surface_raised, t.radius.medium);
+                g.list.stroke(r, t.colors.border, t.radius.medium, 1.0);
+                _ = g.text(std::ui::vec2{ .x = r.x + pad, .y = r.y + pad }, label, label_style);
+                f32 w = g.text(std::ui::vec2{ .x = r.x + pad, .y = r.y + pad + label_height }, number_text.as_str(), big);
+                if (options.unit != "") {
+                    f32 unit_h = g.faces.line_height(unit_style);
+                    _ = g.text(std::ui::vec2{ .x = r.x + pad + w + 6.0, .y = r.y + pad + label_height + big_height - unit_h - 2.0 }, options.unit, unit_style);
+                }
+            }
+            if (spark > 0.0) {
+                std::ui::rect sr = std::ui::rect{ .x = r.x + pad, .y = r.bottom() - pad - spark, .width = r.width - pad * 2.0, .height = spark };
+                std::ui::color c = if (warn) { t.colors.warning } else { t.colors.primary };
+                draw_spark(mut this, this.make_id(label, where), sr, trend, c, true);
+            }
+        }
+    }
+
+    // A line of `values` filling `r`, reduced to its width (in the storage of `widget`, reused);
+    // with the area under it when `filled`.
+    private void draw_spark(mut std::ui::immediate::scope& s, u64 widget, std::ui::rect r, std::span<f32> values, std::ui::color c, bool filled) {
+        if (values.len() < 2 || r.width < 2.0) {
+            return;
+        }
+        mut f32 low = values[0];
+        mut f32 high = values[0];
+        for (usize i : 0..values.len()) {
+            low = low.min(values[i]);
+            high = high.max(values[i]);
+        }
+        if (!(high > low)) {
+            high = low + 1.0;
+            low = low - 1.0;
+        }
+        mut std::darray<f64> reduced = std::take(mut s.storage(widget).numbers);
+        reduced.clear();
+        usize n = decimate_indexed<f32>(values, 0.0, of_usize(values.len() - 1), cast::saturate<u32>(r.width), mut reduced);
+        f64 last_x = of_usize(values.len() - 1);
+        mut std::darray<std::ui::vec2> path = std::take(mut s.storage(widget).points);
+        path.clear();
+        for (usize i : 0..n) {
+            f32 fx = narrow(reduced[2 * i] / last_x);
+            f32 fy = (narrow(reduced[2 * i + 1]) - low) / (high - low);
+            path.push(std::ui::vec2{ .x = r.x + fx * r.width, .y = r.bottom() - fy * r.height });
+        }
+        // The area's lower edge goes after the line in the same buffer.
+        for (usize i : 0..n) {
+            path.push(std::ui::vec2{ .x = path[i].x, .y = r.bottom() });
+        }
+        {
+            mut std::ui::painter g = s.painter();
+            std::span<std::ui::vec2> line = path.as_span().slice(0, n);
+            if (filled) {
+                g.list.fill_between_gradient(line, path.as_span().slice(n, 2 * n), c.with_alpha(0.3), c.with_alpha(0.02));
+            }
+            g.list.stroke_polygon(line, false, 1.5, c);
+            g.list.circle(path[n - 1], 2.5, c);
+        }
+        s.storage(widget).points = move path;
+        s.storage(widget).numbers = move reduced;
+    }
+}

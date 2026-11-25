@@ -1,0 +1,41 @@
+// Standard-library lesson 13: a measurement pipeline. Fill in the TODOs until
+//     python3 course/check.py s13
+// says done. It builds as it is and prints wrong values.
+import std;
+
+compile_time std::static_str raw = "12.5\n13.0\nbad\n11.5\n14.0\n12.0\n\n15.5\noops\n13.5\n";
+
+// Stage 1 and 2: a reader thread sends lines, two parser threads send numbers (or count rejects).
+// Returns the parsed values in any order and how many lines were rejected.
+(std::darray<f32>, u32) parse_all(std::static_str text) {
+    std::atomic<u32> rejected = default;
+    mut std::darray<f32> out = default;
+    // TODO: a bounded channel of lines (4) and an unbounded one of values. Two parser threads each
+    // take lines and send parsed f32 values, counting lines that don't parse in `rejected`. A
+    // reader thread sends the non-empty lines of `text`. Join the reader, close the lines, join
+    // the parsers, close the values, and collect them into `out`.
+    return (move out, rejected.load(std::memory_order::acquire));
+}
+
+i32 main() {
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 3, .name = "calc" });
+
+    (mut std::darray<f32> values, u32 rejected) = parse_all(raw);
+    std::parallel::sort(pool, values.as_mut_span());     // arrival order varies: sort first
+    std::println(f"{values.len()} values, {rejected} rejected, smallest {values[0]}, largest {values[values.len() - 1]}");
+
+    // Stage 3: min and max in one deterministic reduction.
+    // TODO: min and max with pool.reduce_chunks (chunks of 2); the result is a (f32, f32) tuple.
+    (f32, f32) range = (0.0, 0.0);
+    std::println(f"range {range.0} to {range.1}");
+
+    // Stage 4: the deviations from the mean, computed in place, chunk by chunk.
+    // TODO: the sum with reduce_chunks, then subtract the mean from every value in place with
+    // pool.for_chunks (chunks of 2).
+    f32 mean = 0.0;
+    std::println(f"mean {mean:.2}, deviations from {values[0]:.2} to {values[values.len() - 1]:.2}");
+    // TODO: the index of the first value above the mean (above 0 after the subtraction), with std::parallel.
+    std::option<usize> first_above = std::none;
+    std::println(f"first value above the mean is number {first_above.value_or(0) + 1}");
+    return 0;
+}

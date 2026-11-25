@@ -1,0 +1,21 @@
+// Vectors: plain structs of f32 with operators; GPU-ready layout.
+import std;
+namespace m = std::math;
+
+i32 main() {
+    m::vec2 a = m::vec2{ .x = 3.0, .y = 4.0 };
+    m::vec2 b = m::vec2::splat(1.0);
+    std::println(f"{a + b} {a * 2.0} {-a}");
+    std::println(f"len {a.length()}, unit {a.normalized()}, dot {a.dot(b)}");
+    std::println(f"perpendicular {a.perpendicular()}, zero normalized {m::vec2{}.normalized()}");
+    m::vec3 x = m::vec3{ .x = 1.0 };
+    m::vec3 y = m::vec3{ .y = 1.0 };
+    std::println(f"x cross y {x.cross(y)}");
+    std::println(f"halfway {a.lerp(b, 0.5)}, size {std::size_of<m::vec3>()} bytes");
+    return 0;
+}
+//> std::math::vec2 { x: 4.0, y: 5.0 } std::math::vec2 { x: 6.0, y: 8.0 } std::math::vec2 { x: -3.0, y: -4.0 }
+//> len 5.0, unit std::math::vec2 { x: 0.6, y: 0.8 }, dot 7.0
+//> perpendicular std::math::vec2 { x: -4.0, y: 3.0 }, zero normalized std::math::vec2 { x: 0.0, y: 0.0 }
+//> x cross y std::math::vec3 { x: 0.0, y: 0.0, z: 1.0 }
+//> halfway std::math::vec2 { x: 2.0, y: 2.5 }, size 12 bytes

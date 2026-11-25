@@ -1,0 +1,32 @@
+// Where a check is written decides when it runs. This program ends with a panic.
+import std;
+
+struct header {
+    u16 id = 0;
+    u16 kind = 0;
+    u32 length = 0;
+    compile_time check (std::size_of<header>() == 8) else f"header is {std::size_of<header>()} bytes";   // once, when compiled
+}
+
+u8 percent_to_byte(u32 percent) {
+    compile_time run_time check (percent <= 100) else f"{percent}% is more than 100%";   // an entry check
+    return cast::truncate<u8>(percent * 255 / 100);
+}
+
+u32 mask(compile_time u32 bits) {                       // one instance per value of `bits`
+    compile_time check (bits >= 1 && bits <= 32) else f"mask({bits}): bits must be 1 to 32";
+    if compile_time (bits == 32) { return u32::max; } else { return bit<u32>(bits) - 1; }
+}
+
+i32 main() {
+    std::println(f"{percent_to_byte(50)} {mask(4)} {mask(32)}");
+    std::static_str mode = if compile_time (std::build::mode_is(std::build::mode::debug)) { "debug" } else { "optimized" };
+    std::println(f"built as {mode}");
+    std::array<u32, 2> inputs = [40, 150];
+    for (u32 p : inputs) { std::println(f"{percent_to_byte(p)}"); }   // run-time values: checked when it runs
+    return 0;
+}
+//> 127 15 4294967295
+//> built as debug
+//> 102
+//! panic: 150% is more than 100%

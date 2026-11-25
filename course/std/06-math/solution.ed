@@ -1,0 +1,67 @@
+// Standard-library lesson 6: laying out a toolbar (solution).
+import std;
+namespace m = std::math;
+
+// `count` buttons side by side inside `area`, `gap` apart, after shrinking `area` by `padding`.
+std::darray<m::rect> row(m::rect area, usize count, f32 padding, f32 gap) {
+    m::rect inner = area.shrunk(padding);
+    f32 n = cast::round<f32>(count);
+    f32 width = (inner.width - gap * (n - 1.0)) / n;
+    mut std::darray<m::rect> out = std::darray<m::rect>::with_capacity(count);
+    for (usize i : 0..count) {
+        f32 x = inner.x + cast::round<f32>(i) * (width + gap);
+        out.push(m::rect{ .x = x, .y = inner.y, .width = width, .height = inner.height });
+    }
+    return out;
+}
+
+// The index of the button under `p`, if any.
+std::option<usize> hit(std::span<m::rect> buttons, m::vec2 p) {
+    for (usize i : 0..buttons.len()) {
+        if (buttons[i].contains(p)) { return std::some(i); }
+    }
+    return std::none;
+}
+
+// White or black, whichever is easier to read on `background`.
+m::color text_on(m::color background) {
+    m::color white = m::color::white();
+    m::color black = m::color::black();
+    return if (white.contrast(background) >= black.contrast(background)) { white } else { black };
+}
+
+// The background colour lifted by `amount` in OKLCH lightness, keeping hue and chroma.
+m::color hover(m::color c, f32 amount) {
+    m::oklch o = c.to_oklch();
+    return m::color::from_oklch(m::oklch{ .l = (o.l + amount).min(1.0), .c = o.c, .h = o.h }, c.a);
+}
+
+i32 main() {
+    m::rect toolbar = m::rect{ .x = 0.0, .y = 0.0, .width = 320.0, .height = 48.0 };
+    std::darray<m::rect> buttons = row(toolbar, 3, 8.0, 4.0);
+    for (m::rect& b : buttons) { std::println(f"button at x {b.x:.1}, width {b.width:.1}, right {b.right():.1}"); }
+
+    std::array<m::vec2, 3> clicks = [m::vec2{ .x = 50.0, .y = 20.0 }, m::vec2{ .x = 110.0, .y = 20.0 }, m::vec2{ .x = 300.0, .y = 45.0 }];
+    for (m::vec2 c : clicks) {
+        match (hit(buttons.as_span(), c)) {
+            std::some(i) => std::println(f"click ({c.x}, {c.y}) hits button {i}"),
+            std::none => std::println(f"click ({c.x}, {c.y}) hits nothing"),
+        }
+    }
+
+    std::array<u32, 2> backgrounds = [0x1E2A44, 0xF2C94C];
+    for (u32 hexcode : backgrounds) {
+        m::color bg = m::color::hex(hexcode);
+        m::color text = text_on(bg);
+        std::println(f"on {hexcode:x}: text {if (text == m::color::white()) { "white" } else { "black" }}, lighter on hover: {hover(bg, 0.08).luminance() > bg.luminance()}");
+    }
+
+    m::vec2 from = buttons[0].center();
+    m::vec2 to = buttons[2].center();
+    for (u32 step : 0..=2) {
+        f32 t = m::smoothstep(0.0, 1.0, cast::round<f32>(step) / 2.0);
+        m::vec2 p = from.lerp(to, t);
+        std::println(f"highlight at {p.x:.1}");
+    }
+    return 0;
+}

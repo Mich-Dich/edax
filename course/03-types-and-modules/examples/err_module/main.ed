@@ -1,0 +1,9 @@
+// What importers can't reach: private fields and module-local helpers.
+import std;
+import inventory;
+
+i32 main() {
+    shop::stock st = shop::stock::make();
+    usize n = st.names.len();                       //~ error[E4071]
+    return 0;
+}

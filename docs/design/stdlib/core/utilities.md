@@ -74,6 +74,7 @@ f32 sum = w.to_f32() + g.to_f32();             // accumulate in f32
 | `std::cloneable` | Everything except classes without `clone()` |
 | `std::formattable` | What an f-string can print: numbers, `bool`, `char`, strings, simple enums, and types with a `format` method (or `@std::derive::formattable`) |
 | `std::hashable` | See above |
+| `std::equatable` | What `==` works on: numbers, `bool`, `char`, raw pointers, strings, simple enums, and types with `operator==` (written or `= default`) |
 | `std::sendable`, `std::shareable` | Derived from a type's fields (see [Threads](../concurrency/threads.md)) |
 
 A structural interface is implemented by having what it requires; nothing is written in the base list.

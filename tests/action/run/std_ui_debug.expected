@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+kept 100, first #51, last [INFO] step 149, warn 15, error 3
+frames 5, fps true, vertices true, draw calls 10, duplicates 0
+after clear: 1
+--- stderr

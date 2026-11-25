@@ -1,0 +1,39 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4070]: 'std::darray<u32>' has no method 'push_back'
+  --> tests/action/check/cpp_habit_notes.ed:15:10
+   |
+15 |     list.push_back(1);
+   |          ^^^^^^^^^ unknown method
+   = note: 'push_back' is the C++ name; in Edax it is 'push'
+
+error[E4070]: 'std::darray<u32>' has no method 'size'
+  --> tests/action/check/cpp_habit_notes.ed:16:20
+   |
+16 |     usize n = list.size();
+   |                    ^^^^ unknown method
+   = note: 'size' is the C++ name; in Edax it is 'len'
+
+error[E4070]: 'std::darray<u32>' has no method 'empty'
+  --> tests/action/check/cpp_habit_notes.ed:17:19
+   |
+17 |     bool e = list.empty();
+   |                   ^^^^^ unknown method
+   = note: 'empty' is the C++ name; in Edax it is 'is_empty'
+
+error[E4010]: expected 'std::span<u32>', found 'std::array<u32, 2>'
+  --> tests/action/check/cpp_habit_notes.ed:19:17
+   |
+19 |     u32 s = sum(pair);
+   |                 ^^^^ this is 'std::array<u32, 2>'
+   = note: a container doesn't turn into a span by itself; pass '.as_span()'
+
+error[E4073]: 'shout' is a function; call it
+  --> tests/action/check/cpp_habit_notes.ed:20:32
+   |
+20 |     std::fn_ptr<void(u32)> f = shout;
+   |                                ^^^^^ not called
+   = note: write 'shout(...)'; a function is not a value: to pass it on, wrap it in a lambda, '[](...) { shout(...); }'
+
+5 errors, 0 warnings

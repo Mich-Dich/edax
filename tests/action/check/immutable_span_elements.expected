@@ -1,0 +1,25 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4022]: 'bump' is a mut method, but 's[...]' is not mutable
+  --> tests/action/check/immutable_span_elements.ed:12:5
+   |
+12 |     s[0].bump();
+   |     ^^^^^^^^^^^ immutable receiver
+   = note: 'std::span<cell>' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them
+
+error[E4020]: cannot borrow mutably 's[...]': it is not mutable
+  --> tests/action/check/immutable_span_elements.ed:13:19
+   |
+13 |     mut cell& r = s[0];
+   |                   ^^^^ immutable
+   = note: 'std::span<cell>' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them
+
+error[E4020]: cannot pass as a mutable reference 's[...]': it is not mutable
+  --> tests/action/check/immutable_span_elements.ed:14:15
+   |
+14 |     touch(mut s[0]);
+   |               ^^^^ immutable
+   = note: 'std::span<cell>' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them
+
+3 errors, 0 warnings

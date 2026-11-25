@@ -1,0 +1,55 @@
+// Standard-library lesson 12: a job board shared by worker threads. Fill in the TODOs until
+//     python3 course/check.py s12
+// says done. As it is, it builds, and the workers stop at once.
+import std;
+
+// What the board holds: jobs waiting, and whether more will come.
+struct board {
+    std::darray<u32> waiting = default;
+    bool closed = false;
+}
+
+// The workers' shared state.
+struct shop {
+    std::mutex<board> jobs = std::mutex<board>::make(board{});
+    std::condition changed = default;
+    std::rw_mutex<u32> price_per_unit = std::rw_mutex<u32>::make(3);   // read by every job, written once
+    std::atomic<u32> done = default;
+    std::mutex<std::darray<u32>> receipts = std::mutex<std::darray<u32>>::make(default);
+}
+
+// Takes jobs until the board is closed and empty; each job's receipt is units * price.
+void work(shop& s) {
+    // TODO: loop: lock the board and wait on `changed` until it has a job or is closed; take a
+    // job (or return when there is none: closed and empty) and unlock before working. Then read
+    // the price (a read lock), push units * price to the receipts, and count the job as done.
+}
+
+void post(shop& s, u32 units) {
+    // TODO: add the job under the lock, then wake one waiting worker.
+}
+
+void close(shop& s) {
+    // TODO: mark the board closed under the lock, then wake every worker.
+}
+
+i32 main() {
+    shop s = shop{};
+    // TODO: set the price per unit to 5 (a write lock), before any worker reads it.
+    {
+        std::thread::scoped_handle<void> a = std::thread::spawn(std::thread::options{ .name = "worker-a" }, [&s]() { work(s); });
+        std::thread::scoped_handle<void> b = std::thread::spawn(std::thread::options{ .name = "worker-b" }, [&s]() { work(s); });
+        std::array<u32, 6> orders = [4, 1, 7, 2, 9, 3];
+        for (u32 units : orders) { post(s, units); }
+        close(s);
+        a.join();
+        b.join();
+    }
+    mut std::mutex_guard<std::darray<u32>> r = s.receipts.lock();
+    r->sort();
+    mut u32 total = 0;
+    for (u32 v : *r) { total += v; }
+    std::println(f"{s.done.load(std::memory_order::acquire)} jobs done, {r->len()} receipts");
+    std::println(f"smallest {(*r)[0]}, largest {(*r)[r->len() - 1]}, total {total}");
+    return 0;
+}

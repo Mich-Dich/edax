@@ -1,0 +1,22 @@
+// Shared and mutable: put a synchronized type behind the shared_ptr.
+import std;
+
+struct counter {
+    u32 n = 0;
+}
+
+i32 main() {
+    std::shared_ptr<std::mutex<counter>> c = std::shared_ptr<std::mutex<counter>>::make(std::mutex<counter>::make(counter{}));
+    std::shared_ptr<std::mutex<counter>> other = c.clone();
+    {
+        mut std::mutex_guard<counter> g = other->lock();  // locking works through an immutable reference
+        g->n += 5;
+    }                                                     // unlocked here
+    {
+        mut std::mutex_guard<counter> g = c->lock();
+        g->n += 1;
+        std::println(f"{g->n}");
+    }
+    return 0;
+}
+//> 6

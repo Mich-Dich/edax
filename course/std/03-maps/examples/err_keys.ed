@@ -1,0 +1,12 @@
+// [] on a missing key panics: it never inserts, unlike C++'s operator[].
+import std;
+
+i32 main() {
+    mut std::hash_map<std::str, u32> counts = default;
+    counts.insert("a", 1);
+    std::println(f"{counts["a"]}");
+    std::println(f"{counts["b"]}");
+    return 0;
+}
+//> 1
+//! panic: key not found

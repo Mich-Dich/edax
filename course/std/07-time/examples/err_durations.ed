@@ -1,0 +1,13 @@
+// Durations are never negative: earlier minus later is a bug, and it panics like any underflow.
+import std;
+namespace t = std::time;
+
+i32 main() {
+    t::duration a = t::duration::milliseconds(5);
+    t::duration b = t::duration::milliseconds(8);
+    std::println(f"{b - a}");
+    std::println(f"{a - b}");
+    return 0;
+}
+//> 3ms
+//! panic: a duration can't be negative

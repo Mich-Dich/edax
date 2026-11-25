@@ -1,0 +1,26 @@
+// std::str: searching, slicing and parsing without allocating.
+import std;
+
+i32 main() {
+    std::str line = "  key = value; other = 42  ";
+    std::str t = line.trim();
+    std::println(f"[{t}] {t.len()} bytes");
+    std::println(f"{t.starts_with("key")} {t.ends_with("42")} {t.contains("other")}");
+    if (t.find("=") is std::some(at)) {
+        std::println(f"name '{t.slice(0, at).trim()}', rest '{t.slice(at + 1, t.len()).trim()}'");
+    }
+    std::darray<std::str> parts = t.split(';');
+    std::println(f"{parts.len()} parts, second '{parts[1].trim()}'");
+    std::option<u32> n = "42".parse<u32>();
+    std::option<u32> bad = "4x2".parse<u32>();
+    std::option<f64> f = "2.5".parse<f64>();
+    std::println(f"{n.value_or(0)} {bad.is_some()} {f.value_or(0.0)} {"true".parse<bool>().value_or(false)}");
+    std::println(f"first byte {t.byte(0)}, 'k' is {cast<u32>('k')}");
+    return 0;
+}
+//> [key = value; other = 42] 23 bytes
+//> true true true
+//> name 'key', rest 'value; other = 42'
+//> 2 parts, second 'other = 42'
+//> 42 false 2.5 true
+//> first byte 107, 'k' is 107

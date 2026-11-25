@@ -1,0 +1,16 @@
+// A match must cover every case.
+import std;
+
+enum op : u8 { add, sub, mul, div }
+
+i32 apply(op o, i32 a, i32 b) {
+    return match (o) {                       //~ error[E4060]
+        op::add => a + b,
+        op::sub => a - b,
+        op::mul => a * b,
+    };
+}
+
+i32 main() {
+    return 0;
+}

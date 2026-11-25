@@ -1,0 +1,25 @@
+// Owned threads (handle) and borrowing threads (scoped_handle).
+import std;
+
+u64 sum_to(u64 n) {
+    mut u64 s = 0;
+    for (u64 i : 1..=n) { s += i; }
+    return s;
+}
+
+i32 main() {
+    // No reference captures: the thread owns everything it uses, and returns a value.
+    std::thread::handle<u64> worker = std::thread::spawn([]() { return sum_to(1000); });
+    std::println(f"owned: {worker.join()}");
+
+    // A reference capture: a scoped handle. `totals` stays borrowed until the handle is joined.
+    mut std::array<u64, 2> totals = default;
+    {
+        std::thread::scoped_handle<void> a = std::thread::spawn([mut &totals]() { totals[0] = sum_to(10); });
+        a.join();
+    }
+    std::println(f"scoped: {totals[0]}");
+    return 0;
+}
+//> owned: 500500
+//> scoped: 55

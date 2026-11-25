@@ -1,0 +1,69 @@
+// Standard-library lesson 11: a generic settings serializer. Fill in the TODOs until
+//     python3 course/check.py s11
+// says done. It builds as it is and prints wrong values.
+import std;
+
+// The name a field has in the text, when it isn't the field's own name.
+annotation(std::meta::target::field) struct key {
+    std::static_str text;
+
+    // TODO: a check that refuses an empty name, reported at the annotation.
+}
+
+// A field that isn't written or read.
+annotation(std::meta::target::field) struct skip { }
+
+enum quality : u8 { low, medium, high }
+
+struct graphics {
+    @key{ .text = "resolution_width" } u32 width = 1280;
+    @key{ .text = "resolution_height" } u32 height = 720;
+    f32 gamma = 2.2;
+    bool vsync = true;
+    quality shadows = quality::medium;
+    @skip u64 frame_counter = 0;
+}
+
+// One "name = value" line per field that isn't skipped. Enums are written by name.
+template<type T>
+std::string to_text(T& value) {
+    mut std::string out = default;
+    // TODO: for compile_time over std::meta::fields<T>(): skip @skip fields; the name is the @key
+    // text or the field's name; an enum field (std::meta::is_enum<ft>() with
+    // `compile_time type ft = f.type;`) is written with std::meta::name_of.
+    return out;
+}
+
+// Reads "name = value" lines into the matching fields; returns how many lines were not used.
+template<type T>
+u32 from_text(mut T& value, std::str text) {
+    mut u32 unused = 0;
+    for (std::str line : text.split('\n')) {
+        std::str t = line.trim();
+        if (t.is_empty()) { continue; }
+        std::darray<std::str> parts = t.split('=');
+        if (parts.len() != 2) {
+            unused += 1;
+            continue;
+        }
+        std::str name = parts[0].trim();
+        std::str v = parts[1].trim();
+        mut bool used = false;
+        // TODO: find the field whose text name is `name` and assign the parsed value to
+        // f.get(mut value): v.parse<ft>() for numbers and bools, std::meta::from_name<ft>(v) for
+        // enums. A value that doesn't parse leaves the line unused.
+        if (!used) { unused += 1; }
+    }
+    return unused;
+}
+
+i32 main() {
+    graphics g = graphics{ .frame_counter = 99 };
+    std::print(to_text(g));
+
+    mut graphics loaded = default;
+    u32 unused = from_text(mut loaded, "resolution_width = 2560\ngamma = 1.8\nshadows = high\nvsync = false\ncolour = blue\nshadows = epic\n");
+    std::println(f"{unused} lines unused");
+    std::print(to_text(loaded));
+    return 0;
+}

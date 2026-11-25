@@ -1,0 +1,2944 @@
+// The Edax standard library: module std::ui::nodes (see nodes.edh).
+
+import std;
+
+namespace std::ui::nodes {
+    namespace im = std::ui::immediate;
+
+
+    struct edits {
+        bool changed() {
+            return !this.created.is_empty() || !this.deleted_links.is_empty() || !this.deleted_nodes.is_empty() ||
+                   !this.moved.is_empty() || this.dropped.is_some() || this.menu_at.is_some() || this.duplicate;
+        }
+    }
+
+    private bool contains_id(std::span<u64> ids, u64 id) {
+        for (u64 x : ids) {
+            if (x == id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void remove_id(mut std::darray<u64>& ids, u64 id) {
+        mut std::darray<u64> kept = default;
+        for (u64 x : ids) {
+            if (x != id) {
+                kept.push(x);
+            }
+        }
+        ids = move kept;
+    }
+
+    private void toggle_id(mut std::darray<u64>& ids, u64 id) {
+        if (contains_id(ids.as_span(), id)) {
+            remove_id(mut ids, id);
+        } else {
+            ids.push(id);
+        }
+    }
+
+    private void insert_point(mut std::darray<std::ui::vec2>& points, usize at, std::ui::vec2 p) {
+        usize i = at.min(points.len());
+        points.push(p);
+        mut usize k = points.len() - 1;
+        while (k > i) {
+            points[k] = points[k - 1];
+            k -= 1;
+        }
+        points[i] = p;
+    }
+
+    private void remove_point(mut std::darray<std::ui::vec2>& points, usize at) {
+        if (at >= points.len()) {
+            return;
+        }
+        for (usize k : at..(points.len() - 1)) {
+            points[k] = points[k + 1];
+        }
+        points.truncate(points.len() - 1);
+    }
+
+    // Where the selected nodes go for `how`, from their boxes (canvas units).
+    private void arrange(mut view_state& view, arrangement how, std::ui::vec2 origin) {
+        mut std::darray<node_place> chosen = default;
+        for (node_place n : view.boxes) {
+            if (contains_id(view.selected.as_span(), n.id)) {
+                std::ui::vec2 low = (n.bounds.origin() - origin - view.pan) * (1.0 / view.zoom);
+                chosen.push(node_place{ .id = n.id, .bounds = std::ui::rect{ .x = low.x, .y = low.y, .width = n.bounds.width / view.zoom, .height = n.bounds.height / view.zoom } });
+            }
+        }
+        if (chosen.len() < 2) {
+            return;
+        }
+        mut std::ui::rect all = chosen[0].bounds;
+        for (node_place n : chosen) {
+            all = all.united(n.bounds);
+        }
+        bool spread = how == arrangement::spread_x || how == arrangement::spread_y;
+        if (spread) {
+            bool across = how == arrangement::spread_x;
+            chosen.sort_by([across](node_place& a, node_place& b) { return if (across) { a.bounds.x < b.bounds.x } else { a.bounds.y < b.bounds.y }; });
+            mut f32 taken = 0.0;
+            for (node_place n : chosen) {
+                taken += if (across) { n.bounds.width } else { n.bounds.height };
+            }
+            f32 room = if (across) { all.width } else { all.height };
+            f32 gap = (room - taken) / cast::round<f32>(chosen.len() - 1);
+            mut f32 at = if (across) { all.x } else { all.y };
+            for (node_place n : chosen) {
+                _ = view.arranged.insert(n.id, axis_target{ .horizontal = across, .value = at });
+                at += gap + if (across) { n.bounds.width } else { n.bounds.height };
+            }
+            return;
+        }
+        for (node_place n : chosen) {
+            std::ui::rect b = n.bounds;
+            axis_target goal = match (how) {
+                arrangement::left => axis_target{ .horizontal = true, .value = all.x },
+                arrangement::center => axis_target{ .horizontal = true, .value = all.x + (all.width - b.width) * 0.5 },
+                arrangement::right => axis_target{ .horizontal = true, .value = all.right() - b.width },
+                arrangement::top => axis_target{ .horizontal = false, .value = all.y },
+                arrangement::middle => axis_target{ .horizontal = false, .value = all.y + (all.height - b.height) * 0.5 },
+                _ => axis_target{ .horizontal = false, .value = all.bottom() - b.height },
+            };
+            _ = view.arranged.insert(n.id, goal);
+        }
+    }
+
+    // The box between two corners.
+    private std::ui::rect box_between(std::ui::vec2 a, std::ui::vec2 b) {
+        return std::ui::rect{ .x = a.x.min(b.x), .y = a.y.min(b.y), .width = (b.x - a.x).abs(), .height = (b.y - a.y).abs() };
+    }
+
+    private bool boxes_touch(std::ui::rect a, std::ui::rect b) {
+        std::ui::rect both = a.intersection(b);
+        return both.width > 0.0 && both.height > 0.0;
+    }
+
+    // The two control points of a curved run from `a` to `b`: horizontal at both ends, reaching
+    // out at least 50 units from a pin (`pin_a`, `pin_b`; reroute points need no room).
+    private (std::ui::vec2, std::ui::vec2) bends(std::ui::vec2 a, std::ui::vec2 b, f32 zoom, bool pin_a, bool pin_b) {
+        f32 half = (b.x - a.x).abs() * 0.5;
+        f32 out = if (pin_a) { half.max(50.0 * zoom) } else { half };
+        f32 back = if (pin_b) { half.max(50.0 * zoom) } else { half };
+        return (a + std::ui::vec2{ .x = out }, b - std::ui::vec2{ .x = back });
+    }
+
+    // The corners of a subway line from `a` to `b`: out of `a` to the right and into `b` from the
+    // left (after `stub_a` and `stub_b`), every run horizontal, vertical or at 45°.
+    private void metro_corners(mut std::darray<std::ui::vec2>& out, std::ui::vec2 a, std::ui::vec2 b, f32 stub_a, f32 stub_b) {
+        f32 stub = stub_a.max(stub_b).max(1.0);
+        std::ui::vec2 p = a + std::ui::vec2{ .x = stub_a };
+        std::ui::vec2 q = b - std::ui::vec2{ .x = stub_b };
+        out.push(a);
+        if (q.x >= p.x) {
+            f32 dx = q.x - p.x;
+            f32 dy = q.y - p.y;
+            f32 rise = dy.abs();
+            f32 sign = if (dy < 0.0) { -1.0 } else { 1.0 };
+            if (dx >= rise) {
+                // Across, down (or up) at 45°, across.
+                f32 run = (dx - rise) * 0.5;
+                out.push(std::ui::vec2{ .x = p.x + run, .y = a.y });
+                out.push(std::ui::vec2{ .x = p.x + run + rise, .y = b.y });
+            } else {
+                // Steeper than 45°: half the width at 45°, straight down (or up), the other half.
+                f32 half = dx * 0.5;
+                out.push(p);
+                out.push(std::ui::vec2{ .x = p.x + half, .y = p.y + sign * half });
+                out.push(std::ui::vec2{ .x = p.x + half, .y = q.y - sign * half });
+                out.push(q);
+            }
+        } else {
+            // Backwards: out, down (or up) to between the pins (or below both), across, and in.
+            f32 middle = if ((b.y - a.y).abs() > 4.0 * stub) { (a.y + b.y) * 0.5 } else { a.y.max(b.y) + 3.0 * stub };
+            out.push(p);
+            out.push(std::ui::vec2{ .x = p.x, .y = middle });
+            out.push(std::ui::vec2{ .x = q.x, .y = middle });
+            out.push(q);
+        }
+        out.push(b);
+    }
+
+    // Drops points on top of the one before and points in the middle of a straight run.
+    private void simplify(mut std::darray<std::ui::vec2>& points) {
+        mut usize n = 0;
+        for (usize i : 0..points.len()) {
+            std::ui::vec2 q = points[i];
+            if (n > 0 && (q - points[n - 1]).length() < 0.5) {
+                continue;
+            }
+            if (n >= 2) {
+                std::ui::vec2 d1 = points[n - 1] - points[n - 2];
+                std::ui::vec2 d2 = q - points[n - 1];
+                f32 cross = d1.x * d2.y - d1.y * d2.x;
+                if (cross.abs() <= 0.001 * d1.length() * d2.length() && d1.dot(d2) > 0.0) {
+                    points[n - 1] = q;
+                    continue;
+                }
+            }
+            points[n] = q;
+            n += 1;
+        }
+        points.truncate(n);
+    }
+
+    // `corners` with every inner corner replaced by an arc of `radius` (smaller where the runs
+    // beside it are short), appended to `out`.
+    private void round_into(mut std::darray<std::ui::vec2>& out, std::span<std::ui::vec2> corners, f32 radius) {
+        usize n = corners.len();
+        if (n == 0) {
+            return;
+        }
+        out.push(corners[0]);
+        if (n > 2) {
+            for (usize i : 1..(n - 1)) {
+                std::ui::vec2 u = corners[i - 1];
+                std::ui::vec2 v = corners[i];
+                std::ui::vec2 w = corners[i + 1];
+                f32 l1 = (v - u).length();
+                f32 l2 = (w - v).length();
+                if (l1 < 0.001 || l2 < 0.001) {
+                    out.push(v);
+                    continue;
+                }
+                std::ui::vec2 e1 = (v - u) * (1.0 / l1);
+                std::ui::vec2 e2 = (w - v) * (1.0 / l2);
+                f32 c = e1.dot(e2).clamp(-0.999, 1.0);
+                // The arc meets each run tan(turn / 2) × radius before the corner.
+                f32 tangent = ((1.0 - c) / (1.0 + c)).sqrt();
+                f32 room1 = if (i == 1) { l1 } else { l1 * 0.5 };
+                f32 room2 = if (i == n - 2) { l2 } else { l2 * 0.5 };
+                f32 cut = (radius * tangent).min(room1).min(room2);
+                std::ui::vec2 from = v - e1 * cut;
+                std::ui::vec2 to = v + e2 * cut;
+                for (u32 k : 0..9) {
+                    f32 t = cast::round<f32>(k) / 8.0;
+                    f32 s = 1.0 - t;
+                    out.push(from * (s * s) + v * (2.0 * s * t) + to * (t * t));
+                }
+            }
+        }
+        out.push(corners[n - 1]);
+    }
+
+    // A run of a link from `a` to `b` as a polyline appended to `out` (`corners` is room for its
+    // corners); `pin_a` and `pin_b`: whether the ends are pins (or reroute points).
+    private void route(mut std::darray<std::ui::vec2>& out, mut std::darray<std::ui::vec2>& corners, std::ui::vec2 a, std::ui::vec2 b, link_look look, f32 zoom, bool pin_a, bool pin_b) {
+        f32 stub_a = if (pin_a) { look.stub * zoom } else { 0.0 };
+        f32 stub_b = if (pin_b) { look.stub * zoom } else { 0.0 };
+        match (look.shape) {
+            link_shape::curve => {
+                (std::ui::vec2 c1, std::ui::vec2 c2) = bends(a, b, zoom, pin_a, pin_b);
+                f32 reach = (c1 - a).length() + (c2 - c1).length() + (b - c2).length();
+                u32 steps = cast::saturate<u32>((reach / 8.0).ceil()).max(12).min(64);
+                for (u32 i : 0..(steps + 1)) {
+                    f32 t = cast::round<f32>(i) / cast::round<f32>(steps);
+                    f32 s = 1.0 - t;
+                    out.push(a * (s * s * s) + c1 * (3.0 * s * s * t) + c2 * (3.0 * s * t * t) + b * (t * t * t));
+                }
+                return;
+            },
+            link_shape::metro => {
+                corners.clear();
+                metro_corners(mut corners, a, b, stub_a, stub_b);
+            },
+            link_shape::straight => {
+                corners.clear();
+                corners.push(a);
+                corners.push(a + std::ui::vec2{ .x = stub_a });
+                corners.push(b - std::ui::vec2{ .x = stub_b });
+                corners.push(b);
+            },
+        }
+        simplify(mut corners);
+        if (look.round_corners && look.corner_radius > 0.0) {
+            round_into(mut out, corners.as_span(), look.corner_radius * zoom);
+        } else {
+            for (std::ui::vec2 c : corners) {
+                out.push(c);
+            }
+        }
+    }
+
+    private f32 segment_distance(std::ui::vec2 p, std::ui::vec2 a, std::ui::vec2 b) {
+        std::ui::vec2 d = b - a;
+        f32 along = d.length_squared();
+        if (along < 0.000001) {
+            return (p - a).length();
+        }
+        f32 t = ((p - a).dot(d) / along).clamp(0.0, 1.0);
+        return (p - (a + d * t)).length();
+    }
+
+    private f32 path_distance(std::ui::vec2 p, std::span<std::ui::vec2> points) {
+        mut f32 best = 1000000.0;
+        if (points.len() == 1) {
+            return (p - points[0]).length();
+        }
+        for (usize i : 1..points.len()) {
+            best = best.min(segment_distance(p, points[i - 1], points[i]));
+        }
+        return best;
+    }
+
+    // Whether the segment from `a` to `b` touches `r` (Liang-Barsky clipping).
+    private bool segment_touches(std::ui::rect r, std::ui::vec2 a, std::ui::vec2 b) {
+        if (r.contains(a) || r.contains(b)) {
+            return true;
+        }
+        f32 dx = b.x - a.x;
+        f32 dy = b.y - a.y;
+        std::array<f32, 4> p = [-dx, dx, -dy, dy];
+        std::array<f32, 4> q = [a.x - r.x, r.right() - a.x, a.y - r.y, r.bottom() - a.y];
+        mut f32 low = 0.0;
+        mut f32 high = 1.0;
+        for (usize i : 0..4) {
+            if (p[i] == 0.0) {
+                if (q[i] < 0.0) {
+                    return false;
+                }
+            } else {
+                f32 t = q[i] / p[i];
+                if (p[i] < 0.0) {
+                    if (t > high) {
+                        return false;
+                    }
+                    low = low.max(t);
+                } else {
+                    if (t < low) {
+                        return false;
+                    }
+                    high = high.min(t);
+                }
+            }
+        }
+        return low <= high;
+    }
+
+    private bool path_touches(std::ui::rect r, std::span<std::ui::vec2> points) {
+        if (r.width <= 0.0 || r.height <= 0.0) {
+            return false;
+        }
+        for (usize i : 1..points.len()) {
+            if (segment_touches(r, points[i - 1], points[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private std::span<std::ui::vec2> path_of(std::darray<std::ui::vec2>& path, link_place l) {
+        return path.as_span().slice(cast<usize>(l.first), cast<usize>(l.first + l.count));
+    }
+
+    implement widgets for std::ui::immediate::scope {
+        editor node_editor(std::str name, mut view_state& view, f32 height, implicit compile_time std::call_site where) mut override {
+            u64 wid = this.make_id(name, where);
+            std::ui::theme outer = this.ctx.look;
+            std::ui::theme t = match (view.look.canvas_theme) {
+                std::some(own) => {
+                    mut std::ui::theme inside = own;
+                    inside.density = outer.density;
+                    inside
+                },
+                std::none => outer,
+            };
+            f32 wanted = if (height > 0.0) { height * outer.density } else { this.available_height().max(160.0) };
+            std::ui::rect r = if (this.open()) { this.allocate(std::ui::vec2{ .x = this.available_width(), .y = wanted }) } else { std::ui::rect{} };
+            std::ui::rect clip = this.ctx.layers[this.layer_index].list.current_clip();
+            im::response resp = this.ctx.respond(wid, r, this.window, clip, true);
+            std::ui::vec2 cursor = this.ctx.in.cursor;
+            // Lining up the selection: from the boxes of the last frame, applied as nodes come.
+            match (view.arrange_next) {
+                std::some(how) => {
+                    arrange(mut view, how, r.origin());
+                    view.arrange_next = std::none;
+                },
+                std::none => {},
+            }
+            // Alt and a press on a link (as it was drawn last frame) adds a reroute point rather
+            // than panning.
+            mut bool alt_on_link = false;
+            if (this.ctx.in.alt && this.ctx.in.mouse_pressed) {
+                for (link_place l : view.links) {
+                    if (path_distance(cursor, path_of(view.path, l)) < 6.0) {
+                        alt_on_link = true;
+                    }
+                }
+            }
+            // Zoom at the cursor: the canvas point under it stays put.
+            if (resp.state.hovered && this.ctx.in.scroll != 0.0 && this.scroll_unused()) {
+                this.take_scroll();
+                f32 before = view.zoom;
+                f32 after = (before * (1.0 + 0.12 * this.ctx.in.scroll)).clamp(0.35, 2.5);
+                std::ui::vec2 under = (cursor - r.origin() - view.pan) * (1.0 / before);
+                view.zoom = after;
+                view.pan = cursor - r.origin() - under * after;
+            }
+            // Drags: what the press started, and how far the cursor moved since the last frame.
+            std::ui::vec2 moved = cursor - view.last;
+            view.last = cursor;
+            view.step = if (this.ctx.in.mouse_pressed) { std::ui::vec2{} } else { moved };
+            view.move_by = std::ui::vec2{};
+            view.frame_delta = std::ui::vec2{};
+            bool pan_drag = this.ctx.in.middle_down || (this.ctx.in.alt && this.ctx.in.mouse_down);
+            if (resp.state.hovered && (this.ctx.in.middle_pressed || (this.ctx.in.alt && this.ctx.in.mouse_pressed && !alt_on_link))) {
+                view.drag = drag_kind::pan;
+            }
+            if (view.drag == drag_kind::pan) {
+                if (pan_drag) {
+                    view.pan = view.pan + moved;
+                } else {
+                    view.drag = drag_kind::none;
+                }
+            }
+            if (view.drag == drag_kind::nodes) {
+                if (this.ctx.in.mouse_down) {
+                    view.move_by = view.step * (1.0 / view.zoom);
+                } else {
+                    view.drag = drag_kind::none;
+                }
+            }
+            bool background = resp.state.pressed && this.ctx.in.mouse_pressed && !this.ctx.in.alt;
+            mut edits out = default;
+            if (resp.state.hovered && this.ctx.in.right_pressed) {
+                out.menu_at = std::some((cursor - r.origin() - view.pan) * (1.0 / view.zoom));
+            }
+            if (resp.has_focus && this.ctx.in.pressed(std::ui::key::space) && resp.state.hovered) {
+                out.menu_at = std::some((cursor - r.origin() - view.pan) * (1.0 / view.zoom));
+            }
+            // Everything inside draws with the style's theme.
+            this.ctx.look = t;
+            {
+                canvas_part c = canvas_part{ .bounds = r, .origin = r.origin() + view.pan, .zoom = view.zoom, .grid = view.look.grid, .step = view.look.grid_step * view.zoom, .major_every = view.look.major_every };
+                mut std::ui::painter p = this.painter();
+                p.list.push_clip(r);
+                view.look.draw.canvas(mut p, c);
+                p.list.pop_clip();
+            }
+            u32 start = cast::truncate<u32>(this.ctx.layers[this.layer_index].list.indices.len());
+            view.area = r;
+            view.pins.clear();
+            view.boxes.clear();
+            view.links.clear();
+            view.linked_now.clear();
+            view.path.clear();
+            view.marks.clear();
+            view.reroutes.clear();
+            // Nodes draw at the zoom: the theme's density carries it to every widget in them.
+            this.ctx.look.density = t.density * view.zoom;
+            return editor{ .parent = this, .state = view, .id = wid, .area = r, .look = outer, .mark = start, .out = move out, .background_pressed = background };
+        }
+    }
+
+    view class editor {
+    public:
+        std::ui::vec2 to_screen(std::ui::vec2 p) {
+            return this.area.origin() + this.state.pan + p * this.state.zoom;
+        }
+
+        std::ui::vec2 to_canvas(std::ui::vec2 p) {
+            return (p - this.area.origin() - this.state.pan) * (1.0 / this.state.zoom);
+        }
+
+        void frame(u64 frame_id, mut std::ui::rect& box, std::str title, std::ui::color tint) mut {
+            f32 z = this.state.zoom;
+            std::ui::vec2 top_left = this.to_screen(box.origin());
+            std::ui::rect r = std::ui::rect{ .x = top_left.x, .y = top_left.y, .width = box.width * z, .height = box.height * z };
+            std::ui::rect head = std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = (26.0 * z).max(12.0) };
+            std::ui::rect grip = std::ui::rect{ .x = r.right() - 14.0, .y = r.bottom() - 14.0, .width = 14.0, .height = 14.0 };
+            std::ui::rect clip = this.area;
+            u64 head_id = std::hash_combine(this.id, std::hash_combine(frame_id, 0x667261));
+            im::response head_resp = this.parent.ctx.respond(head_id, head, this.parent.window, clip, false);
+            im::response grip_resp = this.parent.ctx.respond(std::hash_combine(head_id, 1), grip, this.parent.window, clip, false);
+            if (this.parent.ctx.in.mouse_pressed && head_resp.state.pressed) {
+                this.state.pressed_frame = std::some(frame_id);
+                this.state.pressed_frame_widget = head_id;
+            }
+            if (this.parent.ctx.in.mouse_pressed && grip_resp.state.pressed) {
+                this.state.pressed_frame = std::some(std::hash_combine(frame_id, 1));
+                this.state.pressed_frame_widget = std::hash_combine(head_id, 1);
+            }
+            if (this.state.drag == drag_kind::frame && !this.parent.ctx.in.mouse_down) {
+                this.state.drag = drag_kind::none;
+            }
+            std::ui::vec2 moved = this.state.step * (1.0 / z);
+            if (this.state.drag == drag_kind::frame && this.state.moving_frame == frame_id) {
+                // The nodes inside move with it (they are declared after it).
+                this.state.frame_before = box;
+                this.state.frame_delta = moved;
+                box = std::ui::rect{ .x = box.x + moved.x, .y = box.y + moved.y, .width = box.width, .height = box.height };
+            }
+            if (this.state.drag == drag_kind::frame && this.state.moving_frame == std::hash_combine(frame_id, 1)) {
+                box = std::ui::rect{ .x = box.x, .y = box.y, .width = (box.width + moved.x).max(80.0), .height = (box.height + moved.y).max(60.0) };
+            }
+            frame_part part = frame_part{ .bounds = r, .header = head, .grip = grip, .title = title, .tint = tint, .hover = head_resp.state.hover, .grip_hover = grip_resp.state.hover, .zoom = z };
+            mut std::ui::painter p = this.parent.painter();
+            p.list.push_clip(this.area);
+            this.state.look.draw.frame(mut p, part);
+            p.list.pop_clip();
+        }
+
+        node_view node(u64 node_id, mut std::ui::vec2& position, std::str title, node_look appearance) mut {
+            f32 z = this.state.zoom;
+            f32 header = this.state.look.header_height;
+            f32 last_height = match (this.state.heights.get(node_id)) {
+                std::some(h) => h,
+                std::none => header + 8.0,
+            };
+            bool collapsed = match (this.state.collapsed.get(node_id)) {
+                std::some(c) => c,
+                std::none => false,
+            };
+            match (this.state.arranged.remove(node_id)) {
+                std::some(goal) => {
+                    if (goal.horizontal) {
+                        position.x = goal.value;
+                    } else {
+                        position.y = goal.value;
+                    }
+                    this.out.moved.push(node_id);
+                },
+                std::none => {},
+            }
+            // Moved by its frame, or with the selection.
+            if (this.state.frame_delta.x != 0.0 || this.state.frame_delta.y != 0.0) {
+                std::ui::rect f = this.state.frame_before;
+                if (position.x >= f.x && position.y >= f.y && position.x + appearance.width <= f.right() && position.y + last_height <= f.bottom()) {
+                    position = position + this.state.frame_delta;
+                    this.out.moved.push(node_id);
+                }
+            }
+            bool chosen = contains_id(this.state.selected.as_span(), node_id);
+            if (chosen && (this.state.move_by.x != 0.0 || this.state.move_by.y != 0.0)) {
+                position = position + this.state.move_by;
+                this.out.moved.push(node_id);
+            }
+            std::ui::vec2 at = this.to_screen(position);
+            f32 head = (header * z).round();
+            std::ui::rect r = std::ui::rect{ .x = at.x.round(), .y = at.y.round(), .width = (appearance.width * z).round(), .height = if (collapsed) { head } else { (last_height * z).round() } };
+            this.state.boxes.push(node_place{ .id = node_id, .bounds = r });
+            u64 widget = std::hash_combine(this.id, node_id);
+            im::response resp = this.parent.ctx.respond(widget, r, this.parent.window, this.area, false);
+            // Whether the press moves the node is known at finish(): a widget declared later (in its
+            // body, its chevron, a pin's inline widget) takes it instead.
+            if (resp.state.pressed && this.parent.ctx.in.mouse_pressed) {
+                this.state.pressed_node = std::some(node_id);
+            }
+            f32 knob = (16.0 * z).round();
+            std::ui::rect chevron = std::ui::rect{ .x = (r.right() - 8.0 * z - knob).round(), .y = (r.y + (head - knob) * 0.5).round(), .width = knob, .height = knob };
+            im::response fold = this.parent.ctx.respond(std::hash_combine(widget, 0x63686576), chevron, this.parent.window, this.area, false);
+            if (fold.clicked) {
+                _ = this.state.collapsed.insert(node_id, !collapsed);
+            }
+            bool selected_now = contains_id(this.state.selected.as_span(), node_id);
+            // Inside the selection box being dragged: shown as what the box will select.
+            bool preview = !selected_now && this.state.drag == drag_kind::box && boxes_touch(r, box_between(this.state.press_at, this.parent.ctx.in.cursor));
+            node_part part = node_part{ .bounds = r, .header = std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = head }, .title = title, .look = appearance, .selected = selected_now, .preview = preview, .hover = resp.state.hover, .zoom = z, .collapsed = collapsed, .chevron = chevron, .chevron_hover = fold.state.hover };
+            mut std::ui::painter p = this.parent.painter();
+            p.list.push_clip(this.area);
+            this.state.look.draw.node(mut p, part);
+            p.list.pop_clip();
+            return node_view{ .ed = this, .id = node_id, .bounds = r, .cursor_y = r.y + head + 4.0 * z, .collapsed = collapsed };
+        }
+
+        void link(u64 link_id, u64 from, u64 to) mut {
+            std::darray<std::ui::vec2> none = default;
+            place_link(mut this, link_id, from, to, none.as_span());
+        }
+
+        void link_via(u64 link_id, u64 from, u64 to, mut std::darray<std::ui::vec2>& via) mut {
+            f32 z = this.state.zoom;
+            bool alt = this.parent.ctx.in.alt;
+            bool pressed = this.parent.ctx.in.mouse_pressed;
+            // A point asked for by an Alt-click on this link last frame.
+            match (this.state.insert_next) {
+                std::some(add) => {
+                    if (add.link == link_id) {
+                        insert_point(mut via, add.index, add.at);
+                        this.out.rerouted.push(link_id);
+                        this.state.insert_next = std::none;
+                    }
+                },
+                std::none => {},
+            }
+            if (this.state.drag == drag_kind::reroute && this.state.reroute_link == link_id) {
+                if (!this.parent.ctx.in.mouse_down) {
+                    this.state.drag = drag_kind::none;
+                } else if (this.state.reroute_index < via.len() && (this.state.step.x != 0.0 || this.state.step.y != 0.0)) {
+                    via[this.state.reroute_index] = via[this.state.reroute_index] + this.state.step * (1.0 / z);
+                    this.out.rerouted.push(link_id);
+                }
+            }
+            // The points as widgets (declared after the nodes, so they are on top of them).
+            mut std::option<usize> removed = std::none;
+            mut std::darray<std::ui::vec2> screen = std::darray<std::ui::vec2>::with_capacity(via.len());
+            u64 base = std::hash_combine(this.id, std::hash_combine(link_id, 0x7265726f));
+            f32 reach = 7.0 * z.max(0.8);
+            for (usize k : 0..via.len()) {
+                std::ui::vec2 at = this.to_screen(via[k]);
+                screen.push(at);
+                std::ui::rect spot = std::ui::rect{ .x = at.x - reach, .y = at.y - reach, .width = 2.0 * reach, .height = 2.0 * reach };
+                im::response resp = this.parent.ctx.respond(std::hash_combine(base, cast<u64>(k)), spot, this.parent.window, this.area, false);
+                if (resp.state.pressed && pressed) {
+                    if (alt) {
+                        removed = std::some(k);
+                    } else {
+                        this.state.drag = drag_kind::reroute;
+                        this.state.reroute_link = link_id;
+                        this.state.reroute_index = k;
+                    }
+                }
+                bool dragging = this.state.drag == drag_kind::reroute && this.state.reroute_link == link_id && this.state.reroute_index == k;
+                this.state.reroutes.push(reroute_place{ .at = at, .hovered = resp.state.hovered, .dragging = dragging });
+            }
+            match (removed) {
+                std::some(k) => {
+                    remove_point(mut via, k);
+                    remove_point(mut screen, k);
+                    this.state.reroutes.truncate(this.state.reroutes.len() - screen.len() - 1);
+                    for (std::ui::vec2 at : screen) {
+                        this.state.reroutes.push(reroute_place{ .at = at });
+                    }
+                    this.out.rerouted.push(link_id);
+                },
+                std::none => {},
+            }
+            usize dots_end = this.state.reroutes.len();
+            usize dots_start = dots_end - screen.len();
+            place_link(mut this, link_id, from, to, screen.as_span());
+            // The points take their link's colour.
+            if (!this.state.links.is_empty() && this.state.links[this.state.links.len() - 1].id == link_id) {
+                std::ui::color tone = this.state.links[this.state.links.len() - 1].color;
+                for (usize k : dots_start..dots_end) {
+                    this.state.reroutes[k].color = tone;
+                }
+            }
+        }
+
+        bool is_linked(u64 pin) {
+            return this.state.linked.contains(pin);
+        }
+
+        edits finish() move {
+            f32 z = this.state.zoom;
+            std::ui::rect r = this.area;
+            // What the frame's input says, read before drawing (the painter borrows the scope).
+            std::ui::vec2 cursor = this.parent.ctx.in.cursor;
+            bool down = this.parent.ctx.in.mouse_down;
+            bool pressed = this.parent.ctx.in.mouse_pressed;
+            bool adding = this.parent.ctx.in.shift || this.parent.ctx.in.control;
+            bool on_canvas = this.parent.ctx.hot == this.id;
+            bool keys = this.parent.ctx.focused == this.id && this.parent.ctx.editing == 0;
+            bool delete_key = keys && (this.parent.ctx.in.pressed(std::ui::key::delete) || this.parent.ctx.in.pressed(std::ui::key::backspace));
+            bool all_key = keys && this.parent.ctx.in.pressed_with_control(std::ui::key::a);
+            bool duplicate_key = keys && this.parent.ctx.in.pressed_with_control(std::ui::key::d);
+            bool fit_key = keys && this.parent.ctx.in.pressed(std::ui::key::f) && !this.parent.ctx.in.control;
+            f32 pin_reach = (this.state.look.pin_radius + 4.0) * z.max(0.8);
+            bool alt = this.parent.ctx.in.alt;
+            u64 active = this.parent.ctx.active;
+            mut bool on_pin = false;
+            if (pressed && r.contains(cursor)) {
+                for (pin_place& pp : this.state.pins) {
+                    if ((pp.at - cursor).length() <= pin_reach) {
+                        on_pin = true;
+                    }
+                }
+            }
+            // A press on a node that no widget inside it took: select it and drag the selection.
+            match (this.state.pressed_node) {
+                std::some(node_id) => {
+                    if (!on_pin && active == std::hash_combine(this.id, node_id)) {
+                        bool chosen = contains_id(this.state.selected.as_span(), node_id);
+                        if (adding) {
+                            toggle_id(mut this.state.selected, node_id);
+                        } else {
+                            if (!chosen) {
+                                this.state.selected.clear();
+                                this.state.selected.push(node_id);
+                            }
+                            this.state.selected_links.clear();
+                        }
+                        this.state.drag = drag_kind::nodes;
+                        this.parent.ctx.focused = this.id;
+                    }
+                    this.state.pressed_node = std::none;
+                },
+                std::none => {},
+            }
+            match (this.state.pressed_frame) {
+                std::some(target) => {
+                    if (active == this.state.pressed_frame_widget) {
+                        this.state.drag = drag_kind::frame;
+                        this.state.moving_frame = target;
+                    }
+                    this.state.pressed_frame = std::none;
+                },
+                std::none => {},
+            }
+            // Alt and a press on a link: a reroute point there, added next frame.
+            if (alt && pressed && active == this.id) {
+                for (link_place& l : this.state.links) {
+                    std::span<std::ui::vec2> points = path_of(this.state.path, l);
+                    if (path_distance(cursor, points) < 6.0) {
+                        mut usize nearest = 0;
+                        mut f32 best = 1000000.0;
+                        for (usize k : 1..points.len()) {
+                            f32 d = segment_distance(cursor, points[k - 1], points[k]);
+                            if (d < best) {
+                                best = d;
+                                nearest = cast<usize>(l.first) + k - 1;
+                            }
+                        }
+                        mut usize run = 0;
+                        for (usize j : 0..cast<usize>(l.mark_count)) {
+                            if (cast<usize>(this.state.marks[cast<usize>(l.mark_first) + j]) <= nearest) {
+                                run = j;
+                            }
+                        }
+                        this.state.insert_next = std::some(reroute_insert{ .link = l.id, .index = run, .at = this.to_canvas(cursor) });
+                    }
+                }
+            }
+            // A press on the canvas itself: a link under it is selected, otherwise a box starts.
+            if (this.background_pressed && on_canvas) {
+                mut u64 hit = 0;
+                for (link_place& l : this.state.links) {
+                    if (path_distance(cursor, path_of(this.state.path, l)) < 6.0) {
+                        hit = l.id;
+                    }
+                }
+                if (hit != 0) {
+                    if (adding) {
+                        toggle_id(mut this.state.selected_links, hit);
+                    } else {
+                        this.state.selected.clear();
+                        this.state.selected_links.clear();
+                        this.state.selected_links.push(hit);
+                    }
+                } else {
+                    this.state.drag = drag_kind::box;
+                    this.state.press_at = cursor;
+                    if (!adding) {
+                        this.state.selected.clear();
+                        this.state.selected_links.clear();
+                    }
+                }
+                this.parent.ctx.focused = this.id;
+            }
+            // A press on a pin starts a link.
+            if (on_pin) {
+                for (pin_place& pp : this.state.pins) {
+                    if ((pp.at - cursor).length() <= pin_reach) {
+                        this.state.drag = drag_kind::link;
+                        this.state.link_from = pp.id;
+                        this.state.link_from_output = pp.output;
+                    }
+                }
+            }
+            // The link being dragged: from its pin to the cursor, or to a pin it would connect to.
+            mut std::option<pin_place> start = std::none;
+            mut std::option<pin_place> target = std::none;
+            if (this.state.drag == drag_kind::link) {
+                for (pin_place& pp : this.state.pins) {
+                    if (pp.id == this.state.link_from && pp.output == this.state.link_from_output) {
+                        start = std::some(pp);
+                    } else if (pp.output != this.state.link_from_output && (pp.at - cursor).length() <= 14.0 * z.max(0.8)) {
+                        target = std::some(pp);
+                    }
+                }
+                if (!down) {
+                    match (start) {
+                        std::some(s) => {
+                            match (target) {
+                                std::some(tp) => {
+                                    this.out.created.push(if (s.output) { link_request{ .from = s.id, .to = tp.id } } else { link_request{ .from = tp.id, .to = s.id } });
+                                },
+                                std::none => {
+                                    if (r.contains(cursor)) {
+                                        this.out.dropped = std::some(canvas_drop{ .from = s.id, .from_output = s.output, .at = this.to_canvas(cursor) });
+                                    }
+                                },
+                            }
+                        },
+                        std::none => {},
+                    }
+                    this.state.drag = drag_kind::none;
+                }
+            }
+            // The selection box: nodes and links it touches are selected when it is let go.
+            std::ui::rect box = box_between(this.state.press_at, cursor);
+            bool boxing = this.state.drag == drag_kind::box;
+            if (boxing && !down) {
+                for (node_place& n : this.state.boxes) {
+                    if (boxes_touch(n.bounds, box) && !contains_id(this.state.selected.as_span(), n.id)) {
+                        this.state.selected.push(n.id);
+                    }
+                }
+                for (link_place& l : this.state.links) {
+                    if (path_touches(box, path_of(this.state.path, l)) && !contains_id(this.state.selected_links.as_span(), l.id)) {
+                        this.state.selected_links.push(l.id);
+                    }
+                }
+                this.state.drag = drag_kind::none;
+            }
+            // Keys.
+            if (delete_key) {
+                for (u64 n : this.state.selected) {
+                    this.out.deleted_nodes.push(n);
+                }
+                for (u64 l : this.state.selected_links) {
+                    this.out.deleted_links.push(l);
+                }
+                this.state.selected.clear();
+                this.state.selected_links.clear();
+            }
+            if (all_key) {
+                this.state.selected.clear();
+                this.state.selected_links.clear();
+                for (node_place& n : this.state.boxes) {
+                    this.state.selected.push(n.id);
+                }
+                for (link_place& l : this.state.links) {
+                    this.state.selected_links.push(l.id);
+                }
+            }
+            if (duplicate_key && !this.state.selected.is_empty()) {
+                this.out.duplicate = true;
+            }
+            if (fit_key) {
+                this.state.fit_next = true;
+            }
+            if (this.state.drag == drag_kind::nodes && !down) {
+                this.state.drag = drag_kind::none;
+            }
+            bool previewing = boxing && down;
+            // The links, put under the nodes.
+            {
+                mut std::ui::draw_list under = default;
+                under.begin(this.parent.ctx.frame_size);
+                under.push_clip(r);
+                {
+                    mut std::ui::painter lp = std::ui::painter{ .list = under, .faces = this.parent.ctx.faces, .tokens = this.parent.ctx.look };
+                    for (link_place& l : this.state.links) {
+                        std::span<std::ui::vec2> points = path_of(this.state.path, l);
+                        bool picked = contains_id(this.state.selected_links.as_span(), l.id);
+                        link_part part = link_part{
+                            .points = points,
+                            .color = l.color,
+                            .look = this.state.look.link,
+                            .selected = picked,
+                            .preview = previewing && !picked && path_touches(box, points),
+                            .hovered = r.contains(cursor) && path_distance(cursor, points) < 6.0,
+                            .dragging = false,
+                            .zoom = z,
+                        };
+                        this.state.look.draw.link(mut lp, part);
+                    }
+                    for (reroute_place& d : this.state.reroutes) {
+                        this.state.look.draw.reroute(mut lp, reroute_part{ .at = d.at, .color = d.color, .hovered = d.hovered, .dragging = d.dragging, .zoom = z });
+                    }
+                }
+                under.pop_clip();
+                this.parent.ctx.layers[this.parent.layer_index].list.insert(this.mark, under);
+            }
+            // The link being dragged, routed like the others.
+            u32 dragged_first = cast::truncate<u32>(this.state.path.len());
+            mut std::ui::color dragged_color = std::ui::color::transparent();
+            match (start) {
+                std::some(s) => {
+                    std::ui::vec2 end = match (target) {
+                        std::some(tp) => tp.at,
+                        std::none => cursor,
+                    };
+                    std::ui::vec2 from = if (s.output) { s.at } else { end };
+                    std::ui::vec2 to = if (s.output) { end } else { s.at };
+                    route(mut this.state.path, mut this.state.corners, from, to, this.state.look.link, z, true, true);
+                    dragged_color = s.style.color;
+                },
+                std::none => {},
+            }
+            u32 dragged_end = cast::truncate<u32>(this.state.path.len());
+            mut std::ui::painter p = this.parent.painter();
+            p.list.push_clip(r);
+            if (dragged_end > dragged_first) {
+                link_part part = link_part{
+                    .points = this.state.path.as_span().slice(cast<usize>(dragged_first), cast<usize>(dragged_end)),
+                    .color = dragged_color,
+                    .look = this.state.look.link,
+                    .selected = false,
+                    .preview = false,
+                    .hovered = false,
+                    .dragging = true,
+                    .zoom = z,
+                };
+                this.state.look.draw.link(mut p, part);
+            }
+            // The pins, over the nodes' edges.
+            for (pin_place& pp : this.state.pins) {
+                bool hovered = (pp.at - cursor).length() <= pin_reach;
+                pin_part part = pin_part{
+                    .at = pp.at,
+                    .style = pp.style,
+                    .output = pp.output,
+                    .linked = contains_id(this.state.linked_now.as_span(), pp.id),
+                    .hovered = hovered,
+                    .radius = (this.state.look.pin_radius + if (hovered) { 1.5 } else { 0.0 }) * z.max(0.6),
+                    .zoom = z,
+                };
+                this.state.look.draw.pin(mut p, part);
+            }
+            if (previewing) {
+                this.state.look.draw.selection_box(mut p, box_part{ .bounds = box });
+            }
+            // The minimap: every node and the view, in the bottom-right corner.
+            if (this.state.look.minimap && !this.state.boxes.is_empty()) {
+                std::ui::color map_back = p.tokens.colors.surface.with_alpha(0.92);
+                std::ui::color map_edge = p.tokens.colors.border;
+                std::ui::color map_node = p.tokens.colors.text_faint;
+                std::ui::color map_chosen = p.tokens.colors.primary;
+                std::ui::color map_view = p.tokens.colors.text_muted;
+                f32 map_radius = p.tokens.radius.small;
+                mut std::ui::rect world = this.state.boxes[0].bounds;
+                for (node_place& n : this.state.boxes) {
+                    world = world.united(n.bounds);
+                }
+                world = world.united(r);
+                f32 mw = 150.0;
+                f32 mh = 96.0;
+                std::ui::rect map = std::ui::rect{ .x = r.right() - mw - 10.0, .y = r.bottom() - mh - 10.0, .width = mw, .height = mh };
+                f32 k = ((mw - 8.0) / world.width).min((mh - 8.0) / world.height);
+                std::ui::vec2 o = std::ui::vec2{ .x = map.x + 4.0 + ((mw - 8.0) - world.width * k) * 0.5, .y = map.y + 4.0 + ((mh - 8.0) - world.height * k) * 0.5 };
+                p.list.fill(map, map_back, map_radius);
+                p.list.stroke(map, map_edge, map_radius, 1.0);
+                for (node_place& n : this.state.boxes) {
+                    bool sel = contains_id(this.state.selected.as_span(), n.id);
+                    std::ui::rect m = std::ui::rect{ .x = o.x + (n.bounds.x - world.x) * k, .y = o.y + (n.bounds.y - world.y) * k, .width = (n.bounds.width * k).max(2.0), .height = (n.bounds.height * k).max(2.0) };
+                    p.list.fill(m, if (sel) { map_chosen } else { map_node }, 1.0);
+                }
+                std::ui::rect seen = std::ui::rect{ .x = o.x + (r.x - world.x) * k, .y = o.y + (r.y - world.y) * k, .width = r.width * k, .height = r.height * k };
+                p.list.stroke(seen, map_view, 1.0, 1.0);
+            }
+            p.list.pop_clip();
+            this.state.path.truncate(cast<usize>(dragged_first));
+            // Fit: the selection (or every node) in view, with a margin; applies next frame.
+            if (this.state.fit_next && !this.state.boxes.is_empty()) {
+                mut std::ui::rect all = default;
+                mut bool any = false;
+                for (node_place& n : this.state.boxes) {
+                    if (this.state.selected.is_empty() || contains_id(this.state.selected.as_span(), n.id)) {
+                        all = if (any) { all.united(n.bounds) } else { n.bounds };
+                        any = true;
+                    }
+                }
+                std::ui::vec2 low = this.to_canvas(all.origin());
+                std::ui::vec2 high = this.to_canvas(std::ui::vec2{ .x = all.right(), .y = all.bottom() });
+                f32 fit = ((r.width - 80.0) / (high.x - low.x).max(1.0)).min((r.height - 80.0) / (high.y - low.y).max(1.0)).clamp(0.35, 1.6);
+                this.state.zoom = fit;
+                std::ui::vec2 middle = (low + high) * 0.5;
+                this.state.pan = std::ui::vec2{ .x = r.width * 0.5, .y = r.height * 0.5 } - middle * fit;
+                this.state.fit_next = false;
+            }
+            this.state.linked.clear();
+            for (u64 pin : this.state.linked_now) {
+                _ = this.state.linked.insert(pin, true);
+            }
+            this.parent.ctx.look = this.look;
+            this.finished = true;
+            return std::take(mut this.out);
+        }
+
+        ~editor() {
+            if (!this.finished) {
+                this.parent.ctx.look = this.look;
+            }
+        }
+    }
+
+    view class node_view {
+    public:
+        void input(u64 pin, std::str label, pin_style style) mut {
+            add_pin(mut this, pin, label, style, false);
+        }
+
+        void output(u64 pin, std::str label, pin_style style) mut {
+            add_pin(mut this, pin, label, style, true);
+        }
+
+        std::ui::immediate::scope input_widget(u64 pin, std::str label, pin_style style) mut {
+            f32 z = this.ed.state.zoom;
+            u64 field_id = std::hash_combine(this.ed.id, std::hash_combine(this.id, std::hash_combine(pin, 0x696e6c)));
+            if (this.collapsed || this.ed.state.linked.contains(pin)) {
+                add_pin(mut this, pin, label, style, false);
+                return this.ed.parent.hidden_region(field_id);
+            }
+            f32 content = this.ed.parent.state(field_id).content;
+            f32 row = (this.ed.state.look.pin_row * z).round().max((content + 2.0).round());
+            f32 top = this.cursor_y;
+            f32 label_width = {
+                mut std::ui::painter p = this.ed.parent.painter();
+                std::ui::text_style text = p.tokens.style(std::ui::text_role::caption, p.tokens.colors.text_muted);
+                p.measure(label, text).x
+            };
+            add_pin_row(mut this, pin, label, style, false, row);
+            f32 left = this.bounds.x + 12.0 * z + label_width + 8.0 * z;
+            std::ui::rect field = std::ui::rect{ .x = left.round(), .y = top + ((row - content) * 0.5).max(0.0).round(), .width = (this.bounds.right() - 10.0 * z - left).max(8.0), .height = content.max(4.0) + 2.0 };
+            return this.ed.parent.region(field_id, field.intersection(this.ed.area), 0.0);
+        }
+
+        std::ui::immediate::scope body() mut {
+            f32 z = this.ed.state.zoom;
+            if (this.collapsed) {
+                return this.ed.parent.hidden_region(std::hash_combine(this.ed.id, std::hash_combine(this.id, 0x626f6479)));
+            }
+            f32 pad = this.ed.state.look.padding * z;
+            u64 body_id = std::hash_combine(this.ed.id, std::hash_combine(this.id, 0x626f6479));
+            f32 content = this.ed.parent.state(body_id).content;
+            std::ui::rect r = std::ui::rect{ .x = this.bounds.x + pad, .y = this.cursor_y, .width = this.bounds.width - 2.0 * pad, .height = content.max(4.0) + 2.0 };
+            this.cursor_y = r.bottom();
+            return this.ed.parent.region(body_id, r.intersection(this.ed.area), 0.0);
+        }
+
+        ~node_view() {
+            if (this.collapsed) {
+                return;
+            }
+            f32 z = this.ed.state.zoom;
+            f32 height = (this.cursor_y + this.ed.state.look.padding * z - this.bounds.y) / z;
+            _ = this.ed.state.heights.insert(this.id, height);
+        }
+    }
+
+    // A pin's row: the label, and the pin on the node's edge (drawn at the end, over the edge).
+    // While the node is collapsed, its pins sit on the header's edges and have no rows.
+    private void add_pin(mut node_view& n, u64 pin, std::str label, pin_style style, bool output) {
+        if (n.collapsed) {
+            std::ui::vec2 at = std::ui::vec2{ .x = if (output) { n.bounds.right() } else { n.bounds.x }, .y = (n.bounds.y + n.bounds.height * 0.5).round() };
+            n.ed.state.pins.push(pin_place{ .id = pin, .node = n.id, .at = at, .output = output, .style = style });
+            return;
+        }
+        f32 row = (n.ed.state.look.pin_row * n.ed.state.zoom).round();
+        add_pin_row(mut n, pin, label, style, output, row);
+    }
+
+    private void add_pin_row(mut node_view& n, u64 pin, std::str label, pin_style style, bool output, f32 row) {
+        f32 z = n.ed.state.zoom;
+        f32 y = n.cursor_y + row * 0.5;
+        std::ui::vec2 at = std::ui::vec2{ .x = if (output) { n.bounds.right() } else { n.bounds.x }, .y = y.round() };
+        n.ed.state.pins.push(pin_place{ .id = pin, .node = n.id, .at = at, .output = output, .style = style });
+        pin_label_part part = pin_label_part{ .row = std::ui::rect{ .x = n.bounds.x, .y = n.cursor_y, .width = n.bounds.width, .height = row }, .label = label, .style = style, .output = output, .zoom = z };
+        std::ui::rect clip = n.ed.area;
+        usize layer = n.ed.parent.layer_index;
+        mut std::ui::painter p = std::ui::painter{ .list = n.ed.parent.ctx.layers[layer].list, .faces = n.ed.parent.ctx.faces, .tokens = n.ed.parent.ctx.look };
+        p.list.push_clip(clip);
+        n.ed.state.look.draw.pin_label(mut p, part);
+        p.list.pop_clip();
+        n.cursor_y += row;
+    }
+
+    // A link through `via` (screen coordinates): routed run by run, from pin to point to pin.
+    private void place_link(mut editor& ed, u64 link_id, u64 from, u64 to, std::span<std::ui::vec2> via) {
+        mut std::option<pin_place> a = std::none;
+        mut std::option<pin_place> b = std::none;
+        for (pin_place& pp : ed.state.pins) {
+            if (pp.id == from && pp.output) {
+                a = std::some(pp);
+            }
+            if (pp.id == to && !pp.output) {
+                b = std::some(pp);
+            }
+        }
+        match (a) {
+            std::some(pa) => {
+                match (b) {
+                    std::some(pb) => {
+                        u32 first = cast::truncate<u32>(ed.state.path.len());
+                        u32 mark_first = cast::truncate<u32>(ed.state.marks.len());
+                        f32 z = ed.state.zoom;
+                        link_look look = ed.state.look.link;
+                        mut std::ui::vec2 last = pa.at;
+                        mut bool from_pin = true;
+                        for (std::ui::vec2 p : via) {
+                            ed.state.marks.push(cast::truncate<u32>(ed.state.path.len()));
+                            route(mut ed.state.path, mut ed.state.corners, last, p, look, z, from_pin, false);
+                            last = p;
+                            from_pin = false;
+                        }
+                        ed.state.marks.push(cast::truncate<u32>(ed.state.path.len()));
+                        route(mut ed.state.path, mut ed.state.corners, last, pb.at, look, z, from_pin, true);
+                        u32 count = cast::truncate<u32>(ed.state.path.len()) - first;
+                        u32 mark_count = cast::truncate<u32>(ed.state.marks.len()) - mark_first;
+                        ed.state.links.push(link_place{ .id = link_id, .from = pa.at, .to = pb.at, .color = pa.style.color, .first = first, .count = count, .mark_first = mark_first, .mark_count = mark_count });
+                        ed.state.linked_now.push(from);
+                        ed.state.linked_now.push(to);
+                    },
+                    std::none => {},
+                }
+            },
+            std::none => {},
+        }
+    }
+
+    std::result<std::darray<u64>, u64> topological_order(std::span<u64> nodes, std::span<edge> edges) {
+        // Kahn's algorithm: repeatedly take a node no remaining edge points to.
+        mut std::darray<usize> waiting = std::darray<usize>::with_capacity(nodes.len());
+        for (usize i : 0..nodes.len()) {
+            mut usize n = 0;
+            for (edge e : edges) {
+                if (e.to == nodes[i] && contains_id(nodes, e.from)) {
+                    n += 1;
+                }
+            }
+            waiting.push(n);
+        }
+        mut std::darray<u64> order = std::darray<u64>::with_capacity(nodes.len());
+        mut std::darray<bool> done = std::darray<bool>::with_capacity(nodes.len());
+        for (usize i : 0..nodes.len()) {
+            done.push(false);
+        }
+        mut bool progress = true;
+        while (progress) {
+            progress = false;
+            for (usize i : 0..nodes.len()) {
+                if (done[i] || waiting[i] != 0) {
+                    continue;
+                }
+                done[i] = true;
+                progress = true;
+                order.push(nodes[i]);
+                for (edge e : edges) {
+                    if (e.from == nodes[i]) {
+                        for (usize j : 0..nodes.len()) {
+                            if (nodes[j] == e.to && waiting[j] > 0) {
+                                waiting[j] -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (usize i : 0..nodes.len()) {
+            if (!done[i]) {
+                return std::error(nodes[i]);
+            }
+        }
+        return std::ok(move order);
+    }
+
+    struct style {
+        static style studio() {
+            return style{};
+        }
+
+        static style metro() {
+            mut style s = default;
+            s.header_height = 32.0;
+            s.pin_row = 24.0;
+            s.pin_radius = 6.0;
+            s.grid = grid_kind::dots;
+            s.link = link_look{ .shape = link_shape::metro, .round_corners = true, .corner_radius = 16.0, .stub = 22.0, .width = 4.5, .halo = 0.0 };
+            s.draw.canvas = [](mut std::ui::painter& p, canvas_part& c) { std::ui::nodes::painters::metro::canvas(mut p, c); };
+            s.draw.node = [](mut std::ui::painter& p, node_part& n) { std::ui::nodes::painters::metro::node(mut p, n); };
+            s.draw.pin = [](mut std::ui::painter& p, pin_part& n) { std::ui::nodes::painters::metro::pin(mut p, n); };
+            s.draw.link = [](mut std::ui::painter& p, link_part& l) { std::ui::nodes::painters::metro::link(mut p, l); };
+            return s;
+        }
+
+        static style blueprint() {
+            mut std::ui::theme t = std::ui::theme::studio(std::ui::color::hex(0xffc857), std::ui::brightness::dark);
+            t.colors.background = std::ui::color::hex(0x0d3360);
+            t.colors.surface = std::ui::color::hex(0x124479);
+            t.colors.surface_raised = std::ui::color::hex(0x15508c);
+            t.colors.surface_sunken = std::ui::color::hex(0x0b2f59);
+            t.colors.border = std::ui::color::white().with_alpha(0.32);
+            t.colors.text = std::ui::color::hex(0xeaf2ff);
+            t.colors.text_muted = std::ui::color::hex(0xa9c4e6);
+            t.colors.text_faint = std::ui::color::hex(0x7b9cc4);
+            mut style s = default;
+            s.header_height = 28.0;
+            s.grid_step = 20.0;
+            s.major_every = 5;
+            s.link = link_look{ .shape = link_shape::metro, .round_corners = false, .corner_radius = 0.0, .stub = 18.0, .width = 1.3, .halo = 0.0 };
+            s.canvas_theme = std::some(t);
+            s.draw.canvas = [](mut std::ui::painter& p, canvas_part& c) { std::ui::nodes::painters::blueprint::canvas(mut p, c); };
+            s.draw.node = [](mut std::ui::painter& p, node_part& n) { std::ui::nodes::painters::blueprint::node(mut p, n); };
+            s.draw.pin = [](mut std::ui::painter& p, pin_part& n) { std::ui::nodes::painters::blueprint::pin(mut p, n); };
+            s.draw.link = [](mut std::ui::painter& p, link_part& l) { std::ui::nodes::painters::blueprint::link(mut p, l); };
+            s.draw.frame = [](mut std::ui::painter& p, frame_part& f) { std::ui::nodes::painters::blueprint::frame(mut p, f); };
+            return s;
+        }
+
+        static style neon() {
+            mut std::ui::theme t = std::ui::theme::studio(std::ui::color::hex(0x22d3ee), std::ui::brightness::dark);
+            t.colors.background = std::ui::color::hex(0x06060a);
+            t.colors.surface = std::ui::color::hex(0x0c0c14);
+            t.colors.surface_raised = std::ui::color::hex(0x11111b);
+            t.colors.surface_sunken = std::ui::color::hex(0x08080e);
+            t.colors.border = std::ui::color::hex(0x2a2a3d);
+            mut style s = default;
+            s.header_height = 30.0;
+            s.grid = grid_kind::dots;
+            s.grid_step = 28.0;
+            s.link = link_look{ .shape = link_shape::curve, .round_corners = true, .corner_radius = 12.0, .stub = 20.0, .width = 2.0, .halo = 12.0 };
+            s.canvas_theme = std::some(t);
+            s.draw.canvas = [](mut std::ui::painter& p, canvas_part& c) { std::ui::nodes::painters::neon::canvas(mut p, c); };
+            s.draw.node = [](mut std::ui::painter& p, node_part& n) { std::ui::nodes::painters::neon::node(mut p, n); };
+            s.draw.pin = [](mut std::ui::painter& p, pin_part& n) { std::ui::nodes::painters::neon::pin(mut p, n); };
+            s.draw.link = [](mut std::ui::painter& p, link_part& l) { std::ui::nodes::painters::neon::link(mut p, l); };
+            return s;
+        }
+
+        static style paper() {
+            mut std::ui::theme t = std::ui::theme::studio(std::ui::color::hex(0x2f5bea), std::ui::brightness::light);
+            t.colors.background = std::ui::color::hex(0xf3ecdc);
+            t.colors.surface = std::ui::color::hex(0xfffdf7);
+            t.colors.surface_raised = std::ui::color::hex(0xfffdf7);
+            t.colors.surface_sunken = std::ui::color::hex(0xf1ebde);
+            t.colors.text = std::ui::color::hex(0x1a1a1a);
+            t.colors.text_muted = std::ui::color::hex(0x4a4a4a);
+            t.colors.border = std::ui::color::hex(0x1a1a1a);
+            mut style s = default;
+            s.header_height = 32.0;
+            s.pin_row = 24.0;
+            s.pin_radius = 5.5;
+            s.grid = grid_kind::dots;
+            s.grid_step = 22.0;
+            s.link = link_look{ .shape = link_shape::curve, .round_corners = true, .corner_radius = 12.0, .stub = 20.0, .width = 3.0, .halo = 0.0 };
+            s.canvas_theme = std::some(t);
+            s.draw.canvas = [](mut std::ui::painter& p, canvas_part& c) { std::ui::nodes::painters::paper::canvas(mut p, c); };
+            s.draw.node = [](mut std::ui::painter& p, node_part& n) { std::ui::nodes::painters::paper::node(mut p, n); };
+            s.draw.pin = [](mut std::ui::painter& p, pin_part& n) { std::ui::nodes::painters::paper::pin(mut p, n); };
+            s.draw.link = [](mut std::ui::painter& p, link_part& l) { std::ui::nodes::painters::paper::link(mut p, l); };
+            s.draw.frame = [](mut std::ui::painter& p, frame_part& f) { std::ui::nodes::painters::paper::frame(mut p, f); };
+            s.draw.selection_box = [](mut std::ui::painter& p, box_part& b) { std::ui::nodes::painters::paper::selection_box(mut p, b); };
+            return s;
+        }
+    }
+
+    // The grid of a canvas: lines, dots or crosses every `step`, every `major_every`th stronger.
+    private void grid_marks(mut std::ui::draw_list& l, canvas_part& c, std::ui::color minor, std::ui::color major) {
+        if (c.grid == grid_kind::none || c.step < 3.0) {
+            return;
+        }
+        std::ui::rect r = c.bounds;
+        i32 every = cast::saturate<i32>(c.major_every.max(1));
+        // Too dense to read: only the major marks.
+        bool minors = c.step >= 10.0;
+        i32 first_x = cast::saturate<i32>(((r.x - c.origin.x) / c.step).ceil());
+        i32 first_y = cast::saturate<i32>(((r.y - c.origin.y) / c.step).ceil());
+        if (c.grid == grid_kind::lines) {
+            mut i32 ix = first_x;
+            mut f32 x = c.origin.x + cast::round<f32>(ix) * c.step;
+            while (x < r.right()) {
+                bool big = ix % every == 0;
+                if (big || minors) {
+                    l.fill(std::ui::rect{ .x = x.round(), .y = r.y, .width = 1.0, .height = r.height }, if (big) { major } else { minor }, 0.0);
+                }
+                x += c.step;
+                ix += 1;
+            }
+            mut i32 iy = first_y;
+            mut f32 y = c.origin.y + cast::round<f32>(iy) * c.step;
+            while (y < r.bottom()) {
+                bool big = iy % every == 0;
+                if (big || minors) {
+                    l.fill(std::ui::rect{ .x = r.x, .y = y.round(), .width = r.width, .height = 1.0 }, if (big) { major } else { minor }, 0.0);
+                }
+                y += c.step;
+                iy += 1;
+            }
+            return;
+        }
+        mut i32 iy = first_y;
+        mut f32 y = c.origin.y + cast::round<f32>(iy) * c.step;
+        while (y < r.bottom()) {
+            mut i32 ix = first_x;
+            mut f32 x = c.origin.x + cast::round<f32>(ix) * c.step;
+            while (x < r.right()) {
+                bool big = ix % every == 0 && iy % every == 0;
+                if (big || minors) {
+                    std::ui::vec2 at = std::ui::vec2{ .x = x.round(), .y = y.round() };
+                    if (c.grid == grid_kind::dots) {
+                        l.circle(at, if (big) { 1.6 } else { 1.0 }, if (big) { major } else { minor });
+                    } else {
+                        f32 arm = if (big) { 4.0 } else { 2.0 };
+                        std::ui::color tone = if (big) { major } else { minor };
+                        l.fill(std::ui::rect{ .x = at.x - arm, .y = at.y, .width = 2.0 * arm + 1.0, .height = 1.0 }, tone, 0.0);
+                        l.fill(std::ui::rect{ .x = at.x, .y = at.y - arm, .width = 1.0, .height = 2.0 * arm + 1.0 }, tone, 0.0);
+                    }
+                }
+                x += c.step;
+                ix += 1;
+            }
+            y += c.step;
+            iy += 1;
+        }
+    }
+
+    // A dashed outline of `r`.
+    private void dashed_box(mut std::ui::draw_list& l, std::ui::rect r, f32 width, f32 dash, std::ui::color c) {
+        std::ui::vec2 a = r.origin();
+        std::ui::vec2 b = std::ui::vec2{ .x = r.right(), .y = r.y };
+        std::ui::vec2 d = std::ui::vec2{ .x = r.x, .y = r.bottom() };
+        std::ui::vec2 e = std::ui::vec2{ .x = r.right(), .y = r.bottom() };
+        l.dashed_line(a, b, width, dash, dash * 0.6, c);
+        l.dashed_line(b, e, width, dash, dash * 0.6, c);
+        l.dashed_line(e, d, width, dash, dash * 0.6, c);
+        l.dashed_line(d, a, width, dash, dash * 0.6, c);
+    }
+
+    // The y at which text of `style` is centred in `r`.
+    private f32 middle_for(mut std::ui::painter& p, std::ui::rect r, std::ui::text_style style) {
+        return (r.y + (r.height - p.faces.line_height(style)) * 0.5).round();
+    }
+
+    namespace painters {
+        void pin_shape_at(mut std::ui::draw_list& l, std::ui::vec2 at, pin_style style, bool filled, f32 r, std::ui::color back) {
+            match (style.shape) {
+                pin_shape::circle => {
+                    l.circle(at, r, style.color);
+                    if (!filled) {
+                        l.circle(at, r - 1.6, back);
+                    }
+                },
+                pin_shape::square => {
+                    std::ui::rect box = std::ui::rect{ .x = at.x - r, .y = at.y - r, .width = 2.0 * r, .height = 2.0 * r };
+                    l.fill(box, style.color, 1.5);
+                    if (!filled) {
+                        l.fill(box.shrunk(1.6), back, 1.0);
+                    }
+                },
+                pin_shape::triangle => {
+                    std::array<std::ui::vec2, 3> t = [at + std::ui::vec2{ .x = -r, .y = -r * 1.1 }, at + std::ui::vec2{ .x = r * 1.3 }, at + std::ui::vec2{ .x = -r, .y = r * 1.1 }];
+                    l.fill_polygon(t.as_span(), style.color);
+                    if (!filled) {
+                        std::array<std::ui::vec2, 3> inner = [at + std::ui::vec2{ .x = -r * 0.45, .y = -r * 0.5 }, at + std::ui::vec2{ .x = r * 0.6 }, at + std::ui::vec2{ .x = -r * 0.45, .y = r * 0.5 }];
+                        l.fill_polygon(inner.as_span(), back);
+                    }
+                },
+                pin_shape::diamond => {
+                    l.regular_polygon(at, r * 1.3, 4, 0.0, style.color);
+                    if (!filled) {
+                        l.regular_polygon(at, r * 1.3 - 2.0, 4, 0.0, back);
+                    }
+                },
+            }
+        }
+
+        void canvas(mut std::ui::painter& p, canvas_part& c) {
+            std::ui::color back = p.tokens.colors.surface_sunken;
+            std::ui::color line = p.tokens.colors.border;
+            p.list.fill(c.bounds, back, p.tokens.radius.medium);
+            grid_marks(mut p.list, c, line.with_alpha(0.22), line.with_alpha(0.55));
+        }
+
+        void node(mut std::ui::painter& p, node_part& n) {
+            std::ui::rect r = n.bounds;
+            f32 z = n.zoom;
+            f32 radius = p.tokens.radius.large;
+            std::ui::color accent = p.tokens.colors.primary;
+            std::ui::color border = p.tokens.colors.border;
+            std::ui::color card = p.tokens.colors.surface_raised;
+            std::ui::color shade = p.tokens.colors.shadow;
+            std::ui::shadow_style lift = p.tokens.elevation(2);
+            p.list.shadow(r, radius, lift, shade);
+            if (n.selected) {
+                p.list.glow(r, radius, accent.with_alpha(0.3), 14.0);
+            } else if (n.preview) {
+                p.list.glow(r, radius, accent.with_alpha(0.16), 10.0);
+            }
+            p.list.fill(r, card, radius);
+            p.list.fill_gradient(n.header, n.look.color.with_alpha(0.3), n.look.color.with_alpha(0.06), radius);
+            p.list.fill(std::ui::rect{ .x = r.x + 1.0, .y = n.header.bottom() - 1.0, .width = r.width - 2.0, .height = 1.0 }, border, 0.0);
+            std::ui::color edge = if (n.selected) { accent } else if (n.preview) { accent.with_alpha(0.65) } else { border.lighter(0.05).mix(n.look.color, 0.25 * n.hover) };
+            p.list.stroke(r, edge, radius, if (n.selected || n.preview) { 1.5 } else { 1.0 });
+            mut f32 x = r.x + 9.0 * z;
+            if (n.look.symbol != std::ui::icon::none) {
+                f32 tile = (18.0 * z).round();
+                std::ui::rect box = std::ui::rect{ .x = x.round(), .y = (r.y + (n.header.height - tile) * 0.5).round(), .width = tile, .height = tile };
+                p.list.fill(box, n.look.color.with_alpha(0.25), p.tokens.radius.small);
+                p.list.draw_icon(n.look.symbol, box.shrunk(tile * 0.18), n.look.color.mix(std::ui::color::white(), 0.35));
+                x += tile + 7.0 * z;
+            }
+            std::ui::text_style style = p.tokens.style(std::ui::text_role::label, p.tokens.colors.text);
+            _ = p.text(std::ui::vec2{ .x = x.round(), .y = middle_for(mut p, n.header, style) }, n.title, style);
+            std::ui::color muted = p.tokens.colors.text_muted;
+            chevron(mut p, n, muted);
+        }
+
+        void pin(mut std::ui::painter& p, pin_part& n) {
+            std::ui::color back = p.tokens.colors.surface_raised;
+            pin_shape_at(mut p.list, n.at, n.style, n.linked, n.radius, back);
+        }
+
+        void pin_label(mut std::ui::painter& p, pin_label_part& l) {
+            std::ui::text_style text = p.tokens.style(std::ui::text_role::caption, p.tokens.colors.text_muted);
+            f32 y = middle_for(mut p, l.row, text);
+            if (l.output) {
+                f32 w = p.measure(l.label, text).x;
+                _ = p.text(std::ui::vec2{ .x = (l.row.right() - 12.0 * l.zoom - w).round(), .y = y }, l.label, text);
+            } else {
+                _ = p.text(std::ui::vec2{ .x = (l.row.x + 12.0 * l.zoom).round(), .y = y }, l.label, text);
+            }
+        }
+
+        void link(mut std::ui::painter& p, link_part& l) {
+            std::ui::color accent = p.tokens.colors.primary;
+            f32 z = l.zoom;
+            if (l.look.halo > 0.0) {
+                f32 alpha = if (l.selected) { 0.3 } else if (l.preview) { 0.25 } else if (l.dragging) { 0.2 } else if (l.hovered) { 0.18 } else { 0.08 };
+                p.list.polyline(l.points, l.look.halo * z.max(0.6), (if (l.selected || l.preview) { accent } else { l.color }).with_alpha(alpha));
+            }
+            std::ui::color tone = if (l.selected) { accent } else if (l.preview) { accent.mix(l.color, 0.35) } else { l.color };
+            p.list.polyline(l.points, (l.look.width + if (l.selected || l.preview) { 0.8 } else { 0.0 }) * z.max(0.7), tone);
+        }
+
+        void frame(mut std::ui::painter& p, frame_part& f) {
+            f32 radius = p.tokens.radius.large;
+            std::ui::color text = p.tokens.colors.text;
+            p.list.fill(f.bounds, f.tint.with_alpha(0.07), radius);
+            p.list.stroke(f.bounds, f.tint.with_alpha(0.35 + 0.3 * f.hover), radius, 1.0);
+            p.list.fill_gradient(f.header, f.tint.with_alpha(0.22), f.tint.with_alpha(0.08), radius);
+            std::ui::text_style style = p.tokens.style(std::ui::text_role::label, f.tint.mix(text, 0.6));
+            _ = p.text(std::ui::vec2{ .x = f.header.x + 10.0 * f.zoom, .y = middle_for(mut p, f.header, style) }, f.title, style);
+            p.list.draw_icon(std::ui::icon::maximize, f.grip.shrunk(2.0), f.tint.with_alpha(0.4 + 0.5 * f.grip_hover));
+        }
+
+        void selection_box(mut std::ui::painter& p, box_part& b) {
+            std::ui::color accent = p.tokens.colors.primary;
+            p.list.fill(b.bounds, accent.with_alpha(0.1), 2.0);
+            p.list.stroke(b.bounds, accent.with_alpha(0.7), 2.0, 1.0);
+        }
+
+        void reroute(mut std::ui::painter& p, reroute_part& r) {
+            f32 size = (if (r.hovered || r.dragging) { 5.5 } else { 4.5 }) * r.zoom.max(0.7);
+            std::ui::color back = p.tokens.colors.surface_sunken;
+            p.list.circle(r.at, size + 1.5, back);
+            p.list.circle(r.at, size, r.color);
+            if (r.dragging) {
+                p.list.circle_stroke(r.at, size + 3.0, p.tokens.colors.primary, 1.5);
+            }
+        }
+
+        void chevron(mut std::ui::painter& p, node_part& n, std::ui::color c) {
+            if (n.chevron_hover > 0.0) {
+                p.list.fill(n.chevron, c.with_alpha(0.15 * n.chevron_hover), 3.0);
+            }
+            p.list.draw_icon(if (n.collapsed) { std::ui::icon::chevron_right } else { std::ui::icon::chevron_down }, n.chevron.shrunk(n.chevron.width * 0.15), c.with_alpha(0.55 + 0.45 * n.chevron_hover));
+        }
+
+        namespace metro {
+            void canvas(mut std::ui::painter& p, canvas_part& c) {
+                p.list.fill(c.bounds, std::ui::color::hex(0x0e1014), p.tokens.radius.medium);
+                grid_marks(mut p.list, c, std::ui::color::white().with_alpha(0.06), std::ui::color::white().with_alpha(0.14));
+            }
+
+            void node(mut std::ui::painter& p, node_part& n) {
+                std::ui::rect r = n.bounds;
+                f32 z = n.zoom;
+                f32 radius = 6.0 * z.max(0.5);
+                std::ui::color card = std::ui::color::hex(0x171a20);
+                std::ui::color accent = p.tokens.colors.primary;
+                std::ui::color shade = p.tokens.colors.shadow;
+                std::ui::shadow_style lift = p.tokens.elevation(2);
+                p.list.shadow(r, radius, lift, shade);
+                p.list.fill(r, card, radius);
+                // The line's colour as a bar across the top.
+                f32 bar = (4.0 * z).max(2.0).round();
+                p.list.fill(std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = 2.0 * radius }, n.look.color, radius);
+                p.list.fill(std::ui::rect{ .x = r.x, .y = r.y + bar, .width = r.width, .height = 2.0 * radius }, card, 0.0);
+                p.list.stroke(r, std::ui::color::hex(0x2a2f38), radius, 1.0);
+                // A line badge: the icon in a disc of the line's colour.
+                f32 badge = (9.0 * z).round();
+                std::ui::vec2 centre = std::ui::vec2{ .x = r.x + 10.0 * z + badge, .y = n.header.y + bar * 0.5 + n.header.height * 0.5 };
+                p.list.circle(centre, badge, n.look.color);
+                if (n.look.symbol != std::ui::icon::none) {
+                    p.list.draw_icon(n.look.symbol, std::ui::rect{ .x = centre.x - badge, .y = centre.y - badge, .width = 2.0 * badge, .height = 2.0 * badge }.shrunk(badge * 0.45), std::ui::color::white());
+                }
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::label, std::ui::color::white());
+                style.face = std::ui::font_face::semibold;
+                std::ui::rect title_row = std::ui::rect{ .x = r.x, .y = n.header.y + bar * 0.5, .width = r.width, .height = n.header.height };
+                _ = p.text(std::ui::vec2{ .x = (centre.x + badge + 8.0 * z).round(), .y = middle_for(mut p, title_row, style) }, n.title, style);
+                painters::chevron(mut p, n, std::ui::color::white());
+                if (n.selected) {
+                    p.list.stroke(r.expanded(3.0), std::ui::color::white(), radius + 3.0, 2.0);
+                } else if (n.preview) {
+                    p.list.stroke(r.expanded(3.0), accent.with_alpha(0.8), radius + 3.0, 1.5);
+                } else if (n.hover > 0.0) {
+                    p.list.stroke(r.expanded(2.0), n.look.color.with_alpha(0.5 * n.hover), radius + 2.0, 1.0);
+                }
+            }
+
+            void pin(mut std::ui::painter& p, pin_part& n) {
+                if (n.style.shape != pin_shape::circle) {
+                    pin_shape_at(mut p.list, n.at, n.style, n.linked, n.radius, std::ui::color::hex(0x171a20));
+                    return;
+                }
+                // A station: a white disc in a ring of the line's colour.
+                f32 r = n.radius * 1.1;
+                p.list.circle(n.at, r, n.style.color);
+                p.list.circle(n.at, r * 0.55, if (n.linked) { std::ui::color::white() } else { std::ui::color::hex(0x171a20) });
+                if (n.hovered) {
+                    p.list.circle_stroke(n.at, r + 2.5, std::ui::color::white().with_alpha(0.7), 1.5);
+                }
+            }
+
+            void link(mut std::ui::painter& p, link_part& l) {
+                f32 z = l.zoom.max(0.6);
+                f32 width = l.look.width * z;
+                std::ui::color accent = p.tokens.colors.primary;
+                // A casing in the canvas's colour, so crossings read as over and under.
+                std::ui::color casing = if (l.selected) { std::ui::color::white() } else if (l.preview) { accent } else { std::ui::color::hex(0x0e1014) };
+                p.list.polyline(l.points, width + 3.5 * z, casing);
+                p.list.polyline(l.points, width, if (l.dragging) { l.color.with_alpha(0.8) } else if (l.hovered) { l.color.lighter(0.08) } else { l.color });
+            }
+        }
+
+        namespace blueprint {
+            void canvas(mut std::ui::painter& p, canvas_part& c) {
+                p.list.fill(c.bounds, std::ui::color::hex(0x0f3a6b), p.tokens.radius.medium);
+                grid_marks(mut p.list, c, std::ui::color::white().with_alpha(0.06), std::ui::color::white().with_alpha(0.17));
+            }
+
+            void node(mut std::ui::painter& p, node_part& n) {
+                std::ui::rect r = n.bounds;
+                f32 z = n.zoom;
+                std::ui::color ink = std::ui::color::white();
+                std::ui::color amber = p.tokens.colors.primary;
+                p.list.fill(r, ink.with_alpha(0.05), 0.0);
+                p.list.stroke(r, ink.with_alpha(0.85), 0.0, 1.0);
+                p.list.fill(std::ui::rect{ .x = r.x, .y = n.header.bottom() - 1.0, .width = r.width, .height = 1.0 }, ink.with_alpha(0.45), 0.0);
+                // Crop marks outside each corner.
+                f32 near = 3.0 * z.max(0.6);
+                f32 far = 9.0 * z.max(0.6);
+                std::array<std::ui::vec2, 4> corners = [r.origin(), std::ui::vec2{ .x = r.right(), .y = r.y }, std::ui::vec2{ .x = r.x, .y = r.bottom() }, std::ui::vec2{ .x = r.right(), .y = r.bottom() }];
+                for (usize i : 0..4) {
+                    std::ui::vec2 c = corners[i];
+                    f32 sx = if (i % 2 == 0) { -1.0 } else { 1.0 };
+                    f32 sy = if (i < 2) { -1.0 } else { 1.0 };
+                    p.list.line(c + std::ui::vec2{ .x = sx * near }, c + std::ui::vec2{ .x = sx * far }, 1.0, ink.with_alpha(0.5));
+                    p.list.line(c + std::ui::vec2{ .y = sy * near }, c + std::ui::vec2{ .y = sy * far }, 1.0, ink.with_alpha(0.5));
+                }
+                mut f32 x = r.x + 9.0 * z;
+                if (n.look.symbol != std::ui::icon::none) {
+                    f32 tile = (14.0 * z).round();
+                    p.list.draw_icon(n.look.symbol, std::ui::rect{ .x = x.round(), .y = (n.header.y + (n.header.height - tile) * 0.5).round(), .width = tile, .height = tile }, ink.with_alpha(0.85));
+                    x += tile + 7.0 * z;
+                }
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::caption, ink);
+                style.face = std::ui::font_face::mono;
+                style.tracking = 0.08;
+                std::string title = std::ui::upper(n.title);
+                _ = p.text(std::ui::vec2{ .x = x.round(), .y = middle_for(mut p, n.header, style) }, title.as_str(), style);
+                painters::chevron(mut p, n, ink);
+                if (n.selected) {
+                    p.list.stroke(r.expanded(4.0), amber, 0.0, 1.5);
+                } else if (n.preview) {
+                    dashed_box(mut p.list, r.expanded(4.0), 1.2, 5.0, amber);
+                } else if (n.hover > 0.0) {
+                    p.list.stroke(r.expanded(3.0), ink.with_alpha(0.3 * n.hover), 0.0, 1.0);
+                }
+            }
+
+            void pin(mut std::ui::painter& p, pin_part& n) {
+                std::ui::color ink = std::ui::color::white();
+                p.list.circle(n.at, n.radius, std::ui::color::hex(0x0f3a6b));
+                p.list.circle_stroke(n.at, n.radius, ink.with_alpha(if (n.hovered) { 1.0 } else { 0.85 }), 1.2);
+                if (n.linked) {
+                    p.list.circle(n.at, n.radius * 0.45, n.style.color.mix(ink, 0.5));
+                }
+            }
+
+            void link(mut std::ui::painter& p, link_part& l) {
+                f32 width = l.look.width * l.zoom.max(0.7);
+                std::ui::color amber = p.tokens.colors.primary;
+                std::ui::color tone = if (l.selected) { amber } else if (l.preview) { amber.with_alpha(0.7) } else if (l.hovered) { std::ui::color::white() } else { std::ui::color::white().with_alpha(0.8) };
+                if (l.dragging || l.preview) {
+                    for (usize i : 1..l.points.len()) {
+                        p.list.dashed_line(l.points[i - 1], l.points[i], width, 6.0, 4.0, tone);
+                    }
+                } else {
+                    p.list.polyline(l.points, width + if (l.selected) { 0.8 } else { 0.0 }, tone);
+                }
+                // Ticks where the line meets its pins.
+                if (l.points.len() >= 2) {
+                    p.list.circle(l.points[0], 1.8 * l.zoom.max(0.7), tone);
+                    p.list.circle(l.points[l.points.len() - 1], 1.8 * l.zoom.max(0.7), tone);
+                }
+            }
+
+            void frame(mut std::ui::painter& p, frame_part& f) {
+                std::ui::color ink = std::ui::color::white();
+                p.list.fill(f.bounds, ink.with_alpha(0.03), 0.0);
+                dashed_box(mut p.list, f.bounds, 1.0, 7.0, ink.with_alpha(0.45 + 0.3 * f.hover));
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::caption, ink.with_alpha(0.75));
+                style.face = std::ui::font_face::mono;
+                style.tracking = 0.12;
+                std::string title = std::ui::upper(f.title);
+                _ = p.text(std::ui::vec2{ .x = f.header.x + 10.0 * f.zoom, .y = middle_for(mut p, f.header, style) }, title.as_str(), style);
+                p.list.draw_icon(std::ui::icon::maximize, f.grip.shrunk(2.0), ink.with_alpha(0.35 + 0.5 * f.grip_hover));
+            }
+        }
+
+        namespace neon {
+            void canvas(mut std::ui::painter& p, canvas_part& c) {
+                p.list.fill(c.bounds, std::ui::color::hex(0x06060a), p.tokens.radius.medium);
+                grid_marks(mut p.list, c, std::ui::color::hex(0x8b5cf6).with_alpha(0.13), std::ui::color::hex(0x8b5cf6).with_alpha(0.3));
+            }
+
+            void node(mut std::ui::painter& p, node_part& n) {
+                std::ui::rect r = n.bounds;
+                f32 z = n.zoom;
+                f32 radius = 12.0 * z.max(0.5);
+                std::ui::color tone = n.look.color.mix(std::ui::color::white(), 0.15);
+                std::ui::color accent = p.tokens.colors.primary;
+                p.list.glow(r, radius, tone.with_alpha(0.28 + 0.2 * n.hover), 22.0 * z.max(0.6));
+                if (n.selected) {
+                    p.list.glow(r, radius, std::ui::color::white().with_alpha(0.3), 12.0 * z.max(0.6));
+                } else if (n.preview) {
+                    p.list.glow(r, radius, accent.with_alpha(0.45), 12.0 * z.max(0.6));
+                }
+                p.list.fill(r, std::ui::color::hex(0x0b0b12).with_alpha(0.94), radius);
+                p.list.stroke(r, if (n.selected) { std::ui::color::white() } else if (n.preview) { accent } else { tone }, radius, 1.5);
+                p.list.fill_gradient_x(std::ui::rect{ .x = r.x + radius, .y = n.header.bottom() - 1.0, .width = r.width - 2.0 * radius, .height = 1.0 }, tone.with_alpha(0.7), tone.with_alpha(0.0), 0.0);
+                mut f32 x = r.x + 12.0 * z;
+                if (n.look.symbol != std::ui::icon::none) {
+                    f32 tile = (15.0 * z).round();
+                    p.list.draw_icon(n.look.symbol, std::ui::rect{ .x = x.round(), .y = (n.header.y + (n.header.height - tile) * 0.5).round(), .width = tile, .height = tile }, tone);
+                    x += tile + 8.0 * z;
+                }
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::label, tone.mix(std::ui::color::white(), 0.55));
+                style.face = std::ui::font_face::semibold;
+                style.tracking = 0.04;
+                _ = p.text(std::ui::vec2{ .x = x.round(), .y = middle_for(mut p, n.header, style) }, n.title, style);
+                painters::chevron(mut p, n, tone);
+            }
+
+            void pin(mut std::ui::painter& p, pin_part& n) {
+                f32 r = n.radius;
+                p.list.glow(std::ui::rect{ .x = n.at.x - r, .y = n.at.y - r, .width = 2.0 * r, .height = 2.0 * r }, r, n.style.color.with_alpha(if (n.hovered) { 0.8 } else { 0.5 }), 8.0);
+                p.list.circle(n.at, r, n.style.color.mix(std::ui::color::white(), 0.2));
+                if (!n.linked) {
+                    p.list.circle(n.at, r - 1.8, std::ui::color::hex(0x0b0b12));
+                }
+            }
+
+            void link(mut std::ui::painter& p, link_part& l) {
+                f32 z = l.zoom.max(0.6);
+                std::ui::color accent = p.tokens.colors.primary;
+                std::ui::color tone = if (l.selected) { std::ui::color::white() } else if (l.preview) { accent } else { l.color.mix(std::ui::color::white(), 0.1) };
+                std::ui::color light = if (l.selected) { accent } else { tone };
+                if (l.look.halo > 0.0) {
+                    p.list.polyline(l.points, l.look.halo * z, light.with_alpha(if (l.hovered) { 0.16 } else { 0.09 }));
+                    p.list.polyline(l.points, l.look.halo * 0.45 * z, light.with_alpha(0.22));
+                }
+                p.list.polyline(l.points, l.look.width * z, if (l.dragging) { tone.with_alpha(0.8) } else { tone });
+                p.list.polyline(l.points, (l.look.width * 0.4).max(0.8) * z, tone.mix(std::ui::color::white(), 0.6));
+            }
+        }
+
+        namespace paper {
+            private compile_time u32 ink = 0x1a1a1a;
+
+            void canvas(mut std::ui::painter& p, canvas_part& c) {
+                p.list.fill(c.bounds, std::ui::color::hex(0xf3ecdc), p.tokens.radius.medium);
+                grid_marks(mut p.list, c, std::ui::color::hex(ink).with_alpha(0.14), std::ui::color::hex(ink).with_alpha(0.32));
+            }
+
+            void node(mut std::ui::painter& p, node_part& n) {
+                std::ui::rect r = n.bounds;
+                f32 z = n.zoom.max(0.5);
+                f32 radius = 8.0 * z;
+                f32 line = (2.0 * z).max(1.5).round();
+                std::ui::color black = std::ui::color::hex(ink);
+                std::ui::color accent = p.tokens.colors.primary;
+                f32 drop = (if (n.selected) { 7.0 } else { 5.0 }) * z;
+                // A hard shadow, offset down and right.
+                p.list.fill(r.translated(std::ui::vec2{ .x = drop, .y = drop }), if (n.selected) { accent } else { black }, radius);
+                p.list.fill(r, std::ui::color::hex(0xfffdf7), radius);
+                std::ui::color head = n.look.color.mix(std::ui::color::white(), 0.3);
+                p.list.fill(n.header, head, radius);
+                p.list.fill(std::ui::rect{ .x = r.x, .y = n.header.y + n.header.height * 0.5, .width = r.width, .height = n.header.height * 0.5 }, head, 0.0);
+                p.list.fill(std::ui::rect{ .x = r.x, .y = n.header.bottom() - line, .width = r.width, .height = line }, black, 0.0);
+                p.list.stroke(r, black, radius, line);
+                mut f32 x = r.x + 10.0 * z;
+                if (n.look.symbol != std::ui::icon::none) {
+                    f32 tile = (16.0 * z).round();
+                    p.list.draw_icon(n.look.symbol, std::ui::rect{ .x = x.round(), .y = (n.header.y + (n.header.height - tile) * 0.5).round(), .width = tile, .height = tile }, black);
+                    x += tile + 7.0 * z;
+                }
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::label, black);
+                style.face = std::ui::font_face::semibold;
+                _ = p.text(std::ui::vec2{ .x = x.round(), .y = middle_for(mut p, n.header, style) }, n.title, style);
+                painters::chevron(mut p, n, black);
+                if (n.preview) {
+                    dashed_box(mut p.list, r.expanded(5.0 * z), line, 6.0 * z, accent);
+                } else if (n.hover > 0.0 && !n.selected) {
+                    p.list.stroke(r.expanded(3.0), black.with_alpha(0.25 * n.hover), radius + 3.0, 1.0);
+                }
+            }
+
+            void pin(mut std::ui::painter& p, pin_part& n) {
+                std::ui::color black = std::ui::color::hex(ink);
+                f32 ring = (1.8 * n.zoom).max(1.4);
+                pin_style outline = pin_style{ .color = black, .shape = n.style.shape };
+                pin_shape_at(mut p.list, n.at, outline, true, n.radius + ring, black);
+                pin_style inside = pin_style{ .color = if (n.linked) { n.style.color } else { std::ui::color::hex(0xfffdf7) }, .shape = n.style.shape };
+                pin_shape_at(mut p.list, n.at, inside, true, n.radius, black);
+            }
+
+            void link(mut std::ui::painter& p, link_part& l) {
+                f32 z = l.zoom.max(0.6);
+                f32 width = l.look.width * z;
+                std::ui::color accent = p.tokens.colors.primary;
+                std::ui::color casing = if (l.selected) { accent } else if (l.preview) { accent.with_alpha(0.7) } else { std::ui::color::hex(ink) };
+                p.list.polyline(l.points, width + 3.0 * z, casing);
+                p.list.polyline(l.points, width, if (l.hovered || l.dragging) { l.color.mix(std::ui::color::white(), 0.25) } else { l.color.mix(std::ui::color::white(), 0.1) });
+            }
+
+            void frame(mut std::ui::painter& p, frame_part& f) {
+                std::ui::color black = std::ui::color::hex(ink);
+                f32 radius = 10.0 * f.zoom.max(0.5);
+                p.list.fill(f.bounds, f.tint.with_alpha(0.12), radius);
+                dashed_box(mut p.list, f.bounds, (2.0 * f.zoom).max(1.0), 8.0 * f.zoom.max(0.5), black.with_alpha(0.55 + 0.35 * f.hover));
+                mut std::ui::text_style style = p.tokens.style(std::ui::text_role::label, black);
+                style.face = std::ui::font_face::semibold;
+                _ = p.text(std::ui::vec2{ .x = f.header.x + 12.0 * f.zoom, .y = middle_for(mut p, f.header, style) }, f.title, style);
+                p.list.draw_icon(std::ui::icon::maximize, f.grip.shrunk(2.0), black.with_alpha(0.4 + 0.5 * f.grip_hover));
+            }
+
+            void selection_box(mut std::ui::painter& p, box_part& b) {
+                std::ui::color accent = p.tokens.colors.primary;
+                p.list.fill(b.bounds, accent.with_alpha(0.1), 0.0);
+                dashed_box(mut p.list, b.bounds, 1.5, 6.0, std::ui::color::hex(ink));
+            }
+        }
+    }
+
+    // ---- graph<K> ---------------------------------------------------------------------------------
+
+    private u64 pin_id(u64 node, usize field) {
+        return node * 64 + cast<u64>(field);
+    }
+
+    private u64 node_of_pin(u64 pin) {
+        return pin / 64;
+    }
+
+    private usize field_of_pin(u64 pin) {
+        return cast::truncate<usize>(pin % 64);
+    }
+
+    // What field `field` of a node's kind is: 0 a parameter, 1 an input, 2 an output; and its
+    // type's id.
+    private template<type K>
+    (u8, u64) pin_of_field(K& v, usize field) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                        compile_time type F = f.type;
+                        if (f.index == field) {
+                            u8 role = if (f.has<in>()) { 1 } else if (f.has<out>()) { 2 } else { 0 };
+                            return (role, std::meta::type_id<F>());
+                        }
+                    }
+                }
+            }
+        }
+        return (0, 0);
+    }
+
+    private template<type K>
+    std::static_str field_name(K& v, usize field) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                        if (f.index == field) {
+                            return f.name;
+                        }
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    private template<type K>
+    std::option<usize> field_index(K& v, std::str name) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                        if (name == f.name) {
+                            return std::some(f.index);
+                        }
+                    }
+                }
+            }
+        }
+        return std::none;
+    }
+
+    // The short name of a pin's type ("vec3", "f32"), for messages.
+    private template<type K>
+    std::string type_label(K& v, usize field) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                        compile_time type F = f.type;
+                        if (f.index == field) {
+                            return last_segment(std::type_name<F>());
+                        }
+                    }
+                }
+            }
+        }
+        return std::string::from("?");
+    }
+
+    private std::string last_segment(std::str path) {
+        mut usize start = 0;
+        for (usize i : 0..path.len()) {
+            if (path.byte(i) == 58) {
+                start = i + 1;
+            }
+        }
+        return std::string::from(path.slice(start, path.len()));
+    }
+
+    private template<type K>
+    kind kind_of(K& v) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    return std::meta::annotation<kind, P>().value_or(kind{ .title = a.name });
+                }
+            }
+        }
+        return kind{};
+    }
+
+    private template<type K>
+    std::static_str title_of_kind(K& v) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    kind info = std::meta::annotation<kind, P>().value_or(kind{});
+                    return if (info.title == "") { a.name } else { info.title };
+                }
+            }
+        }
+        return "";
+    }
+
+    // Whether an output of type `from` may link into an input of type `to`: the same type, or a
+    // @nodes::converts function between them.
+    private template<type K>
+    bool converts_between(u64 from, u64 to) {
+        if (from == to) {
+            return true;
+        }
+        for compile_time (std::meta::function f : std::meta::functions_with<converts>()) {
+            compile_time type A = f.parameters[0].type;
+            compile_time type R = f.result;
+            if (std::meta::type_id<A>() == from && std::meta::type_id<R>() == to) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A pin's colour from its type: the std::math types and numbers have their own, other types get
+    // one from their id.
+    private std::ui::color type_color(u64 ty) {
+        if (ty == std::meta::type_id<f32>() || ty == std::meta::type_id<f64>()) {
+            return std::ui::color::hex(0x9aa4b2);
+        }
+        if (ty == std::meta::type_id<std::ui::vec2>()) {
+            return std::ui::color::hex(0x46a758);
+        }
+        if (ty == std::meta::type_id<std::math::vec3>()) {
+            return std::ui::color::hex(0xf5a524);
+        }
+        if (ty == std::meta::type_id<std::math::vec4>()) {
+            return std::ui::color::hex(0xe5484d);
+        }
+        if (ty == std::meta::type_id<std::ui::color>()) {
+            return std::ui::color::hex(0xe879f9);
+        }
+        if (ty == std::meta::type_id<bool>()) {
+            return std::ui::color::hex(0xef6b6b);
+        }
+        if (ty == std::meta::type_id<i32>() || ty == std::meta::type_id<u32>() || ty == std::meta::type_id<i64>() || ty == std::meta::type_id<u64>()) {
+            return std::ui::color::hex(0x2dd4bf);
+        }
+        f32 hue = cast::round<f32>(ty % 360);
+        return std::ui::color::from_oklch(std::math::oklch{ .l = 0.74, .c = 0.13, .h = hue }, 1.0);
+    }
+
+    // A field's label: its @ui::label, or its name with spaces.
+    private std::string field_label(std::static_str name, std::option<std::ui::label> shown) {
+        match (shown) {
+            std::some(l) => { return std::string::from(l.text); },
+            std::none => {},
+        }
+        mut std::string out = default;
+        for (usize i : 0..name.len()) {
+            out.push_str(if (name.byte(i) == 95) { " " } else { name.slice(i, i + 1) });
+        }
+        return out;
+    }
+
+    // The editor of an unlinked number or bool input, in its pin's row.
+    private template<type F>
+    bool inline_editor(mut std::ui::immediate::scope& w, mut F& value, std::option<std::ui::range> limits) {
+        if compile_time (std::is_same<F, bool>()) {
+            return w.checkbox("", mut value);
+        } else if compile_time (std::is_float<F>()) {
+            return match (limits) {
+                std::some(r) => w.slider("", mut value, cast::round<F>(r.min), cast::round<F>(r.max)),
+                std::none => w.drag("", mut value, 0.01),
+            };
+        } else {
+            return w.drag("", mut value, 0.1);
+        }
+    }
+
+    // Pins, inline editors and parameters of one node.
+    private template<type K>
+    void edit_node(mut editor& ed, mut graph_node<K>& n, mut bool& changed) {
+        u64 node_id = n.id;
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(n.value)) {
+                    compile_time type P = a.payload;
+                    kind info = std::meta::annotation<kind, P>().value_or(kind{});
+                    std::static_str title = if (info.title == "") { a.name } else { info.title };
+                    mut node_view card = ed.node(node_id, mut n.at, title, node_look{ .color = std::ui::color::hex(info.color), .symbol = info.symbol, .width = info.width });
+                    match (a.get(mut n.value)) {
+                        std::some(p) => {
+                            for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                                if compile_time (f.has<out>()) {
+                                    compile_time type F = f.type;
+                                    std::string label = field_label(f.name, f.annotation<std::ui::label>());
+                                    card.output(pin_id(node_id, f.index), label.as_str(), pin_style{ .color = type_color(std::meta::type_id<F>()) });
+                                }
+                            }
+                            // Unlinked inputs that aren't numbers or bools are edited in the body.
+                            mut std::array<bool, 64> in_body = default;
+                            mut bool any_body = false;
+                            for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                                compile_time type F = f.type;
+                                if compile_time (f.has<in>()) {
+                                    u64 pin = pin_id(node_id, f.index);
+                                    std::string label = field_label(f.name, f.annotation<std::ui::label>());
+                                    pin_style look = pin_style{ .color = type_color(std::meta::type_id<F>()) };
+                                    if compile_time (std::is_same<F, bool>() || std::is_float<F>() || std::is_integer<F>()) {
+                                        mut std::ui::immediate::scope w = card.input_widget(pin, label.as_str(), look);
+                                        if (inline_editor<F>(mut w, mut f.get(mut p), f.annotation<std::ui::range>())) {
+                                            changed = true;
+                                        }
+                                    } else {
+                                        bool linked = card.ed.is_linked(pin);
+                                        card.input(pin, label.as_str(), look);
+                                        in_body[f.index] = !linked;
+                                        any_body = any_body || !linked;
+                                    }
+                                } else if compile_time (!f.has<out>()) {
+                                    in_body[f.index] = true;
+                                    any_body = true;
+                                }
+                            }
+                            if (any_body) {
+                                mut std::ui::immediate::scope body = card.body();
+                                for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                                    if compile_time (!f.has<out>()) {
+                                        if (in_body[f.index]) {
+                                            if (body.field(mut p, f.name).changed) {
+                                                changed = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        std::none => {},
+                    }
+                }
+            }
+        }
+    }
+
+    // A new node of the `index`th kind, with its payload's defaults.
+    private template<type K>
+    std::option<K> make_kind(usize index) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.index == index) {
+                    compile_time type P = a.payload;
+                    P fresh = default;
+                    return std::some(a.make(fresh));
+                }
+            }
+        }
+        return std::none;
+    }
+
+    // The first pin of `v` that a link of type `type` fits: an input it can go into (`input`), or an
+    // output that can go into it.
+    private template<type K>
+    std::option<usize> fitting_pin(K& v, u64 ty, bool input) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (a.is(v)) {
+                    compile_time type P = a.payload;
+                    for compile_time (std::meta::field f : std::meta::fields<P>()) {
+                        compile_time type F = f.type;
+                        if compile_time (f.has<in>()) {
+                            if (input && converts_between<K>(ty, std::meta::type_id<F>())) {
+                                return std::some(f.index);
+                            }
+                        } else if compile_time (f.has<out>()) {
+                            if (!input && converts_between<K>(std::meta::type_id<F>(), ty)) {
+                                return std::some(f.index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return std::none;
+    }
+
+    // Whether ASCII `query`'s letters appear in `text` in order (case ignored).
+    private bool fuzzy(std::str text, std::str query) {
+        mut usize at = 0;
+        for (usize i : 0..text.len()) {
+            if (at < query.len() && lower(text.byte(i)) == lower(query.byte(at))) {
+                at += 1;
+            }
+        }
+        return at == query.len();
+    }
+
+    private u8 lower(u8 b) {
+        return if (b >= 65 && b <= 90) { b + 32 } else { b };
+    }
+
+    // ---- text ----
+
+    private void write_quoted(mut std::string& out, std::str text) {
+        out.push_str("\"");
+        for (usize i : 0..text.len()) {
+            u8 b = text.byte(i);
+            if (b == 34 || b == 92) {
+                out.push_str("\\");
+            }
+            out.push_str(if (b == 10) { "\\n" } else { text.slice(i, i + 1) });
+        }
+        out.push_str("\"");
+    }
+
+    private template<type T>
+    void write_value(mut std::string& out, T& v) {
+        compile_time check (std::is_same<T, bool>() || std::is_integer<T>() || std::is_float<T>() || std::is_same<T, std::string>() || std::meta::is_enum<T>() || std::meta::is_struct<T>()) else f"a node's field can't be a {std::type_name<T>()}: graphs keep numbers, bools, strings, enums without payloads and structs of those";
+        if compile_time (std::is_same<T, bool>()) {
+            out.push_str(if (v) { "true" } else { "false" });
+        } else if compile_time (std::is_integer<T>() || std::is_float<T>()) {
+            out.push_str(std::format(f"{v}").as_str());
+        } else if compile_time (std::is_same<T, std::string>()) {
+            write_quoted(mut out, v.as_str());
+        } else if compile_time (std::meta::is_enum<T>()) {
+            out.push_str(std::meta::name_of(v));
+        } else {
+            out.push_str("{");
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                out.push_str(" ");
+                out.push_str(f.name);
+                out.push_str(" = ");
+                write_value(mut out, f.get(v));
+            }
+            out.push_str(" }");
+        }
+    }
+
+    // A node's payload without its outputs (results of evaluating the graph, not part of it).
+    private template<type P>
+    void write_payload(mut std::string& text, P& p) {
+        text.push_str("{");
+        for compile_time (std::meta::field f : std::meta::fields<P>()) {
+            if compile_time (!f.has<out>()) {
+                text.push_str(" ");
+                text.push_str(f.name);
+                text.push_str(" = ");
+                write_value(mut text, f.get(p));
+            }
+        }
+        text.push_str(" }");
+    }
+
+    private template<type K>
+    void write_node(mut std::string& out, graph_node<K>& n) {
+        out.push_str(std::format(f"node {n.id} {std::meta::name_of(n.value)} {n.at.x} {n.at.y} ").as_str());
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                match (a.get(n.value)) {
+                    std::some(p) => write_payload(mut out, p),
+                    std::none => {},
+                }
+            }
+        }
+        out.push_str("\n");
+    }
+
+    // `nodes` (all when `only` is none) and the links between them, as text.
+    private template<type K>
+    std::string graph_text(graph<K>& g, std::option<std::span<u64>> only) {
+        mut std::string out = std::string::from("edax_graph 1\n");
+        for (graph_node<K>& n : g.nodes) {
+            bool wanted = match (only) {
+                std::some(ids) => contains_id(ids, n.id),
+                std::none => true,
+            };
+            if (wanted) {
+                write_node(mut out, n);
+            }
+        }
+        for (graph_link& l : g.links) {
+            u64 a = node_of_pin(l.from);
+            u64 b = node_of_pin(l.to);
+            bool wanted = match (only) {
+                std::some(ids) => contains_id(ids, a) && contains_id(ids, b),
+                std::none => true,
+            };
+            if (!wanted) {
+                continue;
+            }
+            match (g.index_of(a)) {
+                std::some(ia) => {
+                    match (g.index_of(b)) {
+                        std::some(ib) => {
+                            out.push_str(std::format(f"link {l.id} {a} {field_name(g.nodes[ia].value, field_of_pin(l.from))} {b} {field_name(g.nodes[ib].value, field_of_pin(l.to))} {l.via.len()}").as_str());
+                            for (std::ui::vec2 p : l.via) {
+                                out.push_str(std::format(f" {p.x} {p.y}").as_str());
+                            }
+                            out.push_str("\n");
+                        },
+                        std::none => {},
+                    }
+                },
+                std::none => {},
+            }
+        }
+        if (only.is_none()) {
+            for (graph_frame& f : g.frames) {
+                out.push_str(std::format(f"frame {f.id} {f.area.x} {f.area.y} {f.area.width} {f.area.height} {f.color} ").as_str());
+                write_quoted(mut out, f.title.as_str());
+                out.push_str("\n");
+            }
+        }
+        return out;
+    }
+
+    private struct graph_token {
+        std::string text = default;
+        bool quoted = false;
+    }
+
+    private struct graph_reader {
+        std::darray<graph_token> tokens = default;
+        usize at = 0;
+    }
+
+    // Words, numbers, quoted strings, and `{`, `}`, `=` on their own.
+    private std::darray<graph_token> graph_tokens(std::str text) {
+        mut std::darray<graph_token> out = default;
+        mut usize i = 0;
+        usize n = text.len();
+        while (i < n) {
+            u8 b = text.byte(i);
+            if (b == 32 || b == 10 || b == 13 || b == 9) {
+                i += 1;
+                continue;
+            }
+            if (b == 123 || b == 125 || b == 61) {
+                out.push(graph_token{ .text = std::string::from(text.slice(i, i + 1)) });
+                i += 1;
+                continue;
+            }
+            if (b == 34) {
+                mut std::string word = default;
+                i += 1;
+                while (i < n && text.byte(i) != 34) {
+                    if (text.byte(i) == 92 && i + 1 < n) {
+                        i += 1;
+                        word.push_str(if (text.byte(i) == 110) { "\n" } else { text.slice(i, i + 1) });
+                    } else {
+                        word.push_str(text.slice(i, i + 1));
+                    }
+                    i += 1;
+                }
+                i += 1;
+                out.push(graph_token{ .text = move word, .quoted = true });
+                continue;
+            }
+            usize start = i;
+            while (i < n && text.byte(i) != 32 && text.byte(i) != 10 && text.byte(i) != 13 && text.byte(i) != 9 && text.byte(i) != 123 && text.byte(i) != 125 && text.byte(i) != 61) {
+                i += 1;
+            }
+            out.push(graph_token{ .text = std::string::from(text.slice(start, i)) });
+        }
+        return out;
+    }
+
+    private bool reader_done(graph_reader& r) {
+        return r.at >= r.tokens.len();
+    }
+
+    private graph_token take_token(mut graph_reader& r) {
+        if (r.at >= r.tokens.len()) {
+            return graph_token{};
+        }
+        r.at += 1;
+        return graph_token{ .text = r.tokens[r.at - 1].text.clone(), .quoted = r.tokens[r.at - 1].quoted };
+    }
+
+    private std::string take_word(mut graph_reader& r) {
+        mut graph_token t = take_token(mut r);
+        return std::take(mut t.text);
+    }
+
+    private bool next_is(graph_reader& r, std::str word) {
+        return r.at < r.tokens.len() && !r.tokens[r.at].quoted && r.tokens[r.at].text.as_str() == word;
+    }
+
+    private template<type T>
+    std::option<T> take_number(mut graph_reader& r) {
+        std::string w = take_word(mut r);
+        return w.as_str().parse<T>();
+    }
+
+    // Skips one value: a token, or a `{ ... }` with everything in it.
+    private void skip_value(mut graph_reader& r) {
+        mut usize depth = 0;
+        while (!reader_done(r)) {
+            graph_token t = take_token(mut r);
+            if (!t.quoted && t.text.as_str() == "{") {
+                depth += 1;
+            } else if (!t.quoted && t.text.as_str() == "}") {
+                if (depth > 0) {
+                    depth -= 1;
+                }
+            }
+            if (depth == 0) {
+                return;
+            }
+        }
+    }
+
+    // Reads what write_value wrote into `v`; fields missing from the text keep their values, unknown
+    // ones are skipped.
+    private template<type T>
+    bool read_value(mut graph_reader& r, mut T& v) {
+        compile_time check (std::is_same<T, bool>() || std::is_integer<T>() || std::is_float<T>() || std::is_same<T, std::string>() || std::meta::is_enum<T>() || std::meta::is_struct<T>()) else f"a node's field can't be a {std::type_name<T>()}: graphs keep numbers, bools, strings, enums without payloads and structs of those";
+        if compile_time (std::is_same<T, bool>()) {
+            std::string w = take_word(mut r);
+            if (w.as_str() == "true") {
+                v = true;
+            } else if (w.as_str() == "false") {
+                v = false;
+            } else {
+                return false;
+            }
+        } else if compile_time (std::is_integer<T>() || std::is_float<T>()) {
+            match (take_number<T>(mut r)) {
+                std::some(x) => { v = x; },
+                std::none => { return false; },
+            }
+        } else if compile_time (std::is_same<T, std::string>()) {
+            graph_token t = take_token(mut r);
+            if (!t.quoted) {
+                return false;
+            }
+            v = t.text.clone();
+        } else if compile_time (std::meta::is_enum<T>()) {
+            std::string w = take_word(mut r);
+            match (std::meta::from_name<T>(w.as_str())) {
+                std::some(x) => { v = x; },
+                std::none => { return false; },
+            }
+        } else {
+            if (!next_is(r, "{")) {
+                return false;
+            }
+            r.at += 1;
+            while (!reader_done(r) && !next_is(r, "}")) {
+                std::string name = take_word(mut r);
+                if (!next_is(r, "=")) {
+                    return false;
+                }
+                r.at += 1;
+                mut bool known = false;
+                for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                    if (!known && name.as_str() == f.name) {
+                        known = true;
+                        if (!read_value(mut r, mut f.get(mut v))) {
+                            return false;
+                        }
+                    }
+                }
+                if (!known) {
+                    skip_value(mut r);
+                }
+            }
+            if (!next_is(r, "}")) {
+                return false;
+            }
+            r.at += 1;
+        }
+        return true;
+    }
+
+    private template<type K>
+    std::option<K> read_kind(mut graph_reader& r, std::str name) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                if (name == a.name) {
+                    compile_time type P = a.payload;
+                    mut P fresh = default;
+                    if (!read_value(mut r, mut fresh)) {
+                        return std::none;
+                    }
+                    return std::some(a.make(fresh));
+                }
+            }
+        }
+        return std::none;
+    }
+
+    // Puts the nodes, links and frames of `text` into `g` (its view stays).
+    private template<type K>
+    std::result<void, std::string> read_graph(mut graph<K>& g, std::str text) {
+        mut graph_reader r = graph_reader{ .tokens = graph_tokens(text) };
+        g.nodes.clear();
+        g.links.clear();
+        g.frames.clear();
+        g.next_id = 1;
+        while (!reader_done(r)) {
+            std::string word = take_word(mut r);
+            if (word.as_str() == "edax_graph") {
+                _ = take_word(mut r);
+            } else if (word.as_str() == "node") {
+                u64 id = take_number<u64>(mut r).value_or(0);
+                std::string name = take_word(mut r);
+                f32 x = take_number<f32>(mut r).value_or(0.0);
+                f32 y = take_number<f32>(mut r).value_or(0.0);
+                match (read_kind<K>(mut r, name.as_str())) {
+                    std::some(v) => {
+                        g.nodes.push(graph_node<K>{ .id = id, .value = move v, .at = std::ui::vec2{ .x = x, .y = y } });
+                        g.next_id = g.next_id.max(id + 1);
+                    },
+                    std::none => { return std::error(std::format(f"node {id}: no kind '{name}', or its fields can't be read")); },
+                }
+            } else if (word.as_str() == "link") {
+                u64 id = take_number<u64>(mut r).value_or(0);
+                u64 a = take_number<u64>(mut r).value_or(0);
+                std::string out_name = take_word(mut r);
+                u64 b = take_number<u64>(mut r).value_or(0);
+                std::string in_name = take_word(mut r);
+                usize count = take_number<usize>(mut r).value_or(0);
+                mut std::darray<std::ui::vec2> via = default;
+                for (usize k : 0..count) {
+                    f32 x = take_number<f32>(mut r).value_or(0.0);
+                    f32 y = take_number<f32>(mut r).value_or(0.0);
+                    via.push(std::ui::vec2{ .x = x, .y = y });
+                }
+                std::option<usize> fa = match (g.index_of(a)) {
+                    std::some(i) => field_index(g.nodes[i].value, out_name.as_str()),
+                    std::none => std::none,
+                };
+                std::option<usize> fb = match (g.index_of(b)) {
+                    std::some(i) => field_index(g.nodes[i].value, in_name.as_str()),
+                    std::none => std::none,
+                };
+                if (fa.is_none() || fb.is_none()) {
+                    return std::error(std::format(f"link {id}: no pin {a}.{out_name} or {b}.{in_name}"));
+                }
+                g.links.push(graph_link{ .id = id, .from = pin_id(a, fa.value_or(0)), .to = pin_id(b, fb.value_or(0)), .via = move via });
+                g.next_id = g.next_id.max(id + 1);
+            } else if (word.as_str() == "frame") {
+                u64 id = take_number<u64>(mut r).value_or(0);
+                f32 x = take_number<f32>(mut r).value_or(0.0);
+                f32 y = take_number<f32>(mut r).value_or(0.0);
+                f32 w = take_number<f32>(mut r).value_or(100.0);
+                f32 h = take_number<f32>(mut r).value_or(100.0);
+                u32 color = take_number<u32>(mut r).value_or(0x7c8aa0);
+                graph_token title = take_token(mut r);
+                g.frames.push(graph_frame{ .id = id, .area = std::ui::rect{ .x = x, .y = y, .width = w, .height = h }, .title = title.text.clone(), .color = color });
+                g.next_id = g.next_id.max(id + 1);
+            } else {
+                return std::error(std::format(f"unexpected '{word}'"));
+            }
+        }
+        return std::ok();
+    }
+
+    // Whether a link from `from` to `to` (pins) is allowed; the error says why not.
+    private template<type K>
+    std::result<void, std::string> check_link(graph<K>& g, u64 from, u64 to) {
+        std::option<usize> ia = g.index_of(node_of_pin(from));
+        std::option<usize> ib = g.index_of(node_of_pin(to));
+        if (ia.is_none() || ib.is_none()) {
+            return std::error(std::string::from("no such node"));
+        }
+        usize a = ia.value_or(0);
+        usize b = ib.value_or(0);
+        if (a == b) {
+            return std::error(std::string::from("a node can't link to itself"));
+        }
+        (u8 role_a, u64 type_a) = pin_of_field(g.nodes[a].value, field_of_pin(from));
+        (u8 role_b, u64 type_b) = pin_of_field(g.nodes[b].value, field_of_pin(to));
+        if (role_a != 2 || role_b != 1) {
+            return std::error(std::string::from("a link goes from an output to an input"));
+        }
+        if (!converts_between<K>(type_a, type_b)) {
+            std::string have = type_label(g.nodes[a].value, field_of_pin(from));
+            std::string want = type_label(g.nodes[b].value, field_of_pin(to));
+            return std::error(std::format(f"a {have} output can't go into a {want} input"));
+        }
+        return std::ok();
+    }
+
+    private template<type K>
+    std::result<u64, std::string> link_pins(mut graph<K>& g, u64 from, u64 to) {
+        match (check_link(g, from, to)) {
+            std::error(why) => { return std::error(move why); },
+            std::ok(_) => {},
+        }
+        g.links.retain([to](graph_link& l) { return l.to != to; });
+        u64 id = g.next_id;
+        g.next_id += 1;
+        g.links.push(graph_link{ .id = id, .from = from, .to = to });
+        return std::ok(id);
+    }
+
+    // Adds the nodes and links of `text` with new ids, moved by `offset`; selects them.
+    private template<type K>
+    void paste_text(mut graph<K>& g, std::str text, std::ui::vec2 offset) {
+        mut graph<K> part = graph<K>::make();
+        if (read_graph(mut part, text).is_error()) {
+            return;
+        }
+        mut std::hash_map<u64, u64> renamed = default;
+        g.view.selected.clear();
+        g.view.selected_links.clear();
+        // Taken out of `part` from the end, then added in their order.
+        mut std::darray<graph_node<K>> backwards = default;
+        while (true) {
+            match (part.nodes.pop()) {
+                std::some(n) => backwards.push(move n),
+                std::none => { break; },
+            }
+        }
+        while (true) {
+            match (backwards.pop()) {
+                std::some(n) => {
+                    mut graph_node<K> copy = move n;
+                    u64 id = g.next_id;
+                    g.next_id += 1;
+                    _ = renamed.insert(copy.id, id);
+                    g.view.selected.push(id);
+                    copy.id = id;
+                    copy.at = copy.at + offset;
+                    g.nodes.push(move copy);
+                },
+                std::none => { break; },
+            }
+        }
+        for (graph_link& l : part.links) {
+            match (renamed.get(node_of_pin(l.from))) {
+                std::some(a) => {
+                    match (renamed.get(node_of_pin(l.to))) {
+                        std::some(b) => {
+                            mut std::darray<std::ui::vec2> via = default;
+                            for (std::ui::vec2 p : l.via) {
+                                via.push(p + offset);
+                            }
+                            u64 id = g.next_id;
+                            g.next_id += 1;
+                            g.links.push(graph_link{ .id = id, .from = pin_id(a, field_of_pin(l.from)), .to = pin_id(b, field_of_pin(l.to)), .via = move via });
+                        },
+                        std::none => {},
+                    }
+                },
+                std::none => {},
+            }
+        }
+    }
+
+    template<type K>
+    struct graph {
+        static graph<K> make() {
+            return graph<K>{};
+        }
+
+        static std::result<graph<K>, std::string> from_text(std::str text) {
+            mut graph<K> g = graph<K>::make();
+            match (read_graph<K>(mut g, text)) {
+                std::error(why) => { return std::error(move why); },
+                std::ok(_) => {},
+            }
+            return std::ok(move g);
+        }
+
+        static std::result<graph<K>, std::string> load(std::str path) {
+            mut std::file f = match (std::file::open(path)) {
+                std::ok(opened) => move opened,
+                std::error(e) => { return std::error(std::format(f"can't open '{path}': {e}")); },
+            };
+            std::string text = match (f.read_all()) {
+                std::ok(t) => move t,
+                std::error(e) => { return std::error(std::format(f"can't read '{path}': {e}")); },
+            };
+            return graph<K>::from_text(text.as_str());
+        }
+
+        std::string to_text() {
+            return graph_text<K>(this, std::none);
+        }
+
+        std::result<void, std::string> save(std::str path) {
+            std::string text = this.to_text();
+            mut std::file f = match (std::file::create(path)) {
+                std::ok(made) => move made,
+                std::error(e) => { return std::error(std::format(f"can't write '{path}': {e}")); },
+            };
+            match (f.write(text.as_str())) {
+                std::ok(_) => { return std::ok(); },
+                std::error(e) => { return std::error(std::format(f"can't write '{path}': {e}")); },
+            }
+        }
+
+        u64 add(K value, std::ui::vec2 at) mut {
+            u64 id = this.next_id;
+            this.next_id += 1;
+            this.nodes.push(graph_node<K>{ .id = id, .value = move value, .at = at });
+            return id;
+        }
+
+        void remove(u64 node) mut {
+            this.nodes.retain([node](graph_node<K>& n) { return n.id != node; });
+            this.links.retain([node](graph_link& l) { return node_of_pin(l.from) != node && node_of_pin(l.to) != node; });
+            remove_id(mut this.view.selected, node);
+        }
+
+        std::result<u64, std::string> connect(u64 from, std::str output, u64 to, std::str input) mut {
+            std::option<usize> fa = match (this.index_of(from)) {
+                std::some(i) => field_index(this.nodes[i].value, output),
+                std::none => std::none,
+            };
+            std::option<usize> fb = match (this.index_of(to)) {
+                std::some(i) => field_index(this.nodes[i].value, input),
+                std::none => std::none,
+            };
+            if (fa.is_none() || fb.is_none()) {
+                return std::error(std::format(f"no pin {from}.{output} or {to}.{input}"));
+            }
+            return link_pins<K>(mut this, pin_id(from, fa.value_or(0)), pin_id(to, fb.value_or(0)));
+        }
+
+        void add_frame(std::str title, std::ui::rect area, u32 color) mut {
+            u64 id = this.next_id;
+            this.next_id += 1;
+            this.frames.push(graph_frame{ .id = id, .area = area, .title = std::string::from(title), .color = color });
+        }
+
+        std::option<usize> index_of(u64 node) {
+            for (usize i : 0..this.nodes.len()) {
+                if (this.nodes[i].id == node) {
+                    return std::some(i);
+                }
+            }
+            return std::none;
+        }
+
+        std::option<source> source_of(u64 node, std::str input) {
+            std::option<usize> field = match (this.index_of(node)) {
+                std::some(i) => field_index(this.nodes[i].value, input),
+                std::none => std::none,
+            };
+            match (field) {
+                std::some(fi) => {
+                    u64 pin = pin_id(node, fi);
+                    for (graph_link& l : this.links) {
+                        if (l.to == pin) {
+                            match (this.index_of(node_of_pin(l.from))) {
+                                std::some(i) => {
+                                    (_, u64 ty) = pin_of_field(this.nodes[i].value, field_of_pin(l.from));
+                                    return std::some(source{ .node = node_of_pin(l.from), .output = field_name(this.nodes[i].value, field_of_pin(l.from)), .type_id = ty });
+                                },
+                                std::none => {},
+                            }
+                        }
+                    }
+                },
+                std::none => {},
+            }
+            return std::none;
+        }
+
+        std::result<std::darray<u64>, u64> topological_order() {
+            mut std::darray<u64> ids = default;
+            for (graph_node<K>& n : this.nodes) {
+                ids.push(n.id);
+            }
+            mut std::darray<edge> edges = default;
+            for (graph_link& l : this.links) {
+                edges.push(edge{ .from = node_of_pin(l.from), .to = node_of_pin(l.to) });
+            }
+            return std::ui::nodes::topological_order(ids.as_span(), edges.as_span());
+        }
+
+        bool undo() mut {
+            match (this.undo_steps.pop()) {
+                std::some(text) => {
+                    this.redo_steps.push(std::take(mut this.last_text));
+                    _ = read_graph<K>(mut this, text.as_str());
+                    this.last_text = move text;
+                    return true;
+                },
+                std::none => { return false; },
+            }
+        }
+
+        bool redo() mut {
+            match (this.redo_steps.pop()) {
+                std::some(text) => {
+                    this.undo_steps.push(std::take(mut this.last_text));
+                    _ = read_graph<K>(mut this, text.as_str());
+                    this.last_text = move text;
+                    return true;
+                },
+                std::none => { return false; },
+            }
+        }
+    }
+
+    // One entry of the add-node menu.
+    private struct menu_entry {
+        usize kind = 0;
+        std::static_str title = "";
+        std::static_str category = "";
+    }
+
+    // The kinds the add-node menu lists: matching the search, and fitting the dropped link if any.
+    private template<type K>
+    std::darray<menu_entry> menu_entries(graph<K>& g) {
+        mut std::darray<menu_entry> out = default;
+        mut std::option<(u64, bool)> wanted = std::none;
+        match (g.menu_drop) {
+            std::some(d) => {
+                match (g.index_of(node_of_pin(d.from))) {
+                    std::some(i) => {
+                        (_, u64 ty) = pin_of_field(g.nodes[i].value, field_of_pin(d.from));
+                        wanted = std::some((ty, d.from_output));
+                    },
+                    std::none => {},
+                }
+            },
+            std::none => {},
+        }
+        for compile_time (std::meta::alternative a : std::meta::alternatives<K>()) {
+            if compile_time (a.has_payload) {
+                compile_time type P = a.payload;
+                kind info = std::meta::annotation<kind, P>().value_or(kind{});
+                std::static_str title = if (info.title == "") { a.name } else { info.title };
+                mut bool fits = fuzzy(title, g.search.as_str()) || fuzzy(info.category, g.search.as_str());
+                match (wanted) {
+                    std::some(w) => {
+                        (u64 ty, bool from_output) = w;
+                        match (make_kind<K>(a.index)) {
+                            std::some(sample) => { fits = fits && fitting_pin(sample, ty, from_output).is_some(); },
+                            std::none => { fits = false; },
+                        }
+                    },
+                    std::none => {},
+                }
+                if (fits) {
+                    out.push(menu_entry{ .kind = a.index, .title = title, .category = info.category });
+                }
+            }
+        }
+        out.sort_by([](menu_entry& x, menu_entry& y) { return x.category < y.category || (x.category == y.category && x.title < y.title); });
+        return out;
+    }
+
+    // Adds the `index`th kind at the menu's place; connects the dropped link to it if there is one.
+    private template<type K>
+    void add_from_menu(mut graph<K>& g, usize index) {
+        std::ui::vec2 at = g.menu_at.value_or(std::ui::vec2{});
+        match (make_kind<K>(index)) {
+            std::some(value) => {
+                u64 id = g.add(move value, at);
+                g.view.selected.clear();
+                g.view.selected.push(id);
+                match (g.menu_drop) {
+                    std::some(d) => {
+                        match (g.index_of(node_of_pin(d.from))) {
+                            std::some(i) => {
+                                (_, u64 ty) = pin_of_field(g.nodes[i].value, field_of_pin(d.from));
+                                usize last = g.nodes.len() - 1;
+                                match (fitting_pin(g.nodes[last].value, ty, d.from_output)) {
+                                    std::some(field) => {
+                                        u64 pin = pin_id(id, field);
+                                        _ = if (d.from_output) { link_pins(mut g, d.from, pin) } else { link_pins(mut g, pin, d.from) };
+                                    },
+                                    std::none => {},
+                                }
+                            },
+                            std::none => {},
+                        }
+                    },
+                    std::none => {},
+                }
+            },
+            std::none => {},
+        }
+        g.menu_at = std::none;
+        g.menu_drop = std::none;
+    }
+
+    template<type K>
+    graph_edit graph_editor(mut std::ui::immediate::scope& s, mut graph<K>& g) {
+        mut graph_edit result = default;
+        if (!g.settled) {
+            g.last_text = g.to_text();
+            g.settled = true;
+        }
+        mut bool changed = false;
+        mut u64 editor_id = 0;
+        mut std::ui::rect area = default;
+        nodes::edits e = {
+            mut editor ed = s.node_editor("graph", mut g.view, 0.0);
+            editor_id = ed.id;
+            area = ed.area;
+            for (usize i : 0..g.frames.len()) {
+                std::string title = g.frames[i].title.clone();
+                std::ui::color tint = std::ui::color::hex(g.frames[i].color);
+                ed.frame(g.frames[i].id, mut g.frames[i].area, title.as_str(), tint);
+            }
+            for (usize i : 0..g.nodes.len()) {
+                edit_node(mut ed, mut g.nodes[i], mut changed);
+            }
+            for (usize k : 0..g.links.len()) {
+                ed.link_via(g.links[k].id, g.links[k].from, g.links[k].to, mut g.links[k].via);
+            }
+            ed.finish()
+        };
+        mut bool dirty = changed || !e.moved.is_empty() || !e.rerouted.is_empty();
+        for (link_request r : e.created) {
+            match (link_pins(mut g, r.from, r.to)) {
+                std::ok(_) => { changed = true; },
+                std::error(why) => { result.problem = move why; },
+            }
+        }
+        for (u64 gone : e.deleted_links) {
+            g.links.retain([gone](graph_link& l) { return l.id != gone; });
+            changed = true;
+        }
+        for (u64 gone : e.deleted_nodes) {
+            match (g.index_of(gone)) {
+                std::some(i) => {
+                    if (kind_of(g.nodes[i].value).removable) {
+                        g.remove(gone);
+                        changed = true;
+                    } else {
+                        result.problem = std::format(f"the {title_of_kind(g.nodes[i].value)} node can't be deleted");
+                    }
+                },
+                std::none => {},
+            }
+        }
+        match (e.menu_at) {
+            std::some(at) => {
+                g.menu_at = std::some(at);
+                g.menu_drop = std::none;
+                g.search.clear();
+            },
+            std::none => {},
+        }
+        match (e.dropped) {
+            std::some(d) => {
+                g.menu_at = std::some(d.at);
+                g.menu_drop = std::some(d);
+                g.search.clear();
+            },
+            std::none => {},
+        }
+        // Keys while the canvas has the focus.
+        bool keys = s.ctx.focused == editor_id && s.ctx.editing == 0 && g.menu_at.is_none();
+        bool undo_key = keys && s.ctx.in.pressed_with_control(std::ui::key::z) && !s.ctx.in.shift;
+        bool redo_key = keys && (s.ctx.in.pressed_with_control(std::ui::key::y) || (s.ctx.in.pressed_with_control(std::ui::key::z) && s.ctx.in.shift));
+        bool copy_key = keys && s.ctx.in.pressed_with_control(std::ui::key::c);
+        bool cut_key = keys && s.ctx.in.pressed_with_control(std::ui::key::x);
+        bool paste_key = keys && s.ctx.in.pressed_with_control(std::ui::key::v);
+        if (copy_key || cut_key) {
+            std::string text = graph_text(g, std::some(g.view.selected.as_span()));
+            s.ctx.set_clipboard_text(text.as_str());
+        }
+        if (cut_key) {
+            std::darray<u64> chosen = g.view.selected.clone();
+            for (u64 n : chosen) {
+                match (g.index_of(n)) {
+                    std::some(i) => {
+                        if (kind_of(g.nodes[i].value).removable) {
+                            g.remove(n);
+                        }
+                    },
+                    std::none => {},
+                }
+            }
+            changed = true;
+        }
+        if (paste_key) {
+            std::string text = std::string::from(s.ctx.clipboard_text());
+            paste_text(mut g, text.as_str(), std::ui::vec2{ .x = 40.0, .y = 40.0 });
+            changed = true;
+        }
+        if (e.duplicate) {
+            std::string text = graph_text(g, std::some(g.view.selected.as_span()));
+            paste_text(mut g, text.as_str(), std::ui::vec2{ .x = 40.0, .y = 40.0 });
+            changed = true;
+        }
+        if (undo_key || redo_key) {
+            // A change still being made is finished first, so it is what Ctrl+Z undoes.
+            std::string now = g.to_text();
+            if (now != g.last_text) {
+                g.undo_steps.push(std::take(mut g.last_text));
+                g.last_text = move now;
+                g.redo_steps.clear();
+            }
+            bool done = if (undo_key) { g.undo() } else { g.redo() };
+            if (done) {
+                result.changed = true;
+            }
+            g.dirty = false;
+        }
+        // The add-node menu.
+        match (g.menu_at) {
+            std::some(at) => {
+                if (s.ctx.in.pressed(std::ui::key::escape)) {
+                    g.menu_at = std::none;
+                    g.menu_drop = std::none;
+                } else {
+                    bool enter = s.ctx.in.pressed(std::ui::key::enter);
+                    for (std::ui::key_press k : s.ctx.in.keys) {
+                        if (k.key == std::ui::key::backspace && !g.search.is_empty()) {
+                            g.search = std::string::from(g.search.as_str().slice(0, g.search.len() - 1));
+                        }
+                    }
+                    g.search.push_str(s.ctx.in.typed.as_str());
+                    std::darray<menu_entry> entries = menu_entries(g);
+                    std::ui::theme t = s.theme();
+                    f32 row = (24.0 * t.density).round();
+                    mut usize rows = entries.len() + 1;
+                    for (usize k : 0..entries.len()) {
+                        if (k == 0 || entries[k].category != entries[k - 1].category) {
+                            rows += 1;
+                        }
+                    }
+                    std::ui::vec2 corner = area.origin() + g.view.pan + at * g.view.zoom;
+                    f32 width = 230.0;
+                    f32 height = (cast::round<f32>(rows) * row + 16.0).min(380.0);
+                    std::ui::rect box = std::ui::rect{ .x = corner.x.min(area.right() - width - 4.0).max(area.x), .y = corner.y.min(area.bottom() - height - 4.0).max(area.y), .width = width, .height = height };
+                    bool pressed_outside = s.ctx.in.mouse_pressed && !box.contains(s.ctx.in.cursor);
+                    mut std::option<usize> picked = std::none;
+                    {
+                        mut std::ui::painter p = s.painter();
+                        p.list.shadow(box, t.radius.medium, t.elevation(3), t.colors.shadow);
+                        p.list.fill(box, t.colors.surface_raised, t.radius.medium);
+                        p.list.stroke(box, t.colors.border, t.radius.medium, 1.0);
+                    }
+                    {
+                        mut std::ui::immediate::scope menu = s.region(std::hash_combine(editor_id, 0x6d656e75), box.shrunk(6.0), 0.0);
+                        {
+                            mut std::ui::immediate::scope query = menu.row();
+                            std::ui::color faint = t.colors.text_muted;
+                            query.icon(std::ui::icon::search, faint);
+                            if (g.search.is_empty()) {
+                                query.placeholder(if (g.menu_drop.is_some()) { "Type to search: kinds that fit" } else { "Type to search" });
+                            } else {
+                                query.text(f"{g.search}");
+                            }
+                        }
+                        menu.separator();
+                        for (usize k : 0..entries.len()) {
+                            if (k == 0 || entries[k].category != entries[k - 1].category) {
+                                menu.muted(f"{entries[k].category}");
+                            }
+                            mut std::ui::immediate::scope item = menu.id(entries[k].kind);
+                            if (item.menu_item(std::ui::icon::none, entries[k].title, "")) {
+                                picked = std::some(entries[k].kind);
+                            }
+                        }
+                        if (entries.is_empty()) {
+                            menu.muted("Nothing fits");
+                        }
+                    }
+                    if (enter && picked.is_none() && !entries.is_empty()) {
+                        picked = std::some(entries[0].kind);
+                    }
+                    match (picked) {
+                        std::some(index) => {
+                            add_from_menu(mut g, index);
+                            changed = true;
+                        },
+                        std::none => {
+                            if (pressed_outside) {
+                                g.menu_at = std::none;
+                                g.menu_drop = std::none;
+                            }
+                        },
+                    }
+                }
+            },
+            std::none => {},
+        }
+        // One undo step per finished change: once the buttons are up and no field is being typed in.
+        dirty = dirty || changed;
+        g.dirty = g.dirty || dirty;
+        result.changed = result.changed || changed;
+        bool idle = !s.ctx.in.mouse_down && s.ctx.editing == 0 && g.view.drag == drag_kind::none;
+        if (g.dirty && idle) {
+            std::string now = g.to_text();
+            if (now != g.last_text) {
+                g.undo_steps.push(std::take(mut g.last_text));
+                g.last_text = move now;
+                g.redo_steps.clear();
+                result.committed = true;
+                if (g.undo_steps.len() > 200) {
+                    mut std::darray<std::string> kept = default;
+                    for (usize k : 100..g.undo_steps.len()) {
+                        kept.push(std::take(mut g.undo_steps[k]));
+                    }
+                    g.undo_steps = move kept;
+                }
+            }
+            g.dirty = false;
+        }
+        return result;
+    }
+}

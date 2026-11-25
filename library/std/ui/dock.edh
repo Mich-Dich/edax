@@ -1,0 +1,313 @@
+// The Edax standard library: module std::ui::dock, docking for immediate-mode UIs (draft 35 §12).
+//
+//     namespace dock = std::ui::dock;
+//
+//     dock::layout start = dock::split_x(0.2, dock::tabs(["Outliner"]),
+//                          dock::split_x(0.75, dock::split_y(0.7, dock::central(), dock::tabs(["Console", "Frame time"])),
+//                                              dock::tabs(["Inspector"])));
+//     mut dock::workspace ws = dock::workspace::load("editor.layout").value_or(dock::workspace::make(start.clone()));
+//     while (...) {
+//         mut im::frame f = ctx.begin_frame(...);
+//         {
+//             mut dock::space space = f.dockspace("main", mut ws);       // the whole frame
+//             {
+//                 mut im::scope p = space.window("Inspector");             // wherever the user put it
+//                 p.inspect("player", mut player);
+//             }
+//             {
+//                 mut im::scope scene = space.document("Scene");          // in the central area
+//                 ...
+//             }
+//         }
+//         f.finish();
+//         _ = ws.save_if_changed("editor.layout");
+//     }
+//
+// Windows are named, not placed: the layout says where each one is (a tab stack, a split, floating
+// or closed), and the user changes it by dragging tabs onto drop targets, dragging dividers and
+// closing tabs. Closed windows remember their place; ws.reopen(name) puts them back there.
+//
+// Loaded for programs that name std::ui::dock.
+
+namespace std::ui::dock {
+    // ---- the layout: data ----------------------------------------------------------------------------
+
+    enum part : u8 {
+        // Two parts side by side (first left) or one above the other (first on top).
+        split_x,
+        split_y,
+        // A stack of windows shown as tabs.
+        tabs,
+        // The central area: documents (a stack that stays when it is empty).
+        central,
+    }
+
+    // Where something goes relative to a stack (or to the dockspace's edges).
+    enum side : u8 { center, left, right, top, bottom }
+
+    // A part of a layout. Nodes refer to their children by index.
+    struct node {
+        part kind = part::tabs;
+        // Splits: the first part's share (0 to 1), and the share it was made with (a double-click on
+        // the divider returns to it).
+        f32 ratio = 0.5;
+        f32 made_ratio = 0.5;
+        usize first = 0;
+        usize second = 0;
+        // Stacks and the central area: the windows, and the one shown.
+        std::darray<std::string> windows = default;
+        usize active = 0;
+    }
+
+    // A stack of windows outside the dock, in a window of its own.
+    struct floating_stack {
+        std::ui::rect bounds = default;
+        std::darray<std::string> windows = default;
+        usize active = 0;
+        // Higher is in front.
+        u64 order = 0;
+    }
+
+    // Where a closed window was: on `towards` of the part of the layout that held `anchors` (the
+    // windows beside it then; "@central" stands for the central area), with the share `ratio` of a
+    // split, or at tab `index` of their stack (`center`); or floating at `bounds`. Reopening finds
+    // the smallest part that holds the anchors still there.
+    struct closed_window {
+        std::string name = default;
+        std::darray<std::string> anchors = default;
+        side towards = side::center;
+        f32 ratio = 0.3;
+        usize index = 0;
+        bool was_floating = false;
+        std::ui::rect bounds = default;
+    }
+
+    // Where a window is: in docked stack `node`, or in floating stack `node` when `floating`, at tab
+    // `index`.
+    struct place {
+        bool  floating = false;
+        usize node = 0;
+        usize index = 0;
+    }
+
+    // A tree of splits, tab stacks and one central area, plus floating stacks and the closed
+    // windows' places. Plain data: copied with clone(), compared with same(), saved as text.
+    struct layout {
+        std::darray<node> nodes = default;
+        usize root = 0;
+        std::darray<floating_stack> floating = default;
+        std::darray<closed_window> closed = default;
+
+        dock::layout clone();
+        // The same tree, stacks, floating windows and closed windows.
+        bool same(dock::layout& other);
+
+        // Where `name` is, docked or floating.
+        std::option<place> find(std::str name);
+        bool contains(std::str name);
+        bool is_closed(std::str name);
+        // Every docked and floating window, in the order of the tree.
+        std::darray<std::string> windows();
+        // The central area's node, if the layout has one.
+        std::option<usize> central_node();
+
+        // Puts `name` next to the window `anchor` ("@central": the central area): into its stack
+        // (`center`) or into a new stack beside it that takes `share` of the space. False when
+        // the anchor isn't docked.
+        bool dock_next_to(std::str name, std::str anchor, side towards, f32 share) mut;
+        // The same next to the stack at `node`.
+        void dock_at(std::str name, usize stack, side towards, f32 share) mut;
+        // Along an edge of the whole layout: a column or row of `share` beside everything.
+        void dock_at_edge(std::str name, side towards, f32 share) mut;
+        // In a floating stack of its own at `bounds`.
+        void float_window(std::str name, std::ui::rect bounds) mut;
+        // Shows `name` in its stack.
+        void activate(std::str name) mut;
+        // Takes `name` out (stacks that become empty go away, except the central area).
+        void remove(std::str name) mut;
+        // Takes `name` out and remembers its place.
+        void close(std::str name) mut;
+        // Puts a closed window back where it was (or, when that place is gone, into the first
+        // stack). Not closed: shows it.
+        void reopen(std::str name) mut;
+        // A window the layout doesn't know yet: into the first stack that isn't the central area
+        // (none: a new stack right of everything).
+        void add(std::str name) mut;
+        // A document the layout doesn't know yet: into the central area (none: added like a window).
+        void add_document(std::str name) mut;
+
+        // As readable text, and back (none: the text isn't a layout).
+        std::string to_text();
+        static std::option<dock::layout> from_text(std::str text);
+    }
+
+    // Layouts built in code: `dock::split_x(0.2, dock::tabs(["Outliner"]), dock::central())`.
+    dock::layout tabs(std::span<std::str> windows);
+    dock::layout central();
+    // The central area with documents already in it.
+    dock::layout central_with(std::span<std::str> documents);
+    // `first` gets `ratio` of the width (split_x) or height (split_y).
+    dock::layout split_x(f32 ratio, dock::layout first, dock::layout second);
+    dock::layout split_y(f32 ratio, dock::layout first, dock::layout second);
+
+    // ---- the workspace -------------------------------------------------------------------------------
+
+    // A named layout of a workspace.
+    struct named_layout {
+        std::string name = default;
+        dock::layout saved = default;
+    }
+
+    // The layout in use, named layouts to switch between (like a modelling tool's workspaces), and
+    // what a dockspace remembers between frames (a dragged tab or divider). Mark it
+    // @std::hot_reload_state in a plugin's state to keep the layout over a reload.
+    class workspace {
+    public:
+        static workspace make(dock::layout start);
+        // A workspace saved by save(); none when the file is missing or not a workspace.
+        static std::option<workspace> load(std::str path);
+        // Writes the layout in use and the named ones.
+        std::result<void, std::io_error> save(std::str path) mut;
+        // save() when something changed since the last save or load; true when it wrote.
+        bool save_if_changed(std::str path) mut;
+
+        // The layout in use; edit() changes it (and marks the workspace changed).
+        dock::layout& current();
+        mut dock::layout& edit() mut;
+        // Replaces the layout in use (a "Reset layout" menu item).
+        void reset(dock::layout l) mut;
+
+        // Keeps the layout in use under `name` (replacing one of that name); it is then the
+        // workspace's active name.
+        void save_as(std::str name) mut;
+        // Switches to the layout kept under `name` (the one in use is kept under the active name
+        // first). False when there is none.
+        bool switch_to(std::str name) mut;
+        std::darray<std::string> names();
+        std::str active_name();
+
+        void close(std::str name) mut;
+        void reopen(std::str name) mut;
+        // The closed windows, for a "Window" menu.
+        std::darray<std::string> closed_windows();
+        // Where the tab of `name` was drawn in the last frame (scripted input, tests).
+        std::option<std::ui::rect> tab_of(std::str name);
+        // The icon shown in the tab of `name` (not saved with the layout).
+        void set_icon(std::str name, std::ui::icon symbol) mut;
+        std::ui::icon icon_of(std::str name);
+
+        // ---- used by dockspaces ----
+        dock::layout now = default;
+        std::darray<named_layout> kept = default;
+        std::string active = default;
+        bool changed = false;
+        // A tab pressed and maybe dragged: its window, where the press was, whether it moved far
+        // enough to be a drag, and the size of the stack it came from.
+        std::string dragging = default;
+        std::ui::vec2 press_at = default;
+        bool drag_started = false;
+        std::ui::rect drag_from = default;
+        // A divider being dragged (the split's node + 1; 0: none), and the last click on a divider
+        // (double-clicks reset it).
+        usize divider = 0;
+        f64 divider_click_at = -10.0;
+        usize divider_clicked = 0;
+        // A floating stack being moved by its bar (index + 1), and the cursor's offset in it.
+        usize moving = 0;
+        std::ui::vec2 move_offset = default;
+        // The stack the mouse last pressed in (focused tabs are underlined): node + 1, or for
+        // floating stacks the index + 1 with `focus_floating`.
+        usize focus = 0;
+        bool focus_floating = false;
+        // This frame's stacks: where their content goes (filled by the dockspace), and their tabs.
+        std::darray<stack_area> areas = default;
+        std::darray<tab_place> tabs = default;
+        // The tabs' icons, by the hash of the window's name.
+        std::hash_map<u64, std::ui::icon> icons = default;
+    }
+
+    // Where a tab was drawn.
+    struct tab_place {
+        std::string name = default;
+        std::ui::rect bounds = default;
+    }
+
+    // Where a stack's tabs and content are this frame.
+    struct stack_area {
+        bool floating = false;
+        usize node = 0;
+        std::ui::rect bar = default;
+        std::ui::rect content = default;
+        // The stacking order of the stack's content panel.
+        u64 order = 0;
+    }
+
+    // ---- the dockspace --------------------------------------------------------------------------------
+
+    // A frame's docked windows. Borrows the frame (and the workspace) until its `}`.
+    view class space {
+    public:
+        // The window `name` where the layout puts it: a scope for its widgets, closed (open() is
+        // false) when its tab isn't the one shown or the window is closed. A window the layout
+        // doesn't know yet joins the first stack.
+        @std::must_use
+        std::ui::immediate::scope window(std::str name) mut;
+        // A document in the central area (a new one joins it).
+        @std::must_use
+        std::ui::immediate::scope document(std::str name) mut;
+        // Puts a closed window back.
+        void reopen(std::str name) mut;
+        // Where the dockspace is.
+        std::ui::rect bounds();
+
+        ~space();
+
+        mut std::ui::immediate::frame& frame;
+        mut workspace& ws;
+        u64 id = 0;
+        std::ui::rect area = default;
+        // The dockspace's own layer (tab bars, dividers): its index in the context's layers.
+        usize chrome = 0;
+    }
+
+    // Dockspaces as frame widgets: `f.dockspace("main", mut ws)`.
+    interface frame_docking {
+        // A dockspace filling the frame.
+        @std::must_use
+        space dockspace(std::str name, mut workspace& ws) mut;
+        // A dockspace at `area` (under a menu bar, beside a toolbar).
+        @std::must_use
+        space dockspace_in(std::str name, mut workspace& ws, std::ui::rect area) mut;
+    }
+
+    // ---- splits inside a window ------------------------------------------------------------------------
+
+    // Two panes side by side (split_x) or one above the other (split_y) with a divider between
+    // them that the mouse drags. first() and second() give the panes' scopes, one after the other.
+    view class split {
+    public:
+        @std::must_use
+        std::ui::immediate::scope first() mut;
+        @std::must_use
+        std::ui::immediate::scope second() mut;
+        // The first pane's share now.
+        f32 ratio();
+
+        mut std::ui::immediate::scope& parent;
+        u64 id = 0;
+        std::ui::rect one = default;
+        std::ui::rect two = default;
+        f32 share = 0.5;
+    }
+
+    // Splits as widgets of std::ui::immediate's scopes.
+    interface scope_docking {
+        // A split `height` pixels high across the scope; the first pane starts with `ratio`.
+        @std::must_use
+        split split_x(std::str name, f32 ratio, f32 height, implicit compile_time std::call_site where) mut;
+        @std::must_use
+        split split_y(std::str name, f32 ratio, f32 height, implicit compile_time std::call_site where) mut;
+        // Buttons to reopen the workspace's closed windows and to reset its layout to `start`.
+        void window_menu(mut workspace& ws, dock::layout& start, implicit compile_time std::call_site where) mut;
+    }
+}

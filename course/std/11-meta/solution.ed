@@ -1,0 +1,91 @@
+// Standard-library lesson 11: a generic settings serializer (solution).
+import std;
+
+// The name a field has in the text, when it isn't the field's own name.
+annotation(std::meta::target::field) struct key {
+    std::static_str text;
+
+    compile_time check (!annotation.text.is_empty()) else "@key: the name can't be empty";
+}
+
+// A field that isn't written or read.
+annotation(std::meta::target::field) struct skip { }
+
+enum quality : u8 { low, medium, high }
+
+struct graphics {
+    @key{ .text = "resolution_width" } u32 width = 1280;
+    @key{ .text = "resolution_height" } u32 height = 720;
+    f32 gamma = 2.2;
+    bool vsync = true;
+    quality shadows = quality::medium;
+    @skip u64 frame_counter = 0;
+}
+
+// One "name = value" line per field that isn't skipped. Enums are written by name.
+template<type T>
+std::string to_text(T& value) {
+    mut std::string out = default;
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        if compile_time (!f.has<skip>()) {
+            compile_time std::static_str name = f.annotation<key>().value_or(key{ .text = f.name }).text;
+            compile_time type ft = f.type;
+            if compile_time (std::meta::is_enum<ft>()) {
+                out.push_str(std::format(f"{name} = {std::meta::name_of(f.get(value))}\n"));
+            } else {
+                out.push_str(std::format(f"{name} = {f.get(value)}\n"));
+            }
+        }
+    }
+    return out;
+}
+
+// Reads "name = value" lines into the matching fields; returns how many lines were not used.
+template<type T>
+u32 from_text(mut T& value, std::str text) {
+    mut u32 unused = 0;
+    for (std::str line : text.split('\n')) {
+        std::str t = line.trim();
+        if (t.is_empty()) { continue; }
+        std::darray<std::str> parts = t.split('=');
+        if (parts.len() != 2) {
+            unused += 1;
+            continue;
+        }
+        std::str name = parts[0].trim();
+        std::str v = parts[1].trim();
+        mut bool used = false;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (!f.has<skip>()) {
+                compile_time std::static_str field_name = f.annotation<key>().value_or(key{ .text = f.name }).text;
+                compile_time type ft = f.type;
+                if (name == field_name) {
+                    if compile_time (std::meta::is_enum<ft>()) {
+                        if (std::meta::from_name<ft>(v) is std::some(e)) {
+                            f.get(mut value) = e;
+                            used = true;
+                        }
+                    } else {
+                        if (v.parse<ft>() is std::some(parsed)) {
+                            f.get(mut value) = parsed;
+                            used = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (!used) { unused += 1; }
+    }
+    return unused;
+}
+
+i32 main() {
+    graphics g = graphics{ .frame_counter = 99 };
+    std::print(to_text(g));
+
+    mut graphics loaded = default;
+    u32 unused = from_text(mut loaded, "resolution_width = 2560\ngamma = 1.8\nshadows = high\nvsync = false\ncolour = blue\nshadows = epic\n");
+    std::println(f"{unused} lines unused");
+    std::print(to_text(loaded));
+    return 0;
+}

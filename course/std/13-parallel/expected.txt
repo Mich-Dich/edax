@@ -1,0 +1,4 @@
+7 values, 2 rejected, smallest 11.5, largest 15.5
+range 11.5 to 15.5
+mean 13.14, deviations from -1.64 to 2.36
+first value above the mean is number 5

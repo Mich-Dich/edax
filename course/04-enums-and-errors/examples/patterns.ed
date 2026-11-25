@@ -1,0 +1,41 @@
+// The patterns of `match`, and `is` as a one-arm match in a condition.
+import std;
+
+struct item {
+    std::string name;
+    u32 weight = 0;
+}
+
+std::static_str size_of(u32 n) {
+    return match (n) {
+        0 => "none",
+        1..=9 => "a few",
+        big if big > 100 => "lots",        // a guard; it doesn't count toward exhaustiveness
+        _ => "some",
+    };
+}
+
+i32 main() {
+    std::println(f"{size_of(0)} {size_of(5)} {size_of(50)} {size_of(500)}");
+
+    item lamp = item{ .name = std::string::from("lamp"), .weight = 5 };
+    match (lamp) {                          // a variable: the bindings borrow
+        item{ .weight = w, .. } if w > 3 => std::println(f"heavy {lamp.name}"),
+        _ => std::println("light"),
+    }
+
+    std::str word = "+";
+    u32 code = match (word) { "+" => 1, "-" => 2, _ => 0, };   // strings match too
+    std::println(f"code {code}");
+
+    mut std::darray<u32> queue = default;
+    queue.push(1);
+    queue.push(2);
+    while (queue.pop() is std::some(job)) { std::println(f"job {job}"); }   // pop until none
+    return 0;
+}
+//> none a few some lots
+//> heavy lamp
+//> code 1
+//> job 2
+//> job 1

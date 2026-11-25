@@ -1,0 +1,11 @@
+button at x 8.0, width 98.7, right 106.7
+button at x 110.7, width 98.7, right 209.3
+button at x 213.3, width 98.7, right 312.0
+click (50.0, 20.0) hits button 0
+click (110.0, 20.0) hits nothing
+click (300.0, 45.0) hits nothing
+on 1e2a44: text white, lighter on hover: true
+on f2c94c: text black, lighter on hover: true
+highlight at 57.3
+highlight at 160.0
+highlight at 262.7

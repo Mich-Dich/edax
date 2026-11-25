@@ -1,0 +1,297 @@
+// RUN: edaxc run %s
+// std::ui::nodes without a window: nodes with pins and bodies, links drawn under the nodes,
+// dragging a node, linking two pins, dropping a link on the canvas, selecting links by clicks and
+// by the box, box selection, Delete, the add-node request, zoom at the cursor, subway links in 8
+// directions (sharp and rounded), topological order with a cycle, draw_list::insert and polyline;
+// then widgets in nodes (a slider drags its value, not the node), inline pin widgets hidden while
+// linked, collapsing, reroute points (added, moved, removed) and arranging the selection.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace nodes = std::ui::nodes;
+
+struct graph {
+    std::array<ui::vec2, 3> at = [ui::vec2{ .x = 20.0, .y = 20.0 }, ui::vec2{ .x = 280.0, .y = 40.0 }, ui::vec2{ .x = 280.0, .y = 220.0 }];
+    std::darray<nodes::link_request> links = default;
+    std::darray<std::darray<ui::vec2>> via = default;
+    f32 gain = 0.5;
+    f32 level = 0.25;
+}
+
+void add_link(mut graph& g, nodes::link_request r) {
+    g.links.push(r);
+    g.via.push(std::darray<ui::vec2>{});
+}
+
+nodes::edits frame_of(mut im::context& ctx, mut nodes::view_state& view, mut graph& g, ui::input in) {
+    mut nodes::edits out = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 900.0, .y = 600.0 });
+        {
+            mut im::scope w = f.panel(7, ui::rect{ .width = 900.0, .height = 600.0 }, 2, 0.0);
+            mut nodes::editor ed = w.node_editor("graph", mut view, 600.0);
+            std::array<std::str, 3> titles = ["Time", "Scale", "Output"];
+            for (usize i : 0..3) {
+                u64 id = cast<u64>(i) + 1;
+                mut nodes::node_view n = ed.node(id, mut g.at[i], titles[i], nodes::node_look{ .symbol = ui::icon::bolt });
+                if (i == 1) {
+                    n.input(id * 10, "in", nodes::pin_style{});
+                }
+                if (i == 2) {
+                    mut im::scope field = n.input_widget(id * 10, "in", nodes::pin_style{});
+                    _ = field.slider("", mut g.level, 0.0, 1.0);
+                }
+                if (i == 1) {
+                    mut im::scope body = n.body();
+                    _ = body.slider("gain", mut g.gain, 0.0, 1.0);
+                }
+                if (i < 2) {
+                    n.output(id * 10 + 1, "out", nodes::pin_style{ .color = ui::color::hex(0x46a758) });
+                }
+            }
+            for (usize k : 0..g.links.len()) {
+                ed.link_via(cast<u64>(k) + 100, g.links[k].from, g.links[k].to, mut g.via[k]);
+            }
+            out = ed.finish();
+        }
+        f.finish();
+    }
+    return out;
+}
+
+ui::input at(ui::vec2 p) {
+    return ui::input{ .cursor = p, .dt = 0.016 };
+}
+
+ui::vec2 pin_at(nodes::view_state& view, u64 id) {
+    for (nodes::pin_place p : view.pins) {
+        if (p.id == id) {
+            return p.at;
+        }
+    }
+    return ui::vec2{};
+}
+
+// A point on link `id`'s polyline, `share` of the way along its points.
+ui::vec2 on_link(nodes::view_state& view, u64 id, f32 share) {
+    for (nodes::link_place l : view.links) {
+        if (l.id == id) {
+            u32 k = cast::saturate<u32>((cast::round<f32>(l.count - 1) * share).round());
+            return view.path[cast<usize>(l.first + k)];
+        }
+    }
+    return ui::vec2{};
+}
+
+// Whether link `id`'s polyline passes within a pixel of `p`.
+bool path_near(nodes::view_state& view, u64 id, ui::vec2 p) {
+    for (nodes::link_place l : view.links) {
+        if (l.id == id) {
+            for (u32 k : 0..l.count) {
+                if ((view.path[cast<usize>(l.first + k)] - p).length() < 1.0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// Whether every run of every link is horizontal, vertical or at 45°; and how many points they have.
+(bool, usize) octilinear(nodes::view_state& view) {
+    mut bool all = true;
+    mut usize points = 0;
+    for (nodes::link_place l : view.links) {
+        points += cast<usize>(l.count);
+        for (u32 k : 1..l.count) {
+            ui::vec2 d = view.path[cast<usize>(l.first + k)] - view.path[cast<usize>(l.first + k - 1)];
+            bool straight = d.x.abs() < 0.01 || d.y.abs() < 0.01 || (d.x.abs() - d.y.abs()).abs() < 0.01;
+            all = all && straight;
+        }
+    }
+    return (all, points);
+}
+
+// Press at `a`, move to `b`, release there.
+nodes::edits drag(mut im::context& ctx, mut nodes::view_state& view, mut graph& g, ui::vec2 a, ui::vec2 b) {
+    _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = a, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = b, .mouse_down = true, .dt = 0.016 });
+    return frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = b, .mouse_released = true, .dt = 0.016 });
+}
+
+void main() {
+    // Inserting triangles before a mark keeps the commands contiguous.
+    mut ui::draw_list l = default;
+    l.begin(ui::vec2{ .x = 100.0, .y = 100.0 });
+    l.fill(ui::rect{ .width = 10.0, .height = 10.0 }, ui::color::white(), 0.0);
+    u32 mark = cast::truncate<u32>(l.indices.len());
+    l.fill(ui::rect{ .x = 20.0, .width = 10.0, .height = 10.0 }, ui::color::white(), 0.0);
+    mut ui::draw_list under = default;
+    under.begin(ui::vec2{ .x = 100.0, .y = 100.0 });
+    under.push_clip(ui::rect{ .width = 50.0, .height = 50.0 });
+    under.fill(ui::rect{ .x = 40.0, .width = 10.0, .height = 10.0 }, ui::color::black(), 0.0);
+    l.insert(mark, under);
+    mut u32 covered = 0;
+    for (ui::draw_command c : l.commands) {
+        covered += c.index_count;
+    }
+    std::println(f"insert: {l.commands.len()} commands, {covered} of {l.indices.len()} indices, middle clip {l.commands[1].clip.width}");
+
+    // A polyline is one strip: 3 quads per run, points on top of each other dropped.
+    mut ui::draw_list strip = default;
+    strip.begin(ui::vec2{ .x = 100.0, .y = 100.0 });
+    std::array<ui::vec2, 4> bends = [ui::vec2{ .x = 10.0, .y = 10.0 }, ui::vec2{ .x = 50.0, .y = 10.0 }, ui::vec2{ .x = 50.0, .y = 10.0 }, ui::vec2{ .x = 80.0, .y = 40.0 }];
+    strip.polyline(bends.as_span(), 3.0, ui::color::white().with_alpha(0.5));
+    std::println(f"polyline: {strip.vertices.len()} vertices, {strip.indices.len()} indices");
+
+    mut im::context ctx = im::context::create(ui::theme::studio(ui::color::hex(0x3b82f6), ui::brightness::dark));
+    ctx.skin() = ui::skin::studio();
+    mut nodes::view_state view = default;
+    mut graph g = default;
+    _ = frame_of(mut ctx, mut view, mut g, at(ui::vec2{ .x = 899.0, .y = 599.0 }));
+    _ = frame_of(mut ctx, mut view, mut g, at(ui::vec2{ .x = 899.0, .y = 599.0 }));
+    std::println(f"pins {view.pins.len()}, nodes {view.boxes.len()}, duplicates {ctx.duplicate_ids()}");
+
+    // Link Time's output to Scale's input, and Scale's to Output's.
+    nodes::edits e = drag(mut ctx, mut view, mut g, pin_at(view, 11), pin_at(view, 20));
+    std::println(f"created {e.created.len()}: {e.created[0].from} -> {e.created[0].to}");
+    add_link(mut g, e.created[0]);
+    nodes::edits e2 = drag(mut ctx, mut view, mut g, pin_at(view, 21), pin_at(view, 30) + ui::vec2{ .x = 6.0 });
+    add_link(mut g, e2.created[0]);
+    _ = frame_of(mut ctx, mut view, mut g, at(ui::vec2{ .x = 899.0, .y = 599.0 }));
+    std::println(f"links drawn {view.links.len()}, linked pins {view.linked.len()}");
+
+    // A click on a link selects it alone; with Shift another is added.
+    ui::vec2 first_link = on_link(view, 100, 0.5);
+    _ = drag(mut ctx, mut view, mut g, first_link, first_link);
+    usize alone = view.selected_links.len();
+    ui::vec2 second_link = on_link(view, 101, 0.3);
+    _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = second_link, .mouse_down = true, .mouse_pressed = true, .shift = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = second_link, .mouse_released = true, .shift = true, .dt = 0.016 });
+    std::println(f"link clicks: {alone}, then with Shift {view.selected_links.len()}");
+
+    // Drag Time by its header 50 px right.
+    ui::vec2 head = ui::vec2{ .x = g.at[0].x + 60.0, .y = g.at[0].y + 12.0 };
+    _ = drag(mut ctx, mut view, mut g, head, head + ui::vec2{ .x = 50.0 });
+    std::println(f"moved: x {g.at[0].x}, selected {view.selected.len()} (node {view.selected[0]})");
+
+    // A link dropped on the empty canvas asks for the add-node menu there.
+    nodes::edits dropped = drag(mut ctx, mut view, mut g, pin_at(view, 21), ui::vec2{ .x = 600.0, .y = 500.0 });
+    match (dropped.dropped) {
+        std::some(d) => std::println(f"dropped from {d.from} at {d.at.x}, {d.at.y}"),
+        std::none => std::println("not dropped"),
+    }
+
+    // A box around Scale and Output selects them and the links it touches; Delete reports them.
+    nodes::edits boxed = drag(mut ctx, mut view, mut g, ui::vec2{ .x = 250.0, .y = 10.0 }, ui::vec2{ .x = 560.0, .y = 420.0 });
+    std::println(f"box selected {view.selected.len()} nodes, {view.selected_links.len()} links, changed {boxed.changed()}");
+    mut ui::input del = at(ui::vec2{ .x = 899.0, .y = 599.0 });
+    del.keys.push(ui::key_press{ .key = ui::key::delete });
+    nodes::edits removed = frame_of(mut ctx, mut view, mut g, move del);
+    std::println(f"deleted nodes {removed.deleted_nodes.len()}, links {removed.deleted_links.len()}, selection after {view.selected.len()} + {view.selected_links.len()}");
+
+    // A box over nothing but part of a link selects only the link.
+    ui::vec2 on = on_link(view, 100, 0.5);
+    _ = drag(mut ctx, mut view, mut g, on - ui::vec2{ .x = 4.0, .y = 30.0 }, on + ui::vec2{ .x = 4.0, .y = 30.0 });
+    std::println(f"thin box: {view.selected.len()} nodes, {view.selected_links.len()} link");
+
+    // Subway links: every run in one of 8 directions, sharp corners or rounded.
+    view.look = nodes::style::metro();
+    view.look.link.round_corners = false;
+    _ = frame_of(mut ctx, mut view, mut g, at(ui::vec2{ .x = 899.0, .y = 599.0 }));
+    (bool sharp_ok, usize sharp_points) = octilinear(view);
+    view.look.link.round_corners = true;
+    _ = frame_of(mut ctx, mut view, mut g, at(ui::vec2{ .x = 899.0, .y = 599.0 }));
+    (_, usize round_points) = octilinear(view);
+    std::println(f"metro: 8 directions {sharp_ok}, {sharp_points} corners and pins, rounded has more points {round_points > sharp_points}");
+    view.look = nodes::style::studio();
+
+    // A right click asks for the menu; the wheel zooms at the cursor.
+    nodes::edits menu = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = ui::vec2{ .x = 700.0, .y = 100.0 }, .right_pressed = true, .right_down = true, .dt = 0.016 });
+    std::println(f"menu asked {menu.menu_at.is_some()}");
+    ui::vec2 cursor = ui::vec2{ .x = 450.0, .y = 300.0 };
+    ui::vec2 before = (cursor - view.pan) * (1.0 / view.zoom);
+    _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = cursor, .scroll = 2.0, .dt = 0.016 });
+    ui::vec2 still = (cursor - view.pan) * (1.0 / view.zoom);
+    std::println(f"zoom {view.zoom > 1.0}, the point under the cursor stays {(still - before).length() < 0.01}");
+
+    // Topological order: Time, Scale, Output; with Output feeding Time it is a cycle.
+    std::array<u64, 3> ids = [3, 1, 2];
+    std::array<nodes::edge, 2> chain = [nodes::edge{ .from = 1, .to = 2 }, nodes::edge{ .from = 2, .to = 3 }];
+    match (nodes::topological_order(ids.as_span(), chain.as_span())) {
+        std::ok(order) => std::println(f"order {order[0]} {order[1]} {order[2]}"),
+        std::error(n) => std::println(f"cycle at {n}"),
+    }
+    std::array<nodes::edge, 3> looped = [nodes::edge{ .from = 1, .to = 2 }, nodes::edge{ .from = 2, .to = 3 }, nodes::edge{ .from = 3, .to = 1 }];
+    match (nodes::topological_order(ids.as_span(), looped.as_span())) {
+        std::ok(order) => std::println(f"order of {order.len()}"),
+        std::error(n) => std::println(f"cycle at node {n}"),
+    }
+
+    // ---- a second graph: widgets in nodes, collapsing, reroute points, arranging ----
+    mut im::context c2 = im::context::create(ui::theme::studio(ui::color::hex(0x3b82f6), ui::brightness::dark));
+    c2.skin() = ui::skin::studio();
+    mut nodes::view_state v = default;
+    mut graph h = default;
+    ui::vec2 corner = ui::vec2{ .x = 899.0, .y = 599.0 };
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+
+    // Dragging the slider in Scale's body changes its value; Scale stays where it is.
+    ui::vec2 slider = ui::vec2{ .x = h.at[1].x + 80.0, .y = (pin_at(v, 20).y + pin_at(v, 21).y) * 0.5 };
+    f32 gain_before = h.gain;
+    _ = drag(mut c2, mut v, mut h, slider, slider + ui::vec2{ .x = 30.0 });
+    std::println(f"body slider: value changed {h.gain != gain_before}, node at {h.at[1].x}, {h.at[1].y}, selected {v.selected.len()}");
+
+    // The inline widget of Output's input works while unlinked, and is hidden once linked.
+    ui::vec2 field = ui::vec2{ .x = h.at[2].x + 50.0, .y = pin_at(v, 30).y };
+    _ = drag(mut c2, mut v, mut h, field, field + ui::vec2{ .x = 20.0 });
+    f32 level_unlinked = h.level;
+    add_link(mut h, nodes::link_request{ .from = 21, .to = 30 });
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    _ = drag(mut c2, mut v, mut h, field, field - ui::vec2{ .x = 60.0 });
+    std::println(f"inline widget: moved while unlinked {level_unlinked != 0.25}, the node stayed {h.at[2].x == 280.0 || h.at[2].x < 280.0}; once linked it is gone: value kept {h.level == level_unlinked}, the press moved the node to {h.at[2].x}");
+
+    // The chevron collapses Time to its header; its pin moves to the header's edge.
+    ui::rect time_box = v.boxes[0].bounds;
+    ui::vec2 chevron = ui::vec2{ .x = time_box.right() - 16.0, .y = time_box.y + 15.0 };
+    _ = drag(mut c2, mut v, mut h, chevron, chevron);
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    std::println(f"collapsed: height {time_box.height} -> {v.boxes[0].bounds.height}, pin at the header's middle {pin_at(v, 11).y == v.boxes[0].bounds.y + 15.0}");
+    _ = drag(mut c2, mut v, mut h, chevron, chevron);
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    std::println(f"open again: height {v.boxes[0].bounds.height}");
+
+    // Alt and a click on a link adds a reroute point; dragging it moves it; Alt and a click on it
+    // removes it.
+    add_link(mut h, nodes::link_request{ .from = 11, .to = 20 });
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    ui::vec2 spot = on_link(v, 101, 0.5);
+    _ = frame_of(mut c2, mut v, mut h, ui::input{ .cursor = spot, .mouse_down = true, .mouse_pressed = true, .alt = true, .dt = 0.016 });
+    nodes::edits added = frame_of(mut c2, mut v, mut h, ui::input{ .cursor = spot, .mouse_released = true, .alt = true, .dt = 0.016 });
+    std::println(f"reroute added: {h.via[1].len()} point, where clicked {(h.via[1][0] - spot).length() < 0.01}, reported {added.rerouted.len()}, panned {v.pan.x != 0.0}");
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    ui::vec2 point = h.via[1][0];
+    _ = drag(mut c2, mut v, mut h, point, point + ui::vec2{ .y = 40.0 });
+    std::println(f"reroute moved by {h.via[1][0].y - point.y}, {v.reroutes.len()} drawn, link passes it {path_near(v, 101, h.via[1][0])}");
+    ui::vec2 moved_point = h.via[1][0];
+    _ = frame_of(mut c2, mut v, mut h, ui::input{ .cursor = moved_point, .mouse_down = true, .mouse_pressed = true, .alt = true, .dt = 0.016 });
+    _ = frame_of(mut c2, mut v, mut h, ui::input{ .cursor = moved_point, .mouse_released = true, .alt = true, .dt = 0.016 });
+    std::println(f"reroute removed: {h.via[1].len()} left");
+
+    // Lining up: tops of Time and Scale, then the same space down for all three.
+    v.selected.clear();
+    v.selected.push(1);
+    v.selected.push(2);
+    v.arrange_next = std::some(nodes::arrangement::top);
+    nodes::edits lined = frame_of(mut c2, mut v, mut h, at(corner));
+    std::println(f"aligned tops: {h.at[0].y} {h.at[1].y}, moved {lined.moved.len()}");
+    v.selected.push(3);
+    v.arrange_next = std::some(nodes::arrangement::spread_y);
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    _ = frame_of(mut c2, mut v, mut h, at(corner));
+    f32 gap1 = v.boxes[1].bounds.y - v.boxes[0].bounds.bottom();
+    f32 gap2 = v.boxes[2].bounds.y - v.boxes[1].bounds.bottom();
+    std::println(f"spread down: equal gaps {(gap1 - gap2).abs() < 1.5}");
+}

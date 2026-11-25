@@ -1,0 +1,11 @@
+// A container in an arena borrows the arena: it can't outlive it, and the arena can't be reset under it.
+import std;
+
+i32 main() {
+    mut std::arena frame = std::arena::make(1024);
+    mut std::darray<u32, std::arena_allocator> xs = std::darray<u32, std::arena_allocator>::with_allocator(frame.allocator());
+    xs.push(1);
+    frame.reset();                                          //~ error[E5022]
+    xs.push(2);
+    return 0;
+}

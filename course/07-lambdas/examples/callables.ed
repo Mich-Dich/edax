@@ -1,0 +1,27 @@
+// Storing callables: std::function, std::inline_function, std::fn_ptr.
+import std;
+
+void shout(u32 v) { std::println(f"plain {v}"); }
+
+class bus {
+public:
+    void on(std::function<void(u32)> handler) mut { handlers.push(move handler); }
+    void emit(u32 v) {
+        for (usize i : 0..handlers.len()) { handlers[i](v); }    // called like a function
+    }
+private:
+    std::darray<std::function<void(u32)>> handlers = default;
+}
+
+i32 main() {
+    mut bus b = default;
+    u32 bonus = 5;
+    b.on([bonus](u32 v) { std::println(f"bonus {v + bonus}"); });
+    std::fn_ptr<void(u32)> plain = [](u32 v) { shout(v); };     // no captures: a function pointer
+    b.on([plain](u32 v) { plain(v); });
+    std::inline_function<u32(u32), 16> scale = [k = 3u32](u32 v) { return v * k; };   // no heap
+    b.emit(scale(10));
+    return 0;
+}
+//> bonus 35
+//> plain 30

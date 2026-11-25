@@ -1,0 +1,6 @@
+no settings yet: writing the defaults
+2 settings
+volume = 55
+language = en
+settings.txt: 49 bytes, 3 lines
+missing.txt: not_found

@@ -1,0 +1,29 @@
+// No specialization: `if compile_time` picks a branch per instance. Packs replace variadics.
+import std;
+
+template<type T>
+std::string kind(T value) {
+    if compile_time (std::is_integer<T>()) {
+        return std::format(f"integer {value}");
+    } else if compile_time (std::is_float<T>()) {
+        return std::format(f"float {value:.1}");
+    } else {
+        return std::format(f"other {value}");
+    }
+}
+
+// Any number of arguments of any types. The loop body is copied once per argument.
+template<type... A>
+void print_all(A&... values) {
+    for compile_time (A& v : values) { std::println(kind(v)); }
+    std::println(f"{values.len()} values");     // a compile-time usize
+}
+
+i32 main() {
+    print_all(7u8, 2.25, "x");
+    return 0;
+}
+//> integer 7
+//> float 2.2
+//> other x
+//> 3 values

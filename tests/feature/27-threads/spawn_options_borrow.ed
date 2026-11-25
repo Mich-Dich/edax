@@ -1,0 +1,11 @@
+// A thread started with options borrows what its lambda borrows, like one started without:
+// two threads can't both capture `mut &x`.
+import std;
+
+void main() {
+    mut u32 done = 0;
+    std::thread::scoped_handle<void> a = std::thread::spawn(std::thread::options{ .name = "a" }, [mut &done]() { done += 1; });
+    std::thread::scoped_handle<void> b = std::thread::spawn(std::thread::options{ .name = "b" }, [mut &done]() { done += 1; });   //~ error[E5023]
+    a.join();
+    b.join();
+}

@@ -1,0 +1,27 @@
+// The algorithms are methods that take lambdas.
+import std;
+
+struct score {
+    std::string player;
+    u32 points = 0;
+}
+
+i32 main() {
+    mut std::darray<u32> xs = default;
+    for (u32 v : 0..10) { xs.push(v); }
+    xs.retain([](u32& v) { return v % 3 == 0; });            // keep 0 3 6 9
+    xs.sort_by([](u32& a, u32& b) { return a > b; });       // less(a, b) gives a bool
+    std::println(f"{xs.len()} {xs[0]} {xs[3]}");
+
+    mut std::darray<score> s = default;
+    s.push(score{ .player = std::string::from("kim"), .points = 40 });
+    s.push(score{ .player = std::string::from("ann"), .points = 75 });
+    s.push(score{ .player = std::string::from("bob"), .points = 40 });
+    s.sort_by_key(std::sort_order::descending, [](score& x) { return x.points; });   // stable
+    for (score& x : s) { std::println(f"{x.player} {x.points}"); }
+    return 0;
+}
+//> 4 9 0
+//> ann 75
+//> kim 40
+//> bob 40

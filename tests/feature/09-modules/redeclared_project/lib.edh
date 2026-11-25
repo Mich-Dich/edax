@@ -1,0 +1,10 @@
+// A module whose .ed repeats declarations of the header instead of defining them.
+namespace lib {
+    u32 twice(u32 x);
+
+    class box {
+    public:
+        u32 size();
+        u32 width();
+    }
+}

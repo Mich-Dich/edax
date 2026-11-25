@@ -43,11 +43,11 @@ __attribute__((weak)) llvm::PassPluginLibraryInfo getPollyPluginInfo() {
 
 namespace edax {
 
-bool thin_prelink(const ThinLtoJob& job, const std::string& ir_text, const std::string& path, std::string& error) {
+bool thin_prelink(const ThinLtoJob& job, const std::string& ir, const std::string& path, std::string& error) {
     llvm::LLVMContext  ctx;
     llvm::SMDiagnostic err;
     std::unique_ptr<llvm::Module> mod =
-        llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir_text.data(), ir_text.size()), "edax-unit.ll"), err, ctx);
+        llvm::parseIR(llvm::MemoryBufferRef(llvm::StringRef(ir.data(), ir.size()), "edax-unit"), err, ctx);
     if (!mod) {
         error = "internal error: a unit's LLVM IR does not parse";
         return false;

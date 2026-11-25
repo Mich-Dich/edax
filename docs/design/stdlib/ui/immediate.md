@@ -67,6 +67,12 @@ The immediate-mode front-end of [`std::ui`](core.md) ([draft 35](../../drafts/35
 | `choice(label, mut e)` | An enum's alternatives without payloads, by name (`std::meta::alternatives`) |
 | `tooltip(text)` | Shows `text` next to the cursor when the widget before it has been hovered for 0.45 s |
 | `progress(fraction)`, `separator()` | |
+| `icon_button(icon, hint)`, `icon_toggle(icon, mut on, hint)`, `icon_label_button(icon, label, variant)`, `icon(icon, tint)`, `badge(icon, text, tint)` | Icons from `ui::icon` in buttons, toggles and pills ([tools and editors](studio.md)) |
+| `chip(label, mut on)` | A small rounded toggle with a label, filled with the accent while on |
+| `placeholder(text)` | A faint text in the next text field while it is empty |
+| `spacer()`, `bar_separator()` | In a row: take the room left (push what follows to the end), a thin line between groups |
+| `menu(label)` → scope with `menu_item(icon, label, shortcut)`, `menu_check(label, mut on)` | A flat button that opens a popup; hovering another menu while one is open switches |
+| `available_height()` | The height left below the next widget in a panel or region (tables and log panels given 0 fill it) |
 
 Every widget draws through the skin: the button is `skin.button(painter, button_part)`, the slider `slider_track` and `slider_knob`, and so on, so a replaced painter changes the widget everywhere.
 
@@ -80,6 +86,10 @@ Own widgets are methods of the program's own interface, implemented for `im::sco
 | `s.interact(id, rect)` | Hover, press, click and the animated `hover`/`press` (an `im::response`) |
 | `s.animate(id, slot, target)` | A value easing to `target` (0 to 1) with `motion.normal` |
 | `s.state(id)` | The widget's `widget_state` between frames |
+| `s.storage(id)` | The widget's `widget_storage` (numbers, text, points) between frames; its buffers are reused |
+| `s.scroll_unused()`, `s.take_scroll()` | Whether the wheel is still free this frame; taking it (inner widgets first) |
+| `s.region(id, rect, space)` | A part of the window at `rect` (not in the flow), clipped and scrolled: panes of splits |
+| `f.panel(id, rect, order)` | A window without a title bar at `rect`, its own layer at `order` (below 16: under every window): docked windows |
 | `s.painter()` | A `ui::painter` drawing into the scope's window with the current theme |
 | `s.theme()` | The tokens in use |
 
@@ -138,7 +148,7 @@ mut im::context ctx = im::context::create(ui::theme::dark());
 `example/windowing` has a debug overlay made with this module and routed with `im::router` (the M2 dogfood).
 
 ## Not yet
-`split` (two panes with a divider) comes with docking (M5), which splits areas anyway. The system clipboard and the IME area wait for `std::windowing` (M1).
+`split` (two panes with a divider) is `w.split_x`/`split_y` of [docking](docking.md). The system clipboard and the IME area wait for `std::windowing` (M1).
 
 ## Rationale
 - **Ids from call sites, scopes from views:** see draft 35 §10 and the M0 findings (`example/ui_spike/README.md`).

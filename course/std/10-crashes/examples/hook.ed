@@ -1,0 +1,27 @@
+// A panic hook runs on the panicking thread before the process ends. It can record; it can't recover.
+import std;
+
+void on_panic(std::panic_info& info) {
+    std::str first_line = info.message.split('\n')[0];          // a failed check adds a "note:" line
+    std::println(f"hook: '{first_line}' in {info.function} at {info.where.file_name}:{info.where.line}, thread '{info.thread_name}'");
+}
+
+// An entry check: a failure is reported at the caller's line, in the caller's function.
+u32 checked_ratio(u32 a, u32 b) {
+    run_time check (b != 0) else f"ratio {a}/{b}: the divisor is zero";
+    return a / b;
+}
+
+i32 main() {
+    std::thread::set_current_name("main");
+    std::option<std::fn_ptr<void(std::panic_info&)>> previous = std::set_panic_hook([](std::panic_info& info) { on_panic(info); });
+    std::println(f"there was a hook before: {previous.is_some()}");
+    std::println(f"{checked_ratio(10, 2)}");
+    std::println(f"{checked_ratio(1, 0)}");
+    std::println("never printed");
+    return 0;
+}
+//! panic: ratio 1/0: the divisor is zero
+//> there was a hook before: false
+//> 5
+//> hook: 'ratio 1/0: the divisor is zero' in main at hook.ed:20, thread 'main'

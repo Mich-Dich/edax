@@ -1,0 +1,75 @@
+// editor/viewport: the editor's 3D scene view, drawn with std::ui's draw list only (no GPU mesh
+// pipeline): a perspective floor grid with its axes, a flat-shaded model sorted back to front, its
+// shadow, the selection's bounds, the tool's gizmo and an orientation gizmo. A drag orbits the
+// camera, the wheel zooms.
+
+import std;
+
+namespace scene {
+    namespace ui = std::ui;
+    namespace im = std::ui::immediate;
+    compile_time type vec3 = std::math::vec3;
+
+    // A camera orbiting `target`: `yaw` around the vertical and `pitch` above the ground, in
+    // radians, `distance` away; `fov` is the vertical field of view in radians.
+    struct orbit_camera {
+        vec3 target = vec3{ .y = 0.7 };
+        f32 yaw = 0.75;
+        f32 pitch = 0.38;
+        f32 distance = 8.5;
+        f32 fov = 0.82;
+    }
+
+    // What the view shows.
+    struct view_options {
+        bool grid = true;
+        bool wireframe = false;
+        bool bounds = true;
+        bool gizmo = true;
+        bool shadow = true;
+    }
+
+    // The tool whose gizmo is drawn at the selection.
+    enum gizmo_kind : u8 { none, translate, rotate, scale }
+
+    // A flat face of a model: its corners (a convex polygon, in either winding), its colour, and
+    // whether it is glass (drawn see-through with a sheen).
+    struct face {
+        std::darray<vec3> corners = default;
+        ui::color tint = default;
+        bool glass = false;
+    }
+
+    // A low-poly car in `paint`, its wheels sized from `rim_inches`, standing on y = 0 and
+    // pointing along +x.
+    std::darray<face> car_model(ui::color paint, f32 rim_inches);
+
+    // The box around `model`: its smallest and its largest corner.
+    (vec3, vec3) bounds_of(std::span<face> model);
+
+    // What a camera sees in a rectangle of the screen.
+    struct projection {
+        vec3 eye = default;
+        vec3 right = default;
+        vec3 up = default;
+        vec3 forward = default;
+        ui::vec2 center = default;
+        f32 focal = 1.0;
+
+        // The point's distance in front of the camera (along `forward`).
+        f32 depth(vec3 p);
+        // Where `p` is on the screen; meaningful when depth(p) > near.
+        ui::vec2 at(vec3 p);
+    }
+
+    // The projection of `camera` into `area`.
+    projection project(orbit_camera& camera, ui::rect area);
+
+    // Draws the view into `area` of `s`'s window and handles its input: a drag orbits, the wheel
+    // zooms. `triangles` is reported back: how many the model's faces make.
+    usize draw_view(mut im::scope& s, ui::rect area, mut orbit_camera& camera, view_options& options, std::span<face> model, gizmo_kind gizmo);
+
+    // Puts the camera in front of (0), on top of (1) or beside (2) the target, or back to the
+    // three-quarter view (3), at a distance that fits a model `size` long.
+    void look_from(mut orbit_camera& camera, u32 side, f32 size);
+}

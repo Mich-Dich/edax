@@ -1,0 +1,47 @@
+// Errors are values: std::result, std::option, and `?` to pass them up.
+import std;
+
+enum parse_error : u8 {
+    empty,
+    not_a_number(usize),                     // which word
+}
+
+std::result<u32, parse_error> parse_word(std::str word, usize at) {
+    if (word.is_empty()) { return std::error(parse_error::empty); }
+    // .or_error turns an option into a result with the given error
+    u32 n = word.parse<u32>().or_error(parse_error::not_a_number(at))?;
+    return std::ok(n);
+}
+
+std::result<u32, parse_error> sum(std::str text) {
+    mut u32 total = 0;
+    mut usize at = 0;
+    for (std::str word : text.split(' ')) {
+        total += parse_word(word, at)?;       // an error returns from sum right here
+        at += 1;
+    }
+    return std::ok(total);
+}
+
+std::string describe(parse_error e) {
+    return match (e) {
+        parse_error::empty => std::string::from("an empty word"),
+        parse_error::not_a_number(at) => std::format(f"word {at} is not a number"),
+    };
+}
+
+i32 main() {
+    std::array<std::static_str, 3> inputs = ["1 2 3", "4 x 6", "7  8"];
+    for (std::static_str input : inputs) {
+        match (sum(input)) {
+            std::ok(v) => std::println(f"'{input}' = {v}"),
+            std::error(e) => std::println(f"'{input}': {describe(e)}"),
+        }
+    }
+    std::println(f"{sum("5 5").value_or(0)} {sum("oops").value_or(0)}");
+    return 0;
+}
+//> '1 2 3' = 6
+//> '4 x 6': word 1 is not a number
+//> '7  8': an empty word
+//> 10 0

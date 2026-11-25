@@ -1,0 +1,238 @@
+// RUN: edaxc run %s
+// std::ui::dock without a window: layouts as data (building, text, closing and reopening in the
+// same place, workspaces, saving), and a dockspace under made-up input: every window dragged onto
+// every drop target (the stacks' five, the dockspace's four edges, none: floating), dividers
+// dragged and reset, tabs closed by their button. After every drop the layout must still hold
+// each window once and read back from its text.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace dock = std::ui::dock;
+
+dock::layout start() {
+    return dock::split_x(0.2, dock::tabs(["Outliner"]),
+           dock::split_x(0.75, dock::split_y(0.7, dock::central_with(["Scene"]), dock::tabs(["Console", "Frame time"])),
+                               dock::tabs(["Inspector", "Theme"])));
+}
+
+std::array<std::static_str, 6> all_windows() {
+    return ["Outliner", "Console", "Frame time", "Inspector", "Theme", "Scene"];
+}
+
+u32 frame_of(mut im::context& ctx, mut dock::workspace& ws, ui::input in) {
+    mut u32 shown = 0;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 1200.0, .y = 800.0 });
+        {
+            mut dock::space space = f.dockspace("main", mut ws);
+            std::array<std::static_str, 6> names = all_windows();
+            for (usize i : 0..5) {
+                mut im::scope w = space.window(names[i]);
+                if (w.open()) {
+                    shown += 1;
+                    w.text(f"{names[i]}");
+                }
+            }
+            mut im::scope d = space.document("Scene");
+            if (d.open()) {
+                shown += 1;
+                _ = d.button("Play");
+            }
+        }
+        f.finish();
+    }
+    return shown;
+}
+
+ui::input at(ui::vec2 p) { return ui::input{ .cursor = p, .dt = 0.016 }; }
+
+void drag(mut im::context& ctx, mut dock::workspace& ws, ui::vec2 from, ui::vec2 to) {
+    _ = frame_of(mut ctx, mut ws, at(from));
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = from, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = from + ui::vec2{ .x = 30.0, .y = 30.0 }, .mouse_down = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = to, .mouse_down = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = to, .mouse_released = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, at(ui::vec2{ .x = -1.0, .y = -1.0 }));
+}
+
+void click(mut im::context& ctx, mut dock::workspace& ws, ui::vec2 p) {
+    _ = frame_of(mut ctx, mut ws, at(p));
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = p, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = p, .mouse_released = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, at(ui::vec2{ .x = -1.0, .y = -1.0 }));
+}
+
+// Every window once, and the text reads back as the same layout.
+bool consistent(dock::layout& l) {
+    std::darray<std::string> names = l.windows();
+    if (names.len() != 6) {
+        return false;
+    }
+    std::array<std::static_str, 6> expected = all_windows();
+    for (usize i : 0..6) {
+        mut u32 seen = 0;
+        for (usize k : 0..names.len()) {
+            if (names[k].as_str() == expected[i]) {
+                seen += 1;
+            }
+        }
+        if (seen != 1) {
+            return false;
+        }
+    }
+    return match (dock::layout::from_text(l.to_text().as_str())) {
+        std::some(back) => back.same(l),
+        std::none => false,
+    };
+}
+
+// A split inside an ordinary window: two panes and the first pane's share.
+f32 split_frame(mut im::context& ctx, ui::input in, mut ui::rect& divider) {
+    mut f32 share = 0.0;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 900.0, .y = 600.0 });
+        {
+            mut im::scope w = f.window("Panes", ui::rect{ .x = 20.0, .y = 20.0, .width = 600.0 });
+            mut dock::split s = w.split_x("panes", 0.3, 200.0);
+            {
+                mut im::scope left = s.first();
+                left.text(f"left");
+            }
+            {
+                mut im::scope right = s.second();
+                right.text(f"right");
+                _ = right.button("Go");
+            }
+            share = s.ratio();
+            divider = ui::rect{ .x = s.one.right(), .y = s.one.y, .width = 6.0, .height = s.one.height };
+        }
+        f.finish();
+    }
+    return share;
+}
+
+void data_checks() {
+    dock::layout l = start();
+    std::print(f"{l.to_text()}");
+    mut dock::layout m = l.clone();
+    m.close("Console");
+    m.close("Outliner");
+    m.close("Inspector");
+    std::println(f"closed three: {m.windows().len()} windows left, closed list {m.closed.len()}");
+    m.reopen("Inspector");
+    m.reopen("Outliner");
+    m.reopen("Console");
+    std::println(f"reopened in their places: {m.same(l)}");
+    mut dock::workspace ws = dock::workspace::make(l.clone());
+    ws.save_as("Layout");
+    ws.edit().close("Theme");
+    ws.save_as("Animation");
+    _ = ws.switch_to("Layout");
+    std::println(f"workspaces {ws.names().len()}, active {ws.active_name()}, Theme back {ws.current().contains("Theme")}");
+    std::str path = "/tmp/edax_dock_test.layout";
+    _ = ws.save(path);
+    match (dock::workspace::load(path)) {
+        std::some(back) => std::println(f"loaded: same layout {back.current().same(ws.current())}, workspaces {back.names().len()}, active {back.active_name()}"),
+        std::none => std::println("did not load"),
+    }
+    std::println(f"not a layout: {dock::layout::from_text("tabs 0 1 \"x\"").is_none()}");
+}
+
+void main() {
+    data_checks();
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut dock::workspace ws = dock::workspace::make(start());
+    _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+    u32 shown = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+    std::println(f"stacks {ws.areas.len()}, windows shown {shown}, duplicates {ctx.duplicate_ids()}");
+
+    // Every window onto every target.
+    std::array<std::static_str, 6> names = all_windows();
+    mut u32 drops = 0;
+    mut u32 good = 0;
+    mut u32 moved = 0;
+    for (usize w : 0..6) {
+        // The stacks of the start layout, and the edges, as targets.
+        ws.reset(start());
+        _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+        usize stacks = ws.areas.len();
+        for (usize s : 0..stacks + 2) {
+            for (usize k : 0..5) {
+                ws.reset(start());
+                _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+                std::string before = ws.current().to_text();
+                ui::rect tab = ws.tab_of(names[w]).value_or(ui::rect{});
+                ui::vec2 to = if (s < stacks) {
+                    ui::vec2 c = ws.areas[s].content.center();
+                    std::array<ui::vec2, 5> offsets = [ui::vec2{}, ui::vec2{ .x = -40.0 }, ui::vec2{ .x = 40.0 }, ui::vec2{ .y = -40.0 }, ui::vec2{ .y = 40.0 }];
+                    c + offsets[k]
+                } else if (s == stacks) {
+                    // The dockspace's edges (the fifth: nowhere, so floating).
+                    std::array<ui::vec2, 5> edges = [ui::vec2{ .x = 27.0, .y = 400.0 }, ui::vec2{ .x = 1173.0, .y = 400.0 }, ui::vec2{ .x = 600.0, .y = 27.0 }, ui::vec2{ .x = 600.0, .y = 773.0 }, ui::vec2{ .x = 450.0, .y = 120.0 }];
+                    edges[k]
+                } else {
+                    // Dropped on its own tab bar's empty end: nothing but a click.
+                    tab.center() + ui::vec2{ .x = 2.0 }
+                };
+                drag(mut ctx, mut ws, tab.center(), to);
+                drops += 1;
+                if (consistent(ws.current())) {
+                    good += 1;
+                }
+                if (ws.current().to_text() != before) {
+                    moved += 1;
+                }
+            }
+        }
+    }
+    std::println(f"drops {drops}, consistent after all {good == drops}, layouts changed {moved > drops / 2}");
+
+    // Drop "Console" onto the left side of the central area: Scene and Console side by side.
+    ws.reset(start());
+    _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+    mut ui::rect scene_area = default;
+    for (dock::stack_area s : ws.areas) {
+        if (!s.floating && ws.current().nodes[s.node].kind == dock::part::central) {
+            scene_area = s.content;
+        }
+    }
+    drag(mut ctx, mut ws, ws.tab_of("Console").value_or(ui::rect{}).center(), scene_area.center() + ui::vec2{ .x = -40.0 });
+    std::print(f"{ws.current().to_text()}");
+
+    // Drop "Theme" nowhere: a floating window; then move it by its bar.
+    drag(mut ctx, mut ws, ws.tab_of("Theme").value_or(ui::rect{}).center(), ui::vec2{ .x = 500.0, .y = 150.0 });
+    ui::rect floated = ws.current().floating[0].bounds;
+    ui::vec2 bar = ui::vec2{ .x = floated.right() - 20.0, .y = floated.y + 10.0 };
+    drag(mut ctx, mut ws, bar, bar + ui::vec2{ .x = 100.0, .y = 50.0 });
+    std::println(f"floating: {ws.current().floating.len()}, moved by (100, 50) after the drag's start: {ws.current().floating[0].bounds.x > floated.x}");
+    // Close it with its tab's button; reopen it where it was.
+    ui::rect theme_tab = ws.tab_of("Theme").value_or(ui::rect{});
+    click(mut ctx, mut ws, ui::vec2{ .x = theme_tab.right() - 14.0, .y = theme_tab.center().y });
+    std::println(f"closed by its button: {ws.current().is_closed("Theme")}, floating stacks {ws.current().floating.len()}");
+    ws.reopen("Theme");
+    std::println(f"reopened floating: {ws.current().floating.len()}");
+
+    // Drag the outliner's divider right, then double-click it back.
+    ws.reset(start());
+    _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
+    f32 divider_x = ws.areas[0].bar.right() + 2.0;
+    drag(mut ctx, mut ws, ui::vec2{ .x = divider_x, .y = 400.0 }, ui::vec2{ .x = divider_x + 120.0, .y = 400.0 });
+    f32 moved_ratio = ws.current().nodes[ws.current().root].ratio;
+    ui::vec2 now = ui::vec2{ .x = ws.areas[0].bar.right() + 2.0, .y = 400.0 };
+    click(mut ctx, mut ws, now);
+    click(mut ctx, mut ws, now);
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = now, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = now, .mouse_released = true, .dt = 0.016 });
+    std::println(f"divider: dragged to {moved_ratio > 0.25}, double-click back to {ws.current().nodes[ws.current().root].ratio}");
+    std::println(f"duplicates {ctx.duplicate_ids()}, changed {ws.changed}");
+
+    mut im::context panes = im::context::create(ui::theme::dark());
+    mut ui::rect handle = default;
+    _ = split_frame(mut panes, at(ui::vec2{}), mut handle);
+    f32 first = split_frame(mut panes, at(ui::vec2{}), mut handle);
+    ui::vec2 grip = handle.center();
+    _ = split_frame(mut panes, ui::input{ .cursor = grip, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 }, mut handle);
+    _ = split_frame(mut panes, ui::input{ .cursor = grip + ui::vec2{ .x = 150.0 }, .mouse_down = true, .dt = 0.016 }, mut handle);
+    f32 dragged = split_frame(mut panes, ui::input{ .cursor = grip + ui::vec2{ .x = 150.0 }, .mouse_released = true, .dt = 0.016 }, mut handle);
+    std::println(f"split in a window: {first}, dragged wider {dragged > 0.5}, duplicates {panes.duplicate_ids()}");
+}

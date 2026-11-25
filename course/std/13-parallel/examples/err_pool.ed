@@ -1,0 +1,12 @@
+// A parallel loop's body runs on several threads at once: it may not capture `mut &`.
+import std;
+
+i32 main() {
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 2 });
+    std::darray<u32> data = std::darray<u32>::from([1, 2, 3, 4]);
+    mut u32 total = 0;
+    pool.for_chunks(data.as_span(), 2, [mut &total](std::span<u32> part) {   //~ error[E4231]
+        for (u32 v : part) { total += v; }
+    });
+    return 0;
+}

@@ -1,0 +1,18 @@
+// lerp and smoothstep: blending numbers, positions and colours over time.
+import std;
+namespace m = std::math;
+
+i32 main() {
+    for (u32 i : 0..=4) {
+        f32 t = cast::round<f32>(i) / 4.0;              // u32 -> f32 can round in general
+        std::println(f"t {t:.2}: lerp {m::lerp(0.0, 100.0, t):>5.1} smoothstep {m::smoothstep(0.0, 1.0, t):.3}");
+    }
+    std::println(f"pi {m::pi:.5}, 90 degrees in radians {90.0 * m::pi / 180.0:.4}");
+    return 0;
+}
+//> t 0.00: lerp   0.0 smoothstep 0.000
+//> t 0.25: lerp  25.0 smoothstep 0.156
+//> t 0.50: lerp  50.0 smoothstep 0.500
+//> t 0.75: lerp  75.0 smoothstep 0.844
+//> t 1.00: lerp 100.0 smoothstep 1.000
+//> pi 3.14159, 90 degrees in radians 1.5708

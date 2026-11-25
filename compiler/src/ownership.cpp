@@ -817,18 +817,13 @@ private:
                     }
                 }
             }
-            // A function with exactly one view argument returns something that borrows what that
-            // argument borrows (spec 12): `std::thread::spawn([&x]() { ... })`.
-            const Expr* only = nullptr;
-            int         views = 0;
+            // A function's view result borrows what its view arguments borrow (spec 12):
+            // `std::thread::spawn([&x]() { ... })`. With several view arguments it may borrow from
+            // any of them (`spawn(options{ .name = ... }, [mut &x]() { ... })`), so all of them count.
             for (const ExprPtr& a : c.args) {
                 if (a->type && is_view(a->type)) {
-                    ++views;
-                    only = a.get();
+                    for (auto b : borrows_of(*a)) out.push_back(b);
                 }
-            }
-            if (views == 1) {
-                for (auto b : borrows_of(*only)) out.push_back(b);
             }
             return out;
         }
@@ -865,12 +860,23 @@ private:
                     std::format("'{}' is already borrowed mutably by '{}'", v.root->name, v.holder->name), "borrowed mutably")
             : error(DiagCode::E5022, span,
                     std::format("cannot {} '{}' while '{}' borrows it", action, v.root->name, v.holder->name), "still borrowed");
-        note(d, v.to_scope_end ? std::format("the borrow lasts until '{}' is joined, consumed or destroyed", v.holder->name)
-                               : std::format("the borrow lasts until the last use of '{}'", v.holder->name),
+        std::string holder_type = v.holder->type ? types::to_string(types::strip_ref(v.holder->type)) : std::string();
+        bool        joins       = holder_type.find("thread") != std::string::npos || holder_type.find("task") != std::string::npos;
+        note(d, !v.to_scope_end ? std::format("the borrow lasts until the last use of '{}'", v.holder->name)
+                : joins         ? std::format("the borrow lasts until '{}' is joined, consumed or destroyed", v.holder->name)
+                                : std::format("the borrow lasts until '{}' is destroyed or moved: put it in a block of its own", v.holder->name),
              v.at);
         if (v.exclusive) {
-            note(d, "a 'mut &' borrow is the only way to reach the value while it lasts; to share a counter between threads "
-                    "use a std::atomic or a std::mutex (spec 27)");
+            const Type* held = v.holder->type ? types::strip_ref(v.holder->type) : nullptr;
+            std::string held_name = held ? types::to_string(held) : std::string();
+            if (held_name.find("thread") != std::string::npos) {
+                note(d, "a 'mut &' borrow is the only way to reach the value while it lasts; to share a counter between threads "
+                        "use a std::atomic or a std::mutex (spec 27)");
+            } else {
+                note(d, std::format("a 'mut &' borrow is the only way to reach the value while it lasts: read what you need "
+                                    "from '{}' before '{}' is made, or put '{}' in a block of its own",
+                                    v.root->name, v.holder->name, v.holder->name));
+            }
         }
     }
 
@@ -1252,6 +1258,7 @@ private:
         } else {
             walk(callee);
         }
+        std::vector<bool> copied(c.args.size(), false);
         for (std::size_t i = 0; i < c.args.size(); ++i) {
             Expr& arg = *c.args[i];
             walk(arg);
@@ -1268,8 +1275,12 @@ private:
                 param = at;
             }
             if (param && !marked) consume(arg, param);
+            // A value parameter gets a copy made before the call starts (two-phase): reading a
+            // place that a mutable reference of the same call also reaches is fine then, unless
+            // the value itself holds references.
+            if (param && !marked && !param->is(Kind::reference) && !is_view(param)) copied[i] = true;
         }
-        check_aliasing(c, receiver, mut_receiver);
+        check_aliasing(c, receiver, mut_receiver, copied);
     }
 
     // The fields from the root to a place (spec 34, disjoint borrows): `w.a.b` -> a, b. An index
@@ -1308,26 +1319,41 @@ private:
 
     // One mutable reference at a time: `f(mut a, a)`, `f(mut a, mut a)`, `a.push(mut a)`. Different
     // fields of one value are different places: `f(mut w.positions, w.velocities)` (spec 34).
-    void check_aliasing(CallExpr& c, const Symbol* receiver, bool mut_receiver) {
+    void check_aliasing(CallExpr& c, const Symbol* receiver, bool mut_receiver, const std::vector<bool>& copied = {}) {
         struct Arg {
             const Symbol*            root;
             bool                     is_mut;
             Span                     span;
             std::vector<std::string> path;
+            bool                     view_call = false;   // a view made for the call: `xs.as_span()`
+            bool                     receiver  = false;
         };
         std::vector<Arg> args;
         if (receiver) {
             Arg r{receiver, mut_receiver, c.callee->span, {}};
+            r.receiver = true;
             if (c.callee->kind == ExprKind::member) {
                 bool ended = false;
                 field_path(*c.callee->as<MemberExpr>().object, r.path, ended);
             }
             args.push_back(std::move(r));
         }
-        for (ExprPtr& a : c.args) {
+        for (std::size_t k = 0; k < c.args.size(); ++k) {
+            ExprPtr& a = c.args[k];
             bool marked = a->kind == ExprKind::unary && a->as<UnaryExpr>().op == UnaryOp::mut_marker;
+            if (k < copied.size() && copied[k]) continue;
             const Symbol* root = root_of(*a);
             if (a->kind == ExprKind::unary && a->as<UnaryExpr>().op == UnaryOp::move) root = nullptr;
+            if (!root && a->kind == ExprKind::call) {
+                // A view made for the call borrows its source for the call's duration:
+                // `copy_into(xs.as_mut_span(), xs.as_span())` holds `xs` mutably and shared at once.
+                for (auto [borrowed, exclusive] : borrows_of(*a)) {
+                    Arg v{borrowed, exclusive, a->span, {}};
+                    v.view_call = true;
+                    args.push_back(std::move(v));
+                }
+                continue;
+            }
             if (!root) continue;
             Arg  arg{root, marked, a->span, {}};
             bool ended = false;
@@ -1338,6 +1364,9 @@ private:
             for (std::size_t j = i + 1; j < args.size(); ++j) {
                 if (args[i].root != args[j].root || !(args[i].is_mut || args[j].is_mut)) continue;
                 if (!overlaps(args[i].path, args[j].path)) continue;
+                // A view of the receiver passed to its own method (`g.add_sources(t, g.glob(...))`)
+                // is not checked yet: only views passed next to each other are.
+                if ((args[i].receiver && args[j].view_call) || (args[j].receiver && args[i].view_call)) continue;
                 const Arg& m = args[i].is_mut ? args[i] : args[j];
                 const Arg& o = args[i].is_mut ? args[j] : args[i];
                 std::string name = args[i].root == &this_root_ ? "this" : args[i].root->name;
@@ -1453,6 +1482,31 @@ private:
                 return;
             }
         }
+        if (value.kind == ExprKind::call && value.type && is_view(value.type) && !value.type->is(Kind::reference)) {
+            auto& c = value.as<CallExpr>();
+            if (c.callee->kind == ExprKind::member && !c.callee->as<MemberExpr>().arrow) {
+                // `s.as_str()`, `text.trim()`: the view borrows the receiver, which must outlive the call.
+                auto&               me = c.callee->as<MemberExpr>();
+                const FunctionDecl* fn = me.symbol ? me.symbol->function() : nullptr;
+                if (fn && !fn->is_static) {
+                    Expr& object = *me.object;
+                    const Type* ot = object.type ? types::strip_ref(object.type) : nullptr;
+                    if (root_of(object) || (ot && is_view(ot)) || (object.type && object.type->is(Kind::reference))) {
+                        check_returned_reference(object);
+                    } else if (ot && !ot->is(Kind::static_str)) {
+                        error(DiagCode::E5013, value.span, "returns a view of a temporary", "destroyed at the end of the statement");
+                    }
+                    return;
+                }
+            }
+            if (c.callee->kind == ExprKind::path) {
+                // `std::some(view)`, `make_view(x)`: the result borrows what its view arguments borrow.
+                for (ExprPtr& a : c.args) {
+                    if (a->type && is_view(a->type)) check_returned_reference(*a);
+                }
+                return;
+            }
+        }
         const Symbol* root = root_of(value);
         if (root == &this_root_) return;
         if (!root) {
@@ -1468,7 +1522,12 @@ private:
                                 ft = lower(*it->second.front()->decl->as<VariableDecl>().type, it->second.front());
                             }
                         }
-                        if (f.value && (is_view(f.value->type) || (ft && ft->is(Kind::reference)))) check_returned_reference(*f.value);
+                        // A view field given an owning value (`.name = local_string`) borrows that value.
+                        const Type* vt = f.value && f.value->type ? types::strip_ref(f.value->type) : nullptr;
+                        bool static_text = vt && vt->is(Kind::static_str);   // lives forever
+                        if (f.value && !static_text && (is_view(f.value->type) || (ft && (ft->is(Kind::reference) || is_view(ft))))) {
+                            check_returned_reference(*f.value);
+                        }
                     }
                     return;
                 }

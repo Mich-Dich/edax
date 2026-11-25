@@ -1,0 +1,172 @@
+// editor/graph (see graph.edh).
+
+import std;
+
+namespace graph {
+    namespace ui = std::ui;
+    namespace im = std::ui::immediate;
+    namespace nodes = std::ui::nodes;
+    namespace m = std::math;
+
+    m::vec3 splat(f32 x) {
+        return m::vec3{ .x = x, .y = x, .z = x };
+    }
+
+    material car_paint() {
+        mut material mat = default;
+        u64 uv = mat.paint.add(material_node::uv(uv_node{}), ui::vec2{ .x = 30.0, .y = 230.0 });
+        u64 time = mat.paint.add(material_node::time(time_node{}), ui::vec2{ .x = 30.0, .y = 380.0 });
+        u64 color = mat.paint.add(material_node::color(color_node{}), ui::vec2{ .x = 260.0, .y = 40.0 });
+        u64 noise = mat.paint.add(material_node::noise(noise_node{}), ui::vec2{ .x = 260.0, .y = 250.0 });
+        u64 mix = mat.paint.add(material_node::mix(mix_node{ .t = 0.35 }), ui::vec2{ .x = 500.0, .y = 110.0 });
+        u64 out = mat.paint.add(material_node::output(output_node{}), ui::vec2{ .x = 760.0, .y = 140.0 });
+        _ = mat.paint.connect(color, "rgb", mix, "a");
+        _ = mat.paint.connect(uv, "uv", noise, "uv");
+        u64 noisy = mat.paint.connect(noise, "value", mix, "t").value_or(0);
+        _ = mat.paint.connect(mix, "result", out, "base_color");
+        mat.paint.add_frame("Base color", ui::rect{ .x = 240.0, .y = 0.0, .width = 240.0, .height = 400.0 }, 0xe5484d);
+        // Time isn't used yet: collapsed. The noise goes into the mix through a reroute point.
+        _ = mat.paint.view.collapsed.insert(time, true);
+        for (usize k : 0..mat.paint.links.len()) {
+            if (mat.paint.links[k].id == noisy) {
+                mat.paint.links[k].via.push(ui::vec2{ .x = 465.0, .y = 330.0 });
+            }
+        }
+        mat.paint.view.pan = ui::vec2{ .x = 20.0, .y = 30.0 };
+        compile(mut mat);
+        return mat;
+    }
+
+    void use_style(mut material& mat, node_style which) {
+        mat.style_choice = which;
+        mat.paint.view.look = match (which) {
+            node_style::studio => nodes::style::studio(),
+            node_style::metro => nodes::style::metro(),
+            node_style::blueprint => nodes::style::blueprint(),
+            node_style::neon => nodes::style::neon(),
+            node_style::paper => nodes::style::paper(),
+        };
+    }
+
+    void edit(mut im::scope& s, mut material& mat) {
+        mut bool changed = false;
+        {
+            mut im::scope bar = s.row();
+            node_style chosen = mat.style_choice;
+            mut node_style picked = chosen;
+            _ = bar.width(ui::px(330.0)).segmented("", mut picked);
+            if (picked != chosen) {
+                use_style(mut mat, picked);
+            }
+            bar.bar_separator();
+            _ = bar.width(ui::px(190.0)).segmented("", mut mat.paint.view.look.link.shape);
+            _ = bar.chip("Round", mut mat.paint.view.look.link.round_corners);
+            _ = bar.width(ui::px(140.0)).slider("", mut mat.paint.view.look.link.corner_radius, 0.0, 40.0);
+            bar.bar_separator();
+            {
+                // Lining up the selected nodes (two or more).
+                mut im::scope menu = bar.menu("Arrange");
+                std::array<nodes::arrangement, 8> ways = [nodes::arrangement::left, nodes::arrangement::center, nodes::arrangement::right, nodes::arrangement::top, nodes::arrangement::middle, nodes::arrangement::bottom, nodes::arrangement::spread_x, nodes::arrangement::spread_y];
+                std::array<std::str, 8> names = ["Align left edges", "Align centres", "Align right edges", "Align tops", "Align middles", "Align bottoms", "Same space across", "Same space down"];
+                for (usize k : 0..8) {
+                    if (k == 3 || k == 6) {
+                        menu.separator();
+                    }
+                    mut im::scope item = menu.id(k);
+                    if (item.menu_item(ui::icon::none, names[k], "")) {
+                        mat.paint.view.arrange_next = std::some(ways[k]);
+                    }
+                }
+            }
+            bar.bar_separator();
+            if (bar.icon_button(ui::icon::undo, "Undo (Ctrl+Z)") && mat.paint.undo()) {
+                changed = true;
+            }
+            if (bar.icon_button(ui::icon::redo, "Redo (Ctrl+Y)") && mat.paint.redo()) {
+                changed = true;
+            }
+            if (bar.icon_button(ui::icon::save, "Save to car_paint.graph")) {
+                mat.status = match (mat.paint.save(file_name)) {
+                    std::ok(_) => std::format(f"saved {file_name}"),
+                    std::error(why) => move why,
+                };
+            }
+            if (bar.icon_button(ui::icon::folder, "Load car_paint.graph")) {
+                match (nodes::graph<material_node>::load(file_name)) {
+                    std::ok(loaded) => {
+                        mut nodes::graph<material_node> fresh = move loaded;
+                        fresh.view = std::take(mut mat.paint.view);
+                        mat.paint = move fresh;
+                        mat.status = std::format(f"loaded {file_name}");
+                        changed = true;
+                    },
+                    std::error(why) => { mat.status = move why; },
+                }
+            }
+            if (!mat.status.is_empty()) {
+                bar.muted(f"{mat.status}");
+            }
+        }
+        nodes::graph_edit e = nodes::graph_editor(mut s, mut mat.paint);
+        mat.canvas = mat.paint.view.area;
+        if (!e.problem.is_empty()) {
+            mat.status = e.problem.clone();
+        }
+        if (e.changed || changed) {
+            compile(mut mat);
+        }
+    }
+
+    // The expression an input reads: the linked output's variable (repeated into a vec3 where an
+    // f32 goes into one), or `fallback`.
+    private std::string input(material& mat, u64 node, std::str field, bool wants_vec3, std::string fallback) {
+        return match (mat.paint.source_of(node, field)) {
+            std::some(src) => {
+                if (wants_vec3 && src.type_id == std::meta::type_id<f32>()) {
+                    std::format(f"vec3(n{src.node})")
+                } else {
+                    std::format(f"n{src.node}")
+                }
+            },
+            std::none => fallback,
+        };
+    }
+
+    private std::string vec3_literal(m::vec3 v) {
+        return std::format(f"vec3({v.x}, {v.y}, {v.z})");
+    }
+
+    void compile(mut material& mat) {
+        match (mat.paint.topological_order()) {
+            std::error(on_cycle) => {
+                mat.problem = std::format(f"cycle at node n{on_cycle}");
+                mat.glsl.clear();
+            },
+            std::ok(order) => {
+                mut std::string out = std::string::from("#version 330 core\n// made from the material graph 'car paint'\nuniform float u_time;\nin vec2 v_uv;\nin float v_facing;\nout vec4 frag_color;\n\nfloat hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }\n\nvoid main() {\n");
+                for (u64 id : order) {
+                    match (mat.paint.index_of(id)) {
+                        std::some(i) => {
+                            std::string line = match (mat.paint.nodes[i].value) {
+                                material_node::time(p) => std::format(f"    float n{id} = u_time * {p.speed};\n"),
+                                material_node::uv(p) => std::format(f"    vec2 n{id} = v_uv * {p.tiling};\n"),
+                                material_node::color(p) => std::format(f"    vec3 n{id} = vec3({p.red}, {p.green}, {p.blue});\n"),
+                                material_node::fresnel(p) => std::format(f"    float n{id} = pow(1.0 - v_facing, {p.power});\n"),
+                                material_node::noise(p) => std::format(f"    float n{id} = hash(floor({input(mat, id, "uv", false, std::string::from("v_uv"))} * {p.scale}));\n"),
+                                material_node::mix(p) => std::format(f"    vec3 n{id} = mix({input(mat, id, "a", true, vec3_literal(p.a))}, {input(mat, id, "b", true, vec3_literal(p.b))}, {input(mat, id, "t", false, std::format(f"{p.t}"))});\n"),
+                                material_node::multiply(p) => std::format(f"    vec3 n{id} = {input(mat, id, "color", true, vec3_literal(p.color))} * {input(mat, id, "factor", false, std::format(f"{p.factor}"))};\n"),
+                                material_node::output(p) => std::format(f"    frag_color = vec4({input(mat, id, "base_color", true, vec3_literal(p.base_color))}, 1.0);\n    // roughness {input(mat, id, "roughness", false, std::format(f"{p.roughness}"))}, metallic {input(mat, id, "metallic", false, std::format(f"{p.metallic}"))}\n"),
+                            };
+                            out.push_str(line.as_str());
+                        },
+                        std::none => {},
+                    }
+                }
+                out.push_str("}\n");
+                mat.glsl = move out;
+                mat.problem.clear();
+                mat.compiles += 1;
+            },
+        }
+    }
+}

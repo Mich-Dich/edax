@@ -1,0 +1,12 @@
+// expect turns "this can't fail here" into a panic with your reason, and the call site in the message.
+import std;
+
+i32 main() {
+    std::option<u32> port = "8080".parse<u32>();
+    std::println(f"port {port.expect("the default port is a number")}");
+    std::option<u32> bad = "80x".parse<u32>();
+    std::println(f"port {bad.expect(f"the port in the config is a number")}");
+    return 0;
+}
+//> port 8080
+//! panic: the port in the config is a number

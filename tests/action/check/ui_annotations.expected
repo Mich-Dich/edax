@@ -6,9 +6,9 @@ error[E4210]: @ui::range works on number fields; 'name' is a std::string
      |
    8 |     @ui::range{ .min = 0.0, .max = 1.0 }
      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1377:17
+    ::: <std>/ui.ed:<n>
      |
-1377 |                 std::compile_error(f"@ui::range works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+ <n> |                 std::compile_error(f"@ui::range works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
      |                 -------------------------------------------------------------------------------------------------------
      = note: reported by this check
 
@@ -23,9 +23,9 @@ error[E4210]: @ui::unit works on number fields; 'flag' is a bool
      |
   12 |     @ui::unit{ .text = "m" }
      |     ^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1396:17
+    ::: <std>/ui.ed:<n>
      |
-1396 |                 std::compile_error(f"@ui::unit works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+ <n> |                 std::compile_error(f"@ui::unit works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
      |                 ------------------------------------------------------------------------------------------------------
      = note: reported by this check
 
@@ -34,9 +34,9 @@ error[E4210]: @ui::widget: a checkbox or toggle needs a bool; 'volume' is a f32
      |
   14 |     @ui::widget{ .kind = ui::widget_kind::checkbox }
      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1412:17
+    ::: <std>/ui.ed:<n>
      |
-1412 |                 std::compile_error(f"@ui::widget: a checkbox or toggle needs a bool; '{annotated.name}' is a {std::type_name<t>()}");
+ <n> |                 std::compile_error(f"@ui::widget: a checkbox or toggle needs a bool; '{annotated.name}' is a {std::type_name<t>()}");
      |                 --------------------------------------------------------------------------------------------------------------------
      = note: reported by this check
 

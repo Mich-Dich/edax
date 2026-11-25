@@ -1,0 +1,29 @@
+// std::condition: wait until the data behind a mutex reaches a state. The predicate is required.
+import std;
+
+i32 main() {
+    std::mutex<std::darray<u32>> queue = std::mutex<std::darray<u32>>::make(default);
+    std::condition ready = default;
+    mut u32 total = 0;
+    {
+        std::thread::scoped_handle<void> producer = std::thread::spawn([&queue, &ready]() {
+            for (u32 i : 1..=5) {
+                queue.lock()->push(i);
+                ready.notify_one();
+            }
+        });
+        mut u32 received = 0;
+        while (received < 5) {
+            mut std::mutex_guard<std::darray<u32>> q = queue.lock();
+            ready.wait(mut q, [](std::darray<u32>& items) { return !items.is_empty(); });   // unlocks while waiting
+            while (q->pop() is std::some(v)) {
+                total += v;
+                received += 1;
+            }
+        }
+        producer.join();
+    }
+    std::println(f"received all, total {total}");
+    return 0;
+}
+//> received all, total 15

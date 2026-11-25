@@ -1,0 +1,12 @@
+// RUN: edaxc check %s
+import std;
+struct cell { u32 n = 0; }
+void main() {
+    u32 x = 1;
+    mut u32& r = x;
+    r = 2;
+    cell c = default;
+    mut u32& rn = c.n;
+    rn = 3;
+    std::println(f"{x} {c.n}");
+}

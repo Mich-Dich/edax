@@ -1,0 +1,15 @@
+// Overflow behaviour in the name: checked, saturating, wrapping.
+import std;
+
+i32 main() {
+    u8 a = 250;
+    std::option<u8> sum = std::checked_add(a, 10u8);
+    std::option<u8> ok = std::checked_add(a, 5u8);
+    std::println(f"checked: {sum.is_some()} {ok.value_or(0)}");
+    std::println(f"saturating: {std::saturating_add(a, 10u8)} {std::saturating_sub(5u8, 10u8)} {std::saturating_mul(-100i8, 2i8)}");
+    std::println(f"wrapping: {a +% 10} {5u8 -% 10}");
+    return 0;
+}
+//> checked: false 255
+//> saturating: 255 0 -128
+//> wrapping: 4 251

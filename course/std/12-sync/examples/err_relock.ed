@@ -1,0 +1,9 @@
+// Locking a mutex the same thread already holds would wait forever. Debug builds say so instead.
+import std;
+
+i32 main() {
+    std::mutex<u32> m = std::mutex<u32>::make(1);
+    std::println(f"{*m.lock()} {*m.lock()}");           // two guards alive in one statement
+    return 0;
+}
+//! panic: this thread already holds this mutex

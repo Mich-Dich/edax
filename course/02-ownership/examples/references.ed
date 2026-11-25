@@ -1,0 +1,42 @@
+// References: parameters, locals, loop variables; returned only from `this` or the one parameter.
+import std;
+
+struct item {
+    std::string name;
+    u32 weight = 0;
+}
+
+class bag {
+public:
+    void add(item it) mut { items.push(move it); }
+
+    // A reference into `this`, wrapped in an option: "maybe an item, borrowed from the bag".
+    std::option<item&> heaviest() {
+        mut std::option<item&> best = std::none;
+        for (item& it : items) {
+            if (best is std::some(b) && b.weight >= it.weight) { continue; }
+            best = std::some(it);
+        }
+        return best;
+    }
+private:
+    std::darray<item> items = default;
+}
+
+// A view returned from the only view parameter: it borrows what `s` borrows.
+std::str first_word(std::str s) {
+    if (s.find(" ") is std::some(at)) { return s.slice(0, at); }
+    return s;
+}
+
+i32 main() {
+    mut bag b = default;
+    b.add(item{ .name = std::string::from("rope"), .weight = 3 });   // a temporary: moved in
+    b.add(item{ .name = std::string::from("lamp"), .weight = 5 });
+    if (b.heaviest() is std::some(h)) { std::println(f"heaviest {h.name}"); }
+    std::string line = std::string::from("hello brave world");
+    std::println(first_word(line));
+    return 0;
+}
+//> heaviest lamp
+//> hello

@@ -1,0 +1,9 @@
+grass has 2 owners
+frame 1: 9216 bytes
+freed rock
+frame 2: 9216 bytes
+freed hero
+freed grass
+loads 3, hits 1
+loads 4, hits 1
+freed rock

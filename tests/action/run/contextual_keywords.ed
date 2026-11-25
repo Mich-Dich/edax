@@ -1,0 +1,25 @@
+// RUN: edaxc run %s
+// `view` is a keyword only before `class` or `struct`, `check` only after `compile_time` or
+// `run_time`: both can name variables, fields and functions.
+import std;
+
+view struct window_ref {
+    i32& width;
+}
+
+struct camera {
+    i32 view = 2;
+}
+
+bool check(i32 x) {
+    return x > 2;
+}
+
+void main() {
+    i32 view = 3;
+    camera c = default;
+    i32 w = 640;
+    window_ref r = window_ref{ .width = w };
+    run_time check (view == 3) else "view";
+    std::println(f"view {view}, camera view {c.view}, check {check(view)}, width {r.width}");
+}

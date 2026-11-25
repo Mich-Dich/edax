@@ -1,0 +1,27 @@
+// `using` becomes `compile_time type`; a new type with the same layout is a `distinct type`.
+import std;
+
+template<type T>
+struct vec2 {
+    T x = default;
+    T y = default;
+}
+
+compile_time type vec2i = vec2<i32>;       // an alias: the same type under another name
+compile_time type id = u16;
+
+distinct type meters = f32;                // a new type: nothing converts implicitly
+distinct type seconds = f32;
+
+meters walk(meters speed_per_s, seconds t) {
+    return cast<meters>(cast<f32>(speed_per_s) * cast<f32>(t));
+}
+
+i32 main() {
+    vec2i p = vec2i{ .x = 3, .y = -1 };     // an alias builds values like the type itself
+    id biggest = id::max;                   // and reaches its static members
+    meters d = walk(cast<meters>(1.5), cast<seconds>(4.0));
+    std::println(f"{p.x} {p.y} {biggest} {cast<f32>(d)}");
+    return 0;
+}
+//> 3 -1 65535 6.0

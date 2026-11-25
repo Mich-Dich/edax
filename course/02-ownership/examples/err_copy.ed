@@ -1,0 +1,10 @@
+// What a C++ copy turns into, and using a moved-from variable.
+import std;
+
+i32 main() {
+    std::string a = std::string::from("hi");
+    std::string b = a;                      //~ error[E5001]
+    std::string c = move a;
+    std::println(a);                        //~ error[E5002]
+    return 0;
+}

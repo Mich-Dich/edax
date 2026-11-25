@@ -1,0 +1,36 @@
+// RUN: edaxc run %s
+// A destructuring assignment to places that exist already: `(v.lo, v.hi) = f();` assigns the
+// tuple's elements left to right (moved, so std::string elements need no clone); `_` skips one.
+import std;
+
+struct range2 {
+    f64 lo = 0.0;
+    f64 hi = 0.0;
+    std::string name = default;
+}
+
+(f64, f64) split(f64 v) {
+    return (v - 1.0, v + 1.0);
+}
+
+(std::string, i32) named() {
+    return (std::string::from("seven"), 7);
+}
+
+void main() {
+    mut range2 r = default;
+    (r.lo, r.hi) = split(5.0);
+    std::println(f"lo {r.lo}, hi {r.hi}");
+    mut i32 n = 0;
+    (r.name, n) = named();
+    std::println(f"name {r.name}, n {n}");
+    mut std::array<i32, 2> pair = [0, 0];
+    mut i32 a = 1;
+    mut i32 b = 2;
+    (a, b) = (b, a);
+    (pair[0], pair[1]) = (a * 10, b * 10);
+    std::println(f"swapped {a} {b}, array {pair[0]} {pair[1]}");
+    // `_` skips an element.
+    (_, r.hi) = split(10.0);
+    std::println(f"hi only: {r.lo} {r.hi}");
+}

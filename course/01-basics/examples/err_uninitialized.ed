@@ -1,0 +1,7 @@
+// There are no uninitialized variables.
+import std;
+
+i32 main() {
+    u32 c;                    //~ error[E2010]
+    return 0;
+}

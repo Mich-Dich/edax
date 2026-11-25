@@ -6,9 +6,9 @@ error[E4210]: sort_by takes less(a, b) returning bool; a three-way comparison is
     |
  16 |     v.sort_by([](u32& a, u32& b) { return a <=> b; });
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
-   ::: <std>/std.ed:375:33
+   ::: <std>/std.ed:<n>
     |
-375 |             compile_time check (std::returns<F, bool>())
+<n> |             compile_time check (std::returns<F, bool>())
     |                                 -----------------------
     = note: the check of 'sort_by' is here
 

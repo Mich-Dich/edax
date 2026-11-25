@@ -4,6 +4,7 @@
 #include "edax/ast_printer.hpp"
 #include "edax/ast_clone.hpp"
 
+#include <type_traits>
 #include <algorithm>
 #include <utility>
 #include <deque>
@@ -227,7 +228,11 @@ public:
 private:
     // --- token access ---------------------------------------------------------------------
 
+    // Numbers the hidden names of destructuring assignments.
+    std::size_t hidden_names_ = 0;
     const Token& cur() const { return split_ ? split_token_ : tokens_[pos_]; }
+    // A contextual keyword: an identifier spelled `word` (`open`, `view`, `check`).
+    static bool is_word(const Token& t, std::string_view word) { return t.kind == TokenKind::identifier && t.text == word; }
     const Token& peek(std::size_t n) const {
         if (n == 0) {
             return cur();
@@ -303,6 +308,7 @@ private:
     }
 
     [[noreturn]] void fail_unexpected(std::string_view expected) {
+        if (speculating_ > 0) throw ParseError{};   // the message would be dropped
         fail(DiagCode::E2001, cur().span, std::format("expected {}, found {}", expected, describe(cur())),
              "unexpected here");
     }
@@ -409,15 +415,19 @@ private:
         pos_ = s.pos, split_ = s.split, split_token_ = s.split_token, prev_span_ = s.prev;
     }
 
-    // Runs `f` without reporting. On failure restores the position and returns false.
+    // Runs `f` without reporting. On failure (a ParseError, or `f` returning false) restores the
+    // position and returns false.
     template <typename F>
     bool speculate(F&& f) {
         SavedState saved = save();
         ++speculating_;
         try {
-            f();
+            bool ok = true;
+            if constexpr (std::is_same_v<std::invoke_result_t<F>, bool>) ok = f();
+            else f();
             --speculating_;
-            return true;
+            if (!ok) restore(saved);
+            return ok;
         } catch (const ParseError&) {
             --speculating_;
             restore(saved);
@@ -556,12 +566,17 @@ private:
                     continue;
                 }
                 if (cur().text == "open" && (peek(1).kind == TokenKind::kw_class || peek(1).kind == TokenKind::kw_struct ||
-                                             peek(1).kind == TokenKind::kw_view)) {
+                                             is_word(peek(1), "view"))) {
                     m.is_open = true;
                     break;
                 }
+                // `view` is a keyword only before `class` or `struct`, so a variable may be called
+                // `view` (spec 01, 10).
+                if (cur().text == "view" && (peek(1).kind == TokenKind::kw_class || peek(1).kind == TokenKind::kw_struct)) {
+                    m.is_view = true;
+                    break;
+                }
                 return finish_modifiers(m);
-            case TokenKind::kw_view: m.is_view = true; break;
             case TokenKind::kw_virtual: m.is_virtual = true; break;
             case TokenKind::kw_mut: m.is_mut = true; break;
             case TokenKind::kw_extern:
@@ -759,7 +774,6 @@ private:
 
     // `compile_time`, `run_time`, their mode lists, then `check`.
     bool at_check_start() {
-        if (at(TokenKind::kw_check)) return true;
         if (!at(TokenKind::kw_compile_time) && !at(TokenKind::kw_run_time)) return false;
         std::size_t i = 0;   // `compile_time (modes)? run_time (modes)? check`, without speculating
         for (TokenKind k : {TokenKind::kw_compile_time, TokenKind::kw_run_time}) {
@@ -771,7 +785,9 @@ private:
                 ++i;
             }
         }
-        return peek(i).kind == TokenKind::kw_check;
+        // `check` is a keyword only after `compile_time` or `run_time` (spec 23), so `check` can
+        // name a variable or a function.
+        return i > 0 && is_word(peek(i), "check");
     }
 
     std::vector<std::string> parse_mode_list(Span& span) {
@@ -798,7 +814,12 @@ private:
             c.is_run_time = true;
             if (at(TokenKind::l_paren)) c.run_modes = parse_mode_list(c.run_modes_span);
         }
-        Span word = expect(TokenKind::kw_check, "").span;
+        Span word = cur().span;
+        if (is_word(cur(), "check")) {
+            advance();
+        } else {
+            word = expect(TokenKind::identifier, "'check'").span;
+        }
         if (!c.is_compile_time && !c.is_run_time) {
             report(DiagCode::E2031, word, "a check says when it runs", "add 'compile_time' or 'run_time'")
                 .notes.push_back(Note{"write 'run_time check (...) else \"...\";' for an assert, or 'compile_time check' "
@@ -1786,9 +1807,7 @@ private:
             TypePtr type;
             bool    is_type = speculate([&] {
                 type = parse_type(opts);
-                if (!at(TokenKind::comma) && !at(TokenKind::greater) && !at(TokenKind::shr)) {
-                    throw ParseError{};
-                }
+                return at(TokenKind::comma) || at(TokenKind::greater) || at(TokenKind::shr);
             });
             if (is_type) {
                 arg.type = std::move(type);
@@ -1856,10 +1875,8 @@ private:
         }
         return lookahead([&] {
             parse_type({});
-            if (!at(TokenKind::identifier) && !at(TokenKind::kw_operator) &&
-                !(member && is_keyword(cur().kind) && peek_is_name_follower())) {
-                throw ParseError{};
-            }
+            return at(TokenKind::identifier) || at(TokenKind::kw_operator) ||
+                   (member && is_keyword(cur().kind) && peek_is_name_follower());
         });
     }
 
@@ -1883,11 +1900,9 @@ private:
                 break;
             }
         }
-        return lookahead([&] {
+        return lookahead([&] {   // not throwing for the common `std::f(...)` (exceptions are slow)
             parse_type({});
-            if (!at(TokenKind::identifier)) {
-                throw ParseError{};
-            }
+            return at(TokenKind::identifier);
         });
     }
 
@@ -1956,6 +1971,10 @@ private:
         case TokenKind::l_paren:
             if (looks_like_destructure()) {
                 block.statements.push_back(parse_destructure(start, /*is_auto=*/false));
+                return;
+            }
+            if (looks_like_tuple_assignment()) {
+                parse_tuple_assignment(block, start);
                 return;
             }
             if (looks_like_declaration()) {
@@ -2091,11 +2110,76 @@ private:
                 if (accept(TokenKind::underscore)) continue;
                 accept(TokenKind::kw_mut);
                 parse_type({});
-                if (!at(TokenKind::identifier)) throw ParseError{};
+                if (!at(TokenKind::identifier)) return false;
                 advance();
             } while (accept(TokenKind::comma));
-            if (!accept(TokenKind::r_paren) || !at(TokenKind::eq)) throw ParseError{};
+            return accept(TokenKind::r_paren) && at(TokenKind::eq);
         });
+    }
+
+    // `(x, y) = ...` ahead: parentheses whose match is followed by `=` (not a declaration).
+    bool looks_like_tuple_assignment() {
+        if (!at(TokenKind::l_paren)) return false;
+        return lookahead([&] {
+            int depth = 0;
+            bool comma = false;
+            do {
+                TokenKind k = cur().kind;
+                if (k == TokenKind::eof) return false;
+                if (k == TokenKind::l_paren || k == TokenKind::l_bracket || k == TokenKind::l_brace) ++depth;
+                if (k == TokenKind::r_paren || k == TokenKind::r_bracket || k == TokenKind::r_brace) --depth;
+                if (k == TokenKind::comma && depth == 1) comma = true;
+                advance();
+            } while (depth > 0);
+            return comma && at(TokenKind::eq);
+        });
+    }
+
+    // `(v.lo, _, v.hi) = split(x);`: a destructuring assignment to places that exist. It is the
+    // declaration `auto (t0, _, t2) = split(x);` of hidden names, then one assignment per place
+    // (`v.lo = move t0;`), left to right; `_` skips an element.
+    void parse_tuple_assignment(BlockExpr& block, Span start) {
+        Span open = advance().span;   // (
+        std::vector<ExprPtr> targets;
+        do {
+            if (accept(TokenKind::underscore)) {
+                targets.push_back(nullptr);
+            } else {
+                targets.push_back(parse_expr());
+            }
+        } while (accept(TokenKind::comma));
+        expect_close(TokenKind::r_paren, open);
+        expect(TokenKind::eq, "after the places (destructuring takes a value)");
+        ExprPtr value = parse_expr();
+        expect(TokenKind::semicolon, "after the assignment");
+        auto d     = std::make_unique<DestructureStmt>(from(start));
+        d->is_auto = true;
+        std::size_t serial = hidden_names_++;
+        std::vector<std::pair<std::size_t, std::string>> names;
+        for (std::size_t i = 0; i < targets.size(); ++i) {
+            DestructureBinding b;
+            b.span = targets[i] ? targets[i]->span : from(open);
+            if (!targets[i]) {
+                b.wildcard = true;
+            } else {
+                b.name = std::format("__assigned{}_{}", serial, i);
+                names.emplace_back(i, b.name);
+            }
+            d->bindings.push_back(std::move(b));
+        }
+        d->init = std::move(value);
+        block.statements.push_back(std::move(d));
+        for (auto& [i, name] : names) {
+            Span        at = targets[i]->span;
+            PathSegment segment;
+            segment.name = name;
+            segment.span = at;
+            Path path;
+            path.span = at;
+            path.segments.push_back(std::move(segment));
+            ExprPtr read = std::make_unique<UnaryExpr>(at, UnaryOp::move, std::make_unique<PathExpr>(at, std::move(path)));
+            block.statements.push_back(std::make_unique<AssignStmt>(at, TokenKind::eq, std::move(targets[i]), std::move(read)));
+        }
     }
 
     // `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`.

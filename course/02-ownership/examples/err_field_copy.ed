@@ -1,0 +1,18 @@
+// Returning a field by value would copy it, and owning types are never copied implicitly.
+import std;
+
+struct item {
+    std::string name;
+    u32 weight = 0;
+}
+
+class bag {
+public:
+    std::darray<item> empty_out() mut { return items; }      //~ error[E5001]
+private:
+    std::darray<item> items = default;
+}
+
+i32 main() {
+    return 0;
+}

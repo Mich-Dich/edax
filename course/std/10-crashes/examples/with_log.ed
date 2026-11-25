@@ -1,0 +1,16 @@
+// With a log session, a panic is logged as a fatal record and the log is flushed before the end.
+import std;
+
+i32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make_with(std::log::colors::off), std::log::sink_options{ .pattern = std::log::pattern::from("{level:<5} {message}") });
+    for (u32 i : 1..=3) { std::log::info(f"frame {i}"); }   // queued, not yet written...
+    std::array<u32, 3> xs = [1, 2, 3];
+    usize at = xs.len();
+    std::println(f"{xs[at]}");                               // ...but written before the process ends
+    return 0;
+}
+//> INFO  frame 1
+//> INFO  frame 2
+//> INFO  frame 3
+//! panic: index 3 out of bounds (length 3)

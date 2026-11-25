@@ -1,0 +1,15 @@
+// Where references can't go.
+import std;
+
+struct holder {
+    u32& value;                                       //~ error[E5010]
+}
+
+std::str longer(std::str a, std::str b) {            //~ error[E5012]
+    if (a.len() >= b.len()) { return a; }
+    return b;
+}
+
+i32 main() {
+    return 0;
+}

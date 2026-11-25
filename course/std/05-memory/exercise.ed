@@ -1,0 +1,75 @@
+// Standard-library lesson 5: a texture cache and a frame arena. Fill in the TODOs until
+//     python3 course/check.py s5
+// says done. It builds as it is and prints wrong values.
+import std;
+
+// A loaded texture. Expensive: shared between users, freed when the last user is gone.
+class texture {
+public:
+    std::string name;
+    u32 size = 0;
+    ~texture() { std::println(f"freed {name}"); }
+}
+
+// Remembers loaded textures without keeping them alive.
+class cache {
+public:
+    // The texture called `name`: the cached one while someone still uses it, else a newly loaded one.
+    std::shared_ptr<texture> get(std::str name) mut {
+        // TODO: look the name up in `names`. Known and still alive (entries[i].lock() gives
+        // some): count a hit and return it. Known but expired: load it again and remember the new
+        // one (a weak pointer: fresh.weak()). Unknown: load it and add the name and a weak pointer.
+        return load(name);
+    }
+
+    u32 hit_count() { return hits; }
+    u32 load_count() { return loads; }
+
+private:
+    std::shared_ptr<texture> load(std::str name) mut {
+        loads += 1;
+        return std::shared_ptr<texture>::make(texture{ .name = std::string::from(name), .size = cast::truncate<u32>(name.len()) * 1024 });
+    }
+
+    std::darray<std::string> names = default;
+    std::darray<std::weak_ptr<texture>> entries = default;
+    u32 hits = 0;
+    u32 loads = 0;
+}
+
+// One sprite to draw: which texture, and where.
+struct sprite {
+    std::shared_ptr<texture> image;
+    f32 x = 0.0;
+}
+
+// Sums the sizes of the sprites' textures, counting each texture once, with scratch memory from `frame`.
+u32 unique_bytes(std::span<sprite> sprites, mut std::arena& frame) {
+    // TODO: a darray of the names seen so far, with its memory from `frame`
+    // (std::darray<std::str, std::arena_allocator>::with_allocator(frame.allocator())); add each
+    // texture's size the first time its name comes up.
+    mut u32 total = 0;
+    return total;
+}
+
+i32 main() {
+    mut cache textures = default;
+    mut std::arena frame = std::arena::make(4096);
+    {
+        mut std::darray<sprite> sprites = default;
+        sprites.push(sprite{ .image = textures.get("grass"), .x = 0.0 });
+        sprites.push(sprite{ .image = textures.get("rock"), .x = 1.0 });
+        sprites.push(sprite{ .image = textures.get("grass"), .x = 2.0 });
+        std::println(f"grass has {sprites[0].image.owners()} owners");
+        std::println(f"frame 1: {unique_bytes(sprites.as_span(), mut frame)} bytes");
+        frame.reset();
+        sprites.push(sprite{ .image = textures.get("hero"), .x = 5.0 });
+        _ = sprites.remove(1);                                  // the rock's only user is gone
+        std::println(f"frame 2: {unique_bytes(sprites.as_span(), mut frame)} bytes");
+        frame.reset();
+    }
+    std::println(f"loads {textures.load_count()}, hits {textures.hit_count()}");
+    std::shared_ptr<texture> again = textures.get("rock");
+    std::println(f"loads {textures.load_count()}, hits {textures.hit_count()}");
+    return 0;
+}

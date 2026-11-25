@@ -1,0 +1,26 @@
+exit: 1
+--- stdout
+--- stderr
+error[E3013]: 'twice' is declared again in the .ed, without a body
+ --> tests/feature/09-modules/redeclared_project/lib.ed:2:9
+  |
+2 |     u32 twice(u32 x);                  //~ error[E3013]: declared again in the .ed
+  |         ^^^^^ add '{ ... }'
+ ::: tests/feature/09-modules/redeclared_project/lib.edh:3:9
+  |
+3 |     u32 twice(u32 x);
+  |         -----
+  = note: the .edh declares it; the .ed only gives it a body
+
+error[E3013]: 'box::size' is declared again in the .ed, without a body
+ --> tests/feature/09-modules/redeclared_project/lib.ed:6:13
+  |
+6 |         u32 size();                    //~ error[E3013]: declared again in the .ed
+  |             ^^^^ add '{ ... }'
+ ::: tests/feature/09-modules/redeclared_project/lib.edh:7:13
+  |
+7 |         u32 size();
+  |             ----
+  = note: the .edh declares it; the .ed only gives it a body
+
+2 errors, 0 warnings

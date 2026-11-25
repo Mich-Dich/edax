@@ -1,0 +1,54 @@
+// Standard-library lesson 3: a warehouse index. Fill in the TODOs until
+//     python3 course/check.py s3
+// says done. It doesn't build until `location` can be a hash_map key.
+import std;
+
+// Where an item is stored.
+// TODO: a std::hash_map key needs a hash() and ==. It has ==; generate the hash from the fields.
+struct location {
+    u8 aisle = 0;
+    u8 shelf = 0;
+    bool operator==(location& other) = default;
+}
+
+// One delivery: an item, its category, how many, and where it went.
+struct delivery {
+    std::static_str item;
+    std::static_str category;
+    u32 count = 0;
+    location at;
+}
+
+compile_time std::array<delivery, 7> deliveries = [
+    delivery{ .item = "bolt", .category = "hardware", .count = 200, .at = location{ .aisle = 1, .shelf = 1 } },
+    delivery{ .item = "nut", .category = "hardware", .count = 150, .at = location{ .aisle = 1, .shelf = 2 } },
+    delivery{ .item = "glue", .category = "chemicals", .count = 12, .at = location{ .aisle = 3, .shelf = 1 } },
+    delivery{ .item = "bolt", .category = "hardware", .count = 50, .at = location{ .aisle = 1, .shelf = 1 } },
+    delivery{ .item = "paint", .category = "chemicals", .count = 30, .at = location{ .aisle = 3, .shelf = 2 } },
+    delivery{ .item = "tape", .category = "office", .count = 40, .at = location{ .aisle = 2, .shelf = 1 } },
+    delivery{ .item = "nut", .category = "hardware", .count = 25, .at = location{ .aisle = 1, .shelf = 3 } },
+];
+
+i32 main() {
+    mut std::hash_map<std::str, u32> totals = default;                         // item -> count
+    mut std::tree_map<std::str, std::darray<std::str>> by_category = default;   // sorted categories
+    mut std::hash_map<location, std::str> shelves = default;                    // where -> item
+
+    for (delivery& d : deliveries) {
+        // TODO: add the count to the item's total; on the item's first delivery, add the item to
+        // its category's list; record the item in `shelves` at its location, and print
+        // "shelf <aisle>/<shelf> already held <item>" when insert replaced something.
+    }
+
+    // TODO: one line per item, the largest total first (equal totals by name): "{key:<6} {value:>4}".
+    // A hash_map has no order: collect its entries in a darray and sort that.
+
+    // TODO: one line per category, in name order: "<category>: <n> items".
+
+    std::println(f"at 1/2: {shelves.get(location{ .aisle = 1, .shelf = 2 }).value_or("nothing")}");
+    std::println(f"at 9/9: {shelves.get(location{ .aisle = 9, .shelf = 9 }).value_or("nothing")}");
+    // TODO: remove glue from `totals`; remove gives back the value it removed.
+    u32 sold = 0;
+    std::println(f"sold all {sold} glue, {totals.len()} items left");
+    return 0;
+}

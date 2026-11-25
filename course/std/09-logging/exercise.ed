@@ -1,0 +1,50 @@
+// Standard-library lesson 9: logging an asset import. Fill in the TODOs until
+//     python3 course/check.py s9
+// says done. It builds as it is and prints wrong values.
+import std;
+
+struct asset {
+    std::static_str name;
+    u32 bytes = 0;
+}
+
+compile_time std::array<asset, 5> assets = [
+    asset{ .name = "rock.png", .bytes = 2048 },
+    asset{ .name = "tree.png", .bytes = 0 },
+    asset{ .name = "theme.ogg", .bytes = 90000 },
+    asset{ .name = "level1.map", .bytes = 512 },
+    asset{ .name = "huge.png", .bytes = 70000000 },
+];
+
+// The console shows the level and the message; the problems panel only the message.
+private compile_time std::log::pattern console_pattern = std::log::pattern::from("{level:<5} {message}");
+private compile_time std::log::pattern panel_pattern = std::log::pattern::from("{function_name}: {message}");
+
+// Imports one asset; false when it can't be used.
+// TODO: remove this function's debug lines at compile time (@std::log::level_override).
+bool import_asset(asset& a) {
+    std::log::debug(f"checking {a.name}");
+    // TODO: an empty asset is an error (std::log::validate ... else) and can't be used; one larger
+    // than 64 MiB is imported with a warning "<name> is <n> MiB, importing anyway".
+    return true;
+}
+
+i32 main() {
+    std::log::history problems = std::log::history::make(10);
+    mut u32 imported = 0;
+    {
+        mut std::log::session logs = std::log::start(std::log::options{});
+        // TODO: two sinks: the console (no colors) from `info` with console_pattern, and a memory
+        // sink into `problems` from `warn` with panel_pattern.
+        std::log::info(f"importing {assets.len()} assets");
+        // TODO: a status line "importing [i/n] <name>" per asset, finished with
+        // "imported <k> of <n> assets".
+        for (usize i : 0..assets.len()) {
+            if (import_asset(assets[i])) { imported += 1; }
+        }
+        logs.flush();
+    }
+    std::println(f"problems panel ({problems.snapshot().len()}):");
+    for (std::string& line : problems.snapshot()) { std::println(f"  {line}"); }
+    return 0;
+}

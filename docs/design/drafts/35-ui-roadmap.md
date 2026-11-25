@@ -114,6 +114,11 @@ Can start right after M2, beside M3.
 
 **Done when:** the editor's frame-time plot and console work as in the mockup; a series of 1 000 000 points draws in under 1 ms (decimation measured in `bench/`).
 
+**Status (2026-11-25):** done, see `docs/compiler/ui-status.md` and [Plots and debug tools](../stdlib/ui/plots.md).
+- The frame-time plot, the console (`log_view`) and `perf_overlay` are in `example/ui_plots`.
+- Reducing a million points takes 1.4 ms (`bench/plot_decimate`; the same algorithm in C++ takes 4.4 ms). Getting under 1 ms needs SIMD in the column scan, which belongs to M8.
+- Left for later: time axes and `texture_viewer`.
+
 ### M5: Docking (L)
 - `dock::layout` as data (`split_x`, `split_y`, `tabs`, `central`, `floating`), `to_text`/`from_text`, built in code.
 - `f.dockspace`, `space.window(name)`, `space.document(name)`; tab bars, splits with dividers, closing and reopening in the last place.
@@ -124,7 +129,17 @@ Can start right after M2, beside M3.
 
 **Done when:** `example/editor` has the mockup's layout, saved and restored between runs; replay tests drag every window into every drop target.
 
+**Status (2026-11-25):** done, see `docs/compiler/ui-status.md` and [Docking](../stdlib/ui/docking.md).
+- `example/editor` is docked and keeps its layout in `editor.layout`.
+- `action/run/std_ui_dock` drops each of 6 windows onto every target: 180 drops, and the layout stays consistent after each one.
+- Open question 1 is decided for docked windows: names are their ids.
+- Not done: the menu bar (M7), Shift to float, tab overflow and pinning, and compile-time layouts.
+
 ### M6: Node editor (L)
+**Status (2026-11-25):** done, see `docs/compiler/ui-status.md` and [Node editor](../stdlib/ui/nodes.md).
+- §13.1 with styles (five presets, subway links in 8 directions), links in box selections, collapsing, reroute points, arranging and inline pin widgets.
+- §13.2: `nodes::graph<K>` and `graph_editor`; the material graph of `example/editor` can be built from an empty canvas with the mouse and keyboard, saved, reloaded and compiled; a cycle is reported with the node's id.
+- Not done: subgraphs, find node, `nodes::custom_body`, `evaluate()`; open question 11 stays open (the graph is plain data, so both answers work).
 - `nodes::editor` (§13.1): canvas (pan, zoom, grid), nodes with `im::scope` bodies, pins, links, selection, `nodes::edits`, comment frames, reroutes, minimap.
 - `nodes::graph<K>` (§13.2): kinds from an enum, pins from `@nodes::in/out`, parameters with `inspect` and forms, type checks with `nodes::converts`, the add-node menu (filtered while dragging a link), copy/paste as text, undo, saving, `topological_order()`.
 - Decide open question 11 (graph evaluation: interpreter interface only, or also a build step).

@@ -50,6 +50,7 @@ namespace build {
         // std::ui's core (milestone M1): themes, text, shapes and images through one draw list.
         g.add_executable(std::build::edax_target{ .name = "ui_gallery", .root = "ui_gallery/main.ed" });
         g.add_executable(std::build::edax_target{ .name = "ui_widgets", .root = "ui_widgets/main.ed" });
+        g.add_executable(std::build::edax_target{ .name = "ui_plots", .root = "ui_plots/main.ed" });
         g.add_executable(std::build::edax_target{ .name = "editor", .root = "editor/main.ed" });
 
         // ffi links a C library built from native/stats.c, and libm.

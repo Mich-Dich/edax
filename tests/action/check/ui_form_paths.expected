@@ -6,9 +6,9 @@ error[E4210]: 'player' has no field 'move.sped'; did you mean 'speed'?
      |
   13 |     ui::form<player> a = ui::form<player>::annotated().range("move.sped", 0.0, 1.0);
      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1592:17
+    ::: <std>/ui.ed:<n>
      |
-1592 |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'; did you mean '{near}'?");
+ <n> |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'; did you mean '{near}'?");
      |                 --------------------------------------------------------------------------------------------
      = note: inside the library, in 'range'
 
@@ -17,9 +17,9 @@ error[E4210]: a range needs a number field; 'name' is a text field of 'player'
      |
   14 |     ui::form<player> b = ui::form<player>::annotated().range("name", 0.0, 1.0);
      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1597:13
+    ::: <std>/ui.ed:<n>
      |
-1597 |             std::compile_error(f"{what} needs a {class_word(wanted)} field; '{path}' is a {class_word(found)} field of '{std::type_name<T>()}'");
+ <n> |             std::compile_error(f"{what} needs a {class_word(wanted)} field; '{path}' is a {class_word(found)} field of '{std::type_name<T>()}'");
      |             ------------------------------------------------------------------------------------------------------------------------------------
      = note: inside the library, in 'range'
 
@@ -28,9 +28,9 @@ error[E4210]: a text rule needs a text field; 'level' is a number field of 'play
      |
   15 |     ui::form<player> c = ui::form<player>::annotated().rule("level", ui::rules::min_length(3));
      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1597:13
+    ::: <std>/ui.ed:<n>
      |
-1597 |             std::compile_error(f"{what} needs a {class_word(wanted)} field; '{path}' is a {class_word(found)} field of '{std::type_name<T>()}'");
+ <n> |             std::compile_error(f"{what} needs a {class_word(wanted)} field; '{path}' is a {class_word(found)} field of '{std::type_name<T>()}'");
      |             ------------------------------------------------------------------------------------------------------------------------------------
      = note: inside the library, in 'rule'
 
@@ -39,9 +39,9 @@ error[E4210]: 'player' has no field 'level.value'
      |
   16 |     ui::form<player> d = ui::form<player>::annotated().hide("level.value");
      |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1590:17
+    ::: <std>/ui.ed:<n>
      |
-1590 |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'");
+ <n> |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'");
      |                 --------------------------------------------------------------------
      = note: inside the library, in 'hide'
 
@@ -50,9 +50,9 @@ error[E4210]: 'player' has no field 'nmae'; did you mean 'name'?
      |
   17 |     _ = w.field(mut p, "nmae");
      |         ^^^^^^^^^^^^^^^^^^^^^^ check failed
-    ::: <std>/ui.ed:1592:17
+    ::: <std>/ui.ed:<n>
      |
-1592 |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'; did you mean '{near}'?");
+ <n> |                 std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'; did you mean '{near}'?");
      |                 --------------------------------------------------------------------------------------------
      = note: inside the library, in 'field'
 

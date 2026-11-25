@@ -1,0 +1,18 @@
+// Maps own their values: darrays as values, filled through get_or_insert.
+import std;
+
+i32 main() {
+    std::array<std::static_str, 6> words = ["apple", "avocado", "banana", "blueberry", "cherry", "apricot"];
+    mut std::tree_map<std::str, std::darray<std::static_str>> by_letter = default;
+    for (std::static_str w : words) {
+        std::str first = w.slice(0, 1);                    // the first letter, as text
+        by_letter.get_or_insert(first, default).push(w);   // a mut darray& in the map
+    }
+    for (std::map_entry<std::str, std::darray<std::static_str>> e : by_letter.entries()) {
+        std::println(f"{e.key}: {e.value.len()} words, first {e.value[0]}");
+    }
+    return 0;
+}
+//> a: 3 words, first apple
+//> b: 2 words, first banana
+//> c: 1 words, first cherry

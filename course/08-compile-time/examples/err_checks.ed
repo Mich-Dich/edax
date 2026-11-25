@@ -1,0 +1,18 @@
+// Entry checks with known arguments fail the build, at the caller's line, with your message.
+import std;
+
+u8 percent_to_byte(u32 percent) {
+    compile_time run_time check (percent <= 100) else f"{percent}% is more than 100%";
+    return cast::truncate<u8>(percent * 255 / 100);
+}
+
+u32 mask(compile_time u32 bits) {
+    compile_time check (bits >= 1 && bits <= 32) else f"mask({bits}): bits must be 1 to 32";
+    if compile_time (bits == 32) { return u32::max; } else { return bit<u32>(bits) - 1; }
+}
+
+i32 main() {
+    u8 b = percent_to_byte(150);                        //~ error[E4210]
+    u32 m = mask(33);                                   //~ error[E4210]
+    return 0;
+}

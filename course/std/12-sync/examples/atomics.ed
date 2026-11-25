@@ -1,0 +1,34 @@
+// Atomics: always lock-free, every operation names its memory order.
+import std;
+
+private static std::atomic<u64> next_id = default;        // a shared counter: static, no `mut` needed
+
+u64 new_id() { return next_id.fetch_wrapping_add(1, std::memory_order::relaxed); }
+
+// The maximum of all values ever offered: a compare-exchange loop.
+void offer_max(std::atomic<u32>& best, u32 v) {
+    mut u32 current = best.load(std::memory_order::relaxed);
+    while (v > current) {
+        match (best.compare_exchange_weak(current, v, std::memory_order::relaxed, std::memory_order::relaxed)) {
+            std::ok(_) => { return; },
+            std::error(actual) => { current = actual; },      // someone else won: retry with their value
+        }
+    }
+}
+
+i32 main() {
+    std::atomic<u32> best = default;
+    {
+        std::thread::scoped_handle<void> a = std::thread::spawn([&best]() { for (u32 i : 0..1000) { offer_max(best, i * 3 % 997); } });
+        std::thread::scoped_handle<void> b = std::thread::spawn([&best]() { for (u32 i : 0..1000) { offer_max(best, i * 7 % 991); } });
+        a.join();
+        b.join();
+    }
+    u64 first = new_id();
+    u64 second = new_id();
+    std::println(f"best {best.load(std::memory_order::acquire)}, ids {first} {second}");
+    std::println(f"swapped out {best.exchange(0, std::memory_order::acquire_release)}");
+    return 0;
+}
+//> best 996, ids 0 1
+//> swapped out 996

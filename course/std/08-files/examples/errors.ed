@@ -1,0 +1,25 @@
+// I/O fails with a std::io_error value: a simple enum you can match and print.
+import std;
+namespace fs = std::filesystem;
+
+std::result<usize, std::io_error> count_bytes(fs::path& p) {
+    mut std::file f = std::file::open(p)?;
+    std::string all = f.read_all()?;
+    return std::ok(all.len());
+}
+
+i32 main() {
+    fs::path missing = fs::executable_dir() / "no-such-file.txt";
+    match (count_bytes(missing)) {
+        std::ok(n) => std::println(f"{n} bytes"),
+        std::error(e) => std::println(f"error: {e}"),
+    }
+    match (count_bytes(fs::executable_dir())) {              // a directory, not a file
+        std::ok(n) => std::println(f"{n} bytes"),
+        std::error(std::io_error::is_directory) => std::println("that's a directory"),
+        std::error(e) => std::println(f"other error: {e}"),
+    }
+    return 0;
+}
+//> error: not_found
+//> that's a directory

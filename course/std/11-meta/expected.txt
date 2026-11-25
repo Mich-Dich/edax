@@ -1,0 +1,11 @@
+resolution_width = 1280
+resolution_height = 720
+gamma = 2.2
+vsync = true
+shadows = medium
+2 lines unused
+resolution_width = 2560
+resolution_height = 720
+gamma = 1.8
+vsync = false
+shadows = high

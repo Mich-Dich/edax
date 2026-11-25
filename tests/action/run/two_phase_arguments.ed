@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// A value argument is copied before the call starts, so it may read what the call's mutable
+// reference (the receiver or a `mut` argument) also reaches: `c.slot(c.hits)`.
+import std;
+
+struct counter {
+    u64 hits = 0;
+    std::darray<u64> seen = default;
+
+    mut u64& slot(u64 key) mut {
+        this.seen.push(key);
+        return this.hits;
+    }
+}
+
+void bump(mut counter& c, u64 by) {
+    c.hits += by;
+}
+
+void main() {
+    mut counter c = default;
+    c.hits = 41;
+    c.slot(c.hits) += 1;
+    bump(mut c, c.hits);
+    std::println(f"hits {c.hits}, seen {c.seen[0]}");
+}

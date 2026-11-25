@@ -1,0 +1,21 @@
+// An f-string is a std::format_args: a view of its holes, formatted where it is used.
+import std;
+
+// Formats `message` only when `enabled` is true: the holes of a skipped message never run.
+void maybe(bool enabled, std::format_args message) {
+    if (enabled) { std::println(move message); }
+}
+
+u32 expensive(std::str what) {
+    std::println(f"  (computing {what})");
+    return 7;
+}
+
+i32 main() {
+    maybe(true, f"shown: {expensive("a")}");
+    maybe(false, f"hidden: {expensive("b")}");          // expensive("b") never runs
+    std::eprintln("this goes to stderr");
+    return 0;
+}
+//>   (computing a)
+//> shown: 7

@@ -1,0 +1,72 @@
+// Standard-library lesson 4: an invoice from a text order (solution).
+import std;
+
+// An amount of money in cents; prints as "12.30".
+struct money {
+    i64 cents = 0;
+
+    void format(mut std::formatter& out) {
+        std::static_str pad = if (cents % 100 < 10) { "0" } else { "" };
+        out.write(std::format(f"{cents / 100}.{pad}{cents % 100}"));
+    }
+}
+
+// One line of the order: "<quantity> x <name> @ <price>", the price with two decimals.
+view struct line {
+    std::str name;
+    u32 quantity = 0;
+    money price;
+}
+
+// Reads "12.30" as 1230 cents.
+std::option<money> parse_money(std::str text) {
+    std::darray<std::str> parts = text.split('.');
+    if (parts.len() != 2 || parts[1].len() != 2) { return std::none; }
+    i64 whole = parts[0].parse<i64>()?;
+    i64 cents = parts[1].parse<i64>()?;
+    return std::some(money{ .cents = whole * 100 + cents });
+}
+
+std::option<line> parse_line(std::str text) {
+    std::str t = text.trim();
+    usize x = t.find(" x ")?;
+    usize at = t.find(" @ ")?;
+    u32 quantity = t.slice(0, x).trim().parse<u32>()?;
+    std::str name = t.slice(x + 3, at).trim();
+    money price = parse_money(t.slice(at + 3, t.len()).trim())?;
+    return std::some(line{ .name = name, .quantity = quantity, .price = price });
+}
+
+compile_time std::static_str order = "2 x coffee @ 3.50\n1 x croissant @ 2.05\nthree x tea @ 2.00\n4 x water @ 1.00\n";
+
+i32 main() {
+    mut std::darray<line> lines = default;
+    mut u32 rejected = 0;
+    for (std::str text : order.split('\n')) {
+        if (text.trim().is_empty()) { continue; }
+        match (parse_line(text)) {
+            std::some(l) => lines.push(l),
+            std::none => {
+                rejected += 1;
+                std::eprintln(f"rejected: {text}");
+            },
+        }
+    }
+
+    std::println(f"{"item":<10} {"qty":>3} {"price":>7} {"total":>8}");
+    mut money sum = money{};
+    for (line& l : lines) {
+        money total = money{ .cents = l.price.cents * cast<i64>(l.quantity) };
+        sum.cents += total.cents;
+        std::println(f"{l.name:<10} {l.quantity:>3} {l.price:>7} {total:>8}");
+    }
+    std::println("-------------------------------");
+    std::println(f"{"sum":<22} {sum:>8}");
+
+    mut std::string summary = std::string::with_capacity(64);
+    summary.push_str(std::format(f"{lines.len()} lines"));
+    if (rejected > 0) { summary.push_str(std::format(f", {rejected} rejected")); }
+    summary.push('.');
+    std::println(summary);
+    return 0;
+}

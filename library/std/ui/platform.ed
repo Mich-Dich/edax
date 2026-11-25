@@ -8,6 +8,14 @@ namespace std::ui {
             .mouse_down = state.mouse_down(std::windowing::mouse_button::left),
             .mouse_pressed = state.mouse_pressed(std::windowing::mouse_button::left),
             .mouse_released = state.mouse_released(std::windowing::mouse_button::left),
+            .right_down = state.mouse_down(std::windowing::mouse_button::right),
+            .right_pressed = state.mouse_pressed(std::windowing::mouse_button::right),
+            .right_released = state.mouse_released(std::windowing::mouse_button::right),
+            .middle_down = state.mouse_down(std::windowing::mouse_button::middle),
+            .middle_pressed = state.mouse_pressed(std::windowing::mouse_button::middle),
+            .shift = state.modifiers().shift,
+            .control = state.modifiers().control,
+            .alt = state.modifiers().alt,
             .scroll = cast::round<f32>(state.scroll().y),
             .dt = dt,
         };
@@ -55,6 +63,8 @@ namespace std::ui {
             std::windowing::key::x            => std::some(key::x),
             std::windowing::key::y            => std::some(key::y),
             std::windowing::key::z            => std::some(key::z),
+            std::windowing::key::d            => std::some(key::d),
+            std::windowing::key::f            => std::some(key::f),
             _                                 => std::none,
         };
     }

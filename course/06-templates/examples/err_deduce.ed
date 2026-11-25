@@ -1,0 +1,12 @@
+// An untyped literal never decides what T is.
+import std;
+
+template<type T : std::comparable>
+T larger(T a, T b) {
+    return if (a < b) { b } else { a };
+}
+
+i32 main() {
+    u32 x = larger(3, 4);                      //~ error[E4160]
+    return 0;
+}

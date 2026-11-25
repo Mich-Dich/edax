@@ -1,0 +1,16 @@
+// Arithmetic is checked in every build mode. This program stops with a panic.
+import std;
+
+i32 main() {
+    u8 level = 200;
+    u8 wrapped = level +% 100;                       // wrapping, because you asked for it
+    std::println(f"wrapped {wrapped}");
+    std::option<u8> sum = std::checked_add(level, 100u8);
+    std::println(f"checked: {sum.is_some()}, saturated {std::saturating_add(level, 100u8)}");
+    u8 boom = level + 100;                           // checked: this line panics
+    std::println(f"never printed {boom}");
+    return 0;
+}
+//> wrapped 44
+//> checked: false, saturated 255
+//! panic: integer overflow

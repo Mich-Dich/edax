@@ -1,0 +1,271 @@
+// The Edax standard library: module std::ui::plot, charts in immediate-mode UIs (draft 35 §8).
+//
+//     namespace plot = std::ui::plot;
+//
+//     mut plot::history<f32, 600> cpu_ms = default;        // the last 600 values
+//     cpu_ms.push(frame_ms);
+//     {
+//         mut plot::scope p = w.plot("Frame time", 160.0);
+//         p.axis_y(plot::axis{ .label = "ms", .min = std::some(0.0), .max = std::some(33.3) });
+//         p.line("cpu", cpu_ms.as_span());
+//         p.hline("60 fps", 16.7, w.theme().colors.warning);
+//     }                                                     // drawn here
+//
+// A plot collects its series and draws them at its `}`, when the ranges of all of them are known.
+// Series are read in place and reduced to at most four points per pixel column (the first, the
+// lowest, the highest and the last), so a million points cost what a few thousand cost and no peak
+// is lost. Drag to pan, turn the wheel to zoom around the cursor (with Shift: only x), double-click
+// to fit the data again; a click on a legend entry hides or shows its series. Hovering shows the
+// value of every series at the cursor's x.
+//
+// Loaded for programs that name std::ui::plot (or std::ui::debug, which uses it).
+
+namespace std::ui::plot {
+    // ---- data ------------------------------------------------------------------------------------------
+
+    // The last `N` values pushed, oldest first: frame times, sensor readings. as_span() views
+    // them in order without copying (the values are stored twice, so the view is contiguous).
+    template<type T, usize N>
+    struct history {
+        // Every value is at i and at i + N.
+        std::array<T, N * 2> values = default;
+        // Where the oldest value is, and how many there are (at most N).
+        usize start = 0;
+        usize count = 0;
+
+        void push(T value) mut;
+        void clear() mut;
+        usize len();
+        bool is_empty();
+        // The values, oldest first.
+        std::span<T> as_span();
+        // The newest value; panics when empty.
+        T last();
+        // The smallest, largest and mean value; 0 when empty.
+        f64 min();
+        f64 max();
+        f64 mean();
+    }
+
+    // ---- reflection (draft 35 §8.2) --------------------------------------------------------------------
+
+    // The field that is the x value of p.series(); without one, the index is.
+    annotation(std::meta::target::field)
+    struct x { }
+
+    // A field p.series() draws as a line; `unit` labels the y axis.
+    annotation(std::meta::target::field)
+    struct series {
+        std::static_str unit = "";
+    }
+
+    // ---- axes ------------------------------------------------------------------------------------------
+
+    // The scale of an axis. Logarithmic works on the y axis: powers of ten are evenly spaced and
+    // values <= 0 are left out (gaps in lines).
+    enum scale : u8 {
+        linear,
+        logarithmic,
+    }
+
+    // How an axis looks and where it may go.
+    // - `min` and `max` fix the range that fitting returns to (double-click, the reset button);
+    //   unset, the range fits the data.
+    // - `limit_min` and `limit_max` are hard limits: panning and zooming stop there, and fitting
+    //   stays inside. Only positive x: `.limit_min = std::some(0.0)`; only negative y:
+    //   `.limit_max = std::some(0.0)`; a fixed window: both.
+    view struct axis {
+        std::str          label = "";
+        std::option<f64>  min = std::none;
+        std::option<f64>  max = std::none;
+        std::option<f64>  limit_min = std::none;
+        std::option<f64>  limit_max = std::none;
+        scale             kind = scale::linear;
+    }
+
+    // Tick positions for a range: about `target` readable values (1, 2 or 5 times a power of ten
+    // apart), and how many decimals their labels need.
+    struct ticks {
+        f64   first = 0.0;
+        f64   step = 1.0;
+        u32   count = 0;
+        u32   decimals = 0;
+
+        static ticks for_range(f64 low, f64 high, u32 target);
+        f64 at(u32 i);
+        // The label of the i-th tick.
+        std::string label(u32 i);
+    }
+
+    // `value` with `decimals` decimals; large and tiny values in powers of ten ("1.5e6").
+    std::string format_number(f64 value, u32 decimals);
+
+    // ---- what a series becomes --------------------------------------------------------------------------
+
+    enum kind : u8 {
+        line,
+        area,
+        scatter,
+        bars,
+        hline,
+        vline,
+    }
+
+    // One entry of a plot, in this frame. Its points are in the plot's storage, (x, y) pairs from
+    // `first` (an index of a pair) on.
+    struct entry {
+        kind      what = kind::line;
+        u32       name_from = 0;
+        u32       name_to = 0;
+        u32       first = 0;
+        u32       count = 0;
+        // hline/vline: the value; bars: the width in x units.
+        f64       value = 0.0;
+        std::ui::color color = default;
+        bool      own_color = false;
+    }
+
+    // The visible range of a plot: what it shows and whether it follows the data.
+    struct view_range {
+        f64  x_min = 0.0;
+        f64  x_max = 1.0;
+        f64  y_min = 0.0;
+        f64  y_max = 1.0;
+        bool fit_x = true;
+        bool fit_y = true;
+    }
+
+    // At most this many series (and lines) per plot; more are left out.
+    compile_time usize max_entries = 16;
+
+    // The reduction of one series to what `columns` pixel columns over [x_low, x_high] can show:
+    // every point when there are few, otherwise the first, lowest, highest and last point of each
+    // column, in their order. Appends (x, y) pairs to `out`; returns how many pairs it appended.
+    // Points outside [x_low, x_high] are skipped, except the nearest one on each side (so lines
+    // reach the edges).
+    template<type X, type Y>
+    usize decimate(std::span<X> xs, std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out);
+    // The same with the index as x.
+    template<type Y>
+    usize decimate_indexed(std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out);
+
+    // ---- the plot widget --------------------------------------------------------------------------------
+
+    // A plot being built: its series are drawn at its `}`. Borrows the scope it is in.
+    view class scope {
+    public:
+        // The axes' labels, scales and fixed ranges.
+        void axis_x(axis a) mut;
+        void axis_y(axis a) mut;
+        // Plots with the same `group` share their x range: panning or zooming one moves all.
+        void link_x(std::str group) mut;
+        // Shows the legend (default) or not.
+        void legend(bool on) mut;
+
+        // A line through `ys` at x = 0, 1, 2, ...; through (xs[i], ys[i]); through a value of
+        // each row taken by `value(row)`.
+        template<type Y>
+        void line(std::str name, std::span<Y> ys) mut;
+        template<type X, type Y>
+        void line(std::str name, std::span<X> xs, std::span<Y> ys) mut;
+        template<type T, type F>
+        void line_of(std::str name, std::span<T> rows, F value) mut;
+        // A line with the area down to 0 filled.
+        template<type Y>
+        void area(std::str name, std::span<Y> ys) mut;
+        template<type X, type Y>
+        void area(std::str name, std::span<X> xs, std::span<Y> ys) mut;
+        // Points (not reduced: every point is drawn).
+        template<type Y>
+        void scatter(std::str name, std::span<Y> ys) mut;
+        template<type X, type Y>
+        void scatter(std::str name, std::span<X> xs, std::span<Y> ys) mut;
+        // A bar per value at x = 0, 1, 2, ...
+        template<type Y>
+        void bars(std::str name, std::span<Y> ys) mut;
+        // One line per @plot::series field of `T` against its @plot::x field (or the index),
+        // named "name.field" (just the field when `name` is empty).
+        template<type T>
+        void series(std::str name, std::span<T> rows) mut;
+
+        // A horizontal / vertical line across the plot, labelled at its end.
+        void hline(std::str name, f64 y, std::ui::color c) mut;
+        void vline(std::str name, f64 x, std::ui::color c) mut;
+        // The colour of the next series (otherwise the palette's next one).
+        void color(std::ui::color c) mut;
+        // The theme of the scope the plot is in: `p.hline("limit", 16.7, p.theme().colors.warning)`.
+        std::ui::theme& theme();
+
+        // The visible range (in the last frame, before this frame's input).
+        view_range range();
+        // Whether the user moved the view (panned or zoomed) instead of following the data.
+        bool moved();
+        // Back to following the data (or the axes' fixed ranges), as a double-click or the reset
+        // button in the plot's corner does. Takes effect this frame.
+        void reset_view() mut;
+        // Where the cursor is in plot coordinates, when it is over the plot.
+        std::option<std::ui::vec2> hovered();
+
+        ~scope();
+
+        mut std::ui::immediate::scope& parent;
+        u64 id = 0;
+        std::str title = "";
+        std::ui::rect bounds = default;
+        axis x_axis = default;
+        axis y_axis = default;
+        // The widget whose state keeps the x range (the plot, or its link group).
+        u64 x_owner = 0;
+        bool show_legend = true;
+        std::array<entry, 16> entries = default;
+        usize entry_count = 0;
+        // The colour asked for by color(), for the next entry.
+        std::option<std::ui::color> next_color = std::none;
+        // The data range of every series, for fitting.
+        f64 data_x_min = 0.0;
+        f64 data_x_max = 0.0;
+        f64 data_y_min = 0.0;
+        f64 data_y_max = 0.0;
+        bool has_data = false;
+        // The range the series were reduced over.
+        view_range shown = default;
+        u32 columns = 1;
+        // The area inside the axes in the last frame (where input goes and series are drawn this
+        // frame), the hidden series (a bit per entry) and the number of series so far (palette).
+        std::ui::rect inner = default;
+        u32 hidden = 0;
+        usize series_count = 0;
+    }
+
+    // The n-th colour of the series palette: hues around the theme's primary colour at its
+    // lightness and chroma, so every series reads on the theme's surfaces.
+    std::ui::color palette_color(std::ui::theme& t, usize n);
+
+    // The settings of stat().
+    struct stat_options {
+        // Shown under the number ("ms", "MB").
+        std::static_str unit = "";
+        // Decimals of the number.
+        u32 decimals = 1;
+        // Above this the number is coloured as a warning (none: never).
+        std::option<f64> warn_above = std::none;
+    }
+
+    // The range [low, high] moved (keeping its width) and, if it is wider than the limits, cut so
+    // that it lies inside [limit_min, limit_max]; either limit may be missing.
+    (f64, f64) clamp_range(f64 low, f64 high, std::option<f64> limit_min, std::option<f64> limit_max);
+
+    // Plots, sparklines and stat cards as widgets of std::ui::immediate's scopes: `w.plot(...)`.
+    interface widgets {
+        // A plot `height` pixels high across the scope, titled `title`.
+        @std::must_use
+        scope plot(std::str title, f32 height, implicit compile_time std::call_site where) mut;
+        // A small line of `values` (no axes) the height of a row: in text rows and table cells.
+        void sparkline(std::span<f32> values, implicit compile_time std::call_site where) mut;
+        // A card with a label, a big number and a sparkline of `trend` under it.
+        void stat(std::str label, f64 value, std::span<f32> trend, stat_options options, implicit compile_time std::call_site where) mut;
+        // A gauge: an arc filled to `fraction` (0..1) in `tint` with a soft glow, `value` in big
+        // type in its middle and `caption` under it, `label` above (letter-spaced capitals).
+        void gauge(std::str label, f64 fraction, std::str value, std::str caption, std::ui::color tint, implicit compile_time std::call_site where) mut;
+    }
+}

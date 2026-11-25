@@ -112,7 +112,7 @@ u32 main() { return 0; }
 
 `%s` is the test file and `%S` its directory, relative to the repository root (the runner's
 working directory), so paths in the output are stable. `%t` is a fresh temporary directory
-for outputs (`// RUN: edaxc build %s -o %t/prog`); it is written as `%t` in the golden file. Durations (`12.4 s`, from the build checklist) are written as `<t>`.
+for outputs (`// RUN: edaxc build %s -o %t/prog`); it is written as `%t` in the golden file. Durations (`12.4 s`, from the build checklist) are written as `<t>`. Line numbers of places in the standard library (`::: <std>/ui.ed:1401:17` and the snippet under it) are written as `<n>`, so editing the library doesn't change the golden files of the tests that show its checks.
 The RUN line may point at any file, e.g. `// RUN: edaxc check examples/employees.ed`.
 
 **Running compiled programs.** `edaxc run` builds the program in a temporary directory and

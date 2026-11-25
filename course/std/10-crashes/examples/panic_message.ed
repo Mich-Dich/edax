@@ -1,0 +1,19 @@
+// What a panic prints: where, in which function, what failed, and with which values.
+import std;
+
+u32 area(u32 w, u32 h) { return w * h; }
+
+u32 total(std::span<u32> sizes) {
+    mut u32 sum = 0;
+    for (u32 s : sizes) { sum += area(s, s); }
+    return sum;
+}
+
+i32 main() {
+    std::array<u32, 2> sizes = [100, 70000];
+    std::println(f"small: {area(100, 100)}");
+    std::println(f"total: {total(sizes.as_span())}");      // 70000 * 70000 doesn't fit in a u32
+    return 0;
+}
+//> small: 10000
+//! panic: panic in area: integer overflow in 'w * h' (u32): 70000 * 70000

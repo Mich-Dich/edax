@@ -1,0 +1,139 @@
+// RUN: edaxc run %s
+// The studio look and the editor widgets of std::ui (draft 35): theme::studio's tokens, the icon
+// set, icon buttons and toggles, chips, spacers in rows, the height left in a panel, menus (open on
+// a click, switch on hover while open, close on an item or a press elsewhere), letter-spaced
+// capitals, and the draw list's gradients, dashes and curves.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+struct seen {
+    bool saved = false;
+    bool grid = false;
+    ui::rect after_spacer = default;
+    f32 left_below = 0.0;
+    ui::rect file_at = default;
+    ui::rect edit_at = default;
+    bool open = false;
+}
+
+seen frame_of(mut im::context& ctx, mut bool& grid, ui::input in) {
+    mut seen out = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 800.0, .y = 600.0 });
+        {
+            mut im::scope top = f.panel(std::hash("bar"), ui::rect{ .width = 800.0, .height = 40.0 }, 3, 8.0);
+            mut im::scope bar = top.row();
+            out.file_at = bar.allocate(ui::vec2{});
+            {
+                mut im::scope file = bar.menu("File");
+                out.open = out.open || file.open();
+                _ = file.menu_item(ui::icon::folder, "Open", "Ctrl+O");
+                if (file.menu_item(ui::icon::save, "Save", "Ctrl+S")) {
+                    out.saved = true;
+                }
+            }
+            out.edit_at = bar.allocate(ui::vec2{});
+            {
+                mut im::scope edit = bar.menu("Edit");
+                out.open = out.open || edit.open();
+                _ = edit.menu_check("Snap", mut grid);
+            }
+            _ = bar.icon_toggle(ui::icon::grid, mut grid, "Grid");
+            _ = bar.chip("Wire", mut grid);
+            bar.spacer();
+            out.after_spacer = bar.allocate(ui::vec2{ .x = 24.0, .y = 24.0 });
+        }
+        {
+            mut im::scope body = f.panel(std::hash("body"), ui::rect{ .y = 40.0, .width = 800.0, .height = 560.0 }, 2, 10.0);
+            body.text(f"one line");
+            out.left_below = body.available_height();
+        }
+        f.finish();
+    }
+    out.grid = grid;
+    return out;
+}
+
+ui::input at(ui::vec2 p) {
+    return ui::input{ .cursor = p, .dt = 0.016 };
+}
+
+seen click(mut im::context& ctx, mut bool& grid, ui::vec2 p) {
+    _ = frame_of(mut ctx, mut grid, ui::input{ .cursor = p, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    return frame_of(mut ctx, mut grid, ui::input{ .cursor = p, .mouse_released = true, .dt = 0.016 });
+}
+
+void main() {
+    ui::theme t = ui::theme::studio(ui::color::hex(0x3b82f6), ui::brightness::dark);
+    std::println(f"studio: row {t.controls.row_height}, tabs {t.controls.window.tab_height}, gap {t.controls.window.dock_gap}, body {t.typography.body.size} px, bools as {t.controls.boolean}, gradient {t.controls.button.gradient}");
+    std::println(f"neutral: surface {t.colors.surface.r == t.colors.surface.g && t.colors.surface.g < t.colors.surface.b + 0.02}, primary bluish {t.colors.primary.b > t.colors.primary.r}");
+
+    // Every icon draws something but none.
+    mut ui::draw_list l = default;
+    l.begin(ui::vec2{ .x = 100.0, .y = 100.0 });
+    mut u32 empty = 0;
+    mut u32 count = 0;
+    for compile_time (std::meta::alternative a : std::meta::alternatives<ui::icon>()) {
+        usize before = l.vertices.len();
+        l.draw_icon(a.make(), ui::rect{ .width = 16.0, .height = 16.0 }, ui::color::white());
+        if (l.vertices.len() == before) {
+            empty += 1;
+        }
+        count += 1;
+    }
+    std::println(f"icons: {count}, drawing nothing: {empty}");
+
+    // Capitals and tracking: an overline label is wider than the same text without tracking.
+    mut ui::fonts faces = ui::fonts::make();
+    ui::text_style over = t.style(ui::text_role::overline, t.colors.text);
+    mut ui::text_style tight = over;
+    tight.tracking = 0.0;
+    std::string caps = ui::upper("Trigger settings · ä");
+    std::println(f"upper: {caps}, tracking widens {faces.measure(caps.as_str(), over).x > faces.measure(caps.as_str(), tight).x}");
+
+    // Gradients, dashes and curves add triangles.
+    usize before = l.vertices.len();
+    std::array<ui::vec2, 3> top = [ui::vec2{ .x = 0.0, .y = 10.0 }, ui::vec2{ .x = 10.0, .y = 5.0 }, ui::vec2{ .x = 20.0, .y = 8.0 }];
+    std::array<ui::vec2, 3> ground = [ui::vec2{ .x = 0.0, .y = 30.0 }, ui::vec2{ .x = 10.0, .y = 30.0 }, ui::vec2{ .x = 20.0, .y = 30.0 }];
+    l.fill_between_gradient(top.as_span(), ground.as_span(), ui::color::white(), ui::color::transparent());
+    usize area = l.vertices.len() - before;
+    l.dashed_line(ui::vec2{}, ui::vec2{ .x = 100.0 }, 1.0, 6.0, 4.0, ui::color::white());
+    usize dashes = l.vertices.len() - before - area;
+    l.bezier(ui::vec2{}, ui::vec2{ .x = 40.0 }, ui::vec2{ .x = 60.0, .y = 50.0 }, ui::vec2{ .x = 100.0, .y = 50.0 }, 2.0, ui::color::white());
+    l.fill_gradient_x(ui::rect{ .width = 50.0, .height = 10.0 }, ui::color::black(), ui::color::white(), 5.0);
+    std::println(f"gradient area {area} vertices, 10 dashes {dashes / 4 == 10}, curve and gradient box {l.vertices.len() > before + area + dashes}");
+
+    mut im::context ctx = im::context::create(t);
+    ctx.skin() = ui::skin::studio();
+    mut bool grid = false;
+    _ = frame_of(mut ctx, mut grid, at(ui::vec2{}));
+    seen a = frame_of(mut ctx, mut grid, at(ui::vec2{}));
+    std::println(f"spacer: the last widget ends at {a.after_spacer.right()} of 792, height left {a.left_below > 500.0}, duplicates {ctx.duplicate_ids()}");
+
+    // The grid toggle: after the two menus.
+    ui::vec2 toggle = ui::vec2{ .x = a.edit_at.x + 60.0, .y = 20.0 };
+    seen b = click(mut ctx, mut grid, toggle);
+    std::println(f"toggle: grid {b.grid}");
+
+    // Open File, hover Edit (it opens instead), back to File, click Save.
+    ui::vec2 file = ui::vec2{ .x = a.file_at.x + 12.0, .y = 20.0 };
+    ui::vec2 edit = ui::vec2{ .x = a.edit_at.x + 12.0, .y = 20.0 };
+    seen c = click(mut ctx, mut grid, file);
+    std::println(f"file menu open: {c.open}");
+    _ = frame_of(mut ctx, mut grid, at(edit));
+    seen d = frame_of(mut ctx, mut grid, at(edit));
+    std::println(f"hovering Edit keeps a menu open: {d.open}");
+    // Snap is the Edit menu's first item: a click flips it, the menu stays open.
+    seen e = click(mut ctx, mut grid, ui::vec2{ .x = edit.x + 20.0, .y = 58.0 });
+    std::println(f"snap: grid {e.grid}, still open {e.open}");
+    _ = frame_of(mut ctx, mut grid, at(file));
+    _ = frame_of(mut ctx, mut grid, at(file));
+    seen g = click(mut ctx, mut grid, ui::vec2{ .x = file.x + 20.0, .y = 82.0 });
+    std::println(f"save clicked: {g.saved}, open after {frame_of(mut ctx, mut grid, at(ui::vec2{})).open}");
+
+    // A press elsewhere closes an open menu.
+    _ = click(mut ctx, mut grid, file);
+    seen h = click(mut ctx, mut grid, ui::vec2{ .x = 400.0, .y = 300.0 });
+    std::println(f"closed by a press elsewhere: {!h.open}");
+}

@@ -1,0 +1,43 @@
+// mutex<T> owns its data; rw_mutex<T> allows many readers; try_lock doesn't wait.
+import std;
+
+struct stats {
+    u32 files = 0;
+    u64 largest = 0;
+}
+
+void record(std::mutex<stats>& shared, u64 size) {
+    mut std::mutex_guard<stats> s = shared.lock();
+    s->files += 1;
+    s->largest = s->largest.max(size);
+}                                                         // the guard is destroyed: unlocked
+
+i32 main() {
+    std::mutex<stats> shared = std::mutex<stats>::make(stats{});
+    record(shared, 10);
+    record(shared, 300);
+    {
+        std::mutex_guard<stats> held = shared.lock();
+        std::println(f"while held, try_lock gets it: {shared.try_lock().is_some()}");
+    }
+    std::println(f"after, try_lock gets it: {shared.try_lock().is_some()}");
+    {
+        std::mutex_guard<stats> s = shared.lock();           // one guard for both reads
+        std::println(f"{s->files} files, largest {s->largest}");
+    }
+
+    std::rw_mutex<std::darray<u32>> table = std::rw_mutex<std::darray<u32>>::make(std::darray<u32>::from([1, 2, 3]));
+    {
+        std::read_guard<std::darray<u32>> r1 = table.read();
+        std::read_guard<std::darray<u32>> r2 = table.read();    // two readers at once
+        std::println(f"readers see {r1->len()} and {r2->len()}");
+    }
+    table.write()->push(4);
+    std::println(f"after the write: {table.read()->len()}");
+    return 0;
+}
+//> while held, try_lock gets it: false
+//> after, try_lock gets it: true
+//> 2 files, largest 300
+//> readers see 3 and 3
+//> after the write: 4

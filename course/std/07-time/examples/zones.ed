@@ -1,0 +1,23 @@
+// Time zones come from the operating system's database.
+import std;
+namespace t = std::time;
+
+i32 main() {
+    t::wall_time winter = t::wall_time{ .seconds = 1_767_225_600 };     // 2026-01-01 00:00 UTC
+    t::wall_time summer = t::wall_time{ .seconds = 1_782_864_000 };     // 2026-07-01 00:00 UTC
+    match (t::zone::load("Europe/Berlin")) {
+        std::ok(berlin) => {
+            t::civil_time w = winter.in_zone(berlin);
+            t::civil_time s = summer.in_zone(berlin);
+            std::println(f"{berlin.name()}: winter {w.hour}:00 (+{w.utc_offset_seconds / 3600}h), summer {s.hour}:00 (+{s.utc_offset_seconds / 3600}h, dst {berlin.is_dst_at(summer)})");
+        },
+        std::error(e) => std::println(f"no zone: {e}"),
+    }
+    match (t::zone::load("Mars/Olympus")) {
+        std::ok(z) => std::println(f"found {z.name()}"),
+        std::error(e) => std::println(f"Mars/Olympus: {e}"),
+    }
+    return 0;
+}
+//> Europe/Berlin: winter 1:00 (+1h), summer 2:00 (+2h, dst true)
+//> Mars/Olympus: not_found

@@ -1,0 +1,45 @@
+// RUN: edaxc run %s
+// A lambda without '->' inside a template (a method of a template struct, a function template) has
+// the result of its first 'return', already when the template's body is checked generically: callees
+// taking it (retain, sort_by) are instantiated with that signature (was "'void' does not convert to
+// bool" in retain).
+import std;
+
+struct item {
+    u64 id = 0;
+}
+
+template<type K>
+struct holder {
+    std::darray<item> items = default;
+
+    void drop_id(u64 gone) mut {
+        this.items.retain([gone](item& l) { return l.id != gone; });
+    }
+
+    void sort_down() mut {
+        this.items.sort_by([](item& a, item& b) { return a.id > b.id; });
+    }
+}
+
+template<type K>
+usize count_over(std::darray<item>& items, u64 limit) {
+    mut usize n = 0;
+    auto over = [limit](item& l) { return l.id > limit; };
+    for (item& l : items) {
+        if (over(l)) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+void main() {
+    mut holder<u8> h = default;
+    for (u64 i : 1..6) {
+        h.items.push(item{ .id = i });
+    }
+    h.drop_id(3);
+    h.sort_down();
+    std::println(f"left {h.items.len()}, first {h.items[0].id}, over 2: {count_over<u8>(h.items, 2)}");
+}

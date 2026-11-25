@@ -1,0 +1,40 @@
+// Reflection: one generic function that walks the fields of any struct.
+import std;
+
+struct player {
+    std::string name;
+    u32 level = 1;
+    f32 health = 100.0;
+}
+
+struct window_size {
+    u16 width = 0;
+    u16 height = 0;
+}
+
+// "name=..., level=..." for any type whose fields can be printed.
+template<type T>
+std::string describe(T& value) {
+    mut std::string out = std::format(f"{std::type_name<T>()}(");
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {   // one copy of the body per field
+        if compile_time (f.index > 0) { out.push_str(", "); }
+        out.push_str(std::format(f"{f.name}={f.get(value)}"));
+    }
+    out.push_str(")");
+    return out;
+}
+
+// Reflection runs at compile time; its results become constants.
+compile_time usize field_count = std::meta::fields<player>().len();
+compile_time usize health_offset = std::meta::fields<player>()[2].offset;
+
+i32 main() {
+    player p = player{ .name = std::string::from("ada"), .level = 7 };
+    std::println(describe(p));
+    std::println(describe(window_size{ .width = 1280, .height = 720 }));
+    std::println(f"{field_count} fields, health at byte {health_offset}, size {std::size_of<player>()}");
+    return 0;
+}
+//> player(name=ada, level=7, health=100.0)
+//> window_size(width=1280, height=720)
+//> 3 fields, health at byte 28, size 32

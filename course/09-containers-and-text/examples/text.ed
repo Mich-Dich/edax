@@ -1,0 +1,26 @@
+// Text: std::string owns, std::str borrows, std::static_str is a literal.
+import std;
+
+compile_time std::static_str data = std::embed_text("words.txt");   // the file, read while compiling
+
+i32 main() {
+    mut std::string s = std::string::from("Hello");
+    s.push_str(", world");
+    s.push('!');
+    std::str view = s;                                   // borrows s: no copy
+    std::println(f"{view.len()} {view.starts_with("Hell")} {view.slice(7, 12)}");
+
+    for (std::str line : data.split('\n')) {
+        std::str t = line.trim();
+        if (t.is_empty()) { continue; }
+        std::darray<std::str> parts = t.split(' ');     // views into `data`
+        u32 n = parts[1].parse<u32>().value_or(0);
+        std::println(f"[{parts[0]:<6}] [{n:>3}] [{n:^5}] {n:x} {n:+}");
+    }
+    std::println(r"C:\raw\strings\keep\backslashes");
+    return 0;
+}
+//> 13 true world
+//> [alpha ] [  3] [  3  ] 3 +3
+//> [beta  ] [  5] [  5  ] 5 +5
+//> C:\raw\strings\keep\backslashes

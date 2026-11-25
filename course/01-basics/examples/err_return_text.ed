@@ -1,0 +1,11 @@
+// A std::str is a view. Returning one needs something to borrow from.
+import std;
+
+std::str describe(f64 mean) {                   //~ error[E5012]
+    return "mild";
+}
+
+i32 main() {
+    std::println(describe(1.0));
+    return 0;
+}

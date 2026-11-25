@@ -1,0 +1,24 @@
+// One writer or many readers.
+import std;
+
+void grow(mut std::darray<u32>& into, std::darray<u32>& from) {
+    for (u32 v : from) { into.push(v); }
+}
+
+void swap_values(mut u32& a, mut u32& b) {
+    u32 t = a;
+    a = b;
+    b = t;
+}
+
+i32 main() {
+    mut std::darray<u32> xs = default;
+    xs.push(1);
+    for (u32& x : xs) {
+        xs.push(x);                                  //~ error[E5021]
+    }
+    mut u32 n = 1;
+    swap_values(mut n, mut n);                       //~ error[E5020]
+    grow(mut xs, xs);                                //~ error[E5020]
+    return 0;
+}

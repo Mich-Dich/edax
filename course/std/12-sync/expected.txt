@@ -1,0 +1,2 @@
+6 jobs done, 6 receipts
+smallest 5, largest 45, total 130

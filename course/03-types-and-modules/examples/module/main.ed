@@ -1,0 +1,15 @@
+// Uses the module `inventory` (inventory.edh + inventory.ed next to this file).
+import std;
+import inventory;                           // a module path; the names are in namespace shop
+
+namespace s = shop;                         // a file-local namespace alias
+
+i32 main() {
+    mut s::stock st = s::stock::make();
+    st.add("tea", s::price{ .cents = 450 });
+    st.add("cup", s::price{ .cents = 1205 });
+    std::println(f"{st.len()} items, {st.total().text()}");
+    return 0;
+}
+//> 2 items, 16.55
+//> stock of 2 items closed

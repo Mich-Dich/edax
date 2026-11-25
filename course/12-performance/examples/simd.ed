@@ -1,0 +1,23 @@
+// SIMD: vector types work lane by lane; blocks<8> walks a length in blocks, the last one masked.
+import std;
+
+f32 dot(std::span<f32> a, std::span<f32> b) {
+    run_time check (a.len() == b.len()) else "dot: lengths differ";
+    mut f32x8 sum = default;
+    for (std::simd::block<8> at : std::simd::blocks<8>(a.len())) {
+        sum = a.load(at).mul_add(b.load(at), sum);              // 8 multiply-adds at once
+    }
+    return sum.reduce_add();
+}
+
+i32 main() {
+    mut std::darray<f32> a = default;
+    mut std::darray<f32> b = default;
+    for (u32 i : 0..11) {                                       // 11: one full block, one partial
+        a.push(1.0);
+        b.push(2.0);
+    }
+    std::println(f"{dot(a.as_span(), b.as_span())}");
+    return 0;
+}
+//> 22.0

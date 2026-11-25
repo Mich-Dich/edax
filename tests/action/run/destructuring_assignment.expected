@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+lo 4.0, hi 6.0
+name seven, n 7
+swapped 2 1, array 20 10
+hi only: 4.0 11.0
+--- stderr

@@ -80,7 +80,7 @@ New to Edax? Read in this order; each step only uses what came before.
 | `math/` | [Math](stdlib/math/math.md): vectors, rectangles, colours, OKLCH |
 | `image/` | [Images](stdlib/image/image.md): RGBA images, PNG and QOI |
 | `text/` | [Fonts](stdlib/text/fonts.md): TrueType fonts and distance fields |
-| `ui/` | [User interface core](stdlib/ui/core.md): themes, skins and painters, text, the draw list, the OpenGL renderer; [immediate-mode widgets](stdlib/ui/immediate.md); [UIs from types](stdlib/ui/forms.md) |
+| `ui/` | [User interface core](stdlib/ui/core.md): themes, skins and painters, text, the draw list, the OpenGL renderer; [immediate-mode widgets](stdlib/ui/immediate.md); [UIs from types](stdlib/ui/forms.md); [plots and debug tools](stdlib/ui/plots.md); [docking](stdlib/ui/docking.md); [tools and editors](stdlib/ui/studio.md) (studio look, icons, toolbars, menus); [node editor and node graphs](stdlib/ui/nodes.md) |
 
 ### Building: `build/`
 [Build system](build/build-system.md) (`build.ed`, targets, C/C++), [Packages](build/packages.md) (outside code, CMake projects, the lock file), [Build modes](build/build-modes.md) (`debug`, `release`, user-defined modes), [Build output and diagnostics](build/build-output.md) (the checklist, `build.log`, the error limit)

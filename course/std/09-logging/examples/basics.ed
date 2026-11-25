@@ -1,0 +1,21 @@
+// A session with a console sink. The pattern decides what a line looks like.
+import std;
+
+private compile_time std::log::pattern short_pattern = std::log::pattern::from("{level:<5} {file_name}:{line} {message}");
+
+i32 main() {
+    std::log::info("before the session: kept, and written once a sink exists");
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make(), std::log::sink_options{ .min_level = std::log::level::debug, .pattern = short_pattern });
+    u32 meshes = 12;
+    std::log::trace(f"below the sink's minimum: not written");
+    std::log::debug(f"loading {meshes} meshes");
+    std::log::info(f"loaded {meshes} meshes");
+    std::log::warn("texture cache is 90% full");
+    logs.flush();                               // wait until the log thread has written everything
+    return 0;
+}
+//> INFO  basics.ed:7 before the session: kept, and written once a sink exists
+//> DEBUG basics.ed:12 loading 12 meshes
+//> INFO  basics.ed:13 loaded 12 meshes
+//> WARN  basics.ed:14 texture cache is 90% full

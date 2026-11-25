@@ -1,0 +1,15 @@
+// The bit functions: one machine instruction each, on any integer type.
+import std;
+
+i32 main() {
+    u32 flags = 0b0010_1000;
+    std::println(f"ones {std::count_ones(flags)}, trailing zeros {std::trailing_zeros(flags)}, leading zeros {std::leading_zeros(flags)}");
+    u8 b = 0b1000_0001;
+    std::println(f"{std::rotate_left(b, 1u32):b} {std::rotate_right(b, 1u32):b}");
+    u32 lowest = flags & (0u32 -% flags);              // keep only the lowest set bit
+    std::println(f"lowest bit {lowest}, set? {flags & bit(5) != 0}");
+    return 0;
+}
+//> ones 2, trailing zeros 3, leading zeros 26
+//> 11 11000000
+//> lowest bit 8, set? true

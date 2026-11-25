@@ -1,0 +1,27 @@
+// The map API: insert and remove hand values back, get asks, [] insists, get_or_insert is a place.
+import std;
+
+i32 main() {
+    mut std::tree_map<std::str, u32> stock = default;          // keys in order
+    std::println(f"{stock.insert("tea", 3).is_some()}");       // none: nothing was replaced
+    std::println(f"{stock.insert("tea", 5).value_or(0)}");     // some(3): the old value comes back
+    stock.insert("cup", 1);
+    stock.get_or_insert("pot", 0) += 2;                        // insert 0, then add 2
+
+    if (stock.get_mut("cup") is std::some(n)) { n += 10; }     // a mutable reference into the map
+    std::println(f"tea {stock["tea"]}, cup {stock["cup"]}, pot {stock["pot"]}, len {stock.len()}");
+    std::println(f"removed {stock.remove("pot").value_or(0)}, contains pot: {stock.contains("pot")}");
+
+    if (stock.first() is std::some(e)) { std::println(f"first {e.key}={e.value}"); }
+    if (stock.last() is std::some(e)) { std::println(f"last {e.key}={e.value}"); }
+    for (std::map_entry<std::str, u32> e : stock.entries()) { std::println(f"{e.key}: {e.value}"); }
+    return 0;
+}
+//> false
+//> 3
+//> tea 5, cup 11, pot 2, len 3
+//> removed 2, contains pot: false
+//> first cup=11
+//> last tea=5
+//> cup: 11
+//> tea: 5

@@ -1,0 +1,20 @@
+// No slicing: polymorphism goes through references and pointers only.
+import std;
+
+open class base {
+public:
+    u32 x = 0;
+    virtual u32 value() { return x; }
+}
+
+class child : base {
+public:
+    u32 y = 0;
+    u32 value() override { return y; }
+}
+
+i32 main() {
+    child c = child{ .y = 2 };
+    base b = c;                                   //~ error[E4010]
+    return 0;
+}

@@ -1,0 +1,17 @@
+// A result can't be ignored, and `?` needs identical error types.
+import std;
+
+enum small_error : u8 { bad }
+enum big_error : u8 { worse }
+
+std::result<u32, small_error> step() { return std::ok(1); }
+
+std::result<u32, big_error> run() {
+    step();                                  //~ error[E4150]
+    u32 v = step()?;                         //~ error[E4191]
+    return std::ok(v);
+}
+
+i32 main() {
+    return 0;
+}

@@ -1,0 +1,2 @@
+// RUN: edaxc check --root=tests/feature/09-modules/redeclared_project tests/feature/09-modules/redeclared_project/main.ed
+// A .ed that repeats the header's declarations (a C++ habit): E3013 at the repetition, pointing at the header.

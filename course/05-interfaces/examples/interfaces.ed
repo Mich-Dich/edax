@@ -1,0 +1,48 @@
+// Interfaces: no fields, implemented by classes and structs; a reference to one is a fat pointer.
+import std;
+
+interface shape {
+    f32 area();
+    std::string describe() { return std::format(f"a shape of area {area():.1}"); }   // a default body
+}
+
+struct square : shape {
+    f32 side = 0.0;
+    f32 area() override { return side * side; }
+}
+
+struct circle {                                   // doesn't know about `shape`...
+    f32 radius = 0.0;
+}
+
+implement shape for circle {                      // ...so it's added here (this module owns `shape`)
+    f32 area() override { return 3.0 * radius * radius; }
+    std::string describe() override { return std::format(f"a circle of radius {radius}"); }
+}
+
+// Static dispatch: one copy per type, calls can be inlined.
+template<type T : shape>
+f32 twice_area(T& s) { return s.area() * 2.0; }
+
+// Dynamic dispatch: one copy, an indirect call through the table.
+f32 total_area(std::span<std::unique_ptr<shape>> shapes) {
+    mut f32 sum = 0.0;
+    for (std::unique_ptr<shape>& s : shapes) { sum += s->area(); }
+    return sum;
+}
+
+i32 main() {
+    mut std::darray<std::unique_ptr<shape>> all = default;
+    all.push(std::unique_ptr<square>::make(square{ .side = 2.0 }));   // unique_ptr<square> -> unique_ptr<shape>
+    all.push(std::unique_ptr<circle>::make(circle{ .radius = 1.0 }));
+    for (std::unique_ptr<shape>& s : all) { std::println(s->describe()); }
+    std::println(f"total {total_area(all.as_span()):.1}, twice a square {twice_area(square{ .side = 3.0 }):.1}");
+    for (std::unique_ptr<shape>& s : all) {
+        if (cast::dynamic<circle&>(*s) is std::some(c)) { std::println(f"found a circle of radius {c.radius}"); }
+    }
+    return 0;
+}
+//> a shape of area 4.0
+//> a circle of radius 1.0
+//> total 7.0, twice a square 18.0
+//> found a circle of radius 1.0

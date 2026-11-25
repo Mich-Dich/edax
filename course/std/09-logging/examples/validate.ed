@@ -1,0 +1,22 @@
+// validate and assert log a failure and return the condition; the caller handles it with `else`.
+import std;
+
+bool load_texture(u32 id, u32 count) {
+    std::log::validate(id < count, f"texture {id} is out of range ({count} textures)") else {
+        return false;
+    }
+    std::log::info(f"bound texture {id}");
+    return true;
+}
+
+i32 main() {
+    mut std::log::session logs = std::log::start(std::log::options{});
+    _ = logs.add(std::log::console::make(), std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
+    bool first = load_texture(2, 4);
+    bool second = load_texture(9, 4);      // the failure is an ERROR record, which the console writes to stderr
+    logs.flush();                          // the log thread writes asynchronously: flush before printing directly
+    std::println(f"{first} {second}");
+    return 0;
+}
+//> INFO bound texture 2
+//> true false

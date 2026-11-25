@@ -1,0 +1,25 @@
+// std::assume states a fact once, so the optimizer can drop the per-element checks.
+import std;
+
+@std::no_checks_left
+void add_into(mut std::darray<f32>& out, std::darray<f32>& a, std::darray<f32>& b) {
+    usize n = out.len();
+    std::assume(a.len() == n);            // checked once per call, then known
+    std::assume(b.len() == n);
+    for (usize i : 0..n) { out[i] = a[i] + b[i]; }
+}
+
+i32 main() {
+    mut std::darray<f32> out = default;
+    mut std::darray<f32> a = default;
+    mut std::darray<f32> b = default;
+    for (u32 i : 0..5) {
+        out.push(0.0);
+        a.push(1.0);
+        b.push(cast<f32>(cast::truncate<u16>(i)));
+    }
+    add_into(mut out, a, b);
+    std::println(f"{out[0]} {out[4]}");
+    return 0;
+}
+//> 1.0 5.0

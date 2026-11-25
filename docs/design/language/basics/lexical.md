@@ -33,8 +33,8 @@ Identifiers are ASCII letters, digits and `_`, and must not start with a digit. 
 import  namespace  struct  class  interface  enum  template  type
 virtual  override  abstract  operator
 public  protected  private  static  extern
-mut  move  this  view
-compile_time  run_time  deduce  check  thread_local
+mut  move  this
+compile_time  run_time  deduce  thread_local
 if  else  for  while  break  continue  return  match
 true  false  nullptr  default  auto  cast  bit  unsafe
 ```
@@ -43,6 +43,8 @@ true  false  nullptr  default  auto  cast  bit  unsafe
 | Word | Keyword when | See |
 |---|---|---|
 | `open` | directly before `class`, `struct` or `view` (`open class shape`) | [Inheritance and interfaces](../user-types/inheritance-and-interfaces.md) |
+| `view` | directly before `class` or `struct` (`view class painter`) | [Ownership and references](../memory/ownership-and-references.md) |
+| `check` | after `compile_time` or `run_time` and their mode lists (`run_time check (n > 0) else "...";`) | [Checks](../errors/checks.md) |
 | `annotation` | directly before `(` at the top of a declaration (`annotation(std::meta::target::field) struct range`) | [Annotations](../compile-time/annotations.md) |
 | `distinct` | directly before `type` (`distinct type meters = f32;`) | [Templates](../compile-time/templates.md) |
 | `union` | directly before a name and `{` (`union bits { ... }`) | [Memory layout](../user-types/layout.md) |

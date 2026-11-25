@@ -1,0 +1,29 @@
+// std::ordering from <=>, and the structural interfaces std::comparable and std::hashable.
+import std;
+
+struct version_tag {
+    u32 major = 0;
+    u32 minor = 0;
+
+    std::ordering operator<=>(version_tag& other) {
+        if (major != other.major) { return major <=> other.major; }
+        return minor <=> other.minor;
+    }
+    bool operator==(version_tag& other) = default;
+    u64 hash() { return std::hash_combine(std::hash(major), std::hash(minor)); }
+}
+
+template<type T : std::comparable>
+T smaller(T a, T b) { return if (b < a) { b } else { a }; }
+
+i32 main() {
+    version_tag a = version_tag{ .major = 1, .minor = 4 };
+    version_tag b = version_tag{ .major = 1, .minor = 10 };
+    version_tag s = smaller(a, b);                  // <=> makes it std::comparable
+    std::println(f"{s.minor} {a < b} {(a <=> b) == std::ordering::less} {std::hash(a) == std::hash(a)}");
+    std::version v = std::version{ .major = 1, .minor = 4, .patch = 320 };
+    std::println(f"{v} {v.at_least(std::version{ .major = 1, .minor = 3 })}");
+    return 0;
+}
+//> 4 true true true
+//> 1.4.320 true

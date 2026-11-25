@@ -1,0 +1,381 @@
+// editor/viewport (see viewport.edh).
+
+import std;
+
+namespace scene {
+    namespace ui = std::ui;
+    namespace im = std::ui::immediate;
+
+    private compile_time f32 near_plane = 0.15;
+
+    private vec3 v3(f32 x, f32 y, f32 z) {
+        return vec3{ .x = x, .y = y, .z = z };
+    }
+
+    // A face from its corners, turned to face away from `inside` (the solid's middle).
+    private face oriented(std::span<vec3> corners, vec3 inside, ui::color tint, bool glass) {
+        vec3 n = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+        mut vec3 middle = default;
+        for (vec3 c : corners) {
+            middle = middle + c;
+        }
+        middle = middle / cast::round<f32>(corners.len());
+        bool flip = n.dot(middle - inside) < 0.0;
+        mut std::darray<vec3> ordered = std::darray<vec3>::with_capacity(corners.len());
+        for (usize i : 0..corners.len()) {
+            ordered.push(corners[if (flip) { corners.len() - 1 - i } else { i }]);
+        }
+        return face{ .corners = move ordered, .tint = tint, .glass = glass };
+    }
+
+    // The six faces of a solid with 8 corners: the bottom 4 then the top 4, both going around in
+    // the same direction. Glass faces get `glass_sides` (the sides; the top keeps `tint`).
+    private void add_block(mut std::darray<face>& out, std::array<vec3, 8>& c, ui::color tint, bool glass_sides) {
+        mut vec3 inside = default;
+        for (vec3 p : c) {
+            inside = inside + p;
+        }
+        inside = inside / 8.0;
+        ui::color glass = ui::color::hex(0x8fb3d4);
+        out.push(oriented([c[0], c[1], c[2], c[3]], inside, tint.lighter(-0.1), false));
+        out.push(oriented([c[4], c[5], c[6], c[7]], inside, tint, false));
+        for (usize i : 0..4) {
+            usize j = (i + 1) % 4;
+            out.push(oriented([c[i], c[j], c[j + 4], c[i + 4]], inside, if (glass_sides) { glass } else { tint }, glass_sides));
+        }
+    }
+
+    // A wheel: a 14-sided prism around the z axis at `hub`, `radius` high, `width` wide, with a
+    // hub cap on its outer side (`outward`: +1 or -1 along z).
+    private void add_wheel(mut std::darray<face>& out, vec3 hub, f32 radius, f32 width, f32 outward) {
+        ui::color tire = ui::color::hex(0x1c1c20);
+        ui::color rim = ui::color::hex(0xb9bec8);
+        u32 sides = 14;
+        f32 inner_z = hub.z - outward * width * 0.5;
+        f32 outer_z = hub.z + outward * width * 0.5;
+        vec3 inside = v3(hub.x, hub.y, hub.z);
+        mut std::darray<vec3> cap = default;
+        mut std::darray<vec3> back = default;
+        mut std::darray<vec3> hubcap = default;
+        for (u32 k : 0..sides) {
+            f32 a = cast::round<f32>(k) / cast::round<f32>(sides) * 2.0 * std::math::pi;
+            f32 b = cast::round<f32>(k + 1) / cast::round<f32>(sides) * 2.0 * std::math::pi;
+            vec3 p0 = v3(hub.x + a.cos() * radius, hub.y + a.sin() * radius, outer_z);
+            vec3 p1 = v3(hub.x + b.cos() * radius, hub.y + b.sin() * radius, outer_z);
+            vec3 q0 = v3(p0.x, p0.y, inner_z);
+            vec3 q1 = v3(p1.x, p1.y, inner_z);
+            out.push(oriented([p0, p1, q1, q0], inside, tire.lighter(0.04), false));
+            cap.push(p0);
+            back.push(q0);
+            hubcap.push(v3(hub.x + a.cos() * radius * 0.58, hub.y + a.sin() * radius * 0.58, outer_z + outward * 0.004));
+        }
+        out.push(oriented(cap.as_span(), inside, tire, false));
+        out.push(oriented(back.as_span(), inside, tire, false));
+        out.push(oriented(hubcap.as_span(), inside, rim, false));
+    }
+
+    std::darray<face> car_model(ui::color paint, f32 rim_inches) {
+        mut std::darray<face> out = default;
+        f32 wheel = 0.3 + rim_inches * 0.0055;
+        // The body: lower at the front (the hood), a little narrower at the top.
+        std::array<vec3, 8> body = [
+            v3(-2.15, 0.32, -0.92), v3(2.15, 0.32, -0.92), v3(2.15, 0.32, 0.92), v3(-2.15, 0.32, 0.92),
+            v3(-2.1, 0.98, -0.88), v3(2.12, 0.78, -0.88), v3(2.12, 0.78, 0.88), v3(-2.1, 0.98, 0.88),
+        ];
+        add_block(mut out, body, paint, false);
+        // The cabin: a sloped windshield and rear window, glass on every side.
+        std::array<vec3, 8> cabin = [
+            v3(-1.35, 0.95, -0.82), v3(0.95, 0.88, -0.82), v3(0.95, 0.88, 0.82), v3(-1.35, 0.95, 0.82),
+            v3(-1.05, 1.52, -0.7), v3(0.28, 1.52, -0.7), v3(0.28, 1.52, 0.7), v3(-1.05, 1.52, 0.7),
+        ];
+        add_block(mut out, cabin, paint.lighter(-0.04), true);
+        // Lights: front (warm white) and rear (red), just in front of the body's ends.
+        out.push(oriented([v3(2.16, 0.55, -0.8), v3(2.16, 0.55, -0.5), v3(2.16, 0.7, -0.5), v3(2.16, 0.7, -0.8)], v3(0.0, 0.6, 0.0), ui::color::hex(0xfff2c8), false));
+        out.push(oriented([v3(2.16, 0.55, 0.5), v3(2.16, 0.55, 0.8), v3(2.16, 0.7, 0.8), v3(2.16, 0.7, 0.5)], v3(0.0, 0.6, 0.0), ui::color::hex(0xfff2c8), false));
+        out.push(oriented([v3(-2.16, 0.62, -0.82), v3(-2.16, 0.62, -0.45), v3(-2.16, 0.82, -0.45), v3(-2.16, 0.82, -0.82)], v3(0.0, 0.6, 0.0), ui::color::hex(0xe5484d), false));
+        out.push(oriented([v3(-2.16, 0.62, 0.45), v3(-2.16, 0.62, 0.82), v3(-2.16, 0.82, 0.82), v3(-2.16, 0.82, 0.45)], v3(0.0, 0.6, 0.0), ui::color::hex(0xe5484d), false));
+        for (u32 k : 0..4) {
+            f32 x = if (k < 2) { 1.38 } else { -1.38 };
+            f32 side = if (k % 2 == 0) { -1.0 } else { 1.0 };
+            add_wheel(mut out, v3(x, wheel, side * 0.86), wheel, 0.26, side);
+        }
+        return out;
+    }
+
+    (vec3, vec3) bounds_of(std::span<face> model) {
+        mut vec3 low = vec3::splat(1000000.0);
+        mut vec3 high = vec3::splat(-1000000.0);
+        for (face& f : model) {
+            for (vec3 c : f.corners) {
+                low = v3(low.x.min(c.x), low.y.min(c.y), low.z.min(c.z));
+                high = v3(high.x.max(c.x), high.y.max(c.y), high.z.max(c.z));
+            }
+        }
+        return (low, high);
+    }
+
+    struct projection {
+        f32 depth(vec3 p) {
+            return (p - this.eye).dot(this.forward);
+        }
+
+        ui::vec2 at(vec3 p) {
+            vec3 d = p - this.eye;
+            f32 z = d.dot(this.forward).max(0.0001);
+            return ui::vec2{ .x = this.center.x + d.dot(this.right) / z * this.focal, .y = this.center.y - d.dot(this.up) / z * this.focal };
+        }
+    }
+
+    projection project(orbit_camera& camera, ui::rect area) {
+        vec3 offset = v3(camera.pitch.cos() * camera.yaw.sin(), camera.pitch.sin(), camera.pitch.cos() * camera.yaw.cos()) * camera.distance;
+        vec3 eye = camera.target + offset;
+        vec3 forward = (camera.target - eye).normalized();
+        vec3 right = forward.cross(v3(0.0, 1.0, 0.0)).normalized();
+        vec3 up = right.cross(forward);
+        f32 focal = area.height * 0.5 / (camera.fov * 0.5).tan();
+        return projection{ .eye = eye, .right = right, .up = up, .forward = forward, .center = area.center(), .focal = focal };
+    }
+
+    // A line in the world, cut at the near plane.
+    private void world_line(mut ui::painter& p, projection& view, vec3 a, vec3 b, f32 width, ui::color c) {
+        f32 da = view.depth(a);
+        f32 db = view.depth(b);
+        if (da < near_plane && db < near_plane) {
+            return;
+        }
+        mut vec3 from = a;
+        mut vec3 to = b;
+        if (da < near_plane) {
+            from = a + (b - a) * ((near_plane - da) / (db - da));
+        } else if (db < near_plane) {
+            to = b + (a - b) * ((near_plane - db) / (da - db));
+        }
+        p.list.line(view.at(from), view.at(to), width, c);
+    }
+
+    // The floor: lines one metre apart that fade with their distance from the target, every fifth
+    // brighter, and the x (red) and z (blue) axes.
+    private void draw_grid(mut ui::painter& p, projection& view, vec3 target, ui::theme& t) {
+        i32 reach = 14;
+        f32 span = cast::round<f32>(reach);
+        for (i32 i : -reach..(reach + 1)) {
+            f32 k = cast::round<f32>(i);
+            bool major = i % 5 == 0;
+            for (i32 s : -reach..reach) {
+                f32 a = cast::round<f32>(s);
+                f32 b = a + 1.0;
+                for (u32 dir : 0..2) {
+                    vec3 from = if (dir == 0) { v3(a, 0.0, k) } else { v3(k, 0.0, a) };
+                    vec3 to = if (dir == 0) { v3(b, 0.0, k) } else { v3(k, 0.0, b) };
+                    vec3 mid = (from + to) * 0.5;
+                    f32 far = ((mid - v3(target.x, 0.0, target.z)).length() / span).min(1.0);
+                    f32 fade = (1.0 - far) * (1.0 - far);
+                    if (fade <= 0.01) {
+                        continue;
+                    }
+                    ui::color base = if (i == 0 && dir == 0) { ui::color::hex(0xe5484d) } else if (i == 0) { ui::color::hex(0x3e8ef7) } else { t.colors.text_faint };
+                    f32 alpha = if (i == 0) { 0.85 } else if (major) { 0.62 } else { 0.34 };
+                    world_line(mut p, view, from, to, if (i == 0) { 1.4 } else { 1.0 }, base.with_alpha(alpha * fade));
+                }
+            }
+        }
+    }
+
+    // A face ready to draw: its index, distance and shade.
+    private struct lit_face {
+        usize index = 0;
+        f32 depth = 0.0;
+        f32 shade = 0.0;
+    }
+
+    private void draw_gizmo(mut ui::painter& p, projection& view, vec3 origin, gizmo_kind kind, ui::theme& t) {
+        std::array<vec3, 3> axes = [v3(1.0, 0.0, 0.0), v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0)];
+        std::array<u32, 3> colors = [0xe5484d, 0x46a758, 0x3e8ef7];
+        f32 size = view.depth(origin) * 0.16;
+        ui::vec2 o = view.at(origin);
+        match (kind) {
+            gizmo_kind::translate => {
+                for (usize k : 0..3) {
+                    ui::color c = ui::color::hex(colors[k]);
+                    ui::vec2 tip = view.at(origin + axes[k] * size);
+                    ui::vec2 base = view.at(origin + axes[k] * (size * 0.78));
+                    p.list.line(o, base, 2.5, c);
+                    ui::vec2 d = tip - base;
+                    f32 l = d.length().max(0.001);
+                    ui::vec2 n = ui::vec2{ .x = -d.y / l * 6.0, .y = d.x / l * 6.0 };
+                    std::array<ui::vec2, 3> head = [tip, base + n, base - n];
+                    p.list.fill_polygon(head.as_span(), c);
+                }
+            },
+            gizmo_kind::rotate => {
+                for (usize k : 0..3) {
+                    vec3 u = axes[(k + 1) % 3];
+                    vec3 w = axes[(k + 2) % 3];
+                    mut std::darray<ui::vec2> ring = default;
+                    for (u32 i : 0..49) {
+                        f32 a = cast::round<f32>(i) / 48.0 * 2.0 * std::math::pi;
+                        ring.push(view.at(origin + u * (a.cos() * size * 0.8) + w * (a.sin() * size * 0.8)));
+                    }
+                    p.list.stroke_polygon(ring.as_span(), false, 2.0, ui::color::hex(colors[k]));
+                }
+            },
+            gizmo_kind::scale => {
+                for (usize k : 0..3) {
+                    ui::color c = ui::color::hex(colors[k]);
+                    ui::vec2 tip = view.at(origin + axes[k] * size);
+                    p.list.line(o, tip, 2.5, c);
+                    p.list.fill(ui::rect{ .x = tip.x - 5.0, .y = tip.y - 5.0, .width = 10.0, .height = 10.0 }, c, 1.5);
+                }
+            },
+            gizmo_kind::none => {},
+        }
+        p.list.circle(o, 4.5, t.colors.text);
+        p.list.circle(o, 2.5, t.colors.surface_sunken);
+    }
+
+    // The axes as the camera sees them, in a corner: X, Y and Z, nearest last.
+    private void draw_orientation(mut ui::painter& p, projection& view, ui::vec2 at, ui::theme& t) {
+        std::array<vec3, 3> axes = [v3(1.0, 0.0, 0.0), v3(0.0, 1.0, 0.0), v3(0.0, 0.0, 1.0)];
+        std::array<u32, 3> colors = [0xe5484d, 0x46a758, 0x3e8ef7];
+        std::array<std::str, 3> names = ["X", "Y", "Z"];
+        p.list.circle(at, 40.0, t.colors.surface.with_alpha(0.55));
+        p.list.circle_stroke(at, 40.0, t.colors.border.with_alpha(0.8), 1.0);
+        mut std::array<usize, 3> order = [0, 1, 2];
+        // Back to front: the axis pointing away from the camera first.
+        for (usize i : 0..3) {
+            for (usize j : (i + 1)..3) {
+                if (axes[order[j]].dot(view.forward) > axes[order[i]].dot(view.forward)) {
+                    usize swapped = order[i];
+                    order[i] = order[j];
+                    order[j] = swapped;
+                }
+            }
+        }
+        for (usize k : order) {
+            ui::vec2 d = ui::vec2{ .x = axes[k].dot(view.right) * 27.0, .y = -axes[k].dot(view.up) * 27.0 };
+            ui::color c = ui::color::hex(colors[k]);
+            p.list.circle(at - d, 4.0, c.with_alpha(0.35));
+            p.list.line(at, at + d, 2.0, c);
+            p.list.circle(at + d, 8.0, c);
+            p.centered_text(ui::rect{ .x = at.x + d.x - 8.0, .y = at.y + d.y - 8.0, .width = 16.0, .height = 16.0 }, names[k], t.style(ui::text_role::caption, ui::color::hex(0x101012)));
+        }
+    }
+
+    usize draw_view(mut im::scope& s, ui::rect area, mut orbit_camera& camera, view_options& options, std::span<face> model, gizmo_kind gizmo) {
+        ui::theme t = s.theme();
+        u64 id = std::hash("scene view");
+        // Orbit with a drag, zoom with the wheel.
+        im::response resp = s.interact(id, area);
+        ui::vec2 cursor = s.ctx.in.cursor;
+        {
+            mut im::widget_state& st = s.state(id);
+            if (resp.state.pressed && s.ctx.in.mouse_down) {
+                if (s.ctx.in.mouse_pressed) {
+                    st.position = cursor;
+                }
+                ui::vec2 moved = cursor - st.position;
+                camera.yaw -= moved.x * 0.008;
+                camera.pitch = (camera.pitch + moved.y * 0.006).clamp(0.06, 1.45);
+                st.position = cursor;
+            }
+        }
+        if (resp.state.hovered && s.ctx.in.scroll != 0.0 && s.scroll_unused()) {
+            s.take_scroll();
+            camera.distance = (camera.distance * (1.0 - s.ctx.in.scroll * 0.1)).clamp(2.5, 40.0);
+        }
+        projection view = project(camera, area);
+        mut usize triangles = 0;
+        mut ui::painter p = s.painter();
+        p.list.fill_gradient(area, t.colors.surface_sunken.lighter(0.03), t.colors.surface_sunken.lighter(-0.01), t.radius.medium);
+        p.list.push_clip(area);
+        // A soft light behind the model.
+        ui::vec2 middle = view.at(camera.target);
+        p.list.glow(ui::rect{ .x = middle.x - 160.0, .y = middle.y - 60.0, .width = 320.0, .height = 120.0 }, 60.0, t.colors.primary.with_alpha(0.06), 120.0);
+        if (options.grid) {
+            draw_grid(mut p, view, camera.target, t);
+        }
+        (vec3 low, vec3 high) = bounds_of(model);
+        if (options.shadow) {
+            mut std::darray<ui::vec2> blob = default;
+            vec3 mid = (low + high) * 0.5;
+            for (u32 k : 0..40) {
+                f32 a = cast::round<f32>(k) / 40.0 * 2.0 * std::math::pi;
+                vec3 q = v3(mid.x + a.cos() * (high.x - low.x) * 0.56, 0.002, mid.z + a.sin() * (high.z - low.z) * 0.62);
+                blob.push(view.at(q));
+            }
+            p.list.fill_polygon(blob.as_span(), ui::color::black().with_alpha(0.42));
+        }
+        // The faces that look at the camera, far ones first, lit from above and the front.
+        vec3 light = v3(0.45, 0.85, 0.35).normalized();
+        mut std::darray<lit_face> shown = std::darray<lit_face>::with_capacity(model.len());
+        for (usize i : 0..model.len()) {
+            face& f = model[i];
+            vec3 n = (f.corners[1] - f.corners[0]).cross(f.corners[2] - f.corners[0]).normalized();
+            mut vec3 c = default;
+            mut bool behind = false;
+            for (vec3 q : f.corners) {
+                c = c + q;
+                behind = behind || view.depth(q) < near_plane;
+            }
+            c = c / cast::round<f32>(f.corners.len());
+            if (behind || n.dot(view.eye - c) <= 0.0) {
+                continue;
+            }
+            shown.push(lit_face{ .index = i, .depth = view.depth(c), .shade = n.dot(light).max(0.0) });
+            triangles += f.corners.len() - 2;
+        }
+        shown.sort_by([](lit_face& a, lit_face& b) { return a.depth > b.depth; });
+        mut std::darray<ui::vec2> points = default;
+        for (lit_face& lf : shown) {
+            face& f = model[lf.index];
+            points.clear();
+            for (vec3 q : f.corners) {
+                points.push(view.at(q));
+            }
+            f32 light_level = 0.38 + 0.62 * lf.shade;
+            ui::color fill = if (f.glass) {
+                f.tint.mix(ui::color::white(), 0.18 * lf.shade).mix(ui::color::black(), 0.35).with_alpha(0.92)
+            } else {
+                f.tint.mix(ui::color::black(), (1.0 - light_level) * 0.9)
+            };
+            p.list.fill_polygon(points.as_span(), fill);
+            p.list.stroke_polygon(points.as_span(), true, 1.0, if (options.wireframe) { t.colors.primary.with_alpha(0.8) } else { fill.lighter(0.03).with_alpha(0.6) });
+        }
+        if (options.bounds) {
+            vec3 a = low - vec3::splat(0.06);
+            vec3 b = high + vec3::splat(0.06);
+            std::array<vec3, 8> box = [v3(a.x, a.y, a.z), v3(b.x, a.y, a.z), v3(b.x, a.y, b.z), v3(a.x, a.y, b.z), v3(a.x, b.y, a.z), v3(b.x, b.y, a.z), v3(b.x, b.y, b.z), v3(a.x, b.y, b.z)];
+            ui::color edge = t.colors.primary.with_alpha(0.75);
+            for (usize i : 0..4) {
+                usize j = (i + 1) % 4;
+                world_line(mut p, view, box[i], box[j], 1.0, edge);
+                world_line(mut p, view, box[i + 4], box[j + 4], 1.0, edge);
+                world_line(mut p, view, box[i], box[i + 4], 1.0, edge);
+            }
+        }
+        if (options.gizmo) {
+            draw_gizmo(mut p, view, v3(0.0, high.y + 0.25, 0.0), gizmo, t);
+        }
+        draw_orientation(mut p, view, ui::vec2{ .x = area.right() - 58.0, .y = area.y + 58.0 }, t);
+        p.list.pop_clip();
+        return triangles;
+    }
+
+    void look_from(mut orbit_camera& camera, u32 side, f32 size) {
+        camera.distance = size * 1.9;
+        camera.target = vec3{ .y = 0.7 };
+        if (side == 0) {
+            camera.yaw = std::math::pi * 0.5;
+            camera.pitch = 0.08;
+        } else if (side == 1) {
+            camera.yaw = 0.0;
+            camera.pitch = 1.45;
+        } else if (side == 2) {
+            camera.yaw = 0.0;
+            camera.pitch = 0.08;
+        } else {
+            camera.yaw = 0.75;
+            camera.pitch = 0.38;
+        }
+    }
+}

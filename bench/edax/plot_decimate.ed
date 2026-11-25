@@ -1,0 +1,26 @@
+// Reduce a 1M-point f32 series to 1000 pixel columns (first, lowest, highest, last point of
+// each; std::ui::plot::decimate_indexed) 200 times, as a plot does once per frame.
+import std;
+namespace plot = std::ui::plot;
+i32 main() {
+    mut std::darray<f32> ys = default;
+    mut u32 x = 2463534242;
+    for (u32 i : 0..1000000) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        ys.push(cast::round<f32>(x % 10000) * 0.001);
+    }
+    mut std::darray<f64> out = std::darray<f64>::with_capacity(8000);
+    mut usize points = 0;
+    mut f64 sum = 0.0;
+    for (u32 round : 0..200) {
+        out.clear();
+        f64 low = cast<f64>(round);
+        usize n = plot::decimate_indexed<f32>(ys.as_span(), low, low + 999000.0, 1000, mut out);
+        points += n;
+        sum += out[2 * (n / 2) + 1];
+    }
+    std::println(f"{points} {cast::saturate<i64>(sum * 1000.0)}");
+    return 0;
+}

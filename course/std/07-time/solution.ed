@@ -1,0 +1,60 @@
+// Standard-library lesson 7: frame timing and timestamps (solution).
+import std;
+namespace t = std::time;
+
+// Lets an action through at most once per `interval`.
+struct rate_limiter {
+    t::duration interval;
+    std::option<t::instant> last = std::none;
+
+    bool allow(t::instant now) mut {
+        if (last is std::some(previous) && now.since(previous) < interval) { return false; }
+        last = std::some(now);
+        return true;
+    }
+}
+
+// The mean of the frame times, and frames per second at that mean.
+(t::duration, u64) frame_stats(std::span<t::duration> frames) {
+    mut t::duration total = t::duration{};
+    for (t::duration f : frames) { total = total + f; }
+    t::duration mean = total / cast<u64>(frames.len());
+    return (mean, t::duration::seconds(1).as_nanoseconds() / mean.as_nanoseconds());
+}
+
+// Two digits, with a leading zero.
+std::string two(u8 v) {
+    std::static_str pad = if (v < 10) { "0" } else { "" };
+    return std::format(f"{pad}{v}");
+}
+
+// "2026-09-21 16:13" for `when` in `zone`.
+std::string stamp(t::wall_time when, t::zone& zone) {
+    t::civil_time c = when.in_zone(zone);
+    return std::format(f"{c.year}-{two(c.month)}-{two(c.day)} {two(c.hour)}:{two(c.minute)}");
+}
+
+i32 main() {
+    // A simulated clock: instants are values, so tests don't need to sleep.
+    t::instant start = t::instant{};
+    mut rate_limiter saves = rate_limiter{ .interval = t::duration::seconds(5) };
+    std::array<u64, 5> at_ms = [0, 1000, 4999, 5000, 12000];
+    for (u64 ms : at_ms) {
+        bool ok = saves.allow(start + t::duration::milliseconds(ms));
+        std::println(f"save at {t::duration::milliseconds(ms)}: {if (ok) { "saved" } else { "skipped" }}");
+    }
+
+    std::array<t::duration, 4> frames = [t::duration::milliseconds(16), t::duration::milliseconds(17), t::duration::milliseconds(15), t::duration::milliseconds(32)];
+    (t::duration mean, u64 fps) = frame_stats(frames.as_span());
+    std::println(f"mean frame {mean}, {fps} fps");
+
+    t::wall_time launch = t::wall_time{ .seconds = 1_790_000_000 };
+    std::println(f"launch {stamp(launch, t::zone::utc())} UTC");
+    match (t::zone::load("Asia/Tokyo")) {
+        std::ok(tokyo) => std::println(f"launch {stamp(launch, tokyo)} in {tokyo.name()}"),
+        std::error(e) => std::println(f"no Tokyo: {e}"),
+    }
+    t::wall_time later = t::wall_time{ .seconds = launch.seconds + cast::saturate<i64>(t::duration::hours(30).as_seconds()) };
+    std::println(f"30 hours later {stamp(later, t::zone::utc())} UTC");
+    return 0;
+}

@@ -1,0 +1,9 @@
+// Variables are immutable unless declared `mut`.
+import std;
+
+i32 main() {
+    u32 a = 5;
+    a = 6;                    //~ error[E4020]
+    auto n = 5;               //~ error[E4001]
+    return 0;
+}

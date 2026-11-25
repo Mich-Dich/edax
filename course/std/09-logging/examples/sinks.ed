@@ -1,0 +1,22 @@
+// Several sinks, each with its own level and pattern: here a console and an in-memory history.
+import std;
+
+i32 main() {
+    std::log::history recent = std::log::history::make(3);          // the last 3 lines
+    {
+        mut std::log::session logs = std::log::start(std::log::options{});
+        _ = logs.add(std::log::console::make(), std::log::sink_options{
+            .min_level = std::log::level::warn,
+            .pattern = std::log::patterns::minimal,
+        });
+        _ = logs.add(std::log::memory::make(recent), std::log::sink_options{ .pattern = std::log::pattern::from("{message}") });
+        for (u32 i : 1..=5) { std::log::info(f"step {i}"); }
+        std::log::warn("almost done");
+    }                                                                 // destroying the session flushes and joins
+    for (std::string& line : recent.snapshot()) { std::println(f"history: {line}"); }
+    return 0;
+}
+//> WARN  almost done
+//> history: step 4
+//> history: step 5
+//> history: almost done

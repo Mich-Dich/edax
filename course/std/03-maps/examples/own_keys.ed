@@ -1,0 +1,35 @@
+// Your own key types: hashable for hash_map (and ==), comparable for tree_map.
+import std;
+
+@std::derive::hashable                     // generates u64 hash() from the fields
+struct cell {
+    i32 x = 0;
+    i32 y = 0;
+    bool operator==(cell& other) = default;
+}
+
+@std::derive::ordered                      // generates <=> from the fields, in order
+struct date {
+    u16 year = 0;
+    u8 month = 0;
+    u8 day = 0;
+    bool operator==(date& other) = default;
+}
+
+i32 main() {
+    mut std::hash_map<cell, std::static_str> board = default;
+    board.insert(cell{ .x = 1, .y = 2 }, "knight");
+    board.insert(cell{ .x = 4, .y = 4 }, "queen");
+    std::println(f"{board.get(cell{ .x = 1, .y = 2 }).value_or("empty")} {board.get(cell{}).value_or("empty")}");
+
+    mut std::tree_map<date, std::static_str> events = default;
+    events.insert(date{ .year = 2026, .month = 12, .day = 24 }, "eve");
+    events.insert(date{ .year = 2026, .month = 1, .day = 1 }, "new year");
+    events.insert(date{ .year = 2025, .month = 12, .day = 31 }, "old year");
+    for (std::map_entry<date, std::static_str> e : events.entries()) { std::println(f"{e.key.year}-{e.key.month} {e.value}"); }
+    return 0;
+}
+//> knight empty
+//> 2025-12 old year
+//> 2026-1 new year
+//> 2026-12 eve

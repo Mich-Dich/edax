@@ -1,0 +1,16 @@
+// What C++ would accept here, and Edax doesn't.
+import std;
+
+void bump(mut u32& counter) { counter += 1; }
+u32 twice(u32 x) { return x * 2; }
+u64 twice(u64 x) { return x * 2; }
+u32 sum(std::span<u32> xs) { mut u32 s = 0; for (u32 x : xs) { s += x; } return s; }
+
+i32 main() {
+    mut u32 clicks = 0;
+    bump(clicks);                               //~ error[E4023]
+    u32 t = twice(5);                           //~ error[E4031]
+    std::array<u32, 2> pair = [1, 2];
+    u32 s = sum(pair);                          //~ error[E4010]
+    return 0;
+}

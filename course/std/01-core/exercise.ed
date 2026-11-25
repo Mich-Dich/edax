@@ -1,0 +1,75 @@
+// Standard-library lesson 1: a small resource manager. Fill in the TODOs until
+//     python3 course/check.py s1
+// says done. It builds as it is and prints wrong values.
+import std;
+
+// A permission set: one bit per permission.
+compile_time u32 read = bit(0);
+compile_time u32 write = bit(1);
+compile_time u32 execute = bit(2);
+compile_time u32 admin = bit(7);
+
+// A resource: ordered by priority (higher first), then by name; usable as a hash-map key.
+struct resource {
+    std::string name;
+    u8 priority = 0;
+
+    // TODO: higher priority first, then names in order. <=> on numbers and strings gives a
+    // std::ordering; swapping the operands reverses it.
+    std::ordering operator<=>(resource& other) { return std::ordering::equal; }
+    bool operator==(resource& other) = default;
+    // TODO: combine the hashes of both fields (std::hash, std::hash_combine).
+    u64 hash() { return 0; }
+}
+
+// Spends `cost` from `budget` if it is enough; the budget never wraps below zero.
+bool spend(mut u32& budget, u32 cost) {
+    // TODO: std::checked_sub gives none when the result would be below zero.
+    return false;
+}
+
+// The name of the lowest permission in `flags`, or "none".
+std::static_str lowest(u32 flags) {
+    // TODO: std::trailing_zeros(flags) is the index of the lowest set bit.
+    return "none";
+}
+
+i32 main() {
+    mut u32 budget = 100;
+    std::array<u32, 4> costs = [40, 50, 30, 10];
+    for (u32 c : costs) {
+        bool ok = spend(mut budget, c);
+        std::println(f"spend {c}: {ok}, left {budget}");
+    }
+
+    u32 user = read | write;
+    u32 root = read | write | execute | admin;
+    // TODO: count the permissions with std::count_ones.
+    std::println(f"user has 0 permissions, root has 0");
+    std::println(f"lowest of root without read: {lowest(root & ~read)}, of nothing: {lowest(0)}");
+
+    mut std::darray<resource> all = default;
+    all.push(resource{ .name = std::string::from("disk"), .priority = 1 });
+    all.push(resource{ .name = std::string::from("gpu"), .priority = 3 });
+    all.push(resource{ .name = std::string::from("cpu"), .priority = 3 });
+    all.sort();
+    mut std::string order = default;
+    for (resource& r : all) {
+        if (!order.is_empty()) { order.push_str(", "); }
+        order.push_str(std::format(f"{r.name}:{r.priority}"));
+    }
+    std::println(f"order: {order}");
+    std::println(f"same hash for equal keys: {std::hash(all[0]) == std::hash(resource{ .name = std::string::from("cpu"), .priority = 3 })}");
+
+    // TODO: hand the current name over and put "final" in its place (std::replace), then take
+    // "final" out and leave the field empty (std::take).
+    mut resource current = resource{ .name = std::string::from("draft"), .priority = 2 };
+    std::string previous = std::string::from("?");
+    std::string taken = std::string::from("?");
+    std::println(f"{previous} -> {taken}, left '{current.name}'");
+
+    u8 level = 250;
+    // TODO: level + 10, once clamped and once wrapping.
+    std::println(f"level +10: saturated 0, wrapped 0");
+    return 0;
+}

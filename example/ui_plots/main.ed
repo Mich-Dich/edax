@@ -1,0 +1,296 @@
+// ui_plots: plots, sparklines and stat cards (std::ui roadmap M4, draft 35 §8). A frame-time
+// history, a million-point signal reduced per pixel column, bars, scatter, a flight log plotted by
+// reflection, two plots sharing their x axis, a logarithmic axis, and the debug tools
+// (perf_overlay, log_view with the program's std::log records).
+//
+//   edaxc run --root=example ui_plots                                 the window (Esc quits)
+//   edaxc run --root=example ui_plots -- --screenshot out.png         one frame into a PNG
+//
+// Drag a plot to pan, turn the wheel to zoom, double-click to fit; click a legend entry to hide
+// its series.
+
+import std;
+
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace plot = std::ui::plot;
+namespace dbg = std::ui::debug;
+namespace wnd = std::windowing;
+namespace gl = std::graphics::opengl;
+
+compile_time std::graphics::api gl_33 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+
+namespace demo {
+    // One row of a flight log: plotted against `time`, one line per @plot::series field.
+    struct sample {
+        @plot::x
+        f64 time = 0.0;
+        @plot::series{ .unit = "m" }
+        f64 altitude = 0.0;
+        @plot::series
+        f64 speed = 0.0;
+        u32 id = 0;
+    }
+
+    struct state {
+        plot::history<f32, 600> cpu_ms = default;
+        plot::history<f32, 600> gpu_ms = default;
+        plot::history<f32, 120> fps = default;
+        std::darray<f32> signal = default;
+        std::darray<f32> sales = default;
+        std::darray<f32> scatter_x = default;
+        std::darray<f32> scatter_y = default;
+        std::darray<sample> flight = default;
+        std::darray<f32> wave_a = default;
+        std::darray<f32> wave_b = default;
+        std::darray<f64> growth = default;
+        f64 time = 0.0;
+        dbg::frame_stats stats = default;
+        u32 frames = 0;
+    }
+
+    // A repeatable noise in [-1, 1].
+    f32 noise(u32 i) {
+        mut u32 x = i *% 747796405 +% 2891336453;
+        x = ((x >> ((x >> 28) + 4)) ^ x) *% 277803737;
+        x = (x >> 22) ^ x;
+        return cast::round<f32>(x) / 2147483647.5 - 1.0;
+    }
+
+    state make() {
+        mut state s = default;
+        for (u32 i : 0..1000000) {
+            f32 t = cast::round<f32>(i) * 0.00002;
+            mut f32 v = (t * 6.0).sin() * 0.6 + (t * 41.0).sin() * 0.15 + noise(i) * 0.05;
+            if (i == 612345) {
+                v += 2.5;   // one spike: reduction per column keeps it
+            }
+            s.signal.push(v);
+        }
+        std::array<f32, 7> sold = [12.0, 19.0, 7.0, 15.0, 22.0, 9.0, 17.0];
+        for (usize i : 0..7) {
+            s.sales.push(sold[i]);
+        }
+        for (u32 i : 0..400) {
+            f32 x = noise(i * 2 + 1);
+            s.scatter_x.push(x);
+            s.scatter_y.push(x * 0.7 + noise(i * 2 + 2) * 0.35);
+        }
+        for (u32 i : 0..240) {
+            f64 t = cast<f64>(i) * 0.5;
+            s.flight.push(sample{ .time = t, .altitude = 1200.0 * (t / 40.0).min(1.0) * (2.0 - (t / 120.0)), .speed = 80.0 + 20.0 * (t * 0.1).sin(), .id = i });
+        }
+        for (u32 i : 0..120) {
+            f64 t = cast<f64>(i);
+            s.growth.push(2.0 * (1.08f64).pow(t) + cast<f64>(noise(i + 99)) * (1.04f64).pow(t));
+        }
+        for (u32 i : 0..400) {
+            f32 t = cast::round<f32>(i) * 0.05;
+            s.wave_a.push(t.sin());
+            s.wave_b.push((t * 0.5).cos() * 0.8);
+        }
+        return s;
+    }
+
+    void step(mut state& s, f32 dt) {
+        s.time += cast<f64>(dt);
+        s.frames += 1;
+        if (s.frames % 90 == 0) {
+            std::log::info(f"autosave {s.frames / 90} written");
+        }
+        if (s.frames % 250 == 0) {
+            std::log::warn(f"texture streaming behind by {s.frames % 7 + 2} mips");
+        }
+        if (s.frames % 400 == 0) {
+            std::log::error(f"shader 'water.frag' failed to compile: line {s.frames % 31}");
+        }
+        u32 k = cast::truncate<u32>(s.cpu_ms.len() + cast::saturate<usize>(s.time * 60.0));
+        f32 base = 9.0 + (cast::round<f32>(s.time) * 0.7).sin() * 2.0;
+        s.cpu_ms.push(base + noise(k) * 1.2 + if (k % 97 == 0) { 9.0 } else { 0.0 });
+        s.gpu_ms.push(base * 0.8 + noise(k + 7) * 0.8);
+        s.fps.push(1000.0 / (base + 4.0));
+    }
+
+    void build(mut im::frame& f, mut state& s, mut dbg::log_feed& feed) {
+        f.perf_overlay(mut s.stats);
+        f.log_view("Log", mut feed, ui::rect{ .x = 652.0, .y = 652.0, .width = 700.0, .height = 300.0 });
+        {
+            mut im::scope w = f.window("Frame", ui::rect{ .x = 16.0, .y = 16.0, .width = 620.0 });
+            {
+                mut im::scope cards = w.grid(3);
+                cards.stat("FPS", cast<f64>(s.fps.last()), s.fps.as_span(), plot::stat_options{ .unit = "fps", .decimals = 0 });
+                cards.stat("CPU", s.cpu_ms.mean(), s.cpu_ms.as_span(), plot::stat_options{ .unit = "ms", .warn_above = std::some(16.7) });
+                cards.stat("GPU", s.gpu_ms.mean(), s.gpu_ms.as_span(), plot::stat_options{ .unit = "ms" });
+            }
+            {
+                mut plot::scope p = w.plot("Frame time", 200.0);
+                p.axis_y(plot::axis{ .label = "ms", .min = std::some(0.0), .max = std::some(25.0), .limit_min = std::some(0.0) });
+                p.line("cpu", s.cpu_ms.as_span());
+                p.area("gpu", s.gpu_ms.as_span());
+                p.hline("60 fps", 16.7, p.theme().colors.warning);
+            }
+            {
+                mut im::scope r = w.row();
+                r.muted(f"cpu");
+                r.width(ui::fill(1.0)).sparkline(s.cpu_ms.as_span());
+            }
+        }
+        {
+            mut im::scope w = f.window("Data", ui::rect{ .x = 652.0, .y = 16.0, .width = 700.0 });
+            {
+                mut plot::scope p = w.plot("A million points", 190.0);
+                p.line("signal", s.signal.as_span());
+            }
+            {
+                mut im::scope cells = w.grid(2);
+                {
+                    mut plot::scope p = cells.plot("Sales", 170.0);
+                    p.axis_y(plot::axis{ .limit_min = std::some(0.0) });
+                    p.bars("units", s.sales.as_span());
+                }
+                {
+                    mut plot::scope p = cells.plot("Correlation", 170.0);
+                    p.scatter("samples", s.scatter_x.as_span(), s.scatter_y.as_span());
+                }
+            }
+            {
+                mut plot::scope p = w.plot("Flight", 180.0);
+                // No time before the start, no altitude below the ground: pans and zooms stop there.
+                p.axis_x(plot::axis{ .label = "seconds", .limit_min = std::some(0.0) });
+                p.axis_y(plot::axis{ .limit_min = std::some(0.0) });
+                p.series("", s.flight.as_span());
+            }
+        }
+        {
+            mut im::scope w = f.window("Linked", ui::rect{ .x = 16.0, .y = 520.0, .width = 620.0 });
+            w.muted(f"Both plots share their x axis: pan or zoom one.");
+            {
+                mut plot::scope p = w.plot("", 110.0);
+                p.link_x("waves");
+                p.line("a", s.wave_a.as_span());
+            }
+            {
+                mut plot::scope p = w.plot("", 110.0);
+                p.link_x("waves");
+                p.color(p.theme().colors.success);
+                p.line("b", s.wave_b.as_span());
+            }
+            {
+                mut plot::scope p = w.plot("Players (log scale)", 130.0);
+                p.axis_y(plot::axis{ .kind = plot::scale::logarithmic });
+                p.line("players", s.growth.as_span());
+                p.hline("10k", 10000.0, p.theme().colors.danger);
+            }
+        }
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+
+    mut wnd::system sys = match (wnd::system::start()) {
+        std::ok(s) => move s,
+        std::error(e) => {
+            std::eprintln(f"no window system: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
+        .title = "Edax plots",
+        .size  = wnd::size{ .width = 1720, .height = 970 },
+    }, wnd::opengl::config{ .api = gl_33, .samples = 0 }, wnd::opengl::sharing::automatic)) {
+        std::ok(w) => move w,
+        std::error(e) => {
+            std::eprintln(f"no window: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut ui::opengl::renderer<gl_33> renderer = {
+        mut wnd::opengl::frame frame = win.begin_frame();
+        match (ui::opengl::renderer<gl_33>::make(frame)) {
+            std::ok(r) => move r,
+            std::error(e) => {
+                std::eprintln(f"no renderer: {e}");
+                return std::exit_code::failure;
+            },
+        }
+    };
+
+    mut std::log::session session = std::log::start(std::log::options{});
+    (std::unique_ptr<dbg::log_sink> sink, dbg::log_feed log_feed) = dbg::log_sink::create(2000);
+    mut dbg::log_feed feed = log_feed.clone();
+    _ = session.add(move sink, std::log::sink_options{ .pattern = std::log::pattern::from("{time}.{millis} {level:<5} {message}") });
+    std::log::info(f"ui_plots started");
+    mut demo::state s = demo::make();
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    if (screenshot.is_some()) {
+        for (u32 i : 0..1300) {
+            demo::step(mut s, 1.0 / 60.0);
+            s.stats.record_seconds(0.0155 + demo::noise(i) * 0.002 + if (i % 97 == 0) { 0.012 } else { 0.0 });
+        }
+        session.flush();
+    }
+
+    mut std::darray<wnd::event> events = default;
+    mut u32 frame_number = 0;
+    mut bool finished = false;
+    while (!win.should_close()) {
+        sys.poll();
+        win.drain_events(mut events);
+        for (wnd::event e : events) {
+            match (e) {
+                wnd::event::key(k) if k.key == wnd::key::escape && !ctx.wants_keyboard() => win.request_close(),
+                _ => {},
+            }
+        }
+        // The screenshot hovers the frame-time plot.
+        ui::input in = match (screenshot) {
+            std::some(_) => ui::input{ .cursor = ui::vec2{ .x = 400.0, .y = 330.0 }, .dt = 1.0 / 60.0 },
+            std::none    => ui::input_of(win.input(), events.as_span(), 0.0),
+        };
+        if (screenshot.is_none()) {
+            demo::step(mut s, 1.0 / 60.0);
+        }
+        {
+            mut im::frame f = ctx.begin_frame(move in, ui::window_size(win.framebuffer_size()));
+            demo::build(mut f, mut s, mut feed);
+            f.finish();
+        }
+        if (screenshot.is_none()) {
+            s.stats.record(ctx);
+        }
+        {
+            mut wnd::opengl::frame frame = win.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            ui::color bg = ctx.theme().colors.background;
+            gl::functions<gl_33>& f = renderer.functions();
+            unsafe {
+                f.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                f.glClearColor(bg.r, bg.g, bg.b, 1.0);
+                f.glClear(gl::GL_COLOR_BUFFER_BIT);
+            }
+            renderer.draw(frame, ctx.draw_data(), ctx.fonts());
+            match (screenshot) {
+                std::some(path) => {
+                    // Windows know their heights from the first frame, plots their areas from the second.
+                    if (frame_number == 4) {
+                        std::image::rgba8 shot = renderer.read_pixels(frame);
+                        std::darray<u8> png = std::image::encode_png(shot);
+                        mut std::file out = std::file::create(path).expect("the screenshot file");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
+                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        finished = true;
+                    }
+                },
+                std::none => {},
+            }
+            frame.present();
+        }
+        if (finished) {
+            win.request_close();
+        }
+        frame_number += 1;
+    }
+    return std::exit_code::success;
+}

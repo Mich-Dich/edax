@@ -166,14 +166,21 @@ private:
     // std::graphics comes with std::windowing, which uses it (std modules' own text doesn't count
     // as naming a module).
     static std::vector<std::string_view> on_demand_triggers(std::string_view name) {
-        if (name == "std::log") return {name};
+        if (name == "std::log") return {name, "std::ui::debug"};
         if (name == "std::windowing" || name.starts_with("std::windowing::")) return {"std::windowing"};
         if (name == "std::graphics") return {"std::graphics", "std::windowing"};
         if (name == "std::graphics::opengl" || name == "std::graphics::vulkan") return {name};
         // std::ui and the modules it builds on; its OpenGL renderer only for programs that also
         // name OpenGL (see ui_opengl_named).
         if (name == "std::ui" || name == "std::ui::opengl" || name == "std::ui::platform") return {"std::ui"};
-        if (name == "std::ui::immediate" || name == "std::ui::routing") return {"std::ui::immediate"};
+        // The plots, the debug tools and docking are built on std::ui::immediate; the debug tools use plots and
+        // std::log (log_view is a log sink).
+        if (name == "std::ui::immediate" || name == "std::ui::routing") return {"std::ui::immediate", "std::ui::plot", "std::ui::debug", "std::ui::dock"};
+        if (name == "std::ui::plot") return {"std::ui::plot", "std::ui::debug"};
+        if (name == "std::ui::debug") return {"std::ui::debug"};
+        if (name == "std::ui::dock") return {"std::ui::dock"};
+        // The node editor, for programs that name it.
+        if (name == "std::ui::nodes") return {"std::ui::nodes"};
         if (name == "std::math" || name == "std::image" || name == "std::text::font") return {name, "std::ui"};
         return {};
     }
@@ -207,7 +214,9 @@ private:
         // std::ui::platform (input from a window) for programs that use std::ui with windows.
         if (name == "std::ui::platform") return program_names({"std::ui"}) && (ui_gl || program_names({"std::windowing"}));
         // std::ui::routing (the immediate context as an input layer) when both are used.
-        if (name == "std::ui::routing") return program_names({"std::ui::immediate"}) && (ui_gl || program_names({"std::windowing"}));
+        if (name == "std::ui::routing") {
+            return program_names({"std::ui::immediate", "std::ui::plot", "std::ui::debug", "std::ui::dock", "std::ui::nodes"}) && (ui_gl || program_names({"std::windowing"}));
+        }
         if (ui_gl && (name == "std::windowing" || name.starts_with("std::windowing::") || name == "std::graphics" ||
                       name == "std::graphics::opengl")) {
             return true;

@@ -1,0 +1,17 @@
+// Thread names and options, the machine's parallelism, and cache-line alignment.
+import std;
+
+i32 main() {
+    std::println(f"at least one core: {std::thread::available_parallelism() >= 1}");
+    std::thread::handle<std::string> h = std::thread::spawn(std::thread::options{ .name = "worker-1" }, []() {
+        return std::thread::current_name();
+    });
+    std::println(f"the thread called itself '{h.join()}'");
+    std::array<std::cache_aligned<std::atomic<u64>>, 2> counters = default;   // each on its own cache line
+    _ = counters[0]->fetch_wrapping_add(1, std::memory_order::relaxed);
+    std::println(f"{std::size_of<std::cache_aligned<std::atomic<u64>>>()} bytes each, first is {counters[0]->load(std::memory_order::relaxed)}");
+    return 0;
+}
+//> at least one core: true
+//> the thread called itself 'worker-1'
+//> 64 bytes each, first is 1

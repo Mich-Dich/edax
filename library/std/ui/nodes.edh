@@ -1,0 +1,654 @@
+// The Edax standard library: module std::ui::nodes, a node editor on std::ui::immediate (draft 35
+// §13.1, roadmap M6).
+//
+//     namespace nodes = std::ui::nodes;
+//
+//     mut nodes::editor ed = w.node_editor("dialogue", mut view, 0.0);   // pan, zoom, selection in `view`
+//     for (line& l : script.lines) {
+//         mut nodes::node_view n = ed.node(l.id, mut l.position, l.speaker.as_str(), nodes::node_look{});
+//         n.input(pin_id(l.id, 0), "in", nodes::pin_style{ .shape = nodes::pin_shape::triangle });
+//         {
+//             mut im::scope body = n.body();          // any widget inside a node
+//             _ = body.input_text("", mut l.text);
+//         }
+//         n.output(pin_id(l.id, 1), "next", nodes::pin_style{});
+//     }
+//     for (link& k : script.links) { ed.link(k.id, k.from, k.to); }
+//     nodes::edits e = ed.finish();                  // what the user did; the program applies it
+//
+// The editor never changes the program's data except the positions it is given (dragging moves
+// nodes and reroute points, arranging lines nodes up, Alt-clicks add and remove reroute points); links made, links and nodes deleted, and drops on the canvas are reported in `edits`.
+//
+// Mouse: drag a node to move it (with the selection; widgets in its body keep their own drags), its
+// header's chevron collapses it, drag from a pin to another to link them,
+// drag on the canvas to select with a box (nodes and links it touches; they are highlighted while
+// it is dragged), the middle button (or Alt and the left) pans, the wheel
+// zooms at the cursor, a right click asks for the add-node menu, a click on a link selects it (with Shift or Ctrl: adds or removes it),
+// Alt and a click on a link adds a reroute point there (links declared with `link_via`), dragging
+// a reroute point moves it, Alt and a click on one removes it.
+// Keys (while the canvas has the focus): Delete removes the selection, Ctrl+A selects every node,
+// F fits the view to the selection (or to everything), Ctrl+D asks to duplicate the selection.
+//
+// The look is the style in `view_state.look`: sizes, how links run (curves, subway lines in 8
+// directions with rounded or sharp corners, straight), the grid, an optional theme for the whole
+// canvas, and one painter function per part (canvas, node, pin, pin label, link, frame, selection
+// box). `style::studio()` is the default; `metro()`, `blueprint()`, `neon()` and `paper()` are
+// others, and any painter can be replaced:
+//
+//     view.look = nodes::style::metro();
+//     view.look.link.corner_radius = 20.0;
+//     view.look.draw.node = [](mut ui::painter& p, nodes::node_part& n) {
+//         if (n.look.variant == 1) { draw_comment(mut p, n); } else { nodes::painters::node(mut p, n); }
+//     };
+
+import std;
+
+namespace std::ui::nodes {
+    // The shape of a pin: circles for values, triangles for flow, squares for lists, diamonds for
+    // anything else the program wants to tell apart.
+    enum pin_shape : u8 { circle, square, triangle, diamond }
+
+    // How a pin looks; its colour also colours the links that leave it.
+    struct pin_style {
+        std::ui::color color = std::ui::color::hex(0x9aa4b2);
+        pin_shape shape = pin_shape::circle;
+    }
+
+    // How a node looks: its header's colour and icon, and its width on the canvas (at zoom 1).
+    struct node_look {
+        std::ui::color color = std::ui::color::hex(0x7c8aa0);
+        std::ui::icon symbol = std::ui::icon::none;
+        f32 width = 180.0;
+        // Free for the program's painters: which drawing of theirs to use for this node.
+        u32 variant = 0;
+    }
+
+    // How links run from an output to an input.
+    enum link_shape : u8 {
+        // A smooth S-curve.
+        curve,
+        // A subway line: straight runs in the 8 directions (up, up-right, right, down-right, down,
+        // down-left, left, up-left), its corners rounded or sharp.
+        metro,
+        // Straight from pin to pin, after a short run out of each.
+        straight,
+    }
+
+    // The canvas's grid.
+    enum grid_kind : u8 { none, lines, dots, crosses }
+
+    // How links are routed and how wide they are (at zoom 1).
+    struct link_look {
+        link_shape shape = link_shape::curve;
+        // Metro and straight links: corners as arcs of `corner_radius` (sharp when off).
+        bool round_corners = true;
+        f32 corner_radius = 12.0;
+        // Metro and straight links: how far a link runs straight out of a pin before it turns.
+        f32 stub = 20.0;
+        f32 width = 1.8;
+        // A soft band under the link, this wide (0: none).
+        f32 halo = 7.0;
+    }
+
+    // ---- what the painters are given (screen coordinates) ----
+
+    // The canvas behind everything: `origin` is where the canvas point (0, 0) is, `step` the
+    // grid's spacing on the screen.
+    struct canvas_part {
+        std::ui::rect bounds = default;
+        std::ui::vec2 origin = default;
+        f32 zoom = 1.0;
+        grid_kind grid = grid_kind::lines;
+        f32 step = 24.0;
+        u32 major_every = 4;
+    }
+
+    // A node's card, before its pins and body: `header` is its top `header_height`. `preview`:
+    // inside the selection box being dragged (it will be selected when the button is let go).
+    // `chevron` is the button that collapses the node (only the header is shown while collapsed).
+    view struct node_part {
+        std::ui::rect bounds;
+        std::ui::rect header;
+        std::str title;
+        node_look look;
+        bool selected;
+        bool preview;
+        f32 hover;
+        f32 zoom;
+        bool collapsed;
+        std::ui::rect chevron;
+        f32 chevron_hover;
+    }
+
+    // A pin on a node's edge; `radius` is already zoomed.
+    struct pin_part {
+        std::ui::vec2 at = default;
+        pin_style style = default;
+        bool output = false;
+        bool linked = false;
+        bool hovered = false;
+        f32 radius = 5.0;
+        f32 zoom = 1.0;
+    }
+
+    // A pin's label in its row of the node.
+    view struct pin_label_part {
+        std::ui::rect row;
+        std::str label;
+        pin_style style;
+        bool output;
+        f32 zoom;
+    }
+
+    // A link as a polyline (curves come sampled). `dragging`: the link being drawn by the user.
+    view struct link_part {
+        std::span<std::ui::vec2> points;
+        std::ui::color color;
+        link_look look;
+        bool selected;
+        bool preview;
+        bool hovered;
+        bool dragging;
+        f32 zoom;
+    }
+
+    // A comment frame: its box, its title bar, and the resize grip in the bottom-right corner.
+    view struct frame_part {
+        std::ui::rect bounds;
+        std::ui::rect header;
+        std::ui::rect grip;
+        std::str title;
+        std::ui::color tint;
+        f32 hover;
+        f32 grip_hover;
+        f32 zoom;
+    }
+
+    // A reroute point of a link.
+    struct reroute_part {
+        std::ui::vec2 at = default;
+        std::ui::color color = default;
+        bool hovered = false;
+        bool dragging = false;
+        f32 zoom = 1.0;
+    }
+
+    // The selection box while it is dragged.
+    struct box_part {
+        std::ui::rect bounds = default;
+    }
+
+    // The painter functions of a style; the defaults are std::ui::nodes::painters's.
+    struct painter_set {
+        std::function<void(mut std::ui::painter&, canvas_part&)> canvas = [](mut std::ui::painter& p, canvas_part& c) { std::ui::nodes::painters::canvas(mut p, c); };
+        std::function<void(mut std::ui::painter&, node_part&)> node = [](mut std::ui::painter& p, node_part& n) { std::ui::nodes::painters::node(mut p, n); };
+        std::function<void(mut std::ui::painter&, pin_part&)> pin = [](mut std::ui::painter& p, pin_part& n) { std::ui::nodes::painters::pin(mut p, n); };
+        std::function<void(mut std::ui::painter&, pin_label_part&)> pin_label = [](mut std::ui::painter& p, pin_label_part& l) { std::ui::nodes::painters::pin_label(mut p, l); };
+        std::function<void(mut std::ui::painter&, link_part&)> link = [](mut std::ui::painter& p, link_part& l) { std::ui::nodes::painters::link(mut p, l); };
+        std::function<void(mut std::ui::painter&, frame_part&)> frame = [](mut std::ui::painter& p, frame_part& f) { std::ui::nodes::painters::frame(mut p, f); };
+        std::function<void(mut std::ui::painter&, box_part&)> selection_box = [](mut std::ui::painter& p, box_part& b) { std::ui::nodes::painters::selection_box(mut p, b); };
+        std::function<void(mut std::ui::painter&, reroute_part&)> reroute = [](mut std::ui::painter& p, reroute_part& r) { std::ui::nodes::painters::reroute(mut p, r); };
+    }
+
+    // How a node editor looks: sizes (at zoom 1), links, the grid, an optional theme for the
+    // canvas and everything on it (the widgets in node bodies too), and the painters.
+    struct style {
+        f32 header_height = 30.0;
+        f32 pin_row = 22.0;
+        f32 pin_radius = 5.0;
+        // Space around a node's body.
+        f32 padding = 8.0;
+        grid_kind grid = grid_kind::lines;
+        f32 grid_step = 24.0;
+        u32 major_every = 4;
+        link_look link = default;
+        bool minimap = true;
+        // The theme inside the editor; none: the scope's.
+        std::option<std::ui::theme> canvas_theme = std::none;
+        painter_set draw = default;
+
+        // Neutral cards with a tinted header, curved links with a halo (the default).
+        static style studio();
+        // A subway map: thick lines in 8 directions with rounded corners, stations for pins, line
+        // badges for icons.
+        static style metro();
+        // A technical drawing: white lines on blue, sharp-cornered metro links, corner marks.
+        static style blueprint();
+        // Glowing outlines and links on black.
+        static style neon();
+        // Light and bold: cream paper, black outlines, hard offset shadows, flat colour headers.
+        static style paper();
+    }
+
+    // The painters of the styles, to call from a program's own.
+    namespace painters {
+        void canvas(mut std::ui::painter& p, canvas_part& c);
+        void node(mut std::ui::painter& p, node_part& n);
+        void pin(mut std::ui::painter& p, pin_part& n);
+        void pin_label(mut std::ui::painter& p, pin_label_part& l);
+        void link(mut std::ui::painter& p, link_part& l);
+        void frame(mut std::ui::painter& p, frame_part& f);
+        void selection_box(mut std::ui::painter& p, box_part& b);
+        void reroute(mut std::ui::painter& p, reroute_part& r);
+        // The chevron of a node's header: down while open, right while collapsed.
+        void chevron(mut std::ui::painter& p, node_part& n, std::ui::color c);
+        // A pin's shape at `at`, hollow (in `back`) unless `filled`.
+        void pin_shape_at(mut std::ui::draw_list& l, std::ui::vec2 at, pin_style style, bool filled, f32 radius, std::ui::color back);
+
+        namespace metro {
+            void canvas(mut std::ui::painter& p, canvas_part& c);
+            void node(mut std::ui::painter& p, node_part& n);
+            void pin(mut std::ui::painter& p, pin_part& n);
+            void link(mut std::ui::painter& p, link_part& l);
+        }
+        namespace blueprint {
+            void canvas(mut std::ui::painter& p, canvas_part& c);
+            void node(mut std::ui::painter& p, node_part& n);
+            void pin(mut std::ui::painter& p, pin_part& n);
+            void link(mut std::ui::painter& p, link_part& l);
+            void frame(mut std::ui::painter& p, frame_part& f);
+        }
+        namespace neon {
+            void canvas(mut std::ui::painter& p, canvas_part& c);
+            void node(mut std::ui::painter& p, node_part& n);
+            void pin(mut std::ui::painter& p, pin_part& n);
+            void link(mut std::ui::painter& p, link_part& l);
+        }
+        namespace paper {
+            void canvas(mut std::ui::painter& p, canvas_part& c);
+            void node(mut std::ui::painter& p, node_part& n);
+            void pin(mut std::ui::painter& p, pin_part& n);
+            void link(mut std::ui::painter& p, link_part& l);
+            void frame(mut std::ui::painter& p, frame_part& f);
+            void selection_box(mut std::ui::painter& p, box_part& b);
+        }
+    }
+
+    // A pin as the editor saw it this frame (screen coordinates).
+    struct pin_place {
+        u64 id = 0;
+        u64 node = 0;
+        std::ui::vec2 at = default;
+        bool output = false;
+        pin_style style = default;
+    }
+
+    // A node as the editor saw it this frame (screen coordinates).
+    struct node_place {
+        u64 id = 0;
+        std::ui::rect bounds = default;
+    }
+
+    // A link to draw at the end of the frame, under the nodes.
+    struct link_place {
+        u64 id = 0;
+        std::ui::vec2 from = default;
+        std::ui::vec2 to = default;
+        std::ui::color color = default;
+        // Its polyline: `view_state.path[first..first + count]`.
+        u32 first = 0;
+        u32 count = 0;
+        // Where each of its runs (pin, reroute points, pin) starts in `path`:
+        // `view_state.marks[mark_first..mark_first + mark_count]`.
+        u32 mark_first = 0;
+        u32 mark_count = 0;
+    }
+
+    // A reroute point to draw (screen coordinates).
+    struct reroute_place {
+        std::ui::vec2 at = default;
+        std::ui::color color = default;
+        bool hovered = false;
+        bool dragging = false;
+    }
+
+    // A reroute point to add to a link next frame: before its `index`th point (canvas units).
+    struct reroute_insert {
+        u64 link = 0;
+        usize index = 0;
+        std::ui::vec2 at = default;
+    }
+
+    // How to line up the selected nodes (`view_state.arrange_next`): their left edges, centres or
+    // right edges; tops, middles or bottoms; or the same space between them across or down.
+    enum arrangement : u8 { left, center, right, top, middle, bottom, spread_x, spread_y }
+
+    // A node's new place on one axis (from an arrangement).
+    struct axis_target {
+        bool horizontal = true;
+        f32 value = 0.0;
+    }
+
+    // What a drag on the canvas is doing.
+    enum drag_kind : u8 { none, nodes, pan, box, link, frame, reroute }
+
+    // What an editor keeps between frames; the program owns it (one per editor). `pan` and `zoom`
+    // are the view, `selected` the selected nodes, `selected_links` the selected links, `look` the
+    // style it is drawn with.
+    struct view_state {
+        std::ui::vec2 pan = default;
+        f32 zoom = 1.0;
+        std::darray<u64> selected = default;
+        std::darray<u64> selected_links = default;
+        style look = default;
+        // Collapsed nodes (only their header shows).
+        std::hash_map<u64, bool> collapsed = default;
+        // Set to line up the selection in the next frame (needs two nodes or more).
+        std::option<arrangement> arrange_next = std::none;
+        // Where the editor was drawn in the last frame (screen coordinates).
+        std::ui::rect area = default;
+
+        // ---- used by the editor ----
+        drag_kind drag = drag_kind::none;
+        std::ui::vec2 press_at = default;
+        // The cursor in the last frame, and how far it moved since (0 in the frame of a press).
+        std::ui::vec2 last = default;
+        std::ui::vec2 step = default;
+        // A link being dragged: the pin it started at, and whether that is an output.
+        u64 link_from = 0;
+        bool link_from_output = false;
+        // A frame being moved, and how far it moved this frame (canvas units).
+        u64 moving_frame = 0;
+        std::ui::vec2 frame_delta = default;
+        std::ui::rect frame_before = default;
+        // The nodes' heights in the last frame (canvas units), by id.
+        std::hash_map<u64, f32> heights = default;
+        // The pins that had a link in the last frame.
+        std::hash_map<u64, bool> linked = default;
+        // This frame's pins, nodes and links.
+        std::darray<pin_place> pins = default;
+        std::darray<node_place> boxes = default;
+        std::darray<link_place> links = default;
+        std::darray<u64> linked_now = default;
+        // The links' polylines, and room for routing one.
+        std::darray<std::ui::vec2> path = default;
+        std::darray<std::ui::vec2> corners = default;
+        std::darray<u32> marks = default;
+        std::darray<reroute_place> reroutes = default;
+        // A press on a node or a frame's title or corner, decided at finish() (a widget in the
+        // node may take it).
+        std::option<u64> pressed_node = std::none;
+        std::option<u64> pressed_frame = std::none;
+        u64 pressed_frame_widget = 0;
+        // The reroute point being dragged, and one to add next frame.
+        u64 reroute_link = 0;
+        usize reroute_index = 0;
+        std::option<reroute_insert> insert_next = std::none;
+        // Where an arrangement puts nodes, by id (applied as they are declared).
+        std::hash_map<u64, axis_target> arranged = default;
+        // How far the selection moves this frame (canvas units).
+        std::ui::vec2 move_by = default;
+        bool fit_next = false;
+    }
+
+    // A link the user drew: from an output pin to an input pin.
+    struct link_request {
+        u64 from = 0;
+        u64 to = 0;
+    }
+
+    // A link dragged from `from` and dropped on the canvas at `at` (canvas coordinates): the place
+    // to open the add-node menu and connect the new node.
+    struct canvas_drop {
+        u64 from = 0;
+        bool from_output = true;
+        std::ui::vec2 at = default;
+    }
+
+    // What the user did in a frame. The program decides what to accept.
+    struct edits {
+        std::darray<link_request> created = default;
+        std::darray<u64> deleted_links = default;
+        std::darray<u64> deleted_nodes = default;
+        // Nodes whose position changed (by dragging, or by their frame).
+        std::darray<u64> moved = default;
+        std::option<canvas_drop> dropped = std::none;
+        // A right click on the canvas or Space: where to open the add-node menu (canvas units).
+        std::option<std::ui::vec2> menu_at = std::none;
+        // Ctrl+D with a selection.
+        bool duplicate = false;
+        // Links whose reroute points were added, moved or removed.
+        std::darray<u64> rerouted = default;
+
+        // Whether anything at all was asked for.
+        bool changed();
+    }
+
+    // A node being built: its pins and its body, top to bottom. Ends at its `}`.
+    view class node_view {
+    public:
+        // An input pin on the left edge, with its label.
+        void input(u64 pin, std::str label, pin_style style) mut;
+        // An output pin on the right edge, its label right-aligned.
+        void output(u64 pin, std::str label, pin_style style) mut;
+        // An input pin with a widget after its label while it has no link (the value used when
+        // nothing is connected): the scope holds the widget, and does nothing while linked.
+        @std::must_use
+        std::ui::immediate::scope input_widget(u64 pin, std::str label, pin_style style) mut;
+        // The node's body below the pins so far: an ordinary scope (any widget works), drawn at the
+        // editor's zoom; it does nothing while the node is collapsed.
+        @std::must_use
+        std::ui::immediate::scope body() mut;
+
+        ~node_view();
+
+        mut editor& ed;
+        u64 id = 0;
+        std::ui::rect bounds = default;
+        f32 cursor_y = 0.0;
+        bool collapsed = false;
+    }
+
+    // A node editor in a scope's window. Declare frames first, then nodes (with their pins), then
+    // links; finish() ends it and reports the edits.
+    view class editor {
+    public:
+        // A comment frame: a coloured box with a title over the nodes declared after it; dragging
+        // its title moves it and the nodes inside, its corner resizes it. `area` is in canvas units.
+        void frame(u64 id, mut std::ui::rect& area, std::str title, std::ui::color tint) mut;
+        // A node at `position` (canvas units, moved by dragging) with a header titled `title`.
+        @std::must_use
+        node_view node(u64 id, mut std::ui::vec2& position, std::str title, node_look look) mut;
+        // A link from the output pin `from` to the input pin `to` (both declared this frame).
+        void link(u64 id, u64 from, u64 to) mut;
+        // A link through reroute points (canvas units, in order from `from`): the editor adds,
+        // moves and removes them as the user asks, and reports the link in `edits.rerouted`.
+        void link_via(u64 id, u64 from, u64 to, mut std::darray<std::ui::vec2>& via) mut;
+        // Whether a link used `pin` in the last frame.
+        bool is_linked(u64 pin);
+        // Canvas units to the screen and back.
+        std::ui::vec2 to_screen(std::ui::vec2 p);
+        std::ui::vec2 to_canvas(std::ui::vec2 p);
+        // Ends the editor: links under the nodes, the dragged link, the box, the minimap, keys.
+        edits finish() move;
+
+        ~editor();
+
+        mut std::ui::immediate::scope& parent;
+        mut view_state& state;
+        u64 id = 0;
+        std::ui::rect area = default;
+        // The theme before the zoom was applied (restored at the end).
+        std::ui::theme look = default;
+        // Where the nodes' drawing began in the window's list (links are put there).
+        u32 mark = 0;
+        edits out = default;
+        bool background_pressed = false;
+        bool finished = false;
+    }
+
+    // Graph order for evaluating or compiling: every node after the nodes its inputs come from.
+    struct edge {
+        u64 from = 0;
+        u64 to = 0;
+    }
+
+    // `nodes` sorted so that every edge goes forward; an error names a node on a cycle.
+    std::result<std::darray<u64>, u64> topological_order(std::span<u64> nodes, std::span<edge> edges);
+
+    // The node editor as a widget of std::ui::immediate's scopes.
+    interface widgets {
+        // A node editor across the scope, `height` pixels high (0: the rest of the panel).
+        @std::must_use
+        editor node_editor(std::str name, mut view_state& state, f32 height, implicit compile_time std::call_site where) mut;
+    }
+
+    // ---- nodes::graph<K>: a whole editor from one enum (draft 35 §13.2) ------------------------------
+    //
+    //     @nodes::kind{ .title = "Mix", .category = "Math", .color = 0x3e8ef7 }
+    //     struct mix_node {
+    //         @nodes::in vec3 a = default;
+    //         @nodes::in vec3 b = default;
+    //         @nodes::in @ui::range{ .min = 0.0, .max = 1.0 } f32 t = 0.5;   // a slider while unlinked
+    //         @nodes::out vec3 result = default;
+    //     }
+    //     enum material_node : u16 { mix(mix_node), output(material_output) }
+    //
+    //     mut nodes::graph<material_node> material = nodes::graph<material_node>::make();
+    //     nodes::graph_edit e = nodes::graph_editor(mut panel, mut material);    // every frame
+    //     if (e.changed) { shader = compile(material); }
+    //
+    // The kinds are the enum's alternatives (each with a struct payload). A payload's @nodes::in and
+    // @nodes::out fields are pins, typed by the field's type; its other fields are parameters, edited
+    // in the node with the editors of `inspect` (annotations and all). An unlinked input of a number
+    // or a bool shows its editor in its row; other unlinked inputs are edited in the body. Links go
+    // between pins of the same type, or where a @nodes::converts function goes from the output's type
+    // to the input's; a link into an input replaces the one there.
+    //
+    // The editor adds the add-node menu (a right click, Space, or a link dropped on the canvas; typing
+    // filters it; a dropped link lists only kinds it can connect to, and connects the new node), copy
+    // (Ctrl+C), cut (Ctrl+X), paste (Ctrl+V), duplicate (Ctrl+D), undo (Ctrl+Z) and redo (Ctrl+Y,
+    // Ctrl+Shift+Z): every finished change is one step. Graphs are saved as readable text.
+
+    // On a node kind's payload struct.
+    annotation(std::meta::target::type)
+    struct kind {
+        // The node's title (default: the alternative's name).
+        std::static_str title = "";
+        // The add-node menu's group.
+        std::static_str category = "Other";
+        // The header's colour (0xRRGGBB) and icon, and the node's width.
+        u32 color = 0x7c8aa0;
+        std::ui::icon symbol = std::ui::icon::none;
+        f32 width = 170.0;
+        // False: the user can't delete it (a graph's output).
+        bool removable = true;
+    }
+
+    // A field that is an input pin.
+    annotation(std::meta::target::field)
+    struct in { }
+
+    // A field that is an output pin.
+    annotation(std::meta::target::field)
+    struct out { }
+
+    // On a function `To f(From value)`: an output of type From may link into an input of type To
+    // (the program converts when it evaluates the graph).
+    annotation(std::meta::target::function)
+    struct converts { }
+
+    // A node of a graph: its id, its kind and parameters, its place (canvas units).
+    template<type K>
+    struct graph_node {
+        u64 id = 0;
+        K value;
+        std::ui::vec2 at = default;
+    }
+
+    // A link between two pins (a pin is node id × 64 + field index), through reroute points.
+    struct graph_link {
+        u64 id = 0;
+        u64 from = 0;
+        u64 to = 0;
+        std::darray<std::ui::vec2> via = default;
+    }
+
+    // A comment frame of a graph.
+    struct graph_frame {
+        u64 id = 0;
+        std::ui::rect area = default;
+        std::string title = default;
+        u32 color = 0x7c8aa0;
+    }
+
+    // Where an input's value comes from: the node, its output field, and that field's type
+    // (`std::meta::type_id`), to tell when the program has to convert.
+    struct source {
+        u64 node = 0;
+        std::static_str output = "";
+        u64 type_id = 0;
+    }
+
+    // What graph_editor did this frame.
+    struct graph_edit {
+        // The graph changed (a node, a link, a parameter while it is dragged, an undo).
+        bool changed = false;
+        // A change was finished and recorded as an undo step.
+        bool committed = false;
+        // Why something the user asked for was refused, for a status line ("a vec2 output can't
+        // go into a vec3 input"); empty when nothing was.
+        std::string problem = default;
+    }
+
+    // A graph whose node kinds are `K`'s alternatives. Plain data: it can be built, read, saved and
+    // compiled without an editor.
+    template<type K>
+    struct graph {
+        static graph<K> make();
+        // A graph from the text of to_text(); the error names what couldn't be read.
+        static std::result<graph<K>, std::string> from_text(std::str text);
+        static std::result<graph<K>, std::string> load(std::str path);
+        // The graph as text: one line per node (its kind, place and every field but the outputs),
+        // link and frame.
+        std::string to_text();
+        std::result<void, std::string> save(std::str path);
+
+        // Adds a node at `at` (canvas units); returns its id.
+        u64 add(K value, std::ui::vec2 at) mut;
+        // Removes a node and its links.
+        void remove(u64 node) mut;
+        // Links the output field `output` of `from` to the input field `input` of `to`, replacing
+        // the link into that input; the error says why not.
+        std::result<u64, std::string> connect(u64 from, std::str output, u64 to, std::str input) mut;
+        // Adds a comment frame (canvas units, colour 0xRRGGBB).
+        void add_frame(std::str title, std::ui::rect area, u32 color) mut;
+
+        std::option<usize> index_of(u64 node);
+        // The output linked into the input field `input` of `node`, if any.
+        std::option<source> source_of(u64 node, std::str input);
+        // Node ids with every node after the nodes its inputs come from; an error names a node on a
+        // cycle.
+        std::result<std::darray<u64>, u64> topological_order();
+
+        // Undoes or redoes the last finished change made in graph_editor; false when there is none.
+        bool undo() mut;
+        bool redo() mut;
+
+        std::darray<graph_node<K>> nodes = default;
+        std::darray<graph_link> links = default;
+        std::darray<graph_frame> frames = default;
+        u64 next_id = 1;
+        // The editor's view, selection and style.
+        view_state view = default;
+
+        // ---- used by graph_editor ----
+        // The graph's text before each finished change (newest last), and after undone ones.
+        std::darray<std::string> undo_steps = default;
+        std::darray<std::string> redo_steps = default;
+        // The text at the last finished change.
+        std::string last_text = default;
+        bool settled = false;
+        // Something changed since the last finished change.
+        bool dirty = false;
+        // The add-node menu: where it is open (canvas units), the link dropped there, the search.
+        std::option<std::ui::vec2> menu_at = std::none;
+        std::option<canvas_drop> menu_drop = std::none;
+        std::string search = default;
+    }
+
+    // The editor of a graph across the rest of `s`, with everything §13.2 lists; the graph changes
+    // as the user edits it.
+    template<type K>
+    graph_edit graph_editor(mut std::ui::immediate::scope& s, mut graph<K>& g);
+}

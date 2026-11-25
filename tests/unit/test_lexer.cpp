@@ -85,7 +85,7 @@ TEST_CASE("lexer: every keyword and built-in type is recognized") {
     for (std::string_view word : {"import", "struct", "class", "interface", "enum", "template",
                                   "type", "virtual", "override", "abstract", "operator",
                                   "public", "protected", "private", "static", "extern", "mut",
-                                  "move", "this", "view", "compile_time", "run_time", "deduce",
+                                  "move", "this", "compile_time", "run_time", "deduce",
                                   "if", "else", "for", "while", "break", "continue", "return",
                                   "match", "true", "false", "nullptr", "default", "auto", "cast",
                                   "bit", "unsafe", "bool", "char", "void", "never", "i8", "i16",
@@ -106,6 +106,12 @@ TEST_CASE("lexer: removed keywords are plain identifiers") {
 TEST_CASE("lexer: 'open' is contextual") {
     // Spec 01: `open` is a keyword only before a type declaration, so `std::file::open` works.
     CHECK_EQ(kinds("open"), std::string("identifier"));
+}
+
+TEST_CASE("lexer: 'view' and 'check' are contextual") {
+    // `view` is a keyword only before `class` or `struct`, `check` only after `compile_time` or
+    // `run_time`: both can name variables and functions.
+    CHECK_EQ(kinds("view check"), std::string("identifier identifier"));
 }
 
 TEST_CASE("lexer: underscore alone is the wildcard") {

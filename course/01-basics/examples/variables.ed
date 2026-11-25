@@ -1,0 +1,18 @@
+// Lesson 1: variables. `=` is the only way to initialize, and `mut` is opt-in.
+import std;
+
+compile_time u32 limit = 100;          // a file-scope constant (C++: constexpr)
+
+i32 main() {
+    u32 a = 5;                         // immutable
+    mut u32 b = 5;                     // mutable
+    b += 1;                            // no ++ or --
+    std::darray<u32> list = default;   // the type's default value: an empty darray
+    auto n = 7u32;                     // auto needs a type of its own: the suffix gives it
+    mut u32 lo = 1;
+    mut u32 hi = 2;
+    (lo, hi) = (hi, lo);               // destructuring assignment: a swap
+    std::println(f"{a} {b} {list.len()} {n} {limit} {lo} {hi}");
+    return 0;
+}
+//> 5 6 0 7 100 2 1

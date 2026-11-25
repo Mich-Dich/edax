@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+hits 84, seen 41
+--- stderr

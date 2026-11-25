@@ -1,17 +1,43 @@
-// editor: UIs from types (std::ui roadmap M3, draft 35 §7). One `vehicle` value is shown in two
-// windows with two forms: the designer's (every group, wide ranges, debug fields, a rule) and the
-// player's (three fields, a maximum that comes from the garage at run time). The third window has
-// tabs: the committed edits (`ui::edit`) with undo and redo (`ui::undo_history`, Ctrl+Z / Ctrl+Y), and
-// a fleet of 10 000 cars in a sortable table.
+// editor: a scene editor in std::ui's studio look (theme::studio, skin::studio), built on docking
+// (roadmap M5, draft 35 §12) and UIs from types (M3, §7).
+//
+// - The top bar: menus, the tools and play controls in the middle, a command field, Save.
+// - Docked stacks are cards with icon tabs. Every window is an ordinary scope.
+// - The hierarchy is an own widget (§11): icons, folding, visibility and lock toggles.
+// - The scene (editor/viewport) is a 3D view drawn with the draw list: a perspective floor grid,
+//   a flat-shaded low-poly car sorted back to front, its shadow, bounds and the tool's gizmo, an
+//   orientation gizmo. Drag to orbit, wheel to zoom; chips and view buttons float over it.
+// - The graph (editor/graph) is the car paint's material, edited with std::ui::nodes and compiled
+//   to GLSL whenever it changes (the Shader tab): drag nodes and links, right-click for the
+//   add-node menu, Delete removes, F fits, the wheel zooms.
+// - The inspector: a header card, a summary, the transform and the `vehicle` form (designer's
+//   ranges, debug fields); the player's tab shows another form of the same value.
+// - The fleet is 10 000 cars in a sortable table; console, profiler (gauges, frame times) and
+//   history at the bottom; a status bar.
+//
+// Drag a tab onto a drop target to move it, drag a divider to resize, close a tab with its ×; the
+// "Window" menu and the "Layouts" tab reopen closed windows. The layout is saved in
+// `editor.layout` (in the working directory) and restored at the next start.
 //
 //   edaxc run --root=example editor                                   the window (Esc quits)
-//   edaxc run --root=example editor -- --screenshot out.png           one frame into a PNG
-//   edaxc run --root=example editor -- --screenshot out.png --fleet   the same with the fleet's tab
+//   edaxc run --root=example editor -- --screenshot out.png [options]   one frame into a PNG
+//     --accent=blue|green|orange|violet   the accent colour
+//     --drag      a tab held over the scene's left drop target
+//     --menu      the View menu open
+//     --graph     the Graph document in front
+//     --profiler  the Profiler tab in front
+//     --nodes=metro|blueprint|neon|paper   the graph's style (with --graph)
+//     --box       a selection box dragged across the graph (with --graph)
+//     --add       the graph's add-node menu open, "m" typed (with --graph)
 
 import std;
+import editor::viewport;
+import editor::graph;
 
 namespace ui = std::ui;
 namespace im = std::ui::immediate;
+namespace dock = std::ui::dock;
+namespace dbg = std::ui::debug;
 namespace wnd = std::windowing;
 namespace gl = std::graphics::opengl;
 
@@ -19,8 +45,6 @@ compile_time std::graphics::api gl_33 = std::graphics::api{
     .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
 
 namespace garage {
-    enum side_page : u8 { edits, fleet }
-
     enum paint : u8 { midnight, racing_red, glacier, lime }
 
     enum drive : u8 { front, rear, all_wheels }
@@ -70,8 +94,375 @@ namespace garage {
     }
 }
 
+// An object of the scene, in the hierarchy's order: children follow their parent, one deeper.
+struct scene_object {
+    std::string name = default;
+    ui::icon kind = ui::icon::cube;
+    u32 depth = 0;
+    bool open = true;
+    bool shown = true;
+    bool locked = false;
+}
+
+struct transform {
+    std::array<f32, 3> position = [0.0, 0.0, 0.0];
+    std::array<f32, 3> rotation = [0.0, 0.0, 0.0];
+    std::array<f32, 3> scale = [1.0, 1.0, 1.0];
+}
+
+enum tool_kind : u8 { select, translate, rotate, scale }
+
+// What the editor's bars and views change.
+struct editor_state {
+    tool_kind tool = tool_kind::translate;
+    bool snap = true;
+    bool playing = false;
+    bool paused = false;
+    bool active = true;
+    usize selected = 1;
+    transform placement = default;
+    scene::orbit_camera camera = default;
+    scene::view_options view = default;
+    std::string command = default;
+    std::string filter = default;
+}
+
+// The editor's first layout: the hierarchy above the fleet on the left, the inspector on the
+// right, the scene and the graph in the middle above the console.
+dock::layout default_layout() {
+    return dock::split_x(0.18, dock::split_y(0.56, dock::tabs(["Hierarchy"]), dock::tabs(["Fleet"])),
+           dock::split_x(0.765, dock::split_y(0.68, dock::central_with(["Scene", "Graph"]), dock::tabs(["Console", "Shader", "Profiler", "History"])),
+                                dock::tabs(["Inspector", "Player", "Layouts"])));
+}
+
+// The icons of the windows' tabs.
+void set_icons(mut dock::workspace& ws) {
+    std::array<std::str, 11> names = ["Hierarchy", "Fleet", "Scene", "Graph", "Console", "Profiler", "History", "Inspector", "Player", "Layouts", "Shader"];
+    std::array<ui::icon, 11> icons = [ui::icon::layers, ui::icon::car, ui::icon::cube, ui::icon::layers, ui::icon::terminal, ui::icon::chart, ui::icon::history, ui::icon::settings, ui::icon::cursor, ui::icon::layout, ui::icon::code];
+    for (usize i : 0..names.len()) {
+        ws.set_icon(names[i], icons[i]);
+    }
+}
+
+std::darray<scene_object> make_scene() {
+    mut std::darray<scene_object> all = default;
+    all.push(scene_object{ .name = std::string::from("Garage"), .kind = ui::icon::folder });
+    all.push(scene_object{ .name = std::string::from("Ka"), .kind = ui::icon::car, .depth = 1 });
+    all.push(scene_object{ .name = std::string::from("Body"), .kind = ui::icon::cube, .depth = 2 });
+    all.push(scene_object{ .name = std::string::from("Wheels"), .kind = ui::icon::folder, .depth = 2, .open = false });
+    all.push(scene_object{ .name = std::string::from("Wheel FL"), .kind = ui::icon::cube, .depth = 3 });
+    all.push(scene_object{ .name = std::string::from("Wheel FR"), .kind = ui::icon::cube, .depth = 3 });
+    all.push(scene_object{ .name = std::string::from("Driver"), .kind = ui::icon::code, .depth = 2 });
+    all.push(scene_object{ .name = std::string::from("Workbench"), .kind = ui::icon::cube, .depth = 1, .locked = true });
+    all.push(scene_object{ .name = std::string::from("Lights"), .kind = ui::icon::folder });
+    all.push(scene_object{ .name = std::string::from("Sun"), .kind = ui::icon::light, .depth = 1 });
+    all.push(scene_object{ .name = std::string::from("Fill light"), .kind = ui::icon::light, .depth = 1, .shown = false });
+    all.push(scene_object{ .name = std::string::from("Main camera"), .kind = ui::icon::camera });
+    all.push(scene_object{ .name = std::string::from("Environment"), .kind = ui::icon::globe, .open = false });
+    all.push(scene_object{ .name = std::string::from("Ground"), .kind = ui::icon::grid, .depth = 1 });
+    return all;
+}
+
+// The colour of an object's icon: the accent for the selected kind of thing, quiet otherwise.
+ui::color kind_color(ui::theme& t, ui::icon kind) {
+    return match (kind) {
+        ui::icon::car => t.colors.primary,
+        ui::icon::light => t.colors.warning,
+        ui::icon::camera => t.colors.success,
+        ui::icon::code => ui::color::hex(0xb48cf2),
+        ui::icon::folder => t.colors.text_muted,
+        _ => t.colors.text_muted.mix(t.colors.text, 0.3),
+    };
+}
+
+// The colour of a paint.
+ui::color car_paint(garage::paint p) {
+    return match (p) {
+        garage::paint::midnight => ui::color::hex(0x2b3a67),
+        garage::paint::racing_red => ui::color::hex(0xd7263d),
+        garage::paint::glacier => ui::color::hex(0xbfd7ea),
+        garage::paint::lime => ui::color::hex(0x8ac926),
+    };
+}
+
+// A text in a row, centred on the row's height (rows align their widgets' tops).
+void row_text(mut im::scope& row, std::str content, ui::color tint) {
+    ui::theme t = row.theme();
+    ui::text_style style = t.style(ui::text_role::body, tint);
+    f32 height = (t.controls.row_height * t.density).round();
+    f32 width = {
+        mut ui::painter m = row.painter();
+        m.measure(content, style).x
+    };
+    ui::rect r = row.allocate(ui::vec2{ .x = width.round(), .y = height });
+    mut ui::painter p = row.painter();
+    _ = p.text(ui::vec2{ .x = r.x, .y = (r.y + (height - p.faces.line_height(style)) * 0.5).round() }, content, style);
+}
+
+// One row of the hierarchy (an own widget, §11): folding chevron, icon, name, and the visibility
+// and lock toggles (shown on hover, or while they are off). True when the row was clicked.
+bool outliner_row(mut im::scope& w, usize index, mut scene_object& o, bool has_children, bool selected) {
+    ui::theme t = w.theme();
+    f32 height = (t.controls.row_height * t.density).round();
+    ui::rect r = w.allocate(ui::vec2{ .x = w.available_width(), .y = height });
+    u64 id = std::hash_combine(std::hash("outliner"), cast<u64>(index));
+    f32 left = r.x + 4.0 + 14.0 * cast::round<f32>(o.depth);
+    ui::rect chevron = ui::rect{ .x = left, .y = (r.y + (height - 12.0) * 0.5).round(), .width = 12.0, .height = 12.0 };
+    ui::rect eye = ui::rect{ .x = r.right() - 44.0, .y = r.y, .width = 20.0, .height = height };
+    ui::rect lock = ui::rect{ .x = r.right() - 22.0, .y = r.y, .width = 20.0, .height = height };
+    im::response row = w.interact(id, r);
+    im::response fold = if (has_children) { w.interact(std::hash_combine(id, 1), chevron.expanded(4.0)) } else { im::response{} };
+    im::response seen = w.interact(std::hash_combine(id, 2), eye);
+    im::response held = w.interact(std::hash_combine(id, 3), lock);
+    if (fold.clicked) {
+        o.open = !o.open;
+    }
+    if (seen.clicked) {
+        o.shown = !o.shown;
+    }
+    if (held.clicked) {
+        o.locked = !o.locked;
+    }
+    bool hovered = row.state.hovered || seen.state.hovered || held.state.hovered || fold.state.hovered;
+    mut ui::painter p = w.painter();
+    if (selected) {
+        p.list.fill(r, t.colors.primary.with_alpha(0.22), t.radius.small);
+        p.list.fill(ui::rect{ .x = r.x, .y = r.y + 4.0, .width = 2.0, .height = height - 8.0 }, t.colors.primary, 1.0);
+    } else if (row.state.hover > 0.0) {
+        p.list.fill(r, t.colors.text.with_alpha(0.045 * row.state.hover), t.radius.small);
+    }
+    if (has_children) {
+        p.list.draw_icon(if (o.open) { ui::icon::chevron_down } else { ui::icon::chevron_right }, chevron, t.colors.text_faint.mix(t.colors.text, fold.state.hover));
+    }
+    ui::rect symbol = ui::rect{ .x = chevron.right() + 4.0, .y = (r.y + (height - 14.0) * 0.5).round(), .width = 14.0, .height = 14.0 };
+    ui::color tint = if (o.shown) { kind_color(t, o.kind) } else { t.colors.text_faint };
+    p.list.draw_icon(o.kind, symbol, tint);
+    ui::text_style style = t.style(ui::text_role::body, if (o.shown) { t.colors.text } else { t.colors.text_faint });
+    p.list.push_clip(ui::rect{ .x = r.x, .y = r.y, .width = (eye.x - r.x - 4.0).max(0.0), .height = height });
+    _ = p.text(ui::vec2{ .x = symbol.right() + 6.0, .y = (r.y + (height - p.faces.line_height(style)) * 0.5).round() }, o.name.as_str(), style);
+    p.list.pop_clip();
+    if (hovered || !o.shown) {
+        ui::color c = if (o.shown) { t.colors.text_faint.mix(t.colors.text, seen.state.hover) } else { t.colors.text_muted };
+        p.list.draw_icon(if (o.shown) { ui::icon::eye } else { ui::icon::eye_off }, ui::rect{ .x = eye.x + 3.0, .y = (r.y + (height - 14.0) * 0.5).round(), .width = 14.0, .height = 14.0 }, c);
+    }
+    if (hovered || o.locked) {
+        ui::color c = if (o.locked) { t.colors.text_muted } else { t.colors.text_faint.mix(t.colors.text, held.state.hover) };
+        p.list.draw_icon(if (o.locked) { ui::icon::lock } else { ui::icon::unlock }, ui::rect{ .x = lock.x + 3.0, .y = (r.y + (height - 14.0) * 0.5).round(), .width = 14.0, .height = 14.0 }, c);
+    }
+    return row.clicked;
+}
+
+// Three numbers in a row with coloured X, Y and Z tags (an inspector's vector).
+void axis_row(mut im::scope& w, std::str label, mut std::array<f32, 3>& v, f64 speed) {
+    ui::theme t = w.theme();
+    f32 height = (t.controls.row_height * t.density).round();
+    mut im::scope keyed = w.id(label);
+    mut im::scope row = keyed.row();
+    f32 label_width = (row.available_width() * 0.3).round();
+    {
+        ui::rect r = row.allocate(ui::vec2{ .x = label_width - t.space.s, .y = height });
+        ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+        mut ui::painter p = row.painter();
+        _ = p.text(ui::vec2{ .x = r.x, .y = (r.y + (height - p.faces.line_height(style)) * 0.5).round() }, label, style);
+    }
+    std::array<std::str, 3> names = ["X", "Y", "Z"];
+    std::array<u32, 3> colors = [0xe5484d, 0x46a758, 0x3e8ef7];
+    for (usize k : 0..3) {
+        mut im::scope cell = row.id(k);
+        {
+            ui::rect tag = cell.allocate(ui::vec2{ .x = 10.0, .y = height });
+            ui::text_style style = t.style(ui::text_role::label, ui::color::hex(colors[k]));
+            mut ui::painter p = cell.painter();
+            p.centered_text(tag, names[k], style);
+        }
+        mut im::scope field = cell.width(ui::fill(1.0));
+        _ = field.drag("", mut v[k], speed);
+    }
+}
+
+
+// A key and its value in a summary: the key muted on the left, the value at the 45 % mark.
+void key_value(mut im::scope& w, std::str key, std::str value) {
+    ui::theme t = w.theme();
+    f32 height = ((t.controls.row_height - 4.0) * t.density).round();
+    ui::rect r = w.allocate(ui::vec2{ .x = w.available_width(), .y = height });
+    ui::text_style k = t.style(ui::text_role::body, t.colors.text_muted);
+    ui::text_style v = t.style(ui::text_role::body, t.colors.text);
+    mut ui::painter p = w.painter();
+    f32 y = (r.y + (height - p.faces.line_height(k)) * 0.5).round();
+    _ = p.text(ui::vec2{ .x = r.x, .y = y }, key, k);
+    _ = p.text(ui::vec2{ .x = (r.x + r.width * 0.45).round(), .y = y }, value, v);
+}
+
+// A rounded square with an icon in it: object headers and logos.
+void icon_tile(mut ui::painter& p, ui::rect r, ui::icon symbol, ui::color tint, bool solid) {
+    if (solid) {
+        p.list.glow(r, 6.0, tint.with_alpha(0.35), 10.0);
+        p.list.fill_gradient(r, tint.lighter(0.08), tint.lighter(-0.06), 6.0);
+        p.list.draw_icon(symbol, r.shrunk(r.width * 0.24), ui::color::white());
+    } else {
+        p.list.fill(r, tint.with_alpha(0.16), 6.0);
+        p.list.stroke(r, tint.with_alpha(0.3), 6.0, 1.0);
+        p.list.draw_icon(symbol, r.shrunk(r.width * 0.26), tint);
+    }
+}
+
+// The strip at the top of a document: icon, name, a state badge, the file's path, actions.
+void document_header(mut im::scope& d, ui::icon symbol, std::str name, std::str path, bool unsaved) {
+    ui::theme t = d.theme();
+    mut im::scope bar = d.row();
+    {
+        ui::rect r = bar.allocate(ui::vec2{ .x = 24.0, .y = 24.0 });
+        mut ui::painter p = bar.painter();
+        icon_tile(mut p, r.shrunk(1.0), symbol, t.colors.primary, false);
+    }
+    row_text(mut bar, name, t.colors.text);
+    if (unsaved) {
+        bar.badge(ui::icon::none, "Unsaved changes", t.colors.warning);
+    }
+    row_text(mut bar, path, t.colors.text_faint);
+    bar.spacer();
+    _ = bar.icon_label_button(ui::icon::refresh, "Reload", ui::variant::ghost);
+    _ = bar.icon_label_button(ui::icon::save, "Save", ui::variant::primary);
+}
+
+// The scene document: the header, the 3D view, chips and view buttons over it. Returns the view's
+// rectangle.
+ui::rect scene_document(mut im::scope& d, std::span<scene::face> model, mut editor_state& state, bool unsaved) {
+    ui::theme t = d.theme();
+    document_header(mut d, ui::icon::cube, "garage", "scenes / garage.scene", unsaved);
+    ui::rect r = d.allocate(ui::vec2{ .x = d.available_width(), .y = d.available_height().max(240.0) });
+    scene::gizmo_kind gizmo = match (state.tool) {
+        tool_kind::select => scene::gizmo_kind::none,
+        tool_kind::translate => scene::gizmo_kind::translate,
+        tool_kind::rotate => scene::gizmo_kind::rotate,
+        tool_kind::scale => scene::gizmo_kind::scale,
+    };
+    usize triangles = scene::draw_view(mut d, r, mut state.camera, state.view, model, gizmo);
+    // Chips, top left.
+    {
+        mut im::scope over = d.region(std::hash("view chips"), ui::rect{ .x = r.x + 10.0, .y = r.y + 10.0, .width = 420.0, .height = 30.0 }, 0.0);
+        mut im::scope bar = over.row();
+        _ = bar.chip("Grid", mut state.view.grid);
+        _ = bar.chip("Shadow", mut state.view.shadow);
+        _ = bar.chip("Bounds", mut state.view.bounds);
+        _ = bar.chip("Gizmo", mut state.view.gizmo);
+        _ = bar.chip("Wireframe", mut state.view.wireframe);
+    }
+    // The camera's views, bottom right.
+    {
+        ui::rect box = ui::rect{ .x = r.right() - 236.0, .y = r.bottom() - 38.0, .width = 226.0, .height = 28.0 };
+        {
+            mut ui::painter p = d.painter();
+            p.list.fill(box, t.colors.surface.with_alpha(0.85), t.radius.medium);
+            p.list.stroke(box, t.colors.border, t.radius.medium, 1.0);
+        }
+        mut im::scope over = d.region(std::hash("view buttons"), box, 2.0);
+        mut im::scope bar = over.row();
+        std::array<std::str, 4> names = ["Fit", "Front", "Top", "Side"];
+        std::array<u32, 4> sides = [3, 0, 1, 2];
+        for (usize i : 0..4) {
+            mut im::scope item = bar.id(i);
+            if (item.button(names[i], ui::variant::ghost)) {
+                scene::look_from(mut state.camera, sides[i], 4.3);
+            }
+        }
+    }
+    // What the view shows and how to move it, bottom left.
+    {
+        mut ui::painter p = d.painter();
+        ui::text_style caption = t.style(ui::text_role::caption, t.colors.text_muted);
+        ui::text_style faint = t.style(ui::text_role::caption, t.colors.text_faint);
+        std::string facts = std::format(f"Perspective  ·  {triangles} triangles drawn  ·  {ui::plot::format_number(cast<f64>(state.camera.distance), 1)} m away");
+        _ = p.text(ui::vec2{ .x = r.x + 12.0, .y = r.bottom() - 40.0 }, facts.as_str(), caption);
+        _ = p.text(ui::vec2{ .x = r.x + 12.0, .y = r.bottom() - 23.0 }, "Drag to orbit  ·  Wheel to zoom  ·  Fit to frame the selection", faint);
+        if (state.playing) {
+            p.list.stroke(r, t.colors.primary, t.radius.medium, 2.0);
+        }
+    }
+    return r;
+}
+
+// The material graph's shader: whether it compiled, and its source with line numbers.
+void shader_panel(mut im::scope& w, graph::material& m) {
+    ui::theme t = w.theme();
+    {
+        mut im::scope bar = w.row();
+        if (m.problem.is_empty()) {
+            bar.badge(ui::icon::checkmark, "Compiled", t.colors.success);
+            row_text(mut bar, std::format(f"{m.compiles} builds  ·  fragment shader  ·  GLSL 330").as_str(), t.colors.text_faint);
+        } else {
+            bar.badge(ui::icon::error, m.problem.as_str(), t.colors.danger);
+        }
+    }
+    ui::text_style code = t.style(ui::text_role::code, t.colors.text);
+    ui::text_style number = t.style(ui::text_role::code, t.colors.text_faint);
+    ui::text_style keyword = t.style(ui::text_role::code, t.colors.primary);
+    ui::text_style note = t.style(ui::text_role::code, t.colors.text_faint);
+    f32 line = (code.size * code.line_height).round();
+    ui::rect r = w.allocate(ui::vec2{ .x = w.available_width(), .y = w.available_height().max(60.0) });
+    mut ui::painter p = w.painter();
+    p.list.fill(r, t.colors.surface_sunken, t.radius.small);
+    p.list.push_clip(r);
+    std::str source = m.glsl.as_str();
+    mut usize start = 0;
+    mut u32 n = 1;
+    mut f32 y = r.y + 6.0;
+    while (start < source.len() && y < r.bottom()) {
+        mut usize end = start;
+        while (end < source.len() && source.byte(end) != 10) {
+            end += 1;
+        }
+        std::str text = source.slice(start, end);
+        std::string label = std::format(f"{n}");
+        f32 w_num = p.measure(label.as_str(), number).x;
+        _ = p.text(ui::vec2{ .x = r.x + 30.0 - w_num, .y = y }, label.as_str(), number);
+        bool is_comment = text.len() >= 2 && text.byte(0) == 47 && text.byte(1) == 47;
+        bool is_declaration = text.starts_with("uniform") || text.starts_with("in ") || text.starts_with("out ") || text.starts_with("#version") || text.starts_with("float hash") || text.starts_with("void main");
+        _ = p.text(ui::vec2{ .x = r.x + 42.0, .y = y }, text, if (is_comment) { note } else if (is_declaration) { keyword } else { code });
+        y += line;
+        n += 1;
+        start = end + 1;
+    }
+    p.list.pop_clip();
+}
+
+// Three gauges side by side: the frame's share of 16.7 ms, the GPU's and memory's.
+void gauges(mut im::scope& w, dbg::frame_stats& stats) {
+    ui::theme t = w.theme();
+    f64 frame = if (stats.frame_ms.is_empty()) { 0.0 } else { stats.frame_ms.mean() };
+    f64 load = (frame / 16.67).min(1.0);
+    mut im::scope cells = w.grid(3);
+    cells.gauge("CPU frame", load, std::format(f"{ui::plot::format_number(load * 100.0, 0)}%").as_str(), std::format(f"{ui::plot::format_number(frame, 1)} ms").as_str(), t.colors.primary);
+    cells.gauge("GPU", 0.48, "48%", "3.1 ms", t.colors.success);
+    cells.gauge("Memory", 0.31, "1.2 GB", "of 3.9 GB", t.colors.warning);
+}
+
 std::exit_code main(std::span<std::str> args) {
     std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    mut bool drag_shot = false;
+    mut bool menu_shot = false;
+    mut bool graph_shot = false;
+    mut bool profiler_shot = false;
+    mut bool box_shot = false;
+    mut bool add_shot = false;
+    mut graph::node_style node_look = graph::node_style::studio;
+    mut u32 accent_hex = 0x3b82f6;
+    for (usize i : 3..args.len()) {
+        drag_shot = drag_shot || args[i] == "--drag";
+        menu_shot = menu_shot || args[i] == "--menu";
+        graph_shot = graph_shot || args[i] == "--graph";
+        profiler_shot = profiler_shot || args[i] == "--profiler";
+        box_shot = box_shot || args[i] == "--box";
+        add_shot = add_shot || args[i] == "--add";
+        if (args[i] == "--nodes=metro") { node_look = graph::node_style::metro; }
+        if (args[i] == "--nodes=blueprint") { node_look = graph::node_style::blueprint; }
+        if (args[i] == "--nodes=neon") { node_look = graph::node_style::neon; }
+        if (args[i] == "--nodes=paper") { node_look = graph::node_style::paper; }
+        if (args[i] == "--accent=green") { accent_hex = 0x10b981; }
+        if (args[i] == "--accent=orange") { accent_hex = 0xf97316; }
+        if (args[i] == "--accent=violet") { accent_hex = 0x8b5cf6; }
+    }
 
     mut wnd::system sys = match (wnd::system::start()) {
         std::ok(s) => move s,
@@ -81,8 +472,8 @@ std::exit_code main(std::span<std::str> args) {
         },
     };
     mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
-        .title = "Edax editor - UIs from types",
-        .size  = wnd::size{ .width = 1400, .height = 820 },
+        .title = "Edax editor",
+        .size  = wnd::size{ .width = 1600, .height = 900 },
     }, wnd::opengl::config{ .api = gl_33, .samples = 0 }, wnd::opengl::sharing::automatic)) {
         std::ok(w) => move w,
         std::error(e) => {
@@ -101,13 +492,39 @@ std::exit_code main(std::span<std::str> args) {
         }
     };
 
-    mut im::context ctx = im::context::create(ui::theme::from_accent(ui::color::hex(0x8b5cf6), ui::brightness::dark));
+    bool scripted = screenshot.is_some();
+    ui::color accent = ui::color::hex(accent_hex);
+    mut im::context ctx = im::context::create(ui::theme::studio(accent, ui::brightness::dark));
+    ctx.skin() = ui::skin::studio();
+    // The layout of the last run, or the default one (screenshots always start from the default).
+    std::str layout_file = "editor.layout";
+    mut dock::workspace ws = if (scripted) { dock::workspace::make(default_layout()) } else {
+        dock::workspace::load(layout_file).value_or(dock::workspace::make(default_layout()))
+    };
+    dock::layout start_layout = default_layout();
+    set_icons(mut ws);
+    if (graph_shot) {
+        ws.edit().activate("Graph");
+        ws.edit().activate("Shader");
+    }
+    if (profiler_shot) {
+        ws.edit().activate("Profiler");
+    }
+    mut graph::material paint_graph = graph::car_paint();
+    graph::use_style(mut paint_graph, node_look);
+    mut std::log::session session = std::log::start(std::log::options{});
+    (std::unique_ptr<dbg::log_sink> sink, dbg::log_feed log_feed) = dbg::log_sink::create(500);
+    mut dbg::log_feed feed = log_feed.clone();
+    _ = session.add(move sink, std::log::sink_options{ .pattern = std::log::pattern::from("{time}.{millis} {level:<5} {message}") });
+    std::log::info(f"editor started with {ws.current().windows().len()} windows");
+    mut dbg::frame_stats stats = default;
     mut garage::vehicle car = garage::vehicle{ .name = std::string::from("Ka") };
     mut f32 garage_max_ratio = 4.2;
     mut std::darray<std::string> history = default;
     mut ui::undo_history<garage::vehicle> undo = ui::undo_history<garage::vehicle>::make(50);
-    mut garage::side_page side = if (args.len() >= 4 && args[3] == "--fleet") { garage::side_page::fleet } else { garage::side_page::edits };
     mut std::darray<garage::listing> fleet = default;
+    mut std::darray<scene_object> objects = make_scene();
+    mut editor_state state = default;
     std::array<std::str, 5> models = ["Ka", "Vento", "Sirocco", "Brisa", "Marea"];
     for (u32 i : 0..10000) {
         fleet.push(garage::listing{
@@ -118,9 +535,26 @@ std::exit_code main(std::span<std::str> args) {
             .for_sale = i % 4 == 0,
         });
     }
+    if (scripted) {
+        for (u32 i : 0..240) {
+            stats.record_seconds(0.0158 + cast::round<f32>(i % 7) * 0.0004 + if (i % 61 == 0) { 0.009 } else { 0.0 });
+        }
+        std::log::info(f"scene 'garage' opened: 14 objects, 3 lights");
+        std::log::warn(f"texture 'garage_floor.png' is 4096 px wide; mip maps were made at load time");
+        std::log::info(f"fleet loaded: {fleet.len()} cars");
+        std::log::error(f"shader 'paint_flakes.frag' failed to compile: line 42, unknown 'sparkle'");
+        std::log::info(f"autosave written (3 changes)");
+        history.push(std::string::from("paint: racing red"));
+        history.push(std::string::from("rims: 17 → 18 in"));
+        history.push(std::string::from("tuning.gear_ratio: 3.2 → 3.4"));
+        session.flush();
+    }
     mut std::darray<wnd::event> events = default;
     mut u32 frame_number = 0;
     mut bool finished = false;
+    mut ui::rect scene_rect = default;
+    mut usize model_triangles = 0;
+    mut ui::vec2 view_menu_at = default;
     while (!win.should_close()) {
         sys.poll();
         win.drain_events(mut events);
@@ -130,84 +564,385 @@ std::exit_code main(std::span<std::str> args) {
                 _ => {},
             }
         }
-        ui::input in = match (screenshot) {
-            std::some(_) => ui::input{ .cursor = ui::vec2{ .x = -1.0, .y = -1.0 }, .dt = 1.0 },
-            std::none    => ui::input_of(win.input(), events.as_span(), 0.0),
+        // --drag presses the "Console" tab and holds it over the scene's left drop target; --menu
+        // opens the View menu and hovers its second item; --box drags a selection box over the
+        // graph's middle and holds it.
+        ui::input in = if (scripted) {
+            if (add_shot && frame_number >= 2) {
+                ui::rect c = paint_graph.canvas;
+                ui::vec2 spot = ui::vec2{ .x = c.x + c.width * 0.42, .y = c.y + c.height * 0.70 };
+                mut ui::input in = ui::input{ .cursor = spot + ui::vec2{ .x = 60.0, .y = 70.0 }, .right_pressed = frame_number == 2, .right_down = frame_number == 2, .dt = 1.0 / 60.0 };
+                if (frame_number == 2) {
+                    in.cursor = spot;
+                }
+                if (frame_number == 3) {
+                    in.typed = std::string::from("m");
+                }
+                move in
+            } else if (box_shot && frame_number >= 2) {
+                ui::rect c = paint_graph.canvas;
+                ui::vec2 from = ui::vec2{ .x = c.x + c.width * 0.40, .y = c.y + c.height * 0.04 };
+                ui::vec2 to = ui::vec2{ .x = c.x + c.width * 0.66, .y = c.y + c.height * 0.62 };
+                ui::input{ .cursor = if (frame_number == 2) { from } else { to }, .mouse_down = true, .mouse_pressed = frame_number == 2, .dt = 1.0 / 60.0 }
+            } else if (drag_shot && frame_number >= 2) {
+                ui::rect tab = ws.tab_of("Console").value_or(ui::rect{});
+                ui::vec2 target = ui::vec2{ .x = scene_rect.center().x - 40.0, .y = scene_rect.center().y };
+                ui::vec2 from = if (frame_number == 2) { tab.center() } else { target };
+                ui::input{ .cursor = from, .mouse_down = true, .mouse_pressed = frame_number == 2, .dt = 1.0 / 60.0 }
+            } else if (menu_shot && frame_number >= 2) {
+                ui::vec2 at = if (frame_number <= 3) { view_menu_at } else { view_menu_at + ui::vec2{ .x = 30.0, .y = 62.0 } };
+                ui::input{ .cursor = at, .mouse_down = frame_number == 2, .mouse_pressed = frame_number == 2, .mouse_released = frame_number == 3, .dt = 1.0 / 60.0 }
+            } else {
+                ui::input{ .cursor = ui::vec2{ .x = -1.0, .y = -1.0 }, .dt = 1.0 / 60.0 }
+            }
+        } else {
+            ui::input_of(win.input(), events.as_span(), 0.0)
         };
+        ui::vec2 size = ui::window_size(win.size());
+        f32 top_height = 40.0;
+        f32 status_height = 24.0;
+        ui::theme t = ctx.theme();
         {
-            mut im::frame f = ctx.begin_frame(move in, ui::window_size(win.size()));
+            mut im::frame f = ctx.begin_frame(move in, size);
+
+            // The top bar: menus, tools, play controls, history and settings.
             {
-                mut im::scope w = f.window("Designer", ui::rect{ .x = 24.0, .y = 24.0, .width = 460.0, .height = 760.0 });
-                w.muted(f"Every field, wide ranges, the debug id, a rule on the name.");
-                ui::form<garage::vehicle> designer = ui::form<garage::vehicle>::annotated()
-                    .range("top_speed", 0.0, 400.0)
-                    .range("tuning.gear_ratio", 1.0, 6.0)
-                    .show("debug_id")
-                    .read_only("debug_id")
-                    .rule("name", ui::rules::min_length(3));
-                ui::edit e = w.inspect("vehicle", mut car, designer);
-                if (e.committed) {
-                    history.push(std::format(f"designer: {e.path}"));
+                mut im::scope top = f.panel(std::hash("top bar"), ui::rect{ .width = size.x, .height = top_height }, 3, 8.0);
+                {
+                    mut ui::painter p = top.painter();
+                    p.list.fill(ui::rect{ .y = top_height - 1.0, .width = size.x, .height = 1.0 }, t.colors.border, 0.0);
                 }
-                undo.record(e, car);
-            }
-            {
-                mut im::scope w = f.window("Player", ui::rect{ .x = 508.0, .y = 24.0, .width = 420.0 });
-                w.muted(f"Three fields, the touch widget set; the gear ratio's maximum comes from the garage.");
-                ui::form<garage::vehicle> player = ui::form<garage::vehicle>::annotated()
-                    .hide_all()
-                    .show("paint")
-                    .show("rims")
-                    .show("tuning.gear_ratio")
-                    .label("tuning.gear_ratio", "Gearing")
-                    .range("tuning.gear_ratio", 2.5, cast<f64>(garage_max_ratio));
-                // The player's screen uses the touch widget set: steppers, bigger targets.
-                mut im::scope touch = w.with_widgets(ui::widget_sets::touch());
-                ui::edit e = touch.inspect("your car", mut car, player);
-                if (e.committed) {
-                    history.push(std::format(f"player: {e.path}"));
+                mut im::scope bar = top.row();
+                {
+                    ui::rect logo = bar.allocate(ui::vec2{ .x = 24.0, .y = 24.0 });
+                    mut ui::painter p = bar.painter();
+                    icon_tile(mut p, logo, ui::icon::bolt, t.colors.primary, true);
                 }
-                undo.record(e, car);
-                touch.separator();
-                _ = touch.slider("Garage level allows", mut garage_max_ratio, 3.0, 6.0);
+                _ = bar.allocate(ui::vec2{ .x = 2.0, .y = 1.0 });
+                {
+                    mut im::scope file = bar.menu("File");
+                    _ = file.menu_item(ui::icon::file, "New scene", "Ctrl+N");
+                    _ = file.menu_item(ui::icon::folder, "Open…", "Ctrl+O");
+                    if (file.menu_item(ui::icon::save, "Save", "Ctrl+S")) {
+                        std::log::info(f"scene saved");
+                    }
+                    file.separator();
+                    if (file.menu_item(ui::icon::close, "Quit", "Esc")) {
+                        win.request_close();
+                    }
+                }
+                {
+                    mut im::scope edit = bar.menu("Edit");
+                    if (edit.menu_item(ui::icon::undo, "Undo", "Ctrl+Z") && undo.undo(mut car)) {
+                        history.push(std::string::from("undo"));
+                    }
+                    if (edit.menu_item(ui::icon::redo, "Redo", "Ctrl+Y") && undo.redo(mut car)) {
+                        history.push(std::string::from("redo"));
+                    }
+                    edit.separator();
+                    _ = edit.menu_item(ui::icon::copy, "Duplicate", "Ctrl+D");
+                    _ = edit.menu_item(ui::icon::trash, "Delete", "Del");
+                }
+                {
+                    // Where the View menu's button is (the scripted --menu screenshot clicks it).
+                    view_menu_at = ui::vec2{ .x = size.x - 8.0 - bar.available_width() + 16.0, .y = 20.0 };
+                    mut im::scope view = bar.menu("View");
+                    _ = view.menu_check("Floor grid", mut state.view.grid);
+                    _ = view.menu_check("Shadow", mut state.view.shadow);
+                    _ = view.menu_check("Bounds", mut state.view.bounds);
+                    _ = view.menu_check("Gizmo", mut state.view.gizmo);
+                    _ = view.menu_check("Wireframe", mut state.view.wireframe);
+                    view.separator();
+                    if (view.menu_item(ui::icon::layout, "Reset layout", "")) {
+                        ws.reset(start_layout.clone());
+                    }
+                }
+                {
+                    mut im::scope window_menu = bar.menu("Window");
+                    std::darray<std::string> closed = ws.closed_windows();
+                    if (closed.is_empty()) {
+                        _ = window_menu.menu_item(ui::icon::none, "All windows are open", "");
+                    }
+                    for (usize i : 0..closed.len()) {
+                        mut im::scope item = window_menu.id(i);
+                        if (item.menu_item(ui::icon::layers, closed[i].as_str(), "")) {
+                            ws.reopen(closed[i].as_str());
+                        }
+                    }
+                }
+                {
+                    mut im::scope help = bar.menu("Help");
+                    _ = help.menu_item(ui::icon::info, "About the editor", "");
+                }
+                bar.spacer();
+                {
+                    std::array<ui::icon, 4> tools = [ui::icon::cursor, ui::icon::translate, ui::icon::rotate, ui::icon::scale];
+                    std::array<tool_kind, 4> kinds = [tool_kind::select, tool_kind::translate, tool_kind::rotate, tool_kind::scale];
+                    std::array<std::str, 4> hints = ["Select (Q)", "Move (W)", "Rotate (E)", "Scale (R)"];
+                    for (usize i : 0..4) {
+                        mut bool on = state.tool == kinds[i];
+                        if (bar.icon_toggle(tools[i], mut on, hints[i])) {
+                            state.tool = kinds[i];
+                        }
+                    }
+                }
+                bar.bar_separator();
+                _ = bar.icon_toggle(ui::icon::grid, mut state.snap, "Snap to the grid");
+                bar.bar_separator();
+                {
+                    mut bool on = state.playing;
+                    if (bar.icon_toggle(if (state.playing) { ui::icon::stop } else { ui::icon::play }, mut on, "Play (Ctrl+P)")) {
+                        state.playing = on;
+                        state.paused = false;
+                    }
+                    _ = bar.icon_toggle(ui::icon::pause, mut state.paused, "Pause");
+                    if (bar.icon_button(ui::icon::step, "Next frame")) {
+                        std::log::debug(f"stepped one frame");
+                    }
+                }
+                bar.spacer();
+                bar.placeholder("Search or run a command…   Ctrl+K");
+                _ = bar.width(ui::px(250.0)).input_text("", mut state.command);
+                bar.bar_separator();
+                if (bar.icon_button(ui::icon::undo, "Undo (Ctrl+Z)") && undo.undo(mut car)) {
+                    history.push(std::string::from("undo"));
+                }
+                if (bar.icon_button(ui::icon::redo, "Redo (Ctrl+Y)") && undo.redo(mut car)) {
+                    history.push(std::string::from("redo"));
+                }
+                bar.bar_separator();
+                if (bar.icon_label_button(ui::icon::save, "Save", ui::variant::primary)) {
+                    std::log::info(f"scene saved");
+                }
+                _ = bar.icon_button(ui::icon::settings, "Settings");
+                {
+                    ui::rect r = bar.allocate(ui::vec2{ .x = 24.0, .y = 24.0 });
+                    mut ui::painter p = bar.painter();
+                    p.list.fill_gradient(r, ui::color::hex(0x6d7cff), ui::color::hex(0xb15cff), 12.0);
+                    p.centered_text(r, "DM", t.style(ui::text_role::caption, ui::color::white()));
+                    p.list.circle(ui::vec2{ .x = r.right() - 3.0, .y = r.bottom() - 3.0 }, 4.0, t.colors.surface);
+                    p.list.circle(ui::vec2{ .x = r.right() - 3.0, .y = r.bottom() - 3.0 }, 2.5, t.colors.success);
+                }
             }
+
+            // The status bar.
             {
-                mut im::scope w = f.window("Workshop", ui::rect{ .x = 952.0, .y = 24.0, .width = 424.0, .height = 520.0 });
-                _ = w.tabs(mut side);
-                match (side) {
-                    garage::side_page::edits => {
+                mut im::scope bottom = f.panel(std::hash("status bar"), ui::rect{ .y = size.y - status_height, .width = size.x, .height = status_height }, 3, 0.0);
+                {
+                    mut ui::painter p = bottom.painter();
+                    p.list.fill(ui::rect{ .y = size.y - status_height, .width = size.x, .height = 1.0 }, t.colors.border, 0.0);
+                }
+                mut im::scope bar = bottom.row();
+                _ = bar.allocate(ui::vec2{ .x = 4.0, .y = 1.0 });
+                bar.icon(ui::icon::checkmark, t.colors.success);
+                row_text(mut bar, "Ready", t.colors.text_muted);
+                bar.bar_separator();
+                row_text(mut bar, std::format(f"{objects[state.selected].name} selected").as_str(), t.colors.text_muted);
+                bar.spacer();
+                row_text(mut bar, std::format(f"{fleet.len()} cars").as_str(), t.colors.text_faint);
+                bar.bar_separator();
+                row_text(mut bar, std::format(f"{undo.len()} undo steps").as_str(), t.colors.text_faint);
+                bar.bar_separator();
+                f64 fps = if (stats.fps.is_empty()) { 0.0 } else { stats.fps.mean() };
+                row_text(mut bar, std::format(f"{ui::plot::format_number(fps, 0)} fps").as_str(), t.colors.text_faint);
+                _ = bar.allocate(ui::vec2{ .x = 4.0, .y = 1.0 });
+            }
+
+            {
+                f32 gap = t.controls.window.dock_gap;
+                std::darray<scene::face> model = scene::car_model(car_paint(car.paint), cast::round<f32>(car.rims));
+                model_triangles = 0;
+                for (scene::face& face : model) {
+                    model_triangles += face.corners.len() - 2;
+                }
+                mut dock::space space = f.dockspace_in("editor", mut ws, ui::rect{ .x = gap, .y = top_height + gap, .width = size.x - 2.0 * gap, .height = size.y - top_height - status_height - 2.0 * gap });
+                {
+                    mut im::scope d = space.document("Scene");
+                    if (d.open()) {
+                        scene_rect = scene_document(mut d, model.as_span(), mut state, !history.is_empty());
+                    }
+                }
+                {
+                    mut im::scope d = space.document("Graph");
+                    if (d.open()) {
+                        document_header(mut d, ui::icon::layers, "Car paint", "materials / car_paint.graph", false);
+                        graph::edit(mut d, mut paint_graph);
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Hierarchy");
+                    if (w.open()) {
+                        {
+                            mut im::scope bar = w.row();
+                            _ = bar.icon_button(ui::icon::plus, "Add an object");
+                            bar.placeholder("Search objects…");
+                            _ = bar.width(ui::fill(1.0)).input_text("", mut state.filter);
+                            _ = bar.icon_button(ui::icon::filter, "Filter by kind");
+                        }
+                        // Children of a folded object are skipped.
+                        mut u32 hidden_below = 1000;
+                        for (usize i : 0..objects.len()) {
+                            u32 depth = objects[i].depth;
+                            if (depth > hidden_below) {
+                                continue;
+                            }
+                            hidden_below = 1000;
+                            bool parent = i + 1 < objects.len() && objects[i + 1].depth > depth;
+                            if (outliner_row(mut w, i, mut objects[i], parent, state.selected == i)) {
+                                state.selected = i;
+                            }
+                            if (parent && !objects[i].open) {
+                                hidden_below = depth;
+                            }
+                        }
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Inspector");
+                    if (w.open()) {
+                        {
+                            // The header card: icon, name, what it is; Active.
+                            ui::rect card = w.allocate(ui::vec2{ .x = w.available_width(), .y = 58.0 });
+                            {
+                                mut ui::painter p = w.painter();
+                                p.list.fill_gradient(card, t.colors.surface_raised, t.colors.surface_raised.lighter(-0.02), t.radius.medium);
+                                p.list.stroke(card, t.colors.border, t.radius.medium, 1.0);
+                                icon_tile(mut p, ui::rect{ .x = card.x + 10.0, .y = card.y + 11.0, .width = 36.0, .height = 36.0 }, objects[state.selected].kind, kind_color(t, objects[state.selected].kind), false);
+                                _ = p.text(ui::vec2{ .x = card.x + 56.0, .y = card.y + 11.0 }, objects[state.selected].name.as_str(), t.style(ui::text_role::title, t.colors.text));
+                                _ = p.text(ui::vec2{ .x = card.x + 56.0, .y = card.y + 30.0 }, "Vehicle  ·  prefab ka.vehicle", t.style(ui::text_role::caption, t.colors.text_muted));
+                            }
+                            mut im::scope over = w.region(std::hash("inspector head"), ui::rect{ .x = card.right() - 84.0, .y = card.y + 15.0, .width = 80.0, .height = 28.0 }, 0.0);
+                            _ = over.chip("Active", mut state.active);
+                        }
+                        {
+                            mut im::scope summary = w.section("Summary", true);
+                            key_value(mut summary, "Triangles", std::format(f"{model_triangles}  ·  {objects.len()} objects").as_str());
+                            key_value(mut summary, "Materials", "3  ·  paint, glass, rubber");
+                            key_value(mut summary, "Memory", "184 KB");
+                            key_value(mut summary, "Debug id", std::format(f"{car.debug_id}").as_str());
+                        }
+                        {
+                            mut im::scope placing = w.section("Transform", true);
+                            axis_row(mut placing, "Position", mut state.placement.position, 0.05);
+                            axis_row(mut placing, "Rotation", mut state.placement.rotation, 0.5);
+                            axis_row(mut placing, "Scale", mut state.placement.scale, 0.01);
+                        }
+                        {
+                            mut im::scope props = w.section("Vehicle", true);
+                            ui::form<garage::vehicle> designer = ui::form<garage::vehicle>::annotated()
+                                .range("top_speed", 0.0, 400.0)
+                                .range("tuning.gear_ratio", 1.0, 6.0);
+                            ui::edit e = props.inspect_fields(mut car, designer);
+                            if (e.committed) {
+                                history.push(std::format(f"{e.path}"));
+                                std::log::info(f"inspector changed {e.path}");
+                            }
+                            undo.record(e, car);
+                        }
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Player");
+                    if (w.open()) {
+                        w.muted(f"What a player may change: three fields, the touch widget set; the gear ratio's maximum comes from the garage.");
+                        ui::form<garage::vehicle> player = ui::form<garage::vehicle>::annotated()
+                            .hide_all()
+                            .show("paint")
+                            .show("rims")
+                            .show("tuning.gear_ratio")
+                            .label("tuning.gear_ratio", "Gearing")
+                            .range("tuning.gear_ratio", 2.5, cast<f64>(garage_max_ratio));
+                        mut im::scope touch = w.with_widgets(ui::widget_sets::touch());
+                        ui::edit e = touch.inspect("your car", mut car, player);
+                        if (e.committed) {
+                            history.push(std::format(f"player: {e.path}"));
+                            std::log::info(f"player changed {e.path}");
+                        }
+                        undo.record(e, car);
+                        touch.separator();
+                        _ = touch.slider("Garage level allows", mut garage_max_ratio, 3.0, 6.0);
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Fleet");
+                    if (w.open()) {
+                        {
+                            mut im::scope bar = w.row();
+                            bar.icon(ui::icon::car, t.colors.text_faint);
+                            row_text(mut bar, std::format(f"{fleet.len()} cars").as_str(), t.colors.text_muted);
+                            bar.spacer();
+                            _ = bar.icon_button(ui::icon::filter, "Filter the fleet");
+                            _ = bar.icon_button(ui::icon::plus, "Add a car");
+                        }
+                        _ = w.table("fleet", fleet.as_span(), 0.0);
+                    }
+                }
+                {
+                    mut im::scope w = space.window("History");
+                    if (w.open()) {
+                        {
+                            mut im::scope bar = w.row();
+                            if (bar.icon_button(ui::icon::undo, "Undo (Ctrl+Z)") && undo.undo(mut car)) {
+                                history.push(std::string::from("undo"));
+                            }
+                            if (bar.icon_button(ui::icon::redo, "Redo (Ctrl+Y)") && undo.redo(mut car)) {
+                                history.push(std::string::from("redo"));
+                            }
+                            row_text(mut bar, std::format(f"{undo.len()} steps back").as_str(), t.colors.text_faint);
+                        }
                         if (history.is_empty()) {
                             w.muted(f"Change a value: drags count when released, text when Enter is pressed.");
                         }
-                        usize first = if (history.len() > 8) { history.len() - 8 } else { 0 };
+                        usize first = if (history.len() > 12) { history.len() - 12 } else { 0 };
                         for (usize i : first..history.len()) {
                             mut im::scope line = w.id(i);
-                            line.text(f"{history[i]}");
-                        }
-                        {
-                            mut im::scope buttons = w.row();
-                            if (buttons.button("Undo") && undo.undo(mut car)) {
-                                history.push(std::string::from("undo"));
-                            }
-                            if (buttons.button("Redo") && undo.redo(mut car)) {
-                                history.push(std::string::from("redo"));
-                            }
-                            buttons.muted(f"{undo.len()} steps back");
+                            mut im::scope row = line.row();
+                            row.icon(ui::icon::history, t.colors.text_faint);
+                            row_text(mut row, history[i].as_str(), if (i + 1 == history.len()) { t.colors.text } else { t.colors.text_muted });
                         }
                         if (w.undo_shortcuts(mut undo, mut car)) {
                             history.push(std::string::from("undo / redo (keys)"));
                         }
-                        w.separator();
-                        _ = w.field(mut car, "top_speed");
-                        _ = w.field(mut car, "tuning.traction_control");
-                    },
-                    garage::side_page::fleet => {
-                        w.muted(f"{fleet.len()} cars; a header sorts, only the rows in view are drawn.");
-                        _ = w.table("fleet", fleet.as_span(), 380.0);
-                    },
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Console");
+                    if (w.open()) {
+                        w.log_panel(mut feed, 0.0);
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Shader");
+                    if (w.open()) {
+                        shader_panel(mut w, paint_graph);
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Profiler");
+                    if (w.open()) {
+                        mut dock::split halves = w.split_x("profiler", 0.5, w.available_height() / t.density);
+                        {
+                            mut im::scope left = halves.first();
+                            gauges(mut left, stats);
+                        }
+                        {
+                            mut im::scope right = halves.second();
+                            right.perf_panel(mut stats);
+                        }
+                    }
+                }
+                {
+                    mut im::scope w = space.window("Layouts");
+                    if (w.open()) {
+                        w.window_menu(mut ws, start_layout);
+                    }
                 }
             }
             f.finish();
+        }
+        if (!scripted) {
+            stats.record(ctx);
+            _ = ws.save_if_changed(layout_file);
         }
         {
             mut wnd::opengl::frame frame = win.begin_frame();
@@ -222,7 +957,7 @@ std::exit_code main(std::span<std::str> args) {
             renderer.draw(frame, ctx.draw_data(), ctx.fonts());
             match (screenshot) {
                 std::some(path) => {
-                    if (frame_number == 3) {
+                    if (frame_number == 6) {
                         std::image::rgba8 shot = renderer.read_pixels(frame);
                         std::darray<u8> png = std::image::encode_png(shot);
                         mut std::file out = std::file::create(path).expect("the screenshot file");

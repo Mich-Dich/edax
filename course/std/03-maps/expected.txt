@@ -1,0 +1,12 @@
+shelf 1/1 already held bolt
+bolt    250
+nut     175
+tape     40
+paint    30
+glue     12
+chemicals: 2 items
+hardware: 2 items
+office: 1 items
+at 1/2: nut
+at 9/9: nothing
+sold all 12 glue, 4 items left

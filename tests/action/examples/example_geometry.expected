@@ -11,6 +11,6 @@ a == a: true, a == b: false
    0.000  a dot
 --- stderr
 edaxc run: debug, 1 target
- ✓ build.ed       19 targets <t>
+ ✓ build.ed       25 targets <t>
  ✓ geometry       7 units, 4.56 KiB <t>  %t/debug/geometry
 built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log

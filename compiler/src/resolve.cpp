@@ -724,6 +724,12 @@ private:
                                       "no definition");
                 note(e, m.source ? "define it in the module's .ed"
                                  : "this module has no .ed to define it in");
+            } else if (s->in_header && s->definition && !s->definition->as<FunctionDecl>().body) {
+                // The .ed repeats the header's declaration (a C++ habit) instead of defining it.
+                Diagnostic& e = error(DiagCode::E3013, s->definition->name_span,
+                                      std::format("'{}' is declared again in the .ed, without a body", display),
+                                      "add '{ ... }'");
+                note(e, "the .edh declares it; the .ed only gives it a body", s->span);
             } else if (!s->in_header && s->definition && !s->definition->as<FunctionDecl>().body) {
                 error(DiagCode::E3013, s->span, std::format("'{}' has no body", display), "add '{ ... }'");
             }
@@ -2930,7 +2936,16 @@ private:
                     return;
                 }
             }
-            nt.symbol = lookup_path(nt.path, Want::type, nt.span);
+            // `compile_time type names = ring<std::string, 3>;` used as a type: the alias stands for
+            // the path it was given, so a template instance behind it is instantiated like one
+            // written out (spec 26).
+            if (std::optional<std::string> alias_ns = expand_type_alias_head(nt.path)) {
+                std::string saved = std::exchange(ns_, *alias_ns);
+                nt.symbol         = lookup_path(nt.path, Want::type, nt.span);
+                ns_               = std::move(saved);
+            } else {
+                nt.symbol = lookup_path(nt.path, Want::type, nt.span);
+            }
             // `annotated` in a generated member of a template type is the instance: the template
             // with its own parameters as arguments (spec 29).
             if (actx_ && actx_->type && nt.symbol == actx_->type && nt.path.segments.size() == 1 &&

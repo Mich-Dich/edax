@@ -1,0 +1,34 @@
+// Files are values: opened by a function that returns a result, closed when destroyed.
+import std;
+namespace fs = std::filesystem;
+
+std::result<void, std::io_error> write_notes(fs::path& at) {
+    mut std::file out = std::file::create(at)?;          // a new or emptied file
+    _ = out.write("first line\n")?;
+    _ = out.write("second line\n")?;
+    return std::ok();
+}                                                         // `out` is destroyed: flushed and closed
+
+i32 main() {
+    fs::path dir = fs::executable_dir() / "notes";        // next to the program, not "wherever it was started"
+    fs::create_directories(dir).expect("can't create the directory");
+    fs::path notes = dir / "today.txt";
+    write_notes(notes).expect("can't write");
+
+    mut std::file more = std::file::append(notes).expect("can't append");
+    _ = more.write("third line\n").expect("can't write");
+    more.flush().expect("can't flush");
+
+    mut std::file input = std::file::open(notes).expect("can't open");
+    mut u32 n = 0;
+    for (std::str line : input.lines()) {                 // a stream of lines without the line break
+        n += 1;
+        std::println(f"{n}: {line}");
+    }
+    std::println(f"{notes.file_name()} ({notes.extension()}) in {notes.parent().file_name()}");
+    return 0;
+}
+//> 1: first line
+//> 2: second line
+//> 3: third line
+//> today.txt (txt) in notes

@@ -1,0 +1,62 @@
+// Standard-library lesson 2: processing sensor samples. Fill in the TODOs until
+//     python3 course/check.py s2
+// says done. It builds as it is and prints wrong values.
+import std;
+
+struct reading {
+    u8 sensor = 0;
+    i32 value = 0;
+}
+
+// The mean of each chunk of `size` values, as integers (rounded down).
+std::darray<i32> chunk_means(std::span<i32> values, usize size) {
+    // TODO: one mean per values.chunks(size); the last chunk may be shorter. Reserve the room
+    // first (std::darray<i32>::with_capacity).
+    return default;
+}
+
+// Subtracts the first half's minimum from the first half, and adds 100 to the second half.
+void adjust_halves(std::span<mut i32> values) {
+    // TODO: values.split_at(values.len() / 2) gives both halves at once.
+}
+
+std::string join(std::span<i32> values) {
+    mut std::string out = default;
+    for (i32 v : values) {
+        if (!out.is_empty()) { out.push_str(" "); }
+        out.push_str(std::format(f"{v}"));
+    }
+    return out;
+}
+
+i32 main() {
+    mut std::darray<reading> log = default;
+    std::array<i32, 10> raw = [12, 15, 999, 14, 11, -500, 13, 16, 18, 17];
+    for (usize i : 0..raw.len()) {
+        log.push(reading{ .sensor = cast::truncate<u8>(i % 3), .value = raw[i] });
+    }
+
+    // TODO: remove the outliers (values outside -100..=100) in place, with one call.
+    std::println(f"{log.len()} readings kept");
+
+    mut std::darray<i32> values = default;
+    // TODO: copy the values into `values`, and mark each reading's sensor in a std::bitset<8>.
+    std::println(f"sensors seen: 0");
+    std::println(f"values: {join(values.as_span())}");
+
+    std::darray<i32> means = chunk_means(values.as_span(), 3);
+    std::println(f"means of 3: {join(means.as_span())}");
+
+    adjust_halves(values.as_mut_span());
+    std::println(f"adjusted: {join(values.as_span())}");
+
+    // TODO: order the log by sensor, keeping the order of readings of the same sensor.
+    mut std::string order = default;
+    for (reading& r : log) { order.push_str(std::format(f"{r.sensor}:{r.value} ")); }
+    std::println(f"by sensor: {order.as_str().trim()}");
+
+    // TODO: remove the first reading in O(1) (the last one takes its place).
+    reading last = reading{};
+    std::println(f"swap-removed {last.sensor}:{last.value}, first is now {log[0].sensor}:{log[0].value}");
+    return 0;
+}

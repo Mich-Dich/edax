@@ -1,0 +1,1595 @@
+// The Edax standard library: module std::ui::dock (see dock.edh).
+
+namespace std::ui::dock {
+    // ---- building layouts ----------------------------------------------------------------------------
+
+    private node stack_of_names(part kind, std::span<std::str> windows) {
+        mut node n = node{ .kind = kind };
+        for (usize i : 0..windows.len()) {
+            n.windows.push(std::string::from(windows[i]));
+        }
+        return n;
+    }
+
+    dock::layout tabs(std::span<std::str> windows) {
+        mut dock::layout l = default;
+        l.nodes.push(stack_of_names(part::tabs, windows));
+        return l;
+    }
+
+    dock::layout central() {
+        mut dock::layout l = default;
+        l.nodes.push(node{ .kind = part::central });
+        return l;
+    }
+
+    dock::layout central_with(std::span<std::str> documents) {
+        mut dock::layout l = default;
+        l.nodes.push(stack_of_names(part::central, documents));
+        return l;
+    }
+
+    // `a` and `b` side by side (or stacked) in one layout: b's nodes come after a's.
+    private dock::layout join(part kind, f32 ratio, dock::layout first, dock::layout second) {
+        mut dock::layout a = move first;
+        mut dock::layout b = move second;
+        mut dock::layout l = default;
+        for (usize i : 0..a.nodes.len()) {
+            l.nodes.push(std::take(mut a.nodes[i]));
+        }
+        usize offset = l.nodes.len();
+        for (usize i : 0..b.nodes.len()) {
+            mut node n = std::take(mut b.nodes[i]);
+            if (n.kind == part::split_x || n.kind == part::split_y) {
+                n.first += offset;
+                n.second += offset;
+            }
+            l.nodes.push(move n);
+        }
+        f32 share = ratio.clamp(0.02, 0.98);
+        l.nodes.push(node{ .kind = kind, .ratio = share, .made_ratio = share, .first = a.root, .second = b.root + offset });
+        l.root = l.nodes.len() - 1;
+        for (usize i : 0..a.floating.len()) {
+            l.floating.push(std::take(mut a.floating[i]));
+        }
+        for (usize i : 0..b.floating.len()) {
+            l.floating.push(std::take(mut b.floating[i]));
+        }
+        for (usize i : 0..a.closed.len()) {
+            l.closed.push(std::take(mut a.closed[i]));
+        }
+        for (usize i : 0..b.closed.len()) {
+            l.closed.push(std::take(mut b.closed[i]));
+        }
+        return l;
+    }
+
+    dock::layout split_x(f32 ratio, dock::layout first, dock::layout second) {
+        return join(part::split_x, ratio, move first, move second);
+    }
+
+    dock::layout split_y(f32 ratio, dock::layout first, dock::layout second) {
+        return join(part::split_y, ratio, move first, move second);
+    }
+
+    private bool is_split(part k) {
+        return k == part::split_x || k == part::split_y;
+    }
+
+    private node copy_node(node& n) {
+        return node{ .kind = n.kind, .ratio = n.ratio, .made_ratio = n.made_ratio, .first = n.first, .second = n.second, .windows = n.windows.clone(), .active = n.active };
+    }
+
+    // The nodes reached from the root, parents before children, first child first.
+    private void reachable(dock::layout& l, usize at, mut std::darray<usize>& out) {
+        if (at >= l.nodes.len()) {
+            return;
+        }
+        out.push(at);
+        if (is_split(l.nodes[at].kind)) {
+            reachable(l, l.nodes[at].first, mut out);
+            reachable(l, l.nodes[at].second, mut out);
+        }
+    }
+
+    private std::option<usize> parent_of(dock::layout& l, usize child) {
+        mut std::darray<usize> all = default;
+        reachable(l, l.root, mut all);
+        for (usize i : all) {
+            if (is_split(l.nodes[i].kind) && (l.nodes[i].first == child || l.nodes[i].second == child)) {
+                return std::some(i);
+            }
+        }
+        return std::none;
+    }
+
+    private std::option<usize> index_of(std::darray<std::string>& names, std::str name) {
+        for (usize i : 0..names.len()) {
+            if (names[i].as_str() == name) {
+                return std::some(i);
+            }
+        }
+        return std::none;
+    }
+
+    // The windows in the subtree at `at` ("@central" for the central area).
+    private std::darray<std::string> windows_in(dock::layout& l, usize at) {
+        mut std::darray<std::string> out = default;
+        mut std::darray<usize> all = default;
+        reachable(l, at, mut all);
+        for (usize i : all) {
+            if (l.nodes[i].kind == part::central) {
+                out.push(std::string::from("@central"));
+            }
+            for (usize k : 0..l.nodes[i].windows.len()) {
+                out.push(l.nodes[i].windows[k].clone());
+            }
+        }
+        return out;
+    }
+
+    // How many of `anchors` are in the subtree at `at`; `best` becomes the deepest node holding
+    // `total` of them.
+    private usize anchors_under(dock::layout& l, usize at, std::darray<std::string>& anchors, usize total, mut std::option<usize>& best) {
+        if (at >= l.nodes.len()) {
+            return 0;
+        }
+        mut usize count = 0;
+        if (is_split(l.nodes[at].kind)) {
+            count = anchors_under(l, l.nodes[at].first, anchors, total, mut best) + anchors_under(l, l.nodes[at].second, anchors, total, mut best);
+        } else {
+            for (usize i : 0..anchors.len()) {
+                std::str a = anchors[i].as_str();
+                if ((a == "@central" && l.nodes[at].kind == part::central) || index_of(l.nodes[at].windows, a).is_some()) {
+                    count += 1;
+                }
+            }
+        }
+        if (count == total && best.is_none()) {
+            best = std::some(at);
+        }
+        return count;
+    }
+
+    private void fix_active(mut usize& active, usize removed, usize remaining) {
+        if (remaining == 0) {
+            active = 0;
+        } else if (removed < active || active >= remaining) {
+            active = if (active > 0) { active - 1 } else { 0 };
+        }
+    }
+
+    // A stack that became empty goes away: its parent split becomes its sibling.
+    private void collapse(mut dock::layout& l, usize empty) {
+        match (parent_of(l, empty)) {
+            std::some(p) => {
+                usize sibling = if (l.nodes[p].first == empty) { l.nodes[p].second } else { l.nodes[p].first };
+                l.nodes[p] = std::take(mut l.nodes[sibling]);
+                l.nodes[empty] = node{};
+            },
+            std::none => {},
+        }
+    }
+
+    // A split at `s` (whose stack moves to a new node) with a new stack of `name` on `towards`.
+    private void split_beside(mut dock::layout& l, usize s, std::str name, side towards, f32 share) {
+        usize moved = l.nodes.len();
+        l.nodes.push(std::take(mut l.nodes[s]));
+        usize fresh = l.nodes.len();
+        mut node n = node{ .kind = part::tabs };
+        n.windows.push(std::string::from(name));
+        l.nodes.push(move n);
+        bool new_first = towards == side::left || towards == side::top;
+        part kind = if (towards == side::left || towards == side::right) { part::split_x } else { part::split_y };
+        f32 ratio = if (new_first) { share } else { 1.0 - share };
+        l.nodes[s] = node{ .kind = kind, .ratio = ratio, .made_ratio = ratio, .first = if (new_first) { fresh } else { moved }, .second = if (new_first) { moved } else { fresh } };
+    }
+
+    struct layout {
+        dock::layout clone() {
+            mut dock::layout out = dock::layout{ .root = this.root };
+            for (usize i : 0..this.nodes.len()) {
+                out.nodes.push(copy_node(this.nodes[i]));
+            }
+            for (usize i : 0..this.floating.len()) {
+                floating_stack& f = this.floating[i];
+                out.floating.push(floating_stack{ .bounds = f.bounds, .windows = f.windows.clone(), .active = f.active, .order = f.order });
+            }
+            for (usize i : 0..this.closed.len()) {
+                closed_window& c = this.closed[i];
+                out.closed.push(closed_window{ .name = c.name.clone(), .anchors = c.anchors.clone(), .towards = c.towards, .ratio = c.ratio, .index = c.index, .was_floating = c.was_floating, .bounds = c.bounds });
+            }
+            return out;
+        }
+
+        bool same(dock::layout& other) {
+            return this.to_text() == other.to_text();
+        }
+
+        std::option<place> find(std::str name) {
+            mut std::darray<usize> all = default;
+            reachable(this, this.root, mut all);
+            for (usize i : all) {
+                if (!is_split(this.nodes[i].kind)) {
+                    match (index_of(this.nodes[i].windows, name)) {
+                        std::some(k) => { return std::some(place{ .node = i, .index = k }); },
+                        std::none => {},
+                    }
+                }
+            }
+            for (usize i : 0..this.floating.len()) {
+                match (index_of(this.floating[i].windows, name)) {
+                    std::some(k) => { return std::some(place{ .floating = true, .node = i, .index = k }); },
+                    std::none => {},
+                }
+            }
+            return std::none;
+        }
+
+        bool contains(std::str name) {
+            return this.find(name).is_some();
+        }
+
+        bool is_closed(std::str name) {
+            for (usize i : 0..this.closed.len()) {
+                if (this.closed[i].name.as_str() == name) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        std::darray<std::string> windows() {
+            mut std::darray<std::string> out = default;
+            mut std::darray<usize> all = default;
+            reachable(this, this.root, mut all);
+            for (usize i : all) {
+                for (usize k : 0..this.nodes[i].windows.len()) {
+                    out.push(this.nodes[i].windows[k].clone());
+                }
+            }
+            for (usize i : 0..this.floating.len()) {
+                for (usize k : 0..this.floating[i].windows.len()) {
+                    out.push(this.floating[i].windows[k].clone());
+                }
+            }
+            return out;
+        }
+
+        std::option<usize> central_node() {
+            mut std::darray<usize> all = default;
+            reachable(this, this.root, mut all);
+            for (usize i : all) {
+                if (this.nodes[i].kind == part::central) {
+                    return std::some(i);
+                }
+            }
+            return std::none;
+        }
+
+        bool dock_next_to(std::str name, std::str anchor, side towards, f32 share) mut {
+            mut usize s = 0;
+            if (anchor == "@central") {
+                match (this.central_node()) {
+                    std::some(c) => { s = c; },
+                    std::none => { return false; },
+                }
+            } else if (anchor == "@root") {
+                s = this.root;
+            } else {
+                match (this.find(anchor)) {
+                    std::some(p) => {
+                        if (p.floating) {
+                            // Floating stacks don't split: the window joins the stack.
+                            this.floating[p.node].windows.push(std::string::from(name));
+                            this.floating[p.node].active = this.floating[p.node].windows.len() - 1;
+                            return true;
+                        }
+                        s = p.node;
+                    },
+                    std::none => { return false; },
+                }
+            }
+            this.dock_at(name, s, towards, share);
+            return true;
+        }
+
+        void dock_at(std::str name, usize stack, side towards, f32 share) mut {
+            if (stack >= this.nodes.len()) {
+                return;
+            }
+            if (towards == side::center || is_split(this.nodes[stack].kind)) {
+                if (is_split(this.nodes[stack].kind)) {
+                    this.add(name);
+                    return;
+                }
+                this.nodes[stack].windows.push(std::string::from(name));
+                this.nodes[stack].active = this.nodes[stack].windows.len() - 1;
+                return;
+            }
+            // An empty stack (the root of an empty layout) just takes the window.
+            if (this.nodes[stack].kind == part::tabs && this.nodes[stack].windows.is_empty()) {
+                this.nodes[stack].windows.push(std::string::from(name));
+                return;
+            }
+            split_beside(mut this, stack, name, towards, share.clamp(0.05, 0.95));
+        }
+
+        void dock_at_edge(std::str name, side towards, f32 share) mut {
+            if (this.nodes.is_empty()) {
+                this.nodes.push(node{});
+                this.root = 0;
+            }
+            if (towards == side::center) {
+                this.add(name);
+                return;
+            }
+            usize top_node = this.root;
+            split_beside(mut this, top_node, name, towards, share.clamp(0.05, 0.95));
+        }
+
+        void float_window(std::str name, std::ui::rect bounds) mut {
+            mut floating_stack f = floating_stack{ .bounds = bounds };
+            f.windows.push(std::string::from(name));
+            this.floating.push(move f);
+        }
+
+        void activate(std::str name) mut {
+            match (this.find(name)) {
+                std::some(p) => {
+                    if (p.floating) {
+                        this.floating[p.node].active = p.index;
+                    } else {
+                        this.nodes[p.node].active = p.index;
+                    }
+                },
+                std::none => {},
+            }
+        }
+
+        void remove(std::str name) mut {
+            match (this.find(name)) {
+                std::some(p) => {
+                    if (p.floating) {
+                        mut floating_stack& f = this.floating[p.node];
+                        _ = f.windows.remove(p.index);
+                        fix_active(mut f.active, p.index, f.windows.len());
+                        if (f.windows.is_empty()) {
+                            _ = this.floating.remove(p.node);
+                        }
+                        return;
+                    }
+                    {
+                        mut node& n = this.nodes[p.node];
+                        _ = n.windows.remove(p.index);
+                        fix_active(mut n.active, p.index, n.windows.len());
+                    }
+                    if (this.nodes[p.node].windows.is_empty() && this.nodes[p.node].kind == part::tabs && p.node != this.root) {
+                        collapse(mut this, p.node);
+                    }
+                },
+                std::none => {},
+            }
+        }
+
+        void close(std::str name) mut {
+            mut closed_window record = closed_window{ .name = std::string::from(name) };
+            match (this.find(name)) {
+                std::some(p) => {
+                    if (p.floating) {
+                        record.was_floating = true;
+                        record.bounds = this.floating[p.node].bounds;
+                    } else if (this.nodes[p.node].windows.len() > 1 || this.nodes[p.node].kind == part::central) {
+                        for (usize k : 0..this.nodes[p.node].windows.len()) {
+                            if (k != p.index) {
+                                record.anchors.push(this.nodes[p.node].windows[k].clone());
+                            }
+                        }
+                        if (this.nodes[p.node].kind == part::central) {
+                            record.anchors.push(std::string::from("@central"));
+                        }
+                        record.index = p.index;
+                    } else {
+                        match (parent_of(this, p.node)) {
+                            std::some(parent) => {
+                                node& split_node = this.nodes[parent];
+                                bool is_first = split_node.first == p.node;
+                                usize sibling = if (is_first) { split_node.second } else { split_node.first };
+                                record.anchors = windows_in(this, sibling);
+                                record.towards = if (split_node.kind == part::split_x) {
+                                    if (is_first) { side::left } else { side::right }
+                                } else {
+                                    if (is_first) { side::top } else { side::bottom }
+                                };
+                                record.ratio = if (is_first) { split_node.ratio } else { 1.0 - split_node.ratio };
+                            },
+                            std::none => {},
+                        }
+                    }
+                },
+                std::none => { return; },
+            }
+            this.remove(name);
+            forget_closed(mut this, name);
+            this.closed.push(move record);
+        }
+
+        void reopen(std::str name) mut {
+            mut std::option<usize> at = std::none;
+            for (usize i : 0..this.closed.len()) {
+                if (this.closed[i].name.as_str() == name) {
+                    at = std::some(i);
+                }
+            }
+            match (at) {
+                std::some(i) => {
+                    closed_window record = this.closed.remove(i);
+                    if (record.was_floating) {
+                        this.float_window(name, record.bounds);
+                    } else if (!reopen_near(mut this, name, record)) {
+                        this.add(name);
+                    }
+                    this.activate(name);
+                },
+                std::none => { this.activate(name); },
+            }
+        }
+
+        void add(std::str name) mut {
+            if (this.contains(name)) {
+                return;
+            }
+            forget_closed(mut this, name);
+            if (this.nodes.is_empty()) {
+                this.nodes.push(node{});
+                this.root = 0;
+            }
+            mut std::darray<usize> all = default;
+            reachable(this, this.root, mut all);
+            for (usize i : all) {
+                if (this.nodes[i].kind == part::tabs) {
+                    this.nodes[i].windows.push(std::string::from(name));
+                    this.nodes[i].active = this.nodes[i].windows.len() - 1;
+                    return;
+                }
+            }
+            this.dock_at_edge(name, side::right, 0.25);
+        }
+
+        void add_document(std::str name) mut {
+            if (this.contains(name)) {
+                return;
+            }
+            forget_closed(mut this, name);
+            match (this.central_node()) {
+                std::some(c) => {
+                    this.nodes[c].windows.push(std::string::from(name));
+                    this.nodes[c].active = this.nodes[c].windows.len() - 1;
+                },
+                std::none => { this.add(name); },
+            }
+        }
+
+        std::string to_text() {
+            mut std::string out = std::string::from("edax-dock 1\n");
+            write_node(this, this.root, 0, mut out);
+            for (usize i : 0..this.floating.len()) {
+                floating_stack& f = this.floating[i];
+                out.push_str(std::format(f"floating {f.bounds.x} {f.bounds.y} {f.bounds.width} {f.bounds.height} {f.active} {f.windows.len()}").as_str());
+                write_names(f.windows, mut out);
+                out.push_str("\n");
+            }
+            for (usize i : 0..this.closed.len()) {
+                closed_window& c = this.closed[i];
+                out.push_str("closed ");
+                write_quoted(c.name.as_str(), mut out);
+                out.push_str(std::format(f" {side_name(c.towards)} {c.ratio} {c.index} {c.was_floating} {c.bounds.x} {c.bounds.y} {c.bounds.width} {c.bounds.height} {c.anchors.len()}").as_str());
+                write_names(c.anchors, mut out);
+                out.push_str("\n");
+            }
+            out.push_str("end\n");
+            return out;
+        }
+
+        static std::option<dock::layout> from_text(std::str text) {
+            mut reader r = reader{ .tokens = tokenize(text) };
+            return read_layout(mut r);
+        }
+    }
+
+    // Puts `name` back beside the smallest part holding the record's anchors that are still there.
+    private bool reopen_near(mut dock::layout& l, std::str name, closed_window& record) {
+        mut std::darray<std::string> present = default;
+        for (usize i : 0..record.anchors.len()) {
+            std::str a = record.anchors[i].as_str();
+            bool docked = match (l.find(a)) {
+                std::some(p) => !p.floating,
+                std::none => false,
+            };
+            if ((a == "@central" && l.central_node().is_some()) || docked) {
+                present.push(record.anchors[i].clone());
+            }
+        }
+        if (present.is_empty()) {
+            return false;
+        }
+        mut std::option<usize> best = std::none;
+        usize top_node = l.root;
+        _ = anchors_under(l, top_node, present, present.len(), mut best);
+        match (best) {
+            std::some(at) => {
+                if (record.towards == side::center && !is_split(l.nodes[at].kind)) {
+                    usize to = record.index.min(l.nodes[at].windows.len());
+                    l.nodes[at].windows.insert(to, std::string::from(name));
+                    l.nodes[at].active = to;
+                    return true;
+                }
+                if (record.towards == side::center) {
+                    return false;
+                }
+                split_beside(mut l, at, name, record.towards, record.ratio.clamp(0.05, 0.95));
+                return true;
+            },
+            std::none => { return false; },
+        }
+    }
+
+    private void forget_closed(mut dock::layout& l, std::str name) {
+        for (usize i : 0..l.closed.len()) {
+            if (l.closed[i].name.as_str() == name) {
+                _ = l.closed.remove(i);
+                return;
+            }
+        }
+    }
+
+    // ---- text ----------------------------------------------------------------------------------------
+
+    private std::static_str side_name(side s) {
+        return match (s) {
+            side::center => "center",
+            side::left => "left",
+            side::right => "right",
+            side::top => "top",
+            side::bottom => "bottom",
+        };
+    }
+
+    private std::option<side> side_of(std::str s) {
+        if (s == "center") { return std::some(side::center); }
+        if (s == "left") { return std::some(side::left); }
+        if (s == "right") { return std::some(side::right); }
+        if (s == "top") { return std::some(side::top); }
+        if (s == "bottom") { return std::some(side::bottom); }
+        return std::none;
+    }
+
+    // `"text"` with `"` and `\` escaped.
+    private void write_quoted(std::str text, mut std::string& out) {
+        out.push_str("\"");
+        for (usize i : 0..text.len()) {
+            u8 b = text.byte(i);
+            if (b == 34 || b == 92) {
+                out.push_str("\\");
+            }
+            out.push_str(text.slice(i, i + 1));
+        }
+        out.push_str("\"");
+    }
+
+    private void write_names(std::darray<std::string>& names, mut std::string& out) {
+        for (usize i : 0..names.len()) {
+            out.push_str(" ");
+            write_quoted(names[i].as_str(), mut out);
+        }
+    }
+
+    private void write_node(dock::layout& l, usize at, usize depth, mut std::string& out) {
+        for (usize i : 0..depth) {
+            out.push_str("  ");
+        }
+        if (at >= l.nodes.len()) {
+            out.push_str("tabs 0 0\n");
+            return;
+        }
+        node& n = l.nodes[at];
+        match (n.kind) {
+            part::split_x => { out.push_str(std::format(f"split_x {n.ratio} {n.made_ratio}\n").as_str()); },
+            part::split_y => { out.push_str(std::format(f"split_y {n.ratio} {n.made_ratio}\n").as_str()); },
+            part::tabs => {
+                out.push_str(std::format(f"tabs {n.active} {n.windows.len()}").as_str());
+                write_names(n.windows, mut out);
+                out.push_str("\n");
+                return;
+            },
+            part::central => {
+                out.push_str(std::format(f"central {n.active} {n.windows.len()}").as_str());
+                write_names(n.windows, mut out);
+                out.push_str("\n");
+                return;
+            },
+        }
+        write_node(l, n.first, depth + 1, mut out);
+        write_node(l, n.second, depth + 1, mut out);
+    }
+
+    // Words and quoted strings (unescaped).
+    private std::darray<std::string> tokenize(std::str text) {
+        mut std::darray<std::string> out = default;
+        mut usize i = 0;
+        usize n = text.len();
+        while (i < n) {
+            u8 b = text.byte(i);
+            if (b == 32 || b == 10 || b == 13 || b == 9) {
+                i += 1;
+                continue;
+            }
+            mut std::string token = default;
+            if (b == 34) {
+                i += 1;
+                while (i < n && text.byte(i) != 34) {
+                    if (text.byte(i) == 92 && i + 1 < n) {
+                        i += 1;
+                    }
+                    token.push_str(text.slice(i, i + 1));
+                    i += 1;
+                }
+                i += 1;
+                // Quoted tokens are marked so that an empty name stays a token.
+                out.push(std::format(f"\"{token}"));
+                continue;
+            }
+            usize start = i;
+            while (i < n && text.byte(i) != 32 && text.byte(i) != 10 && text.byte(i) != 13 && text.byte(i) != 9) {
+                i += 1;
+            }
+            out.push(std::string::from(text.slice(start, i)));
+        }
+        return out;
+    }
+
+    private struct reader {
+        std::darray<std::string> tokens = default;
+        usize at = 0;
+        bool failed = false;
+    }
+
+    private std::str next_word(mut reader& r) {
+        if (r.at >= r.tokens.len()) {
+            r.failed = true;
+            return "";
+        }
+        r.at += 1;
+        return r.tokens[r.at - 1].as_str();
+    }
+
+    private std::string next_name(mut reader& r) {
+        std::str w = next_word(mut r);
+        if (w.is_empty() || w.byte(0) != 34) {
+            r.failed = true;
+            return default;
+        }
+        return std::string::from(w.slice(1, w.len()));
+    }
+
+    private f32 next_number(mut reader& r) {
+        match (next_word(mut r).parse<f32>()) {
+            std::some(v) => { return v; },
+            std::none => {
+                r.failed = true;
+                return 0.0;
+            },
+        }
+    }
+
+    private usize next_count(mut reader& r) {
+        match (next_word(mut r).parse<usize>()) {
+            std::some(v) => { return v; },
+            std::none => {
+                r.failed = true;
+                return 0;
+            },
+        }
+    }
+
+    private std::option<usize> read_node(mut reader& r, mut dock::layout& l, u32 depth) {
+        if (depth > 64) {
+            r.failed = true;
+            return std::none;
+        }
+        std::string word = std::string::from(next_word(mut r));
+        if (word.as_str() == "split_x" || word.as_str() == "split_y") {
+            f32 ratio = next_number(mut r);
+            f32 made = next_number(mut r);
+            std::option<usize> a = read_node(mut r, mut l, depth + 1);
+            std::option<usize> b = read_node(mut r, mut l, depth + 1);
+            if (r.failed || a.is_none() || b.is_none()) {
+                r.failed = true;
+                return std::none;
+            }
+            part kind = if (word.as_str() == "split_x") { part::split_x } else { part::split_y };
+            l.nodes.push(node{ .kind = kind, .ratio = ratio.clamp(0.02, 0.98), .made_ratio = made.clamp(0.02, 0.98), .first = a.value_or(0), .second = b.value_or(0) });
+            return std::some(l.nodes.len() - 1);
+        }
+        if (word.as_str() == "tabs" || word.as_str() == "central") {
+            usize active = next_count(mut r);
+            usize count = next_count(mut r);
+            mut node n = node{ .kind = if (word.as_str() == "tabs") { part::tabs } else { part::central } };
+            for (usize i : 0..count.min(1000)) {
+                n.windows.push(next_name(mut r));
+            }
+            n.active = if (n.windows.is_empty()) { 0 } else { active.min(n.windows.len() - 1) };
+            l.nodes.push(move n);
+            return std::some(l.nodes.len() - 1);
+        }
+        r.failed = true;
+        return std::none;
+    }
+
+    private std::option<dock::layout> read_layout(mut reader& r) {
+        if (next_word(mut r) != "edax-dock") {
+            return std::none;
+        }
+        _ = next_word(mut r);
+        mut dock::layout l = default;
+        match (read_node(mut r, mut l, 0)) {
+            std::some(root) => { l.root = root; },
+            std::none => { return std::none; },
+        }
+        while (!r.failed) {
+            std::string word = std::string::from(next_word(mut r));
+            if (word.as_str() == "end") {
+                return std::some(move l);
+            }
+            if (word.as_str() == "floating") {
+                mut floating_stack f = default;
+                f.bounds = std::ui::rect{ .x = next_number(mut r), .y = next_number(mut r), .width = next_number(mut r), .height = next_number(mut r) };
+                usize active = next_count(mut r);
+                usize count = next_count(mut r);
+                for (usize i : 0..count.min(1000)) {
+                    f.windows.push(next_name(mut r));
+                }
+                f.active = if (f.windows.is_empty()) { 0 } else { active.min(f.windows.len() - 1) };
+                if (!f.windows.is_empty()) {
+                    l.floating.push(move f);
+                }
+            } else if (word.as_str() == "closed") {
+                mut closed_window c = default;
+                c.name = next_name(mut r);
+                c.towards = side_of(next_word(mut r)).value_or(side::center);
+                c.ratio = next_number(mut r);
+                c.index = next_count(mut r);
+                c.was_floating = next_word(mut r) == "true";
+                c.bounds = std::ui::rect{ .x = next_number(mut r), .y = next_number(mut r), .width = next_number(mut r), .height = next_number(mut r) };
+                usize count = next_count(mut r);
+                for (usize i : 0..count.min(1000)) {
+                    c.anchors.push(next_name(mut r));
+                }
+                l.closed.push(move c);
+            } else {
+                return std::none;
+            }
+        }
+        return std::none;
+    }
+
+    // ---- the workspace ------------------------------------------------------------------------------
+
+    class workspace {
+    public:
+        static workspace make(dock::layout start) {
+            return workspace{ .now = move start, .active = std::string::from("Default") };
+        }
+
+        static std::option<workspace> load(std::str path) {
+            mut std::file f = match (std::file::open(path)) {
+                std::ok(opened) => move opened,
+                std::error(_) => { return std::none; },
+            };
+            std::string text = match (f.read_all()) {
+                std::ok(t) => move t,
+                std::error(_) => { return std::none; },
+            };
+            mut reader r = reader{ .tokens = tokenize(text.as_str()) };
+            if (next_word(mut r) != "edax-workspace") {
+                return std::none;
+            }
+            _ = next_word(mut r);
+            mut workspace ws = default;
+            while (!r.failed && r.at < r.tokens.len()) {
+                std::string word = std::string::from(next_word(mut r));
+                if (word.as_str() == "active") {
+                    ws.active = next_name(mut r);
+                } else if (word.as_str() == "current") {
+                    match (read_layout(mut r)) {
+                        std::some(l) => { ws.now = move l; },
+                        std::none => { return std::none; },
+                    }
+                } else if (word.as_str() == "kept") {
+                    std::string name = next_name(mut r);
+                    match (read_layout(mut r)) {
+                        std::some(l) => { ws.kept.push(named_layout{ .name = move name, .saved = move l }); },
+                        std::none => { return std::none; },
+                    }
+                } else {
+                    return std::none;
+                }
+            }
+            if (r.failed || ws.now.nodes.is_empty()) {
+                return std::none;
+            }
+            return std::some(move ws);
+        }
+
+        std::result<void, std::io_error> save(std::str path) mut {
+            mut std::string text = std::string::from("edax-workspace 1\nactive ");
+            write_quoted(this.active.as_str(), mut text);
+            text.push_str("\ncurrent\n");
+            text.push_str(this.now.to_text().as_str());
+            for (usize i : 0..this.kept.len()) {
+                text.push_str("kept ");
+                write_quoted(this.kept[i].name.as_str(), mut text);
+                text.push_str("\n");
+                text.push_str(this.kept[i].saved.to_text().as_str());
+            }
+            mut std::file f = std::file::create(path)?;
+            _ = f.write(text.as_str())?;
+            f.flush()?;
+            this.changed = false;
+            return std::ok();
+        }
+
+        bool save_if_changed(std::str path) mut {
+            if (!this.changed) {
+                return false;
+            }
+            return this.save(path).is_ok();
+        }
+
+        dock::layout& current() {
+            return this.now;
+        }
+
+        mut dock::layout& edit() mut {
+            this.changed = true;
+            return this.now;
+        }
+
+        void reset(dock::layout l) mut {
+            this.now = move l;
+            this.changed = true;
+        }
+
+        void save_as(std::str name) mut {
+            dock::layout copy = this.now.clone();
+            for (usize i : 0..this.kept.len()) {
+                if (this.kept[i].name.as_str() == name) {
+                    this.kept[i].saved = move copy;
+                    this.active = std::string::from(name);
+                    this.changed = true;
+                    return;
+                }
+            }
+            this.kept.push(named_layout{ .name = std::string::from(name), .saved = move copy });
+            this.active = std::string::from(name);
+            this.changed = true;
+        }
+
+        bool switch_to(std::str name) mut {
+            mut std::option<usize> found = std::none;
+            for (usize i : 0..this.kept.len()) {
+                if (this.kept[i].name.as_str() == name) {
+                    found = std::some(i);
+                }
+            }
+            match (found) {
+                std::some(i) => {
+                    std::string current_name = this.active.clone();
+                    this.save_as(current_name.as_str());
+                    this.now = this.kept[i].saved.clone();
+                    this.active = std::string::from(name);
+                    this.changed = true;
+                    return true;
+                },
+                std::none => { return false; },
+            }
+        }
+
+        std::darray<std::string> names() {
+            mut std::darray<std::string> out = default;
+            for (usize i : 0..this.kept.len()) {
+                out.push(this.kept[i].name.clone());
+            }
+            return out;
+        }
+
+        std::str active_name() {
+            return this.active.as_str();
+        }
+
+        void close(std::str name) mut {
+            this.now.close(name);
+            this.changed = true;
+        }
+
+        void reopen(std::str name) mut {
+            this.now.reopen(name);
+            this.changed = true;
+        }
+
+        void set_icon(std::str name, std::ui::icon symbol) mut {
+            _ = this.icons.insert(std::hash(name), symbol);
+        }
+
+        std::ui::icon icon_of(std::str name) {
+            u64 key = std::hash(name);
+            return match (this.icons.get(key)) {
+                std::some(found) => found,
+                std::none => std::ui::icon::none,
+            };
+        }
+
+        std::option<std::ui::rect> tab_of(std::str name) {
+            for (usize i : 0..this.tabs.len()) {
+                if (this.tabs[i].name.as_str() == name) {
+                    return std::some(this.tabs[i].bounds);
+                }
+            }
+            return std::none;
+        }
+
+        std::darray<std::string> closed_windows() {
+            mut std::darray<std::string> out = default;
+            for (usize i : 0..this.now.closed.len()) {
+                out.push(this.now.closed[i].name.clone());
+            }
+            return out;
+        }
+    }
+
+    // ---- the dockspace ----------------------------------------------------------------------------------
+
+    // Stacking orders: the dockspace's tab bars and dividers, then its docked windows (both under
+    // every ordinary window); floating stacks take two orders from the context (bar, content).
+    private compile_time u64 chrome_order = 1;
+    private compile_time u64 docked_order = 2;
+
+    private u64 tab_id(u64 space_id, std::str name) {
+        return std::hash_combine(std::hash_combine(space_id, 0x746162), std::hash(name));
+    }
+
+    private u64 panel_id(u64 space_id, std::str name) {
+        return std::hash_combine(std::hash_combine(space_id, 0x70616e), std::hash(name));
+    }
+
+    // The tab bar's height and the gap between split parts.
+    private f32 bar_height(std::ui::theme& t) {
+        return (t.controls.window.tab_height * t.density).round();
+    }
+
+    // Lays out the docked part: stacks into ws.areas, dividers handled and drawn.
+    private void lay_out(mut std::ui::immediate::context& ctx, mut workspace& ws, u64 space_id, usize chrome, usize at, std::ui::rect r) {
+        if (at >= ws.now.nodes.len()) {
+            return;
+        }
+        std::ui::theme t = ctx.look;
+        part kind = ws.now.nodes[at].kind;
+        if (!is_split(kind)) {
+            f32 bar = bar_height(t);
+            ws.areas.push(stack_area{
+                .node = at,
+                .bar = std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = bar },
+                .content = std::ui::rect{ .x = r.x, .y = r.y + bar, .width = r.width, .height = (r.height - bar).max(0.0) },
+                .order = docked_order,
+            });
+            return;
+        }
+        bool across = kind == part::split_x;
+        u64 divider_id = std::hash_combine(std::hash_combine(space_id, 0x646976), cast<u64>(at));
+        f32 span = if (across) { r.width } else { r.height };
+        // Dragging the divider: the share follows the cursor.
+        if (ws.divider == at + 1 && ctx.in.mouse_down) {
+            f32 offset = if (across) { ctx.in.cursor.x - r.x } else { ctx.in.cursor.y - r.y };
+            f32 share = (offset / span.max(1.0)).clamp(0.05, 0.95);
+            if (share != ws.now.nodes[at].ratio) {
+                ws.now.nodes[at].ratio = share;
+                ws.changed = true;
+            }
+        }
+        f32 divider_gap = t.controls.window.dock_gap;
+        f32 ratio = ws.now.nodes[at].ratio;
+        f32 first_size = ((span - divider_gap) * ratio).round();
+        std::ui::rect one = if (across) {
+            std::ui::rect{ .x = r.x, .y = r.y, .width = first_size, .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = first_size }
+        };
+        std::ui::rect handle = if (across) {
+            std::ui::rect{ .x = one.right(), .y = r.y, .width = divider_gap, .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = one.bottom(), .width = r.width, .height = divider_gap }
+        };
+        std::ui::rect two = if (across) {
+            std::ui::rect{ .x = handle.right(), .y = r.y, .width = (r.right() - handle.right()).max(0.0), .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = handle.bottom(), .width = r.width, .height = (r.bottom() - handle.bottom()).max(0.0) }
+        };
+        std::ui::rect clip = ctx.layers[chrome].bounds;
+        std::ui::immediate::response resp = ctx.respond(divider_id, handle.expanded(2.0), space_id, clip, false);
+        if (resp.state.hovered && ctx.in.mouse_pressed) {
+            ws.divider = at + 1;
+            if (ws.divider_clicked == at + 1 && ctx.clock - ws.divider_click_at < 0.35) {
+                // A double-click: back to the share the layout was made with.
+                ws.now.nodes[at].ratio = ws.now.nodes[at].made_ratio;
+                ws.changed = true;
+                ws.divider = 0;
+                ws.divider_click_at = -10.0;
+            } else {
+                ws.divider_clicked = at + 1;
+                ws.divider_click_at = ctx.clock;
+            }
+        }
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = ctx.layers[chrome].list, .faces = ctx.faces, .tokens = ctx.look };
+            ctx.painters.divider(mut p, std::ui::divider_part{ .bounds = handle, .vertical = across, .state = resp.state });
+        }
+        usize a = ws.now.nodes[at].first;
+        usize b = ws.now.nodes[at].second;
+        lay_out(mut ctx, mut ws, space_id, chrome, a, one);
+        lay_out(mut ctx, mut ws, space_id, chrome, b, two);
+    }
+
+    // The windows of a stack area (docked or floating).
+    private std::darray<std::string> stack_windows(workspace& ws, stack_area& s) {
+        if (s.floating) {
+            return ws.now.floating[s.node].windows.clone();
+        }
+        return ws.now.nodes[s.node].windows.clone();
+    }
+
+    private usize stack_active(workspace& ws, stack_area& s) {
+        return if (s.floating) { ws.now.floating[s.node].active } else { ws.now.nodes[s.node].active };
+    }
+
+    // Draws a stack's tab bar into `layer` and handles its tabs: press activates and may start a
+    // drag, the close button closes. Returns true when the layout changed so that the stack areas
+    // are no longer valid.
+    private bool tab_bar(mut std::ui::immediate::context& ctx, mut workspace& ws, u64 space_id, usize layer_index, u64 window, usize area_index) {
+        stack_area s = ws.areas[area_index];
+        std::ui::theme t = ctx.look;
+        std::darray<std::string> names = stack_windows(ws, s);
+        usize active = stack_active(ws, s);
+        bool focused = ws.focus == s.node + 1 && ws.focus_floating == s.floating;
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = ctx.layers[layer_index].list, .faces = ctx.faces, .tokens = ctx.look };
+            if (!s.floating) {
+                std::ui::rect whole = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
+                ctx.painters.dock_stack(mut p, std::ui::dock_stack_part{ .bounds = whole, .bar = s.bar, .content = s.content, .focused = focused });
+            }
+            ctx.painters.dock_bar(mut p, std::ui::tabs_part{ .bar = s.bar });
+        }
+        ctx.layers[layer_index].list.push_clip(s.bar);
+        std::ui::text_style style = t.style(std::ui::text_role::label, t.colors.text);
+        f32 pad = (12.0 * t.density).round();
+        f32 close_size = (16.0 * t.density).round();
+        mut f32 x = s.bar.x + 4.0;
+        mut bool changed = false;
+        for (usize i : 0..names.len()) {
+            std::str name = names[i].as_str();
+            std::ui::icon symbol = ws.icon_of(name);
+            f32 icon_room = if (symbol == std::ui::icon::none) { 0.0 } else { (14.0 * t.density).round() + 6.0 };
+            f32 text_width = ctx.faces.measure(name, style).x;
+            f32 width = (text_width + icon_room + 2.0 * pad + close_size).round();
+            std::ui::rect tab = std::ui::rect{ .x = x, .y = s.bar.y + 3.0, .width = width, .height = s.bar.height - 3.0 };
+            x += width + 2.0;
+            u64 id = tab_id(space_id, name);
+            ws.tabs.push(tab_place{ .name = std::string::from(name), .bounds = tab });
+            std::ui::rect close = std::ui::rect{ .x = tab.right() - close_size - 6.0, .y = tab.y + ((tab.height - close_size) * 0.5).round(), .width = close_size, .height = close_size };
+            // The tab first, then its close button: the button takes the press over the tab.
+            std::ui::immediate::response resp = ctx.respond(id, tab, window, s.bar, false);
+            std::ui::immediate::response close_resp = ctx.respond(std::hash_combine(id, 0x636c), close, window, s.bar, false);
+            bool on_close = close_resp.state.hovered;
+            if (close_resp.clicked && !changed) {
+                ws.now.close(name);
+                ws.changed = true;
+                changed = true;
+            } else if (resp.state.hovered && ctx.in.mouse_pressed && !on_close) {
+                if (s.floating) {
+                    ws.now.floating[s.node].active = i;
+                } else {
+                    ws.now.nodes[s.node].active = i;
+                }
+                ws.dragging = std::string::from(name);
+                ws.press_at = ctx.in.cursor;
+                ws.drag_started = false;
+                ws.drag_from = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
+                ws.focus = s.node + 1;
+                ws.focus_floating = s.floating;
+                ws.changed = true;
+            }
+            bool is_active = i == active;
+            bool dragged_away = ws.drag_started && ws.dragging.as_str() == name;
+            if (!dragged_away) {
+                mut std::ui::painter p = std::ui::painter{ .list = ctx.layers[layer_index].list, .faces = ctx.faces, .tokens = ctx.look };
+                ctx.painters.dock_tab(mut p, std::ui::dock_tab_part{
+                    .bounds = tab, .title = name, .symbol = symbol, .active = is_active, .stack_focused = focused, .state = resp.state,
+                    .close = close, .closable = is_active || resp.state.hovered || on_close, .close_hover = close_resp.state.hover,
+                });
+            }
+        }
+        ctx.layers[layer_index].list.pop_clip();
+        return changed;
+    }
+
+    // Where a dragged tab would go: the target buttons of the stack under the cursor and of the
+    // dockspace's edges, drawn in the overlay; the one hovered and the preview of the result.
+    private struct drop {
+        // 0: none; 1: a stack's side; 2: an edge of the dockspace.
+        u8 kind = 0;
+        usize area = 0;
+        side towards = side::center;
+    }
+
+    private std::ui::rect target_box(std::ui::vec2 center, f32 size) {
+        return std::ui::rect{ .x = (center.x - size * 0.5).round(), .y = (center.y - size * 0.5).round(), .width = size, .height = size };
+    }
+
+    private std::ui::rect side_part(std::ui::rect r, side s, f32 share) {
+        return match (s) {
+            side::left => std::ui::rect{ .x = r.x, .y = r.y, .width = r.width * share, .height = r.height },
+            side::right => std::ui::rect{ .x = r.right() - r.width * share, .y = r.y, .width = r.width * share, .height = r.height },
+            side::top => std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = r.height * share },
+            side::bottom => std::ui::rect{ .x = r.x, .y = r.bottom() - r.height * share, .width = r.width, .height = r.height * share },
+            side::center => r,
+        };
+    }
+
+    private u8 side_code(side s) {
+        return match (s) {
+            side::center => 0,
+            side::left => 1,
+            side::right => 2,
+            side::top => 3,
+            side::bottom => 4,
+        };
+    }
+
+    private drop drop_targets(mut std::ui::immediate::context& ctx, mut workspace& ws, std::ui::rect area) {
+        std::ui::theme t = ctx.look;
+        std::ui::vec2 cursor = ctx.in.cursor;
+        f32 size = (34.0 * t.density).round();
+        f32 step = size + 6.0;
+        mut drop found = default;
+        // The stack under the cursor: floating ones first (the front-most), then docked ones.
+        mut std::option<usize> under = std::none;
+        mut u64 best = 0;
+        for (usize i : 0..ws.areas.len()) {
+            stack_area s = ws.areas[i];
+            std::ui::rect whole = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
+            if (whole.contains(cursor) && (under.is_none() || s.order > best)) {
+                under = std::some(i);
+                best = s.order;
+            }
+        }
+        usize oi = ctx.overlay_layer();
+        mut std::ui::painter p = std::ui::painter{ .list = ctx.layers[oi].list, .faces = ctx.faces, .tokens = ctx.look };
+        match (under) {
+            std::some(i) => {
+                stack_area s = ws.areas[i];
+                std::ui::rect whole = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
+                std::ui::vec2 c = s.content.center();
+                std::array<side, 5> sides = [side::center, side::left, side::right, side::top, side::bottom];
+                usize shown = if (s.floating) { 1 } else { 5 };
+                for (usize k : 0..shown) {
+                    side sd = sides[k];
+                    std::ui::vec2 offset = match (sd) {
+                        side::left => std::ui::vec2{ .x = -step },
+                        side::right => std::ui::vec2{ .x = step },
+                        side::top => std::ui::vec2{ .y = -step },
+                        side::bottom => std::ui::vec2{ .y = step },
+                        side::center => std::ui::vec2{},
+                    };
+                    std::ui::rect box = target_box(c + offset, size);
+                    bool hovered = box.contains(cursor);
+                    if (hovered) {
+                        found = drop{ .kind = 1, .area = i, .towards = sd };
+                    }
+                    ctx.painters.drop_target(mut p, std::ui::drop_target_part{ .bounds = box, .side = side_code(sd), .hovered = hovered, .preview = side_part(whole, sd, 0.5) });
+                }
+            },
+            std::none => {},
+        }
+        // The dockspace's edges: a column or row beside everything.
+        std::array<side, 4> edges = [side::left, side::right, side::top, side::bottom];
+        for (usize k : 0..4) {
+            side sd = edges[k];
+            std::ui::vec2 at = match (sd) {
+                side::left => std::ui::vec2{ .x = area.x + size * 0.5 + 10.0, .y = area.center().y },
+                side::right => std::ui::vec2{ .x = area.right() - size * 0.5 - 10.0, .y = area.center().y },
+                side::top => std::ui::vec2{ .x = area.center().x, .y = area.y + size * 0.5 + 10.0 },
+                side::bottom => std::ui::vec2{ .x = area.center().x, .y = area.bottom() - size * 0.5 - 10.0 },
+                side::center => area.center(),
+            };
+            std::ui::rect box = target_box(at, size);
+            bool hovered = box.contains(cursor);
+            if (hovered) {
+                found = drop{ .kind = 2, .towards = sd };
+            }
+            ctx.painters.drop_target(mut p, std::ui::drop_target_part{ .bounds = box, .side = side_code(sd), .hovered = hovered, .preview = side_part(area, sd, 0.25) });
+        }
+        // The dragged tab follows the cursor.
+        std::ui::text_style style = t.style(std::ui::text_role::label, t.colors.text);
+        std::ui::icon symbol = ws.icon_of(ws.dragging.as_str());
+        f32 icon_room = if (symbol == std::ui::icon::none) { 0.0 } else { 20.0 };
+        f32 width = ctx.faces.measure(ws.dragging.as_str(), style).x + icon_room + 24.0 * t.density;
+        std::ui::rect ghost = std::ui::rect{ .x = cursor.x + 14.0, .y = cursor.y + 16.0, .width = width.round(), .height = (28.0 * t.density).round() };
+        p.list.shadow(ghost, t.radius.small, t.elevation(2), t.colors.shadow);
+        p.list.fill(ghost, t.colors.surface_raised, t.radius.small);
+        p.list.stroke(ghost, t.colors.border, t.radius.small, 1.0);
+        ctx.painters.dock_tab(mut p, std::ui::dock_tab_part{
+            .bounds = ghost, .title = ws.dragging.as_str(), .symbol = symbol, .active = true, .stack_focused = true, .state = std::ui::interaction{},
+            .close = std::ui::rect{}, .closable = false, .close_hover = 0.0,
+        });
+        return found;
+    }
+
+    // The window any other than `name` in the stack, or the stack's marker when it has none.
+    private std::string anchor_of(workspace& ws, stack_area& s, std::str name) {
+        std::darray<std::string> names = stack_windows(ws, s);
+        for (usize i : 0..names.len()) {
+            if (names[i].as_str() != name) {
+                return names[i].clone();
+            }
+        }
+        if (!s.floating && ws.now.nodes[s.node].kind == part::central) {
+            return std::string::from("@central");
+        }
+        return default;
+    }
+
+    // Applies the drop of the dragged window.
+    private void apply_drop(mut std::ui::immediate::context& ctx, mut workspace& ws, drop d) {
+        std::string name = ws.dragging.clone();
+        std::str n = name.as_str();
+        if (d.kind == 1) {
+            stack_area s = ws.areas[d.area];
+            std::string anchor = anchor_of(ws, s, n);
+            if (anchor.is_empty()) {
+                return;   // onto its own stack, alone in it: nothing changes
+            }
+            ws.now.remove(n);
+            if (!ws.now.dock_next_to(n, anchor.as_str(), d.towards, 0.5)) {
+                ws.now.add(n);
+            }
+            ws.now.activate(n);
+        } else if (d.kind == 2) {
+            ws.now.remove(n);
+            ws.now.dock_at_edge(n, d.towards, 0.25);
+        } else {
+            // Dropped on no target: a floating window of its own at the cursor.
+            std::ui::vec2 at = ctx.in.cursor - std::ui::vec2{ .x = 24.0, .y = 12.0 };
+            f32 w = ws.drag_from.width.clamp(280.0, 560.0);
+            f32 h = ws.drag_from.height.clamp(200.0, 480.0);
+            match (ws.now.find(n)) {
+                std::some(p) => {
+                    if (p.floating && ws.now.floating[p.node].windows.len() == 1) {
+                        ws.now.floating[p.node].bounds = std::ui::rect{ .x = at.x, .y = at.y, .width = ws.now.floating[p.node].bounds.width, .height = ws.now.floating[p.node].bounds.height };
+                        ws.changed = true;
+                        return;
+                    }
+                },
+                std::none => {},
+            }
+            ws.now.remove(n);
+            ws.now.float_window(n, std::ui::rect{ .x = at.x, .y = at.y, .width = w, .height = h });
+            ctx.next_order += 2;
+            usize last = ws.now.floating.len() - 1;
+            ws.now.floating[last].order = ctx.next_order - 1;
+        }
+        ws.changed = true;
+    }
+
+    // Floating stacks: their bars (move, tabs) and frames; their content goes into panels later.
+    private bool floating_stacks(mut std::ui::immediate::context& ctx, mut workspace& ws, u64 space_id) {
+        std::ui::theme t = ctx.look;
+        f32 bar = bar_height(t);
+        for (usize i : 0..ws.now.floating.len()) {
+            if (ws.now.floating[i].order < 16) {
+                ctx.next_order += 2;
+                ws.now.floating[i].order = ctx.next_order - 1;
+            }
+        }
+        // Moving a floating stack by its bar.
+        if (ws.moving > 0 && ws.moving <= ws.now.floating.len() && ctx.in.mouse_down) {
+            mut floating_stack& f = ws.now.floating[ws.moving - 1];
+            std::ui::vec2 at = ctx.in.cursor - ws.move_offset;
+            f.bounds = std::ui::rect{ .x = at.x.round(), .y = at.y.round(), .width = f.bounds.width, .height = f.bounds.height };
+            ws.changed = true;
+        }
+        if (!ctx.in.mouse_down) {
+            ws.moving = 0;
+        }
+        for (usize i : 0..ws.now.floating.len()) {
+            floating_stack f = floating_stack{ .bounds = ws.now.floating[i].bounds, .order = ws.now.floating[i].order };
+            u64 chrome_id = std::hash_combine(std::hash_combine(space_id, 0x666c6f), cast<u64>(i));
+            std::ui::rect b = f.bounds;
+            std::ui::rect bar_rect = std::ui::rect{ .x = b.x, .y = b.y, .width = b.width, .height = bar };
+            // A press anywhere on it brings it to the front.
+            if (ctx.in.mouse_pressed && (ctx.hover_window == chrome_id || ctx.hover_window == std::hash_combine(chrome_id, 1)) && f.order + 1 < ctx.next_order) {
+                ctx.next_order += 2;
+                ws.now.floating[i].order = ctx.next_order - 1;
+            }
+            u64 order = ws.now.floating[i].order;
+            usize index = ctx.layers.len();
+            ctx.layers.push(std::ui::immediate::layer{ .window = chrome_id, .order = order, .bounds = bar_rect });
+            ctx.layers[index].list.begin(ctx.frame_size);
+            {
+                bool focused = ws.focus == i + 1 && ws.focus_floating;
+                mut std::ui::painter p = std::ui::painter{ .list = ctx.layers[index].list, .faces = ctx.faces, .tokens = ctx.look };
+                ctx.painters.dock_stack(mut p, std::ui::dock_stack_part{
+                    .bounds = b, .bar = bar_rect,
+                    .content = std::ui::rect{ .x = b.x + 1.0, .y = b.y + bar, .width = b.width - 2.0, .height = (b.height - bar - 1.0).max(0.0) },
+                    .focused = focused, .floating = true,
+                });
+            }
+            usize area_index = ws.areas.len();
+            ws.areas.push(stack_area{
+                .floating = true, .node = i, .bar = bar_rect,
+                .content = std::ui::rect{ .x = b.x + 1.0, .y = b.y + bar, .width = b.width - 2.0, .height = (b.height - bar - 1.0).max(0.0) },
+                .order = order + 1,
+            });
+            // The bar's empty part moves the stack.
+            std::ui::immediate::response move_resp = ctx.respond(std::hash_combine(chrome_id, 2), bar_rect, chrome_id, bar_rect, false);
+            if (tab_bar(mut ctx, mut ws, space_id, index, chrome_id, area_index)) {
+                return true;
+            }
+            if (move_resp.state.hovered && ctx.in.mouse_pressed && ws.dragging.is_empty()) {
+                ws.moving = i + 1;
+                ws.move_offset = ctx.in.cursor - b.origin();
+            }
+        }
+        return false;
+    }
+
+    implement frame_docking for std::ui::immediate::frame {
+        space dockspace(std::str name, mut workspace& ws) mut override {
+            std::ui::rect all = std::ui::rect{ .width = this.ctx.frame_size.x, .height = this.ctx.frame_size.y };
+            return this.dockspace_in(name, mut ws, all);
+        }
+
+        space dockspace_in(std::str name, mut workspace& ws, std::ui::rect area) mut override {
+        u64 id = std::hash_combine(std::hash(name), 0x646f636b);
+        this.ctx.touch(id);
+        usize chrome = this.ctx.layers.len();
+        this.ctx.layers.push(std::ui::immediate::layer{ .window = id, .order = chrome_order, .bounds = area });
+        this.ctx.layers[chrome].list.begin(this.ctx.frame_size);
+        std::ui::theme t = this.ctx.look;
+        this.ctx.layers[chrome].list.fill(area, t.colors.background, 0.0);
+        if (ws.now.nodes.is_empty()) {
+            ws.now = central();
+        }
+        // Twice at most: when a tab closes, the stacks are laid out again.
+        for (u32 pass : 0..2) {
+            ws.areas.clear();
+            ws.tabs.clear();
+            usize root = ws.now.root;
+            lay_out(mut this.ctx, mut ws, id, chrome, root, area);
+            mut bool changed = false;
+            usize docked = ws.areas.len();
+            for (usize i : 0..docked) {
+                if (!changed && tab_bar(mut this.ctx, mut ws, id, chrome, id, i)) {
+                    changed = true;
+                }
+            }
+            if (!changed) {
+                changed = floating_stacks(mut this.ctx, mut ws, id);
+            }
+            if (!changed || pass == 1) {
+                break;
+            }
+            // Start the chrome again: what was drawn belongs to the layout before the change.
+            this.ctx.layers[chrome].list.begin(this.ctx.frame_size);
+            this.ctx.layers[chrome].list.fill(area, t.colors.background, 0.0);
+            this.ctx.layers.truncate(chrome + 1);
+        }
+        if (!this.ctx.in.mouse_down) {
+            ws.divider = 0;
+        }
+        // A dragged tab.
+        if (!ws.dragging.is_empty()) {
+            if (!ws.drag_started && (this.ctx.in.cursor - ws.press_at).length() > 6.0 && this.ctx.in.mouse_down) {
+                ws.drag_started = true;
+            }
+            if (ws.drag_started) {
+                drop d = drop_targets(mut this.ctx, mut ws, area);
+                if (!this.ctx.in.mouse_down) {
+                    apply_drop(mut this.ctx, mut ws, d);
+                }
+            }
+            if (!this.ctx.in.mouse_down) {
+                ws.dragging.clear();
+                ws.drag_started = false;
+            }
+        }
+        return space{ .frame = this, .ws = ws, .id = id, .area = area, .chrome = chrome };
+        }
+    }
+
+    view class space {
+    public:
+        std::ui::immediate::scope window(std::str name) mut {
+            if (!this.ws.now.contains(name) && !this.ws.now.is_closed(name)) {
+                this.ws.now.add(name);
+                this.ws.changed = true;
+            }
+            return this.content_of(name);
+        }
+
+        std::ui::immediate::scope document(std::str name) mut {
+            if (!this.ws.now.contains(name) && !this.ws.now.is_closed(name)) {
+                this.ws.now.add_document(name);
+                this.ws.changed = true;
+            }
+            return this.content_of(name);
+        }
+
+        void reopen(std::str name) mut {
+            this.ws.reopen(name);
+        }
+
+        std::ui::rect bounds() {
+            return this.area;
+        }
+
+        ~space() {
+        }
+
+    private:
+        // The window's panel when its tab is the one shown in a stack laid out this frame.
+        std::ui::immediate::scope content_of(std::str name) mut {
+            match (this.ws.now.find(name)) {
+                std::some(p) => {
+                    for (usize i : 0..this.ws.areas.len()) {
+                        stack_area s = this.ws.areas[i];
+                        if (s.floating != p.floating || s.node != p.node) {
+                            continue;
+                        }
+                        usize active = stack_active(this.ws, s);
+                        if (active != p.index) {
+                            break;
+                        }
+                        u64 pid = panel_id(this.id, name);
+                        if (this.frame.ctx.in.mouse_pressed && this.frame.ctx.hover_window == pid) {
+                            this.ws.focus = s.node + 1;
+                            this.ws.focus_floating = s.floating;
+                        }
+                        // The stack's painter drew the background (dock_stack).
+                        std::ui::theme t = this.frame.ctx.look;
+                        return this.frame.panel(pid, s.content, s.order, t.controls.window.padding * t.density, false);
+                    }
+                },
+                std::none => {},
+            }
+            return std::ui::immediate::scope{ .ctx = this.frame.ctx, .id_base = std::hash(name), .visible = false, .kind = 0, .layer_index = this.chrome, .window = this.id };
+        }
+    }
+
+    // ---- splits inside a window ------------------------------------------------------------------------
+
+    private split open_split(mut std::ui::immediate::scope& s, u64 id, bool across, f32 ratio, f32 height) {
+        if (!s.open()) {
+            return split{ .parent = s, .id = id, .share = ratio };
+        }
+        std::ui::theme t = s.theme();
+        std::ui::rect r = s.allocate(std::ui::vec2{ .x = s.available_width(), .y = (height * t.density).round() });
+        mut f32 share = ratio;
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(id);
+            if (st.numbers.len() < 2) {
+                st.numbers.resize(2, cast<f64>(ratio));
+            }
+            share = cast::round<f32>(st.numbers[0]);
+        }
+        f32 span = if (across) { r.width } else { r.height };
+        f32 gap = 6.0;
+        mut f32 first_size = ((span - gap) * share).round();
+        std::ui::rect handle = if (across) {
+            std::ui::rect{ .x = r.x + first_size, .y = r.y, .width = gap, .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = r.y + first_size, .width = r.width, .height = gap }
+        };
+        std::ui::immediate::response resp = s.interact(std::hash_combine(id, 0x646976), handle);
+        bool double_click = {
+            mut std::ui::immediate::widget_storage& st = s.storage(id);
+            if (st.numbers.len() < 3) {
+                st.numbers.resize(3, -10.0);
+            }
+            bool twice = resp.state.hovered && s.ctx.in.mouse_pressed && s.ctx.clock - st.numbers[2] < 0.35;
+            if (resp.state.hovered && s.ctx.in.mouse_pressed) {
+                st.numbers[2] = if (twice) { -10.0 } else { s.ctx.clock };
+            }
+            twice
+        };
+        if (double_click) {
+            share = ratio;
+        } else if (resp.state.pressed) {
+            f32 offset = if (across) { s.ctx.in.cursor.x - r.x } else { s.ctx.in.cursor.y - r.y };
+            share = (offset / span.max(1.0)).clamp(0.05, 0.95);
+        }
+        {
+            mut std::ui::immediate::widget_storage& st = s.storage(id);
+            st.numbers[0] = cast<f64>(share);
+        }
+        first_size = ((span - gap) * share).round();
+        std::ui::rect one = if (across) {
+            std::ui::rect{ .x = r.x, .y = r.y, .width = first_size, .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = r.y, .width = r.width, .height = first_size }
+        };
+        std::ui::rect line = if (across) {
+            std::ui::rect{ .x = one.right(), .y = r.y, .width = gap, .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = one.bottom(), .width = r.width, .height = gap }
+        };
+        std::ui::rect two = if (across) {
+            std::ui::rect{ .x = line.right(), .y = r.y, .width = (r.right() - line.right()).max(0.0), .height = r.height }
+        } else {
+            std::ui::rect{ .x = r.x, .y = line.bottom(), .width = r.width, .height = (r.bottom() - line.bottom()).max(0.0) }
+        };
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            p.list.fill(r, t.colors.surface_sunken, t.radius.small);
+            std::ui::rect mark = if (across) {
+                std::ui::rect{ .x = line.center().x - 0.5, .y = r.y, .width = 1.0, .height = r.height }
+            } else {
+                std::ui::rect{ .x = r.x, .y = line.center().y - 0.5, .width = r.width, .height = 1.0 }
+            };
+            p.list.fill(mark, t.colors.border, 0.0);
+            s.ctx.painters.divider(mut p, std::ui::divider_part{ .bounds = line, .vertical = across, .state = resp.state });
+        }
+        return split{ .parent = s, .id = id, .one = one, .two = two, .share = share };
+    }
+
+    view class split {
+    public:
+        std::ui::immediate::scope first() mut {
+            return this.parent.region(std::hash_combine(this.id, 1), this.one, 6.0);
+        }
+
+        std::ui::immediate::scope second() mut {
+            return this.parent.region(std::hash_combine(this.id, 2), this.two, 6.0);
+        }
+
+        f32 ratio() {
+            return this.share;
+        }
+    }
+
+    implement scope_docking for std::ui::immediate::scope {
+        split split_x(std::str name, f32 ratio, f32 height, implicit compile_time std::call_site where) mut override {
+            u64 split_id = this.make_id(name, where);
+            return open_split(mut this, split_id, true, ratio, height);
+        }
+
+        split split_y(std::str name, f32 ratio, f32 height, implicit compile_time std::call_site where) mut override {
+            u64 split_id = this.make_id(name, where);
+            return open_split(mut this, split_id, false, ratio, height);
+        }
+
+        void window_menu(mut workspace& ws, dock::layout& start, implicit compile_time std::call_site where) mut override {
+            std::darray<std::string> closed = ws.closed_windows();
+            if (closed.is_empty()) {
+                this.muted(f"No closed windows");
+            }
+            for (usize i : 0..closed.len()) {
+                mut std::ui::immediate::scope item = this.id(i);
+                if (item.button(std::format(f"Reopen {closed[i]}").as_str())) {
+                    ws.reopen(closed[i].as_str());
+                }
+            }
+            if (this.button("Reset dock::layout")) {
+                ws.reset(start.clone());
+            }
+        }
+    }
+}

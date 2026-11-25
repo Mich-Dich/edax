@@ -1,0 +1,26 @@
+// RAII as in C++: destroyed at the end of the scope, in reverse order. A moved-from value isn't.
+import std;
+
+class noisy {
+public:
+    static noisy make(std::str name) { return noisy{ .label = std::string::from(name) }; }
+    ~noisy() { std::println(f"destroy {label}"); }
+private:
+    std::string label;
+}
+
+void keep(noisy n) { std::println("keep() got its noisy"); }   // destroyed at the end of keep
+
+i32 main() {
+    noisy a = noisy::make("a");
+    noisy b = noisy::make("b");
+    noisy c = noisy::make("c");
+    keep(move b);                    // b's value now lives (and dies) in keep
+    std::println("end of main");
+    return 0;
+}
+//> keep() got its noisy
+//> destroy b
+//> end of main
+//> destroy c
+//> destroy a

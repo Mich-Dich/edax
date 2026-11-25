@@ -1,0 +1,22 @@
+// RUN: edaxc check %s
+// Notes for C++ habits: method names, containers passed as spans, functions used as values.
+import std;
+
+u32 sum(std::span<u32> xs) {
+    mut u32 s = 0;
+    for (u32 x : xs) { s += x; }
+    return s;
+}
+
+void shout(u32 v) { std::println(f"{v}"); }
+
+i32 main() {
+    mut std::darray<u32> list = default;
+    list.push_back(1);
+    usize n = list.size();
+    bool e = list.empty();
+    std::array<u32, 2> pair = [1, 2];
+    u32 s = sum(pair);
+    std::fn_ptr<void(u32)> f = shout;
+    return 0;
+}

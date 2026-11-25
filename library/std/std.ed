@@ -2276,6 +2276,10 @@ namespace std {
 
     template<type K, type V, type A>
     class hash_map {
+        compile_time check (std::implements<K, std::hashable>())
+            else f"'{std::type_name<K>()}' can't be a hash_map key: give it a 'u64 hash()' method (or @std::derive::hashable)";
+        compile_time check (std::implements<K, std::equatable>())
+            else f"'{std::type_name<K>()}' can't be a hash_map key: give it an '==' (bool operator==({std::type_name<K>()}& other) = default;)";
     public:
         usize len() { return this.count; }
 
@@ -2747,6 +2751,8 @@ namespace std {
 
     template<type K, type V, type A>
     class tree_map {
+        compile_time check (std::implements<K, std::comparable>())
+            else f"'{std::type_name<K>()}' can't be a tree_map key: give it an 'operator<=>' (or @std::derive::ordered)";
     public:
         static tree_map<K, V, A> with_allocator(A alloc) {
             return tree_map<K, V, A>{ .alloc = alloc };

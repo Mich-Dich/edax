@@ -1,0 +1,27 @@
+// Every conversion is written, and its name says what it may lose.
+import std;
+
+i32 main() {
+    u32 small = 200;
+    i64 widened = cast<i64>(small);               // lossless: always allowed
+    u8 low_bits = cast::truncate<u8>(1000u32);    // keeps the low 8 bits: 1000 % 256
+    u8 clamped = cast::saturate<u8>(-5i32);       // clamps into 0..=255
+    f64 as_float = cast::round<f64>(widened);     // i64 -> f64 can round for huge values
+    std::option<u8> fits = cast::checked<u8>(small);
+    std::option<u8> too_big = cast::checked<u8>(1000u32);
+    std::println(f"{widened} {low_bits} {clamped} {as_float} {fits.is_some()} {too_big.is_some()}");
+
+    // Integer division stays integer division, as in C++: convert first if you want a fraction.
+    u32 total = 7;
+    u32 parts = 2;
+    std::println(f"{total / parts} {cast<f64>(total) / cast<f64>(parts)}");
+
+    // Lengths and indices are usize, and the method is len(), not size().
+    std::array<u32, 3> xs = [10, 20, 30];
+    usize n = xs.len();
+    std::println(f"{n} items, the last is {xs[n - 1]}");
+    return 0;
+}
+//> 200 232 0 200.0 true false
+//> 3 3.5
+//> 3 items, the last is 30

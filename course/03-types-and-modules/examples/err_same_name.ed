@@ -1,0 +1,11 @@
+// Fields and methods share one scope.
+import std;
+
+struct item {
+    u32 owner = 0;
+    u32 owner() { return owner; }              //~ error[E3010]
+}
+
+i32 main() {
+    return 0;
+}

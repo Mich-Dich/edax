@@ -1,0 +1,117 @@
+// editor/graph: the car paint's material, a std::ui::nodes::graph (draft 35 §13.2) of the kinds
+// below, compiled to a GLSL fragment shader whenever it changes. The kinds are an enum whose
+// payloads declare the pins (@nodes::in, @nodes::out) and parameters; the library gives the editor,
+// the add-node menu, type checks, copy and paste, undo, and saving as text. Pins show Edax's types
+// (f32, vec2, vec3); the shader uses GLSL's.
+
+import std;
+
+namespace graph {
+    namespace ui = std::ui;
+    namespace im = std::ui::immediate;
+    namespace nodes = std::ui::nodes;
+    namespace m = std::math;
+
+    @nodes::kind{ .title = "Time", .category = "Input", .color = 0xf5a524, .symbol = ui::icon::history, .width = 150.0 }
+    struct time_node {
+        @nodes::out f32 seconds = 0.0;
+        @ui::range{ .min = 0.0, .max = 4.0 } f32 speed = 1.0;
+    }
+
+    @nodes::kind{ .title = "UV", .category = "Input", .color = 0x46a758, .symbol = ui::icon::grid, .width = 150.0 }
+    struct uv_node {
+        @nodes::out m::vec2 uv = default;
+        @ui::range{ .min = 0.5, .max = 8.0 } f32 tiling = 1.0;
+    }
+
+    @nodes::kind{ .title = "Color", .category = "Input", .color = 0xe5484d, .symbol = ui::icon::light, .width = 200.0 }
+    struct color_node {
+        @nodes::out m::vec3 rgb = default;
+        @ui::range{ .min = 0.0, .max = 1.0 } f32 red = 0.8;
+        @ui::range{ .min = 0.0, .max = 1.0 } f32 green = 0.15;
+        @ui::range{ .min = 0.0, .max = 1.0 } f32 blue = 0.2;
+    }
+
+    @nodes::kind{ .title = "Fresnel", .category = "Input", .color = 0x22d3ee, .symbol = ui::icon::eye, .width = 170.0 }
+    struct fresnel_node {
+        @nodes::out f32 facing = 0.0;
+        @ui::range{ .min = 0.5, .max = 8.0 } f32 power = 5.0;
+    }
+
+    @nodes::kind{ .title = "Noise", .category = "Pattern", .color = 0x8b5cf6, .symbol = ui::icon::layers, .width = 170.0 }
+    struct noise_node {
+        @nodes::in m::vec2 uv = default;
+        @nodes::out f32 value = 0.0;
+        @ui::range{ .min = 1.0, .max = 20.0 } f32 scale = 6.0;
+    }
+
+    @nodes::kind{ .title = "Mix", .category = "Math", .color = 0x3e8ef7, .symbol = ui::icon::filter, .width = 220.0 }
+    struct mix_node {
+        @nodes::in m::vec3 a = default;
+        @nodes::in m::vec3 b = default;
+        @nodes::in @ui::range{ .min = 0.0, .max = 1.0 } f32 t = 0.5;
+        @nodes::out m::vec3 result = default;
+    }
+
+    @nodes::kind{ .title = "Multiply", .category = "Math", .color = 0x3e8ef7, .symbol = ui::icon::close, .width = 170.0 }
+    struct multiply_node {
+        @nodes::in m::vec3 color = default;
+        @nodes::in @ui::range{ .min = 0.0, .max = 2.0 } f32 factor = 1.0;
+        @nodes::out m::vec3 result = default;
+    }
+
+    @nodes::kind{ .title = "Paint Output", .category = "Output", .color = 0xb48cf2, .symbol = ui::icon::car, .width = 180.0, .removable = false }
+    struct output_node {
+        @nodes::in @ui::label{ .text = "base color" } m::vec3 base_color = default;
+        @nodes::in @ui::range{ .min = 0.0, .max = 1.0 } f32 roughness = 0.35;
+        @nodes::in @ui::range{ .min = 0.0, .max = 1.0 } f32 metallic = 0.8;
+    }
+
+    // The material's node kinds.
+    enum material_node : u16 {
+        time(time_node),
+        uv(uv_node),
+        color(color_node),
+        fresnel(fresnel_node),
+        noise(noise_node),
+        mix(mix_node),
+        multiply(multiply_node),
+        output(output_node),
+    }
+
+    // An f32 output may go into a vec3 input: the shader repeats it (`vec3(x)`).
+    @nodes::converts
+    m::vec3 splat(f32 x);
+
+    // The node editor's looks to choose from (std::ui::nodes::style's presets).
+    enum node_style : u8 { studio, metro, blueprint, neon, paper }
+
+    struct material {
+        nodes::graph<material_node> paint = default;
+        node_style style_choice = node_style::studio;
+        // Where the canvas was drawn in the last frame (screen; scripted screenshots aim at it).
+        ui::rect canvas = default;
+        // What the editor refused last, or what saving and loading did (shown in the bar).
+        std::string status = default;
+        // The shader made from the graph, or why there is none.
+        std::string glsl = default;
+        std::string problem = default;
+        u32 compiles = 0;
+    }
+
+    // Where the graph is saved and loaded from (the working directory).
+    compile_time std::static_str file_name = "car_paint.graph";
+
+    // The paint of the example's car: a colour mixed with noise, into the output.
+    material car_paint();
+
+    // Draws `m` with the preset `which`.
+    void use_style(mut material& m, node_style which);
+
+    // Draws a bar (style, links, arranging, undo, save and load) and the graph editor into the rest
+    // of `s`; the shader is made again when the graph changed.
+    void edit(mut im::scope& s, mut material& m);
+
+    // Makes `m.glsl` (or `m.problem`, naming the node on a cycle) from the graph.
+    void compile(mut material& m);
+}

@@ -1,0 +1,7 @@
+8 readings kept
+sensors seen: 3
+values: 12 15 14 11 13 16 18 17
+means of 3: 13 13 17
+adjusted: 1 4 3 0 113 116 118 117
+by sensor: 0:12 0:14 0:13 0:17 1:15 1:11 1:16 2:18
+swap-removed 0:12, first is now 2:18

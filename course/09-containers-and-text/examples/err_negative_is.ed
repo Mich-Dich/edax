@@ -1,0 +1,8 @@
+// `is` isn't an operator, so it can't be negated.
+import std;
+
+i32 main() {
+    std::option<u32> o = std::none;
+    if (!(o is std::some(v))) { std::println("none"); }   //~ error[E2001] //~ error[E2005]
+    return 0;
+}

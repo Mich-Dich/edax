@@ -1,0 +1,40 @@
+// Channels in depth: send hands the value back when closed; try_ forms never wait; timeouts.
+import std;
+namespace t = std::time;
+
+i32 main() {
+    std::channel<std::string> mail = std::channel<std::string>::bounded(2);
+    std::channel_sender<std::string> out = mail.sender();
+    std::channel_receiver<std::string> inbox = mail.receiver();
+
+    _ = out.send(std::string::from("a"));
+    _ = out.try_send(std::string::from("b"));
+    match (out.try_send(std::string::from("c"))) {            // full: the value comes back
+        std::ok(_) => std::println("sent c"),
+        std::error(std::send_error::full(v)) => std::println(f"full, kept '{v}'"),
+        std::error(std::send_error::closed(v)) => std::println(f"closed, kept '{v}'"),
+    }
+    std::println(f"got {inbox.receive().value_or(std::string::from("?"))}");
+    mail.close();
+    match (out.send(std::string::from("d"))) {                // closed: the value comes back
+        std::ok(_) => std::println("sent d"),
+        std::error(v) => std::println(f"closed, '{v}' handed back"),
+    }
+    std::println(f"still queued: {inbox.receive().value_or(std::string::from("?"))}");
+    match (inbox.try_receive()) {
+        std::ok(v) => std::println(f"got {v}"),
+        std::error(e) => std::println(f"try_receive: {e}"),
+    }
+    std::channel<u32> quiet = std::channel<u32>::unbounded();
+    match (quiet.receiver().receive_for(t::duration::milliseconds(10))) {
+        std::ok(v) => std::println(f"got {v}"),
+        std::error(e) => std::println(f"receive_for: {e}"),
+    }
+    return 0;
+}
+//> full, kept 'c'
+//> got a
+//> closed, 'd' handed back
+//> still queued: b
+//> try_receive: closed
+//> receive_for: timed_out

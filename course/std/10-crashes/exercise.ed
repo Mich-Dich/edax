@@ -1,0 +1,34 @@
+// Standard-library lesson 10: a crash report. Fill in the TODOs until
+//     python3 course/check.py s10
+// says done. The program ends with a panic on purpose; only stdout is compared.
+import std;
+namespace fs = std::filesystem;
+
+// The panic hook: a short report on stdout, and the same report in crash.txt next to the program.
+// It runs on the panicking thread, once; it must not panic itself.
+void report(std::panic_info& info) {
+    // TODO: print the report (the message's first line, the function, the thread's name) and
+    // write the same text to crash.txt next to the program. Don't panic in here.
+}
+
+// A level is a grid of tiles; reading outside the grid is a bug.
+struct level {
+    std::array<u8, 6> tiles = [1, 1, 2, 0, 3, 1];
+    usize width = 3;
+
+    u8 tile(usize x, usize y) { return tiles[y * width + x]; }
+}
+
+i32 main() {
+    std::thread::set_current_name("main");
+    // TODO: install `report` as the panic hook (std::set_panic_hook takes a std::fn_ptr).
+
+    level l = level{};
+    std::println(f"tile (2, 1) is {l.tile(2, 1)}");
+    // TODO: name the thread "loader" (std::thread::options as the first argument of spawn).
+    std::thread::handle<u8> loader = std::thread::spawn([move l]() {
+        return l.tile(1, 2);                     // row 2 doesn't exist: index 7 of 6
+    });
+    std::println(f"loaded {loader.join()}");
+    return 0;
+}

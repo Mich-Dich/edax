@@ -2,9 +2,9 @@ exit: 1
 --- stdout
 --- stderr
 error[E4210]: -Dlog_level=loud: not a level (trace, debug, info, warn, error, fatal, off)
-   --> <std>/log.ed:440:17
+   --> <std>/log.ed:<n>
     |
-440 |                 std::compile_error(f"-Dlog_level={given}: not a level (trace, debug, info, warn, error, fatal, off)");
+<n> |                 std::compile_error(f"-Dlog_level={given}: not a level (trace, debug, info, warn, error, fatal, off)");
     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
 
 1 error, 0 warnings

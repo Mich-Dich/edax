@@ -1,0 +1,37 @@
+exit: 0
+--- stdout
+time -> mix.a: true
+uv -> mix.b: a vec2 output can't go into a vec3 input
+mix.a -> out: a link goes from an output to an input
+mix -> out.color: true, links 2
+time -> out.color replaces: true, links 2
+out.color from node 3.result, a vec3 true
+out.roughness linked false
+order: 4 nodes, output last true
+edax_graph 1
+node 1 time 20.0 40.0 { speed = 2.0 }
+node 2 uv 20.0 200.0 { }
+node 3 mix 260.0 60.0 { a = { x = 0.0 y = 0.0 z = 0.0 } b = { x = 0.0 y = 0.0 z = 0.0 } t = 0.25 mode = add }
+node 4 output 500.0 80.0 { color = { x = 0.0 y = 0.0 z = 0.0 } roughness = 0.5 name = "car \"paint\"" }
+link 6 1 seconds 3 a 0
+link 9 3 result 4 color 0
+frame 5 0.0 0.0 220.0 300.0 15026253 "Inputs"
+read back: same text true, nodes 4, links 2, frames 1
+mix: t 0.25, mode add
+unknown kind: node 1: no kind 'sparkle', or its fields can't be read
+old file: speed 3.5, seconds 0.0, next id 5
+saved true
+loaded the same true
+editor: pins 8, links drawn 2, duplicates 0
+menu open true, search 'mi'
+added a mix at 700.0, 450.0; nodes 5, changed true, menu closed true
+dropped: menu true for a link true
+added a mix, links 2 -> 3, its a from time true
+refused: 'a vec2 output can't go into a vec3 input', links 3
+delete the output: 'the Output node can't be deleted', nodes 6
+clipboard has the mix true
+pasted: nodes 6 -> 7, selected 1, a mix mix
+duplicated: nodes 8
+undo: 4 steps, nodes 5, links 2
+redo: nodes 6, links 3
+--- stderr

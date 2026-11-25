@@ -4,6 +4,7 @@
 
 - `std::hash_map<K, V>`: keys in no particular order, found by `std::hash(key)`.
   Keys implement `std::hashable` (integers, `char`, `bool`, `std::string`, `std::str`, and any type with a `u64 hash()` method, see [Core Utilities](../core/utilities.md)) and are compared with `==`.
+- The key type is checked where the map is named: a `hash_map` key must be `std::hashable` and `std::equatable`, a `tree_map` key `std::comparable`. A key type that isn't is one error at the declaration, saying what to add.
 - `std::tree_map<K, V>`: keys in ascending order, compared with `<`. Both maps take an allocator as their last parameter (`std::hash_map<K, V, A>`, `std::tree_map<K, V, A>`, see [Allocators](../memory/allocators.md)).
 - Both have `insert(key, value) mut → std::option<V>` (the replaced value), `contains(key&)`,
   `get(key&) → std::option<V&>`, `get_mut(key&) mut → std::option<mut V&>`,

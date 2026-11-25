@@ -1,0 +1,22 @@
+// Enum names both ways, and walking the alternatives.
+import std;
+
+enum quality : u8 { low, medium, high, ultra }
+
+i32 main() {
+    quality q = quality::high;
+    std::println(f"{std::meta::name_of(q)}");
+    std::option<quality> parsed = std::meta::from_name<quality>("medium");
+    std::option<quality> bad = std::meta::from_name<quality>("extreme");
+    std::println(f"{parsed.is_some()} {bad.is_some()}");
+    mut std::string all = default;
+    for compile_time (std::meta::alternative a : std::meta::alternatives<quality>()) {
+        if compile_time (a.index > 0) { all.push_str(" | "); }
+        all.push_str(a.name);
+    }
+    std::println(f"options: {all}");
+    return 0;
+}
+//> high
+//> true false
+//> options: low | medium | high | ultra

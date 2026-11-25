@@ -1,0 +1,8 @@
+// What C++ capture habits become.
+import std;
+
+i32 main() {
+    u32 x = 1;
+    auto all = [=]() { return x; };            //~ error[E2026]
+    return 0;
+}

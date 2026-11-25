@@ -1,0 +1,11 @@
+// Two threads may not both get a mutable reference to one variable: that's a data race.
+import std;
+
+i32 main() {
+    mut u32 hits = 0;
+    std::thread::scoped_handle<void> a = std::thread::spawn([mut &hits]() { hits += 1; });
+    std::thread::scoped_handle<void> b = std::thread::spawn([mut &hits]() { hits += 1; });   //~ error[E5023]
+    a.join();
+    b.join();
+    return 0;
+}

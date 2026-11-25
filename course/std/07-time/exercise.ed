@@ -1,0 +1,62 @@
+// Standard-library lesson 7: frame timing and timestamps. Fill in the TODOs until
+//     python3 course/check.py s7
+// says done. It builds as it is and prints wrong values.
+import std;
+namespace t = std::time;
+
+// Lets an action through at most once per `interval`.
+struct rate_limiter {
+    t::duration interval;
+    std::option<t::instant> last = std::none;
+
+    bool allow(t::instant now) mut {
+        // TODO: refuse when less than `interval` passed since the last allowed instant;
+        // otherwise remember `now` and allow.
+        return true;
+    }
+}
+
+// The mean of the frame times, and frames per second at that mean.
+(t::duration, u64) frame_stats(std::span<t::duration> frames) {
+    // TODO: add the durations up, divide by the count; fps is one second in nanoseconds divided
+    // by the mean in nanoseconds.
+    return (t::duration{}, 0);
+}
+
+// Two digits, with a leading zero.
+std::string two(u8 v) {
+    std::static_str pad = if (v < 10) { "0" } else { "" };
+    return std::format(f"{pad}{v}");
+}
+
+// "2026-09-21 16:13" for `when` in `zone`.
+std::string stamp(t::wall_time when, t::zone& zone) {
+    // TODO: the civil time in `zone`, months, days, hours and minutes with two digits (two(...)).
+    return std::string::from("?");
+}
+
+i32 main() {
+    // A simulated clock: instants are values, so tests don't need to sleep.
+    t::instant start = t::instant{};
+    mut rate_limiter saves = rate_limiter{ .interval = t::duration::seconds(5) };
+    std::array<u64, 5> at_ms = [0, 1000, 4999, 5000, 12000];
+    for (u64 ms : at_ms) {
+        bool ok = saves.allow(start + t::duration::milliseconds(ms));
+        std::println(f"save at {t::duration::milliseconds(ms)}: {if (ok) { "saved" } else { "skipped" }}");
+    }
+
+    std::array<t::duration, 4> frames = [t::duration::milliseconds(16), t::duration::milliseconds(17), t::duration::milliseconds(15), t::duration::milliseconds(32)];
+    (t::duration mean, u64 fps) = frame_stats(frames.as_span());
+    std::println(f"mean frame {mean}, {fps} fps");
+
+    t::wall_time launch = t::wall_time{ .seconds = 1_790_000_000 };
+    std::println(f"launch {stamp(launch, t::zone::utc())} UTC");
+    match (t::zone::load("Asia/Tokyo")) {
+        std::ok(tokyo) => std::println(f"launch {stamp(launch, tokyo)} in {tokyo.name()}"),
+        std::error(e) => std::println(f"no Tokyo: {e}"),
+    }
+    // TODO: 30 hours after launch: a wall_time with that many more seconds (a duration in seconds is a u64).
+    t::wall_time later = launch;
+    std::println(f"30 hours later {stamp(later, t::zone::utc())} UTC");
+    return 0;
+}

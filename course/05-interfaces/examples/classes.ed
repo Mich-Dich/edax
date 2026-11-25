@@ -1,0 +1,36 @@
+// Single inheritance: `open` to allow it, `virtual` to add a method, `override` to implement one.
+import std;
+
+open class animal {                               // `open`: other classes may derive from it
+public:
+    std::string name;
+
+    virtual std::static_str sound() abstract;     // pure virtual: no body
+    virtual std::string greet() { return std::format(f"{name} says {sound()}"); }
+}
+
+class dog : animal {                              // final: nothing derives from dog
+public:
+    std::static_str sound() override { return "woof"; }
+}
+
+class puppy : animal {
+public:
+    u32 age = 0;
+    std::static_str sound() override { return "yip"; }
+    std::string greet() override {
+        return std::format(f"{this.animal::greet()} (age {age})");   // call the base version
+    }
+}
+
+void introduce(animal& a) { std::println(a.greet()); }   // dynamic dispatch through a reference
+
+i32 main() {
+    dog rex = dog{ .name = std::string::from("rex") };   // base fields in the same literal
+    puppy pip = puppy{ .name = std::string::from("pip"), .age = 1 };
+    introduce(rex);
+    introduce(pip);
+    return 0;
+}
+//> rex says woof
+//> pip says yip (age 1)

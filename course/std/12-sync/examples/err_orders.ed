@@ -1,0 +1,8 @@
+// An invalid memory order is a compile error from the library's own entry check.
+import std;
+
+i32 main() {
+    std::atomic<u32> x = default;
+    u32 v = x.load(std::memory_order::release);         //~ error[E4210]
+    return 0;
+}

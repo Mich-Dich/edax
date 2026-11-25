@@ -1,0 +1,15 @@
+// std::nonzero, the 8-bit floats and std::exit_code.
+import std;
+
+std::exit_code main() {
+    std::option<std::nonzero<u32>> none_yet = std::nonzero<u32>::of(0);
+    std::nonzero<u32> id = std::nonzero<u32>::make(7);
+    std::println(f"{none_yet.is_some()} {id.get()} {std::size_of<std::option<std::nonzero<u32>>>()}");
+
+    std::f8e4m3 w = std::f8e4m3::from_f32(0.1);
+    std::f8e5m2 g = std::f8e5m2::saturate(1.0e9);
+    std::println(f"{w.to_f32()} {g.to_f32()} {std::size_of<std::f8e4m3>()}");
+    return std::exit_code::success;
+}
+//> false 7 4
+//> 0.1015625 57344.0 1

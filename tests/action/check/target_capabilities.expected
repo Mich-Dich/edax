@@ -6,9 +6,9 @@ error[E4210]: std::thread::spawn needs a target with threads
     |
  21 |     std::thread::handle<u32> h = std::thread::spawn([]() { return 1u32; });
     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
-   ::: <std>/thread.ed:120:29
+   ::: <std>/thread.ed:<n>
     |
-120 |         compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
+<n> |         compile_time check (std::build::target_has(std::build::capability::threads)) else "std::thread::spawn needs a target with threads";
     |                             -------------------------------------------------------
     = note: the check of 'spawn' is here
 
@@ -17,9 +17,9 @@ error[E4210]: std::file needs a target with files
      |
   22 |     std::result<std::file, std::io_error> f = std::file::open(std::filesystem::path::from("data.bin"));
      |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
-    ::: <std>/std.ed:1484:33
+    ::: <std>/std.ed:<n>
      |
-1484 |             compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+ <n> |             compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
      |                                 -----------------------------------------------------
      = note: the check of 'open' is here
 

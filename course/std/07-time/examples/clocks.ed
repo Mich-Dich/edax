@@ -1,0 +1,22 @@
+// instant measures; wall_time tells the date. Two clocks, two types.
+import std;
+namespace t = std::time;
+
+i32 main() {
+    t::instant start = t::instant::now();
+    std::thread::sleep(t::duration::milliseconds(20));
+    t::duration took = start.elapsed();
+    std::println(f"slept at least 20ms: {took >= t::duration::milliseconds(20)}");
+    t::instant later = start + t::duration::seconds(1);
+    std::println(f"{later.since(start)}");
+
+    t::wall_time launch = t::wall_time{ .seconds = 1_790_000_000 };     // a fixed moment
+    t::civil_time u = launch.utc();
+    std::println(f"{u.year}-{u.month}-{u.day} {u.hour}:{u.minute}:{u.second} UTC");
+    std::println(f"now is after launch: {t::wall_time::now().seconds > launch.seconds}");
+    return 0;
+}
+//> slept at least 20ms: true
+//> 1s
+//> 2026-9-21 14:13:20 UTC
+//> now is after launch: true

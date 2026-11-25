@@ -1,0 +1,47 @@
+// Annotations carry data that generic code reads, and check where they are written.
+import std;
+
+// A display name for a field, read by `settings_page`.
+annotation(std::meta::target::field) struct label {
+    std::static_str text;
+}
+
+// A field generic code should leave out.
+annotation(std::meta::target::field) struct hidden { }
+
+// A valid range for an integer field.
+annotation(std::meta::target::field) struct range {
+    i64 min;
+    i64 max;
+
+    compile_time check (annotation.min <= annotation.max)
+        else f"@range: min ({annotation.min}) is larger than max ({annotation.max})";
+}
+
+struct audio_settings {
+    @label{ .text = "Master volume" } @range{ .min = 0, .max = 100 } u32 volume = 80;
+    @label{ .text = "Sample rate" } u32 rate = 48000;
+    @hidden u64 cache_key = 0;
+}
+
+template<type T>
+void settings_page(T& value) {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        if compile_time (!f.has<hidden>()) {
+            compile_time std::static_str text = f.annotation<label>().value_or(label{ .text = f.name }).text;
+            if compile_time (f.has<range>()) {
+                compile_time range r = f.annotation<range>().expect("has range");
+                std::println(f"{text:<14} {f.get(value)} ({r.min}..{r.max})");
+            } else {
+                std::println(f"{text:<14} {f.get(value)}");
+            }
+        }
+    }
+}
+
+i32 main() {
+    settings_page(audio_settings{});
+    return 0;
+}
+//> Master volume  80 (0..100)
+//> Sample rate    48000

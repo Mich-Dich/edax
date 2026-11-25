@@ -1,0 +1,30 @@
+// Three sorts with three promises: sort (fast), sort_by (your order), sort_by_key (stable).
+import std;
+
+struct task {
+    std::static_str name;
+    u32 priority = 0;
+}
+
+i32 main() {
+    mut std::darray<i32> xs = std::darray<i32>::from([3, -1, 2, -7, 5]);
+    xs.sort();                                                    // introsort with <
+    std::println(f"{xs[0]} {xs[4]}");
+    xs.sort_by([](i32& a, i32& b) { return a.abs() < b.abs(); });  // by absolute value
+    std::println(f"{xs[0]} {xs[4]}");
+
+    mut std::darray<task> tasks = default;
+    tasks.push(task{ .name = "write", .priority = 2 });
+    tasks.push(task{ .name = "read", .priority = 1 });
+    tasks.push(task{ .name = "test", .priority = 2 });
+    tasks.push(task{ .name = "ship", .priority = 1 });
+    tasks.sort_by_key(std::sort_order::descending, [](task& t) { return t.priority; });
+    for (task& t : tasks) { std::println(f"{t.priority} {t.name}"); }   // equal keys keep their order
+    return 0;
+}
+//> -7 5
+//> -1 -7
+//> 2 write
+//> 2 test
+//> 1 read
+//> 1 ship

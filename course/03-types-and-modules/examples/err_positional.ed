@@ -1,0 +1,12 @@
+// Construction names its fields; there is no positional form.
+import std;
+
+struct span2 {
+    u32 from = 0;
+    u32 to = 0;
+}
+
+i32 main() {
+    span2 b = span2{ 1, 4 };                   //~ error[E2017]
+    return 0;
+}

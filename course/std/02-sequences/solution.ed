@@ -1,0 +1,72 @@
+// Standard-library lesson 2: processing sensor samples (solution).
+import std;
+
+struct reading {
+    u8 sensor = 0;
+    i32 value = 0;
+}
+
+// The mean of each chunk of `size` values, as integers (rounded down).
+std::darray<i32> chunk_means(std::span<i32> values, usize size) {
+    mut std::darray<i32> out = std::darray<i32>::with_capacity((values.len() + size - 1) / size);
+    for (std::span<i32> part : values.chunks(size)) {
+        mut i32 sum = 0;
+        for (i32 v : part) { sum += v; }
+        out.push(sum / cast::truncate<i32>(part.len()));
+    }
+    return out;
+}
+
+// Subtracts the first half's minimum from the first half, and adds 100 to the second half.
+void adjust_halves(std::span<mut i32> values) {
+    (std::span<mut i32> first, std::span<mut i32> second) = values.split_at(values.len() / 2);
+    mut i32 low = i32::max;
+    for (i32 v : first) { low = low.min(v); }
+    for (mut i32& v : first) { v -= low; }
+    for (mut i32& v : second) { v += 100; }
+}
+
+std::string join(std::span<i32> values) {
+    mut std::string out = default;
+    for (i32 v : values) {
+        if (!out.is_empty()) { out.push_str(" "); }
+        out.push_str(std::format(f"{v}"));
+    }
+    return out;
+}
+
+i32 main() {
+    mut std::darray<reading> log = default;
+    std::array<i32, 10> raw = [12, 15, 999, 14, 11, -500, 13, 16, 18, 17];
+    for (usize i : 0..raw.len()) {
+        log.push(reading{ .sensor = cast::truncate<u8>(i % 3), .value = raw[i] });
+    }
+
+    // Outliers are readings outside -100..=100.
+    log.retain([](reading& r) { return r.value >= -100 && r.value <= 100; });
+    std::println(f"{log.len()} readings kept");
+
+    mut std::darray<i32> values = std::darray<i32>::with_capacity(log.len());
+    mut std::bitset<8> sensors = default;
+    for (reading& r : log) {
+        values.push(r.value);
+        sensors.set(cast<usize>(r.sensor), true);
+    }
+    std::println(f"sensors seen: {sensors.count()}");
+    std::println(f"values: {join(values.as_span())}");
+
+    std::darray<i32> means = chunk_means(values.as_span(), 3);
+    std::println(f"means of 3: {join(means.as_span())}");
+
+    adjust_halves(values.as_mut_span());
+    std::println(f"adjusted: {join(values.as_span())}");
+
+    log.sort_by_key(std::sort_order::ascending, [](reading& r) { return r.sensor; });
+    mut std::string order = default;
+    for (reading& r : log) { order.push_str(std::format(f"{r.sensor}:{r.value} ")); }
+    std::println(f"by sensor: {order.as_str().trim()}");
+
+    reading last = log.swap_remove(0);
+    std::println(f"swap-removed {last.sensor}:{last.value}, first is now {log[0].sensor}:{log[0].value}");
+    return 0;
+}

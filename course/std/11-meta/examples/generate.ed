@@ -1,0 +1,30 @@
+// An annotation with a generate block adds methods to the type it is written on.
+import std;
+
+// Adds `reset()`: every field back to its default.
+annotation(std::meta::target::type) struct resettable {
+    generate {
+        void reset() mut {
+            for compile_time (std::meta::field f : std::meta::fields<annotated>()) {
+                f.get(mut this) = default;
+            }
+        }
+    }
+}
+
+@resettable
+@std::derive::formattable
+struct counters {
+    u32 frames = 0;
+    u32 draws = 0;
+}
+
+i32 main() {
+    mut counters c = counters{ .frames = 60, .draws = 1200 };
+    std::println(f"{c}");
+    c.reset();
+    std::println(f"{c}");
+    return 0;
+}
+//> counters { frames: 60, draws: 1200 }
+//> counters { frames: 0, draws: 0 }

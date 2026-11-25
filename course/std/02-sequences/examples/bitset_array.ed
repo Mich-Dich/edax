@@ -1,0 +1,16 @@
+// std::array (inline, fixed) and std::bitset (bits inline).
+import std;
+
+i32 main() {
+    std::array<f32, 4> weights = default;              // four 0.0 inline: no heap
+    std::array<f32, 4> copy = weights;                 // a copy type when the element is
+    std::println(f"{copy.len()} {copy[3]}");
+
+    mut std::bitset<100> seen = default;
+    std::array<usize, 4> ids = [3, 64, 99, 3];
+    for (usize id : ids) { seen.set(id, true); }
+    std::println(f"{seen.count()} of {seen.len()}, 64? {seen.test(64)}, 65? {seen.test(65)}");
+    return 0;
+}
+//> 4 0.0
+//> 3 of 100, 64? true, 65? false

@@ -1,0 +1,9 @@
+// A literal relative path depends on where the program is started. The library warns about it.
+import std;
+
+i32 main() {
+    std::result<std::file, std::io_error> f = std::file::open("settings.toml");   // warning: relative path literal
+    std::println(f"{f.is_ok()}");
+    return 0;
+}
+//> false

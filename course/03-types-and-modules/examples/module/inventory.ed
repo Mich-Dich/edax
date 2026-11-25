@@ -1,0 +1,40 @@
+// The module `inventory`: the bodies, and what only this module sees.
+import std;
+
+namespace shop {
+    // The struct's block holds the method bodies; it adds no fields.
+    struct price {
+        std::string text() {
+            std::static_str pad = if (cents % 100 < 10) { "0" } else { "" };
+            return std::format(f"{cents / 100}.{pad}{cents % 100}");
+        }
+    }
+
+    // The class's block holds the public method bodies, then the private part.
+    class stock {
+    public:
+        static stock make() { return stock{}; }   // every field has a default
+
+        void add(std::str name, price p) mut {
+            names.push(std::string::from(name));
+            prices.push(p);
+        }
+
+        usize len() { return names.len(); }
+
+        price total() { return price{ .cents = sum_of(prices.as_span()) }; }
+
+        ~stock() { std::println(f"stock of {len()} items closed"); }
+
+    private:
+        std::darray<std::string> names = default;
+        std::darray<price>       prices = default;
+    }
+
+    // Not in the header, so it must be `private`: only this module can call it.
+    private u32 sum_of(std::span<price> ps) {
+        mut u32 s = 0;
+        for (price p : ps) { s += p.cents; }
+        return s;
+    }
+}

@@ -46,6 +46,7 @@ std::static_str d = "config.toml";                 // OK: can be stored in a str
 | `split(c)` | `std::darray<std::str>` of the parts between `c` (a view: it borrows the text) |
 | `parse<T>()` | `std::option<T>` for numbers and `bool` |
 | `as_ptr()` | `std::raw_ptr<u8>` to the first byte (for C, see [Raw Pointers and `unsafe`](../../language/memory/raw-pointers-and-unsafe.md)) |
+| `byte(i)` | `u8`: byte `i` of the UTF-8 text; panics when out of bounds |
 | `==`, `<=>` | Byte-wise comparison |
 
 `len`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice` and `find` also work at compile time (see [Compile-Time Evaluation](../../language/compile-time/compile-time.md)).

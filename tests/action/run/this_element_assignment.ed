@@ -1,0 +1,12 @@
+// RUN: edaxc run %s
+// A mut method changes a field of an element of its own container: `this.items[i].n += 3`.
+import std;
+struct cmd { u32 n = 0; }
+struct holder {
+    std::darray<cmd> items = default;
+    void bump() mut {
+        usize last = this.items.len() - 1;
+        this.items[last].n += 3;
+    }
+}
+void main() { mut holder h = default; h.items.push(cmd{}); h.bump(); std::println(f"{h.items[0].n}"); }

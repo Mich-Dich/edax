@@ -16,6 +16,7 @@ namespace std::build::mode {
         compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::none; }
         compile_time std::build::optimization std_optimization() override { return std::build::optimization::speed; }
         compile_time std::option<std::static_str> profile_guided() override { return std::none; }
+        compile_time bool stop_debugger_on_panic() override { return true; }
     }
 
     open class release : settings {
@@ -33,6 +34,7 @@ namespace std::build::mode {
         compile_time std::build::sanitizer sanitize() override { return std::build::sanitizer::none; }
         compile_time std::build::optimization std_optimization() override { return std::build::optimization::speed; }
         compile_time std::option<std::static_str> profile_guided() override { return std::none; }
+        compile_time bool stop_debugger_on_panic() override { return true; }
     }
 
     open class development : debug {

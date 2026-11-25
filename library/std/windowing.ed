@@ -484,7 +484,7 @@ namespace std::windowing {
                     else "std::windowing: a frame (or a share group's current context) is still alive; finish it before making another context current";
                 unsafe {
                     std::raw_ptr<mut platform_state> p = (*this.group).platform;
-                    make_current(p, (*this.group).context, (*this.group).pbuffer);
+                    std::windowing::make_current(p, (*this.group).context, (*this.group).pbuffer);
                     return current{ .platform = p, .owner = this };
                 }
             }
@@ -653,16 +653,16 @@ namespace std::windowing {
             }
         }
 
-        void set_cursor_mode(cursor_mode mode) mut {
+        void set_cursor_mode(cursor_mode new_mode) mut {
             unsafe {
                 std::raw_ptr<mut window_state> s = this.state;
                 std::raw_ptr<mut platform_state> p = (*s).platform;
                 cursor_mode before = (*s).cursor_mode;
-                (*s).cursor_mode = mode;
+                (*s).cursor_mode = new_mode;
                 if (before == cursor_mode::captured) {
                     _ = (*p).x.XUngrabPointer((*p).display, 0);
                 }
-                match (mode) {
+                match (new_mode) {
                     cursor_mode::normal => {
                         if ((*s).cursor != 0) {
                             _ = (*p).x.XDefineCursor((*p).display, (*s).handle, (*s).cursor);
@@ -776,18 +776,18 @@ namespace std::windowing {
         std::windowing::point position() { unsafe { return (*this.state).origin; } }
         scale content_scale() { unsafe { return (*(*this.state).platform).content_scale; } }
 
-        void set_size(std::windowing::size size) mut {
+        void set_size(std::windowing::size new_size) mut {
             unsafe {
                 std::raw_ptr<mut platform_state> p = (*this.state).platform;
-                _ = (*p).x.XResizeWindow((*p).display, (*this.state).handle, size.width, size.height);
+                _ = (*p).x.XResizeWindow((*p).display, (*this.state).handle, new_size.width, new_size.height);
                 _ = (*p).x.XFlush((*p).display);
             }
         }
 
-        void set_position(std::windowing::point position) mut {
+        void set_position(std::windowing::point new_position) mut {
             unsafe {
                 std::raw_ptr<mut platform_state> p = (*this.state).platform;
-                _ = (*p).x.XMoveWindow((*p).display, (*this.state).handle, position.x, position.y);
+                _ = (*p).x.XMoveWindow((*p).display, (*this.state).handle, new_position.x, new_position.y);
                 _ = (*p).x.XFlush((*p).display);
             }
         }
@@ -855,15 +855,15 @@ namespace std::windowing {
                 .display = (*p).display,
                 .window  = (*s).handle,
             };
-            mut u64 surface = 0;
-            i32 result = cast::reinterpret<std::fn_ptr<i32(u64, std::raw_ptr<x11::xlib_surface_create_info>, std::raw_ptr<u8>, std::raw_ptr<mut u64>)>>(create)(instance, &info, nullptr, mut &surface);
+            mut u64 handle_out = 0;
+            i32 result = cast::reinterpret<std::fn_ptr<i32(u64, std::raw_ptr<x11::xlib_surface_create_info>, std::raw_ptr<u8>, std::raw_ptr<mut u64>)>>(create)(instance, &info, nullptr, mut &handle_out);
             if (result != 0) {
                 return std::error(result);
             }
             (*s).vk_instance = instance;
-            (*s).vk_surface = surface;
+            (*s).vk_surface = handle_out;
             (*s).vk_destroy_surface = std::some(cast::reinterpret<std::fn_ptr<void(u64, u64, std::raw_ptr<u8>)>>(destroy));
-            return std::ok(surface);
+            return std::ok(handle_out);
         }
 
         u64 surface() { unsafe { return (*this.state).vk_surface; } }

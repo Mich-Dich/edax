@@ -1,0 +1,127 @@
+// RUN: edaxc run %s
+// std::ui::immediate's tables, tabs and radio buttons, and inspect on lists, options, vectors,
+// colours and enums with payloads; ui::undo_history with Ctrl+Z. A table of 100 000 rows draws
+// only the rows in view and sorts by a clicked column.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+enum page : u8 { general, graphics, audio }
+enum team : u8 { red, blue }
+
+struct enemy {
+    u32 id = 0;
+    std::string name = default;
+    f32 health = 100.0;
+    team side = team::red;
+    @ui::hidden
+    u64 cache = 0;
+}
+
+enum shape : u8 { none, circle(f32), box(std::math::vec2) }
+
+struct item {
+    std::string name = default;
+    f32 weight = 1.0;
+}
+
+struct bag {
+    std::math::vec3 position = default;
+    std::math::color tint = std::math::color{ .r = 1.0, .g = 0.5, .b = 0.2 };
+    std::option<f32> limit = std::none;
+    std::darray<item> items = default;
+    std::darray<i32> numbers = default;
+    shape form = shape::circle(2.0);
+}
+
+struct seen {
+    std::option<usize> clicked = std::none;
+    ui::rect table_at = default;
+    ui::rect tabs_at = default;
+    usize vertices = 0;
+}
+
+seen frame_of(mut im::context& ctx, mut page& current, mut team& side, std::span<enemy> rows, mut bag& b, mut ui::undo_history<bag>& history, ui::input in) {
+    mut seen out = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 1200.0, .y = 1000.0 });
+        {
+            mut im::scope w = f.window("Data", ui::rect{ .x = 0.0, .y = 0.0, .width = 600.0 });
+            out.tabs_at = w.allocate(ui::vec2{});
+            _ = w.tabs(mut current);
+            _ = w.radio("Team", mut side);
+            out.table_at = w.allocate(ui::vec2{});
+            out.clicked = w.table("enemies", rows, 300.0);
+        }
+        {
+            mut im::scope w = f.window("Bag", ui::rect{ .x = 620.0, .y = 0.0, .width = 560.0 });
+            ui::edit e = w.inspect("bag", mut b, ui::form<bag>::annotated().range("items[].weight", 0.0, 5.0));
+            history.record(e, b);
+            _ = w.undo_shortcuts(mut history, mut b);
+        }
+        f.finish();
+    }
+    out.vertices = ctx.draw_data().vertices.len();
+    return out;
+}
+
+ui::input at(ui::vec2 p) {
+    return ui::input{ .cursor = p, .dt = 0.016 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut page current = page::general;
+    mut team side = team::red;
+    mut std::darray<enemy> enemies = default;
+    for (u32 i : 0..100000) {
+        enemies.push(enemy{ .id = i, .name = std::format(f"enemy {i}"), .health = cast<f32>(cast::truncate<u16>((i * 7919) % 1000)) / 10.0 });
+    }
+    mut bag b = default;
+    b.items.push(item{ .name = std::string::from("rope") });
+    b.numbers.push(3);
+    mut ui::undo_history<bag> history = ui::undo_history<bag>::make(20);
+
+    ui::vec2 away = ui::vec2{ .x = 1199.0, .y = 999.0 };
+    _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, at(away));
+    seen s = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, at(away));
+    std::println(f"100 000 rows, {s.vertices} vertices (only the rows in view), duplicates {ctx.duplicate_ids()}");
+
+    // Click the third tab ("Audio").
+    mut ui::vec2 tab = ui::vec2{ .x = s.tabs_at.x + 5.0, .y = s.tabs_at.y + 15.0 };
+    for (u32 i : 0..3) {
+        _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = tab, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+        _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = tab, .mouse_released = true, .dt = 0.016 });
+        tab.x += 90.0;
+    }
+    std::println(f"page: {current}");
+
+    // Sort by health (the third column), downwards: two clicks on its header; then click the first row.
+    // The window's content is 600 - 2 * 16 wide; 12 of it is the scroll bar's.
+    f32 column = (568.0 - 12.0) / 4.0;
+    ui::vec2 health_header = ui::vec2{ .x = s.table_at.x + column * 2.0 + 20.0, .y = s.table_at.y + 10.0 };
+    for (u32 i : 0..2) {
+        _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = health_header, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+        _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = health_header, .mouse_released = true, .dt = 0.016 });
+    }
+    ui::vec2 first_row = ui::vec2{ .x = s.table_at.x + 30.0, .y = s.table_at.y + 45.0 };
+    _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = first_row, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    seen picked = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, ui::input{ .cursor = first_row, .mouse_released = true, .dt = 0.016 });
+    usize row = picked.clicked.value_or(0);
+    std::println(f"clicked row {row}: health {enemies[row].health} (the most)");
+
+    // Arrow down moves the selection to the next row in the sorted order.
+    mut ui::input down = at(away);
+    down.keys.push(ui::key_press{ .key = ui::key::down });
+    seen next = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, move down);
+    usize second = next.clicked.value_or(0);
+    std::println(f"down: health {enemies[second].health} <= {enemies[row].health}: {enemies[second].health <= enemies[row].health}");
+
+    // Undo: change the bag in code as if an editor committed it, then Ctrl+Z.
+    b.position.x = 5.0;
+    history.record(ui::edit{ .changed = true, .committed = true }, b);
+    mut ui::input undo = at(away);
+    undo.keys.push(ui::key_press{ .key = ui::key::z, .control = true });
+    _ = frame_of(mut ctx, mut current, mut side, enemies.as_span(), mut b, mut history, move undo);
+    std::println(f"after Ctrl+Z: x {b.position.x}, can redo {history.can_redo()}");
+}

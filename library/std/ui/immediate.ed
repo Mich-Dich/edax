@@ -1,0 +1,2671 @@
+// The Edax standard library: module std::ui::immediate (see immediate.edh).
+
+namespace std::ui::immediate {
+    // The id of a widget: its scope's id, where it was called and its key.
+    private u64 hash_id(u64 base, std::call_site where, std::str key) {
+        mut u64 h = std::hash_combine(base, std::hash(where.file));
+        h = std::hash_combine(h, cast<u64>(where.line));
+        h = std::hash_combine(h, cast<u64>(where.column));
+        return std::hash_combine(h, std::hash(key));
+    }
+
+    // `v` with two decimals.
+    private std::string two_decimals(f64 v) {
+        f64 magnitude = if (v < 0.0) { -v } else { v };
+        u64 hundredths = cast::saturate<u64>(magnitude * 100.0 + 0.5);
+        u64 whole = hundredths / 100;
+        u64 part = hundredths % 100;
+        std::str sign = if (v < 0.0 && hundredths > 0) { "-" } else { "" };
+        std::str pad = if (part < 10) { "0" } else { "" };
+        return std::format(f"{sign}{whole}.{pad}{part}");
+    }
+
+    // `v` rounded to a whole number, without decimals.
+    private std::string whole_number(f64 v) {
+        i64 whole = cast::saturate<i64>(v + if (v < 0.0) { -0.5 } else { 0.5 });
+        return std::format(f"{whole}");
+    }
+
+    // Numbers as f64 and back, for the generic slider.
+    private template<type T>
+    f64 to_f64(T v) {
+        if compile_time (std::is_same<T, f32>() || std::is_same<T, f64>() || std::is_same<T, i32>() || std::is_same<T, u32>()) {
+            return cast<f64>(v);
+        } else {
+            return cast::round<f64>(v);
+        }
+    }
+
+    private template<type T>
+    T from_f64(f64 v) {
+        if compile_time (std::is_same<T, f64>()) {
+            return v;
+        } else if compile_time (std::is_float<T>()) {
+            return cast::round<T>(v);
+        } else {
+            return cast::saturate<T>(v + if (v < 0.0) { -0.5 } else { 0.5 });
+        }
+    }
+
+    // ---- context ---------------------------------------------------------------------------------------
+
+    class context {
+    public:
+        static context create(std::ui::theme start) {
+            return context{ .look = start, .fade_from = start, .fade_to = start };
+        }
+
+        frame begin_frame(std::ui::input frame_input, std::ui::vec2 size) mut {
+            this.frame_number += 1;
+            this.in = move frame_input;
+            if (!this.routed_keys.is_empty()) {
+                mut std::darray<ui::key_press> keys = std::take(mut this.routed_keys);
+                for (ui::key_press k : this.in.keys) {
+                    keys.push(k);
+                }
+                this.in.keys = move keys;
+            }
+            if (!this.routed_text.is_empty()) {
+                this.routed_text.push_str(this.in.typed.as_str());
+                this.in.typed = std::take(mut this.routed_text);
+            }
+            this.frame_size = size;
+            std::time::instant now = std::time::instant::now();
+            this.dt = if (this.in.dt > 0.0) {
+                this.in.dt
+            } else {
+                match (this.last_frame_at) {
+                    std::some(before) => cast::round<f32>(now.since(before).as_seconds_f64()).min(0.25),
+                    std::none => 1.0 / 60.0,
+                }
+            };
+            this.last_frame_at = std::some(now);
+            if (this.fade < 1.0) {
+                f32 seconds = this.fade_to.motion.slow;
+                this.fade = if (seconds <= 0.0) { 1.0 } else { (this.fade + this.dt / seconds).min(1.0) };
+                this.look = ui::theme::mix(this.fade_from, this.fade_to, std::math::smoothstep(0.0, 1.0, this.fade));
+            }
+            this.last_windows = std::take(mut this.layers);
+            this.layers.clear();
+            this.layouts.clear();
+            this.last_duplicates = this.duplicates;
+            this.duplicates = 0;
+            this.hot = 0;
+            if (!this.in.mouse_down && !this.in.mouse_released) {
+                this.active = 0;
+            }
+            this.overlay = std::none;
+            this.scroll_used = false;
+            this.next_width = std::none;
+            if (!this.tooltip_seen) {
+                this.tooltip_of = 0;
+            }
+            this.tooltip_seen = false;
+            this.last_item = 0;
+            this.last_item_hovered = false;
+            this.caret_phase += this.dt;
+            if (this.caret_phase >= 1.0) {
+                this.caret_phase -= 1.0;
+            }
+
+            // The keyboard: Tab moves the focus, Enter and Space press, Escape steps back.
+            this.last_focus_order = std::take(mut this.focus_order);
+            this.focus_order.clear();
+            this.activate = false;
+            if (this.in.mouse_pressed) {
+                this.focus_visible = false;
+            }
+            mut bool tab = false;
+            mut bool backwards = false;
+            for (ui::key_press k : this.in.keys) {
+                if (k.key == ui::key::tab) {
+                    tab = true;
+                    backwards = k.shift;
+                }
+            }
+            if (tab && !this.last_focus_order.is_empty()) {
+                usize n = this.last_focus_order.len();
+                mut usize at = if (backwards) { n - 1 } else { 0 };
+                for (usize i : 0..n) {
+                    if (this.last_focus_order[i] == this.focused) {
+                        at = if (backwards) { (i + n - 1) % n } else { (i + 1) % n };
+                    }
+                }
+                this.focused = this.last_focus_order[at];
+                this.focus_visible = true;
+                this.editing = 0;
+                this.open_popup = 0;
+            }
+            if (this.editing == 0 && this.focused != 0 && (this.in.pressed(ui::key::enter) || this.in.pressed(ui::key::space))) {
+                this.activate = true;
+                this.focus_visible = true;
+            }
+            if (this.in.pressed(ui::key::escape)) {
+                if (this.open_popup != 0) {
+                    this.open_popup = 0;
+                } else if (this.editing != 0) {
+                    this.editing = 0;
+                } else {
+                    this.focused = 0;
+                    this.focus_visible = false;
+                }
+            }
+            // The window in front under the cursor.
+            this.hover_window = 0;
+            mut u64 best = 0;
+            for (layer l : this.last_windows) {
+                if (l.bounds.contains(this.in.cursor) && (this.hover_window == 0 || l.order > best)) {
+                    this.hover_window = l.window;
+                    best = l.order;
+                }
+            }
+            return frame{ .ctx = this };
+        }
+
+        std::ui::draw_list& draw_data() {
+            return this.output;
+        }
+
+        std::ui::fonts& fonts() {
+            return this.faces;
+        }
+
+        std::ui::theme& theme() {
+            return this.look;
+        }
+
+        void set_theme(std::ui::theme next) mut {
+            this.fade_from = this.look;
+            this.fade_to = next;
+            this.fade = 0.0;
+        }
+
+        void set_theme_now(std::ui::theme next) mut {
+            this.look = next;
+            this.fade_from = next;
+            this.fade_to = next;
+            this.fade = 1.0;
+        }
+
+        mut std::ui::skin& skin() mut {
+            return this.painters;
+        }
+
+        template<type T>
+        void set_form(std::ui::form<T> rules) mut {
+            mut std::ui::form<T> owned = move rules;
+            u64 id = std::meta::type_id<T>();
+            stored_form entry = stored_form{ .type_id = id, .overrides = std::take(mut owned.overrides), .hide_unlisted = owned.hide_unlisted };
+            for (usize i : 0..this.context_forms.len()) {
+                if (this.context_forms[i].type_id == id) {
+                    this.context_forms[i] = move entry;
+                    return;
+                }
+            }
+            this.context_forms.push(move entry);
+        }
+
+        bool wants_mouse() {
+            return this.active != 0 || this.hover_window != 0;
+        }
+
+        bool wants_keyboard() {
+            return this.editing != 0 || (this.focused != 0 && this.focus_visible);
+        }
+
+        std::str clipboard_text() {
+            return this.clipboard.as_str();
+        }
+
+        void set_clipboard_text(std::str text) mut {
+            this.clipboard = std::string::from(text);
+        }
+
+        u32 duplicate_ids() {
+            return this.last_duplicates;
+        }
+
+        mut widget_state& state_of(u64 id) mut {
+            return this.states.get_or_insert(id, widget_state{});
+        }
+
+        mut flow& top() mut {
+            usize n = this.layouts.len();
+            return this.layouts[n - 1];
+        }
+
+        std::ui::rect place(f32 natural, f32 height) mut {
+            std::option<ui::length> size = this.take_next_width();
+            f32 width = this.resolve_width(size, natural);
+            mut flow& l = this.top();
+            if (l.columns > 0) {
+                f32 columns = cast::round<f32>(l.columns);
+                f32 cell = ((l.width - l.gap * (columns - 1.0)) / columns).max(0.0);
+                u32 column = l.index % l.columns;
+                if (column == 0 && l.index > 0) {
+                    l.cursor_y += l.row_height + l.gap;
+                    l.row_height = 0.0;
+                }
+                std::ui::rect cell_rect = std::ui::rect{ .x = l.left + cast::round<f32>(column) * (cell + l.gap), .y = l.cursor_y, .width = width.min(cell), .height = height };
+                l.row_height = l.row_height.max(height);
+                l.index += 1;
+                l.bottom = l.bottom.max(cell_rect.bottom());
+                l.right = l.right.max(cell_rect.right());
+                return cell_rect;
+            }
+            if (l.row) {
+                match (size) {
+                    std::some(given) if given.kind == ui::length_kind::fill => { l.weights += given.value; },
+                    _ => { l.fixed += width; },
+                }
+                l.items += 1;
+            }
+            std::ui::rect r = if (l.row) {
+                std::ui::rect{ .x = l.cursor_x, .y = l.top, .width = width, .height = height }
+            } else {
+                std::ui::rect{ .x = l.left, .y = l.cursor_y, .width = width, .height = height }
+            };
+            if (l.row) {
+                l.cursor_x += width + l.gap;
+            } else {
+                l.cursor_y += height + l.gap;
+            }
+            l.bottom = l.bottom.max(r.bottom());
+            l.right = l.right.max(r.right());
+            return r;
+        }
+
+        f32 room() mut {
+            flow l = this.top();
+            if (l.columns > 0) {
+                f32 columns = cast::round<f32>(l.columns);
+                return ((l.width - l.gap * (columns - 1.0)) / columns).max(0.0);
+            }
+            return if (l.row) { (l.left + l.width - l.cursor_x).max(0.0) } else { l.width };
+        }
+
+        std::option<std::ui::length> take_next_width() mut {
+            std::option<ui::length> size = this.next_width;
+            this.next_width = std::none;
+            return size;
+        }
+
+        f32 resolve_width(std::option<std::ui::length> size, f32 natural) mut {
+            ui::length given = match (size) {
+                std::some(l) => l,
+                std::none    => return natural,
+            };
+            flow l = this.top();
+            return match (given.kind) {
+                ui::length_kind::px      => given.value,
+                ui::length_kind::fit     => natural,
+                ui::length_kind::percent => l.width * given.value / 100.0,
+                ui::length_kind::fill    => {
+                    if (l.row && l.last_weights > 0.0) {
+                        f32 gaps = l.gap * cast::round<f32>(l.last_items.max(1) - 1);
+                        ((l.width - l.last_fixed - gaps).max(0.0) * given.value / l.last_weights).round()
+                    } else {
+                        this.room()
+                    }
+                },
+            };
+        }
+
+        void touch(u64 id) mut {
+            u64 now = this.frame_number;
+            mut widget_state& s = this.state_of(id);
+            if (s.seen_in_frame == now) {
+                this.duplicates += 1;
+            }
+            s.seen_in_frame = now;
+        }
+
+        f32 ease(u64 key, f32 target, f32 seconds) mut {
+            f32 step = if (seconds <= 0.0) { 1.0 } else { this.dt / seconds };
+            mut f32& v = this.animations.get_or_insert(key, target);
+            if (v < target) {
+                v = (v + step).min(target);
+            } else if (v > target) {
+                v = (v - step).max(target);
+            }
+            return std::math::smoothstep(0.0, 1.0, v);
+        }
+
+        response respond(u64 widget, std::ui::rect r, u64 window, std::ui::rect clip, bool focusable) mut {
+            this.touch(widget);
+            if (focusable) {
+                this.focus_order.push(widget);
+            }
+            bool inside = this.hover_window == window && r.contains(this.in.cursor) && clip.contains(this.in.cursor);
+            if (inside) {
+                this.hot = widget;
+                if (this.in.mouse_pressed) {
+                    this.active = widget;
+                    if (focusable) {
+                        this.focused = widget;
+                    }
+                }
+            }
+            bool held = this.active == widget && this.in.mouse_down;
+            bool has_focus = focusable && this.focused == widget;
+            bool clicked = (inside && this.in.mouse_released && this.active == widget) || (has_focus && this.activate);
+            f32 fast = this.look.motion.fast;
+            f32 hover = this.ease(std::hash_combine(widget, 1), if (inside || held) { 1.0 } else { 0.0 }, fast);
+            f32 press = this.ease(std::hash_combine(widget, 2), if (held) { 1.0 } else { 0.0 }, fast);
+            this.last_item = widget;
+            this.last_item_hovered = inside && !this.in.mouse_down;
+            return response{
+                .state = ui::interaction{ .hovered = inside, .pressed = held, .focused = has_focus && this.focus_visible, .hover = hover, .press = press },
+                .clicked = clicked,
+                .has_focus = has_focus,
+                .cursor = this.in.cursor,
+            };
+        }
+
+        usize overlay_layer() mut {
+            match (this.overlay) {
+                std::some(i) => { return i; },
+                std::none => {},
+            }
+            usize index = this.layers.len();
+            this.layers.push(layer{ .window = overlay_window, .order = 0xffffffffffffffff });
+            this.layers[index].list.begin(this.frame_size);
+            this.overlay = std::some(index);
+            return index;
+        }
+    }
+
+    // The window id of the overlay (popups, tooltips).
+    private compile_time u64 overlay_window = 1;
+
+    // ---- frame -------------------------------------------------------------------------------------------
+
+    view class frame {
+    public:
+        scope window(std::str title, std::ui::rect start, implicit compile_time std::call_site where) mut {
+            u64 wid = hash_id(0, where, title);
+            this.ctx.touch(wid);
+            ui::theme t = this.ctx.look;
+            {
+                mut widget_state& s = this.ctx.state_of(wid);
+                if (!s.open) {
+                    s.open = true;
+                    s.position = start.origin();
+                    s.size = start.size();
+                    s.sized = start.height > 0.0;
+                    this.ctx.next_order += 1;
+                    s.order = this.ctx.next_order;
+                }
+            }
+            ui::vec2 at = this.ctx.state_of(wid).position;
+            f32 width = this.ctx.state_of(wid).size.x;
+            f32 title_height = t.controls.window.title_height * t.density;
+
+            // A press inside brings the window to the front; on the title bar it starts a drag.
+            bool in_front = this.ctx.hover_window == wid;
+            ui::rect bar = ui::rect{ .x = at.x, .y = at.y, .width = width, .height = title_height };
+            if (in_front && this.ctx.in.mouse_pressed) {
+                this.ctx.next_order += 1;
+                this.ctx.state_of(wid).order = this.ctx.next_order;
+                if (bar.contains(this.ctx.in.cursor)) {
+                    this.ctx.active = wid;
+                    this.ctx.drag_offset = this.ctx.in.cursor - at;
+                }
+            }
+            if (this.ctx.active == wid && this.ctx.in.mouse_down) {
+                this.ctx.state_of(wid).position = this.ctx.in.cursor - this.ctx.drag_offset;
+            }
+            // The grip in the bottom-right corner resizes; a resized window keeps its height and scrolls.
+            {
+                widget_state before = this.ctx.state_of(wid);
+                ui::rect last = ui::rect{ .x = before.position.x, .y = before.position.y, .width = width, .height = before.size.y.max(title_height) };
+                ui::rect grip_area = ui::rect{ .x = last.right() - 16.0, .y = last.bottom() - 16.0, .width = 16.0, .height = 16.0 };
+                response grip = this.ctx.respond(std::hash_combine(wid, 9), grip_area, wid, last, false);
+                if (grip.state.pressed) {
+                    if (this.ctx.in.mouse_pressed) {
+                        this.ctx.resize_from = last.size();
+                        this.ctx.press_at = this.ctx.in.cursor;
+                    }
+                    ui::vec2 grown = this.ctx.resize_from + (this.ctx.in.cursor - this.ctx.press_at);
+                    mut widget_state& s = this.ctx.state_of(wid);
+                    s.size = ui::vec2{ .x = grown.x.max(160.0), .y = grown.y.max(title_height + 48.0) };
+                    s.sized = true;
+                }
+                this.ctx.animations.get_or_insert(std::hash_combine(wid, 10), 0.0) = grip.state.hover;
+            }
+            widget_state now = this.ctx.state_of(wid);
+            f32 window_width = now.size.x;
+            f32 height = now.size.y.max(title_height);
+            ui::rect bounds = ui::rect{ .x = now.position.x, .y = now.position.y, .width = window_width, .height = height };
+            ui::rect title_bar = ui::rect{ .x = bounds.x, .y = bounds.y, .width = window_width, .height = title_height };
+            f32 grip_hover = this.ctx.animations.get_or_insert(std::hash_combine(wid, 10), 0.0);
+
+            usize index = this.ctx.layers.len();
+            this.ctx.layers.push(layer{ .window = wid, .order = now.order, .bounds = bounds });
+            this.ctx.layers[index].list.begin(this.ctx.frame_size);
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.window(mut p, ui::window_part{ .bounds = bounds, .title_bar = title_bar, .title = title, .grip = ui::interaction{ .hover = grip_hover } });
+            }
+            this.ctx.layers[index].list.push_clip(bounds);
+
+            f32 padding = t.controls.window.padding * t.density;
+            f32 top = title_bar.bottom() + padding - if (now.sized) { now.scroll } else { 0.0 };
+            if (now.sized) {
+                this.ctx.layers[index].list.push_clip(ui::rect{ .x = bounds.x, .y = title_bar.bottom(), .width = window_width, .height = height - title_height });
+            }
+            this.ctx.layouts.push(flow{
+                .left = bounds.x + padding, .top = top, .width = window_width - 2.0 * padding,
+                .cursor_x = bounds.x + padding, .cursor_y = top, .bottom = top, .right = bounds.x + padding,
+                .gap = t.controls.gap * t.density,
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = true, .kind = 2, .layer_index = index, .window = wid, .owner = wid };
+        }
+
+        void finish() move {
+            // Stack the windows: lowest order first.
+            mut std::darray<usize> stacking = default;
+            for (usize i : 0..this.ctx.layers.len()) {
+                stacking.push(i);
+            }
+            for (usize i : 0..stacking.len()) {
+                for (usize j : (i + 1)..stacking.len()) {
+                    if (this.ctx.layers[stacking[j]].order < this.ctx.layers[stacking[i]].order) {
+                        usize swapped = stacking[i];
+                        stacking[i] = stacking[j];
+                        stacking[j] = swapped;
+                    }
+                }
+            }
+            // A press on no widget drops the focus and ends typing.
+            if (this.ctx.in.mouse_pressed && this.ctx.hot == 0) {
+                this.ctx.focused = 0;
+                this.ctx.editing = 0;
+            }
+            if (this.ctx.editing != 0 && this.ctx.focused != this.ctx.editing) {
+                this.ctx.editing = 0;
+            }
+            this.ctx.output.begin(this.ctx.frame_size);
+            for (usize i : stacking) {
+                this.ctx.output.append(this.ctx.layers[i].list);
+            }
+        }
+    }
+
+    // ---- scope -------------------------------------------------------------------------------------------
+
+    view class scope {
+    public:
+        bool open() {
+            return this.visible;
+        }
+
+        std::ui::theme& theme() {
+            return this.ctx.look;
+        }
+
+        u64 make_id(std::str key, std::call_site where) {
+            return hash_id(this.id_base, where, key);
+        }
+
+        f32 available_width() mut {
+            return this.ctx.room();
+        }
+
+        std::ui::rect allocate(std::ui::vec2 size) mut {
+            return this.ctx.place(size.x, size.y);
+        }
+
+        response interact(u64 widget, std::ui::rect r) mut {
+            ui::rect clip = this.ctx.layers[this.layer_index].list.current_clip();
+            return this.ctx.respond(widget, r, this.window, clip, true);
+        }
+
+        f32 animate(u64 widget, u32 slot, f32 target) mut {
+            f32 seconds = this.ctx.look.motion.normal;
+            return this.ctx.ease(std::hash_combine(widget, cast<u64>(slot) + 16), target, seconds);
+        }
+
+        mut widget_state& state(u64 widget) mut {
+            return this.ctx.state_of(widget);
+        }
+
+        std::ui::painter painter() mut {
+            return ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+        }
+
+        void text(std::format_args message) mut {
+            std::string content = std::format(move message);
+            write_line(mut this, content.as_str(), ui::text_role::body, false);
+        }
+
+        void muted(std::format_args message) mut {
+            std::string content = std::format(move message);
+            write_line(mut this, content.as_str(), ui::text_role::body, true);
+        }
+
+        void heading(std::str title) mut {
+            write_line(mut this, title, ui::text_role::title, false);
+        }
+
+        bool button(std::str label, implicit compile_time std::call_site where) mut {
+            return press_button(mut this, label, ui::variant::secondary, this.make_id(label, where));
+        }
+
+        bool button(std::str label, std::ui::variant look, implicit compile_time std::call_site where) mut {
+            return press_button(mut this, label, look, this.make_id(label, where));
+        }
+
+        bool checkbox(std::str label, mut bool& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            f32 box_size = t.controls.checkbox.size * t.density;
+            f32 height = t.controls.row_height * t.density;
+            ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+            f32 label_width = this.ctx.faces.measure(label, style).x;
+            ui::rect r = this.ctx.place(box_size + t.space.s + label_width, height);
+            response resp = this.interact(wid, r);
+            if (resp.clicked) {
+                value = !value;
+            }
+            f32 amount = this.animate(wid, 0, if (value) { 1.0 } else { 0.0 });
+            ui::rect box = ui::rect{ .x = r.x, .y = r.y + ((height - box_size) * 0.5).round(), .width = box_size, .height = box_size };
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.checkbox(mut p, ui::check_part{ .bounds = box, .checked = value, .amount = amount, .state = resp.state });
+                _ = p.text(ui::vec2{ .x = box.right() + t.space.s, .y = r.y + ((height - p.faces.line_height(style)) * 0.5).round() }, label, style);
+            }
+            return resp.clicked;
+        }
+
+        bool toggle(std::str label, mut bool& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            f32 track_width = t.controls.toggle.width * t.density;
+            f32 track_height = t.controls.toggle.height * t.density;
+            f32 height = t.controls.row_height * t.density;
+            ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+            f32 label_width = this.ctx.faces.measure(label, style).x;
+            f32 span = this.ctx.room().max(label_width + t.space.m + track_width);
+            ui::rect r = this.ctx.place(span, height);
+            response resp = this.interact(wid, r);
+            if (resp.clicked) {
+                value = !value;
+            }
+            f32 amount = this.animate(wid, 0, if (value) { 1.0 } else { 0.0 });
+            ui::rect track = ui::rect{ .x = r.right() - track_width, .y = r.y + ((height - track_height) * 0.5).round(), .width = track_width, .height = track_height };
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                _ = p.text(ui::vec2{ .x = r.x, .y = r.y + ((height - p.faces.line_height(style)) * 0.5).round() }, label, style);
+                this.ctx.painters.toggle(mut p, ui::toggle_part{ .bounds = track, .on = value, .amount = amount, .state = resp.state });
+            }
+            return resp.clicked;
+        }
+
+        bool boolean(std::str label, mut bool& value, implicit compile_time std::call_site where) mut {
+            return match (this.ctx.look.controls.boolean) {
+                ui::bool_widget::toggle => this.toggle(label, mut value, where),
+                ui::bool_widget::checkbox => this.checkbox(label, mut value, where),
+            };
+        }
+
+        template<type T>
+        bool slider(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            mut f64 v = to_f64(value);
+            f64 low = to_f64(min);
+            f64 high = to_f64(max);
+            std::string shown = if compile_time (std::is_float<T>()) { two_decimals(v) } else { std::format(f"{value}") };
+            f64 step = if compile_time (std::is_float<T>()) { (high - low) / 100.0 } else { 1.0 };
+            bool changed = drag_slider(mut this, this.make_id(label, where), label, mut v, low, high, step, shown.as_str());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        }
+
+        void progress(f32 fraction) mut {
+            if (!this.visible) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            f32 height = t.controls.row_height * t.density;
+            ui::rect r = this.ctx.place(this.ctx.room(), height);
+            f32 bar_height = 8.0 * t.density;
+            ui::rect bar = ui::rect{ .x = r.x, .y = r.y + ((height - bar_height) * 0.5).round(), .width = r.width, .height = bar_height };
+            mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+            this.ctx.painters.progress(mut p, ui::progress_part{ .bounds = bar, .fraction = fraction });
+        }
+
+        void separator() mut {
+            if (!this.visible) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            ui::rect r = this.ctx.place(this.ctx.room(), t.space.s);
+            f32 y = (r.y + r.height * 0.5).round() + 0.5;
+            this.ctx.layers[this.layer_index].list.line(ui::vec2{ .x = r.x, .y = y }, ui::vec2{ .x = r.right(), .y = y }, 1.0, t.colors.border);
+        }
+
+        scope section(std::str label, bool open_at_first, implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id(label, where);
+            bool is_open = open_node(mut this, wid, label, open_at_first, false);
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = is_open, .kind = 1, .layer_index = this.layer_index, .window = this.window, .owner = wid };
+        }
+
+        scope tree(std::str label, bool open_at_first, implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id(label, where);
+            bool is_open = open_node(mut this, wid, label, open_at_first, true);
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = is_open, .kind = 1, .layer_index = this.layer_index, .window = this.window, .owner = wid };
+        }
+
+        scope styled(std::ui::theme look) mut {
+            ui::theme before = this.ctx.look;
+            this.ctx.style_stack.push(before);
+            this.ctx.look = look;
+            return scope{ .ctx = this.ctx, .id_base = this.id_base, .visible = this.visible, .kind = 5, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        template<type T>
+        bool drag(std::str label, mut T& value, f64 speed, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            mut f64 v = to_f64(value);
+            bool changed = number_field(mut this, this.make_id(label, where), label, mut v, -1.0e300, 1.0e300, speed, false, std::is_float<T>());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        }
+
+        template<type T>
+        bool number(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            mut f64 v = to_f64(value);
+            f64 low = to_f64(min);
+            f64 high = to_f64(max);
+            f64 speed = if compile_time (std::is_float<T>()) { (high - low) / 400.0 } else { ((high - low) / 400.0).max(0.05) };
+            bool changed = number_field(mut this, this.make_id(label, where), label, mut v, low, high, speed, true, std::is_float<T>());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        }
+
+        bool input_text(std::str label, mut std::string& content, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            (ui::rect area, f32 height) = labelled_row(mut this, label);
+            response resp = this.interact(wid, area);
+            bool start = (resp.state.pressed && this.ctx.in.mouse_pressed) || (resp.has_focus && (this.ctx.focus_visible || resp.clicked) && this.ctx.editing != wid);
+            (bool changed, bool done) = text_field(mut this, wid, mut content, area, resp, start);
+            return changed;
+        }
+
+        bool combo(std::str label, mut usize& selected, std::span<std::str> items, implicit compile_time std::call_site where) mut {
+            if (!this.visible || items.is_empty()) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            (ui::rect area, f32 height) = labelled_row(mut this, label);
+            response resp = this.interact(wid, area);
+            mut bool changed = false;
+            if (resp.clicked) {
+                this.ctx.open_popup = if (this.ctx.open_popup == wid) { 0 } else { wid };
+            }
+            if (resp.has_focus) {
+                for (ui::key_press k : this.ctx.in.keys) {
+                    if (k.key == ui::key::up && selected > 0) {
+                        selected -= 1;
+                        changed = true;
+                    } else if (k.key == ui::key::down && selected + 1 < items.len()) {
+                        selected += 1;
+                        changed = true;
+                    }
+                }
+            }
+            selected = selected.min(items.len() - 1);
+            bool is_open = this.ctx.open_popup == wid;
+            ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.field(mut p, ui::field_part{ .bounds = area, .editing = is_open, .state = resp.state });
+                f32 line = p.faces.line_height(style);
+                p.list.push_clip(area.shrunk(1.0));
+                _ = p.text(ui::vec2{ .x = area.x + t.space.s, .y = area.y + ((area.height - line) * 0.5).round() }, items[selected], style);
+                p.list.pop_clip();
+                f32 turn = this.ctx.ease(std::hash_combine(wid, 3), if (is_open) { 1.0 } else { 0.0 }, t.motion.fast);
+                p.list.regular_polygon(ui::vec2{ .x = area.right() - 14.0, .y = area.y + area.height * 0.5 }, 4.5, 3, 180.0 * (1.0 - turn), t.colors.text_muted);
+            }
+            if (!is_open) {
+                return changed;
+            }
+
+            // The list, in the overlay: below the area, or above it when there is no room.
+            f32 item_height = t.controls.row_height * t.density;
+            f32 pad = t.space.xs;
+            f32 list_height = item_height * cast::round<f32>(items.len()) + 2.0 * pad;
+            f32 below = area.bottom() + 4.0;
+            f32 top = if (below + list_height > this.ctx.frame_size.y && area.y - 4.0 - list_height >= 0.0) { area.y - 4.0 - list_height } else { below };
+            ui::rect box = ui::rect{ .x = area.x, .y = top, .width = area.width, .height = list_height };
+            usize oi = this.ctx.overlay_layer();
+            ui::rect seen = this.ctx.layers[oi].bounds;
+            this.ctx.layers[oi].bounds = if (seen.width <= 0.0) { box } else { seen.united(box) };
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[oi].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.popup(mut p, ui::popup_part{ .bounds = box });
+            }
+            mut bool picked = false;
+            for (usize i : 0..items.len()) {
+                ui::rect entry = ui::rect{ .x = box.x + pad, .y = box.y + pad + item_height * cast::round<f32>(i), .width = box.width - 2.0 * pad, .height = item_height };
+                response item = this.ctx.respond(std::hash_combine(wid, cast<u64>(i) + 100), entry, overlay_window, box, false);
+                if (item.clicked) {
+                    if (selected != i) {
+                        selected = i;
+                        changed = true;
+                    }
+                    picked = true;
+                }
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[oi].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.list_item(mut p, ui::item_part{ .bounds = entry, .label = items[i], .selected = i == selected, .state = item.state });
+            }
+            bool pressed_elsewhere = this.ctx.in.mouse_pressed && !box.contains(this.ctx.in.cursor) && !area.contains(this.ctx.in.cursor);
+            if (picked || pressed_elsewhere || this.ctx.in.pressed(ui::key::enter)) {
+                this.ctx.open_popup = 0;
+            }
+            return changed;
+        }
+
+        template<type E>
+        bool choice(std::str label, mut E& value, implicit compile_time std::call_site where) mut {
+            mut std::darray<std::str> names = default;
+            mut usize index = 0;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+                if compile_time (!a.has_payload) {
+                    if (a.is(value)) {
+                        index = names.len();
+                    }
+                    names.push(a.name);
+                }
+            }
+            if (!this.combo(label, mut index, names.as_span(), where)) {
+                return false;
+            }
+            mut usize n = 0;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+                if compile_time (!a.has_payload) {
+                    if (n == index) {
+                        value = a.make();
+                    }
+                    n += 1;
+                }
+            }
+            return true;
+        }
+
+        void tooltip(std::str message) mut {
+            if (!this.visible || this.ctx.last_item == 0) {
+                return;
+            }
+            if (!this.ctx.last_item_hovered) {
+                return;
+            }
+            if (this.ctx.tooltip_of != this.ctx.last_item) {
+                this.ctx.tooltip_of = this.ctx.last_item;
+                this.ctx.tooltip_wait = 0.0;
+            }
+            this.ctx.tooltip_seen = true;
+            this.ctx.tooltip_wait += this.ctx.dt;
+            if (this.ctx.tooltip_wait < 0.45) {
+                return;
+            }
+            ui::theme t = this.ctx.look;
+            ui::text_style style = t.style(ui::text_role::caption, t.colors.background);
+            ui::vec2 extent = this.ctx.faces.measure(message, style);
+            ui::vec2 at = this.ctx.in.cursor + ui::vec2{ .x = 14.0, .y = 20.0 };
+            f32 span = (extent.x + 2.0 * t.space.s).round();
+            f32 height = (extent.y + t.space.s).round();
+            ui::rect box = ui::rect{
+                .x = at.x.min(this.ctx.frame_size.x - span - 4.0).max(0.0), .y = at.y.min(this.ctx.frame_size.y - height - 4.0).max(0.0),
+                .width = span, .height = height,
+            };
+            usize oi = this.ctx.overlay_layer();
+            mut ui::painter p = ui::painter{ .list = this.ctx.layers[oi].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+            this.ctx.painters.tooltip(mut p, ui::tooltip_part{ .bounds = box, .text = message });
+        }
+
+        scope card(implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id("card", where);
+            this.ctx.touch(wid);
+            ui::theme t = this.ctx.look;
+            flow parent = this.ctx.top();
+            std::option<ui::length> own = this.ctx.take_next_width();
+            f32 span = this.ctx.resolve_width(own, this.ctx.room());
+            f32 x = if (parent.row) { parent.cursor_x } else { parent.left };
+            f32 y = if (parent.row) { parent.top } else { parent.cursor_y };
+            f32 padding = t.space.m;
+            if (this.visible) {
+                ui::vec2 last = this.ctx.state_of(wid).size;
+                ui::rect bounds = ui::rect{ .x = x, .y = y, .width = span, .height = last.y };
+                if (last.y > 0.0) {
+                    mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                    this.ctx.painters.card(mut p, ui::card_part{ .bounds = bounds });
+                }
+            }
+            this.ctx.layouts.push(flow{
+                .left = x + padding, .top = y + padding, .width = span - 2.0 * padding,
+                .cursor_x = x + padding, .cursor_y = y + padding, .bottom = y + padding, .right = x + padding, .gap = parent.gap,
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = this.visible, .kind = 3, .layer_index = this.layer_index, .window = this.window, .owner = wid, .own_width = own };
+        }
+
+        scope row(implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id("row", where);
+            this.ctx.touch(wid);
+            flow parent = this.ctx.top();
+            f32 x = if (parent.row) { parent.cursor_x } else { parent.left };
+            f32 y = if (parent.row) { parent.top } else { parent.cursor_y };
+            std::option<ui::length> own = this.ctx.take_next_width();
+            f32 span = this.ctx.resolve_width(own, this.ctx.room());
+            widget_state last = this.ctx.state_of(wid);
+            this.ctx.layouts.push(flow{
+                .left = x, .top = y, .width = span, .cursor_x = x, .cursor_y = y, .bottom = y, .right = x, .gap = parent.gap, .row = true,
+                .last_fixed = last.fixed_width, .last_weights = last.fill_weight, .last_items = last.items,
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = this.visible, .kind = 4, .layer_index = this.layer_index, .window = this.window, .owner = wid, .own_width = own };
+        }
+
+        scope grid(u32 columns, implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id("grid", where);
+            flow parent = this.ctx.top();
+            f32 x = if (parent.row) { parent.cursor_x } else { parent.left };
+            f32 y = if (parent.row) { parent.top } else { parent.cursor_y };
+            std::option<ui::length> own = this.ctx.take_next_width();
+            f32 span = this.ctx.resolve_width(own, this.ctx.room());
+            this.ctx.layouts.push(flow{
+                .left = x, .top = y, .width = span, .cursor_x = x, .cursor_y = y, .bottom = y, .right = x, .gap = parent.gap, .columns = columns.max(1),
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = this.visible, .kind = 7, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        scope scroll(f32 height, implicit compile_time std::call_site where) mut {
+            u64 wid = this.make_id("scroll", where);
+            if (!this.visible) {
+                this.ctx.layouts.push(this.ctx.top());
+                return scope{ .ctx = this.ctx, .id_base = wid, .visible = false, .kind = 4, .layer_index = this.layer_index, .window = this.window, .owner = wid };
+            }
+            this.ctx.touch(wid);
+            ui::rect area = this.ctx.place(this.ctx.room(), height);
+            f32 offset = {
+                mut widget_state& s = this.ctx.state_of(wid);
+                s.position = area.origin();
+                s.size = area.size();
+                s.scroll
+            };
+            this.ctx.layers[this.layer_index].list.push_clip(area);
+            f32 gap = this.ctx.top().gap;
+            f32 bar = 12.0;
+            f32 top = area.y - offset;
+            this.ctx.layouts.push(flow{
+                .left = area.x, .top = top, .width = (area.width - bar).max(0.0), .cursor_x = area.x, .cursor_y = top, .bottom = top, .right = area.x, .gap = gap,
+            });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = true, .kind = 6, .layer_index = this.layer_index, .window = this.window, .owner = wid };
+        }
+
+        scope width(std::ui::length size) mut {
+            this.ctx.next_width = if (this.visible) { std::some(size) } else { std::none };
+            return scope{ .ctx = this.ctx, .id_base = this.id_base, .visible = this.visible, .kind = 0, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        template<type K>
+        scope id(K key, implicit compile_time std::call_site where) mut {
+            u64 wid = std::hash_combine(this.make_id("", where), std::hash(key));
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = this.visible, .kind = 0, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        template<type E>
+        bool segmented(std::str label, mut E& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            mut std::darray<std::string> names = default;
+            mut usize index = 0;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+                if compile_time (!a.has_payload) {
+                    if (a.is(value)) {
+                        index = names.len();
+                    }
+                    match (a.annotation<std::ui::label>()) {
+                        std::some(given) => names.push(std::string::from(given.text)),
+                        std::none        => names.push(std::ui::label_of(a.name)),
+                    }
+                }
+            }
+            usize n = names.len();
+            if (n == 0) {
+                return false;
+            }
+            (ui::rect area, f32 row_height) = labelled_row(mut this, label);
+            response whole = this.interact(wid, area);
+            f32 cell_width = area.width / cast::round<f32>(n);
+            ui::rect clip = this.ctx.layers[this.layer_index].list.current_clip();
+            mut usize picked = index;
+            for (usize i : 0..n) {
+                ui::rect cell = ui::rect{ .x = area.x + cell_width * cast::round<f32>(i), .y = area.y, .width = cell_width, .height = area.height };
+                response r = this.ctx.respond(std::hash_combine(wid, cast<u64>(i) + 50), cell, this.window, clip, false);
+                if (r.clicked) {
+                    picked = i;
+                    this.ctx.focused = wid;
+                }
+            }
+            if (whole.has_focus) {
+                for (ui::key_press k : this.ctx.in.keys) {
+                    if (k.key == ui::key::left && picked > 0) {
+                        picked -= 1;
+                    } else if (k.key == ui::key::right && picked + 1 < n) {
+                        picked += 1;
+                    }
+                }
+            }
+            // The thumb slides to the chosen segment.
+            f32 target = cast::round<f32>(picked);
+            f32 seconds = t.motion.normal;
+            f32 moved = {
+                mut f32& at = this.ctx.animations.get_or_insert(std::hash_combine(wid, 3), target);
+                f32 speed = if (seconds <= 0.0) { 1000.0 } else { this.ctx.dt / seconds * cast::round<f32>(n) };
+                if (at < target) {
+                    at = (at + speed).min(target);
+                } else if (at > target) {
+                    at = (at - speed).max(target);
+                }
+                at
+            };
+            ui::rect thumb = ui::rect{ .x = area.x + cell_width * moved, .y = area.y, .width = cell_width, .height = area.height };
+            ui::text_style chosen = t.style(ui::text_role::label, t.colors.text);
+            ui::text_style other = t.style(ui::text_role::label, t.colors.text_muted);
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.segments(mut p, ui::segments_part{ .track = area, .thumb = thumb, .state = whole.state });
+                for (usize i : 0..n) {
+                    ui::rect cell = ui::rect{ .x = area.x + cell_width * cast::round<f32>(i), .y = area.y, .width = cell_width, .height = area.height };
+                    ui::text_style style = if (i == picked) { chosen } else { other };
+                    f32 wide = p.measure(names[i].as_str(), style).x;
+                    bool fits = wide <= cell_width - 6.0;
+                    f32 shrunk = (style.size * (cell_width - 6.0) / wide.max(1.0)).max(style.size * 0.6);
+                    ui::text_style small = ui::text_style{ .face = style.face, .size = shrunk, .line_height = style.line_height, .color = style.color };
+                    p.list.push_clip(cell);
+                    p.centered_text(cell, names[i].as_str(), if (fits) { style } else { small });
+                    p.list.pop_clip();
+                }
+            }
+            if (picked == index) {
+                return false;
+            }
+            mut usize k = 0;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+                if compile_time (!a.has_payload) {
+                    if (k == picked) {
+                        value = a.make();
+                    }
+                    k += 1;
+                }
+            }
+            return true;
+        }
+
+        template<type E>
+        bool tabs(mut E& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id("tabs", where);
+            ui::theme t = this.ctx.look;
+            mut std::darray<std::string> names = default;
+            mut usize index = 0;
+            alternative_names<E>(value, mut names, mut index);
+            usize n = names.len();
+            if (n == 0) {
+                return false;
+            }
+            ui::text_style style = t.style(ui::text_role::label, t.colors.text);
+            f32 bar_height = 38.0 * t.density;
+            ui::rect bar = this.ctx.place(this.ctx.room(), bar_height);
+            mut std::darray<ui::rect> cells = default;
+            mut f32 x = bar.x;
+            for (std::string& name : names) {
+                f32 w = (this.ctx.faces.measure(name.as_str(), style).x + 2.0 * t.space.l).round();
+                cells.push(ui::rect{ .x = x, .y = bar.y, .width = w, .height = bar_height - 3.0 });
+                x += w;
+            }
+            mut usize picked = index;
+            mut std::darray<response> states = default;
+            for (usize i : 0..n) {
+                response r = this.interact(std::hash_combine(wid, cast<u64>(i) + 1), cells[i]);
+                if (r.clicked) {
+                    picked = i;
+                }
+                if (r.has_focus) {
+                    if (this.ctx.in.pressed(ui::key::left) && i > 0) {
+                        picked = i - 1;
+                        this.ctx.focused = std::hash_combine(wid, cast<u64>(i));
+                    } else if (this.ctx.in.pressed(ui::key::right) && i + 1 < n) {
+                        picked = i + 1;
+                        this.ctx.focused = std::hash_combine(wid, cast<u64>(i) + 2);
+                    }
+                }
+                states.push(r);
+            }
+            f32 at = follow(mut this.ctx, std::hash_combine(wid, 1000), cells[picked].x);
+            f32 span = follow(mut this.ctx, std::hash_combine(wid, 1001), cells[picked].width);
+            {
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                for (usize i : 0..n) {
+                    this.ctx.painters.tab(mut p, ui::item_part{ .bounds = cells[i], .label = names[i].as_str(), .selected = i == picked, .state = states[i].state });
+                }
+                this.ctx.painters.tab_bar(mut p, ui::tabs_part{ .bar = bar, .indicator = ui::rect{ .x = at + 8.0, .y = bar.bottom() - 3.0, .width = (span - 16.0).max(4.0), .height = 3.0 } });
+            }
+            if (picked == index) {
+                return false;
+            }
+            set_alternative<E>(mut value, picked);
+            return true;
+        }
+
+        template<type E>
+        bool radio(std::str label, mut E& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = this.make_id(label, where);
+            ui::theme t = this.ctx.look;
+            mut std::darray<std::string> names = default;
+            mut usize index = 0;
+            alternative_names<E>(value, mut names, mut index);
+            write_line(mut this, label, ui::text_role::label, true);
+            f32 row_height = t.controls.row_height * t.density;
+            f32 size = t.controls.checkbox.size * t.density;
+            ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+            mut usize picked = index;
+            for (usize i : 0..names.len()) {
+                u64 option_id = std::hash_combine(wid, cast<u64>(i) + 1);
+                f32 text_width = this.ctx.faces.measure(names[i].as_str(), style).x;
+                ui::rect r = this.ctx.place(size + t.space.s + text_width, row_height);
+                response resp = this.interact(option_id, r);
+                if (resp.clicked) {
+                    picked = i;
+                }
+                if (resp.has_focus) {
+                    if (this.ctx.in.pressed(ui::key::up) && picked > 0) {
+                        picked -= 1;
+                    } else if (this.ctx.in.pressed(ui::key::down) && picked + 1 < names.len()) {
+                        picked += 1;
+                    }
+                }
+                f32 amount = this.animate(option_id, 0, if (i == picked) { 1.0 } else { 0.0 });
+                ui::rect circle = ui::rect{ .x = r.x, .y = r.y + ((row_height - size) * 0.5).round(), .width = size, .height = size };
+                mut ui::painter p = ui::painter{ .list = this.ctx.layers[this.layer_index].list, .faces = this.ctx.faces, .tokens = this.ctx.look };
+                this.ctx.painters.radio(mut p, ui::check_part{ .bounds = circle, .checked = i == picked, .amount = amount, .state = resp.state });
+                f32 line = p.faces.line_height(style);
+                _ = p.text(ui::vec2{ .x = circle.right() + t.space.s, .y = r.y + ((row_height - line) * 0.5).round() }, names[i].as_str(), style);
+            }
+            if (picked == index) {
+                return false;
+            }
+            set_alternative<E>(mut value, picked);
+            return true;
+        }
+
+        template<type T>
+        std::option<usize> table(std::str label, std::span<T> rows, f32 height, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return std::none;
+            }
+            u64 wid = this.make_id(label, where);
+            return draw_table<T>(mut this, wid, rows, height);
+        }
+
+        std::option<usize> table_selection(std::str label, implicit compile_time std::call_site where) mut {
+            usize chosen = this.ctx.state_of(this.make_id(label, where)).selected;
+            return if (chosen == 0) { std::none } else { std::some(chosen - 1) };
+        }
+
+        template<type T>
+        bool undo_shortcuts(mut std::ui::undo_history<T>& history, mut T& value) mut {
+            if (this.ctx.editing != 0) {
+                return false;
+            }
+            mut bool changed = false;
+            for (ui::key_press k : this.ctx.in.keys) {
+                if (k.control && k.key == ui::key::z && !k.shift) {
+                    changed = history.undo(mut value) || changed;
+                } else if (k.control && (k.key == ui::key::y || (k.key == ui::key::z && k.shift))) {
+                    changed = history.redo(mut value) || changed;
+                }
+            }
+            return changed;
+        }
+
+        template<type T>
+        bool stepper(std::str label, mut T& value, T min, T max, T step, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            mut f64 v = to_f64(value);
+            (ui::rect area, f32 row_height) = labelled_row(mut this, label);
+            bool changed = step_box(mut this, this.make_id(label, where), area, mut v, to_f64(min), to_f64(max), to_f64(step), std::is_float<T>());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        }
+
+        template<type T>
+        scope with_form(std::ui::form<T> rules) mut {
+            mut std::ui::form<T> owned = move rules;
+            this.ctx.scoped_forms.push(stored_form{ .type_id = std::meta::type_id<T>(), .overrides = std::take(mut owned.overrides), .hide_unlisted = owned.hide_unlisted });
+            return scope{ .ctx = this.ctx, .id_base = this.id_base, .visible = this.visible, .kind = 8, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        scope with_widgets(std::ui::widget_set set) mut {
+            this.ctx.widget_stack.push(set);
+            ui::theme before = this.ctx.look;
+            this.ctx.style_stack.push(before);
+            this.ctx.look.density = this.ctx.look.density * set.density;
+            this.ctx.look.controls.boolean = set.boolean;
+            return scope{ .ctx = this.ctx, .id_base = this.id_base, .visible = this.visible, .kind = 9, .layer_index = this.layer_index, .window = this.window };
+        }
+
+        template<type T>
+        std::ui::edit inspect(std::str label, mut T& value, implicit compile_time std::call_site where) mut {
+            std::ui::form<T> plain = std::ui::form<T>::annotated();
+            return this.inspect(label, mut value, plain, where);
+        }
+
+        template<type T>
+        std::ui::edit inspect(std::str label, mut T& value, std::ui::form<T>& rules, implicit compile_time std::call_site where) mut {
+            u64 root = this.make_id(label, where);
+            mut scope node = this.section(label, true, where);
+            return run_inspect<T>(mut node, mut value, rules, root, "");
+        }
+
+        template<type T>
+        std::ui::edit inspect_fields(mut T& value) mut {
+            std::ui::form<T> plain = std::ui::form<T>::annotated();
+            return this.inspect_fields(mut value, plain);
+        }
+
+        template<type T>
+        std::ui::edit inspect_fields(mut T& value, std::ui::form<T>& rules) mut {
+            u64 root = std::hash_combine(this.id_base, std::meta::type_id<T>());
+            return run_inspect<T>(mut this, mut value, rules, root, "");
+        }
+
+        template<type T>
+        std::ui::edit field(mut T& value, compile_time std::static_str path) mut {
+            if compile_time (!std::ui::require_path<T>(path, std::ui::path_class::other, "area")) {}
+            std::ui::form<T> plain = std::ui::form<T>::annotated();
+            u64 root = std::hash_combine(this.id_base, std::hash(path));
+            return run_inspect<T>(mut this, mut value, plain, root, path);
+        }
+
+        ~scope() {
+            if (this.kind == 0) {
+                return;
+            }
+            if (this.kind == 5 || this.kind == 9) {
+                match (this.ctx.style_stack.pop()) {
+                    std::some(before) => { this.ctx.look = before; },
+                    std::none => {},
+                }
+                if (this.kind == 9) {
+                    _ = this.ctx.widget_stack.pop();
+                }
+                return;
+            }
+            if (this.kind == 8) {
+                _ = this.ctx.scoped_forms.pop();
+                return;
+            }
+            flow inner = match (this.ctx.layouts.pop()) {
+                std::some(l) => l,
+                std::none    => return,
+            };
+            if (this.kind == 2) {
+                ui::theme t = this.ctx.look;
+                f32 padding = t.controls.window.padding * t.density;
+                widget_state s = this.ctx.state_of(this.owner);
+                if (s.sized) {
+                    f32 title_height = t.controls.window.title_height * t.density;
+                    ui::rect area = ui::rect{ .x = s.position.x, .y = s.position.y + title_height, .width = s.size.x, .height = s.size.y - title_height };
+                    finish_scroll(mut this.ctx, this.owner, area, inner.bottom - inner.top + 2.0 * padding, this.layer_index, this.window);
+                    this.ctx.layers[this.layer_index].list.pop_clip();
+                } else {
+                    this.ctx.state_of(this.owner).size.y = inner.bottom - s.position.y + padding;
+                }
+                this.ctx.layers[this.layer_index].list.pop_clip();
+                return;
+            }
+            if (this.kind == 6) {
+                widget_state s = this.ctx.state_of(this.owner);
+                ui::rect area = ui::rect{ .x = s.position.x, .y = s.position.y, .width = s.size.x, .height = s.size.y };
+                finish_scroll(mut this.ctx, this.owner, area, inner.bottom - inner.top, this.layer_index, this.window);
+                this.ctx.layers[this.layer_index].list.pop_clip();
+                return;
+            }
+            if (this.ctx.layouts.is_empty()) {
+                return;
+            }
+            // The parent continues after what the scope placed.
+            ui::theme t = this.ctx.look;
+            if (this.kind == 3) {
+                f32 padding = t.space.m;
+                f32 height = inner.bottom - inner.top + 2.0 * padding;
+                f32 span = inner.width + 2.0 * padding;
+                this.ctx.state_of(this.owner).size = ui::vec2{ .x = span, .y = height };
+                this.ctx.next_width = this.own_width;
+                _ = this.ctx.place(span, height);
+                return;
+            }
+            if (this.kind == 4) {
+                {
+                    mut widget_state& s = this.ctx.state_of(this.owner);
+                    s.fixed_width = inner.fixed;
+                    s.fill_weight = inner.weights;
+                    s.items = inner.items;
+                }
+                this.ctx.next_width = this.own_width;
+                _ = this.ctx.place((inner.right - inner.left).max(0.0), inner.bottom - inner.top);
+                return;
+            }
+            if (this.kind == 7) {
+                _ = this.ctx.place(inner.width, (inner.bottom - inner.top).max(0.0));
+                return;
+            }
+            if (this.owner != 0 && this.visible) {
+                this.ctx.state_of(this.owner).size.y = (inner.bottom - inner.top).max(0.0);
+            }
+            mut flow& parent = this.ctx.top();
+            if (inner.bottom > inner.top) {
+                parent.cursor_y = inner.bottom + parent.gap;
+                parent.bottom = parent.bottom.max(inner.bottom);
+            }
+        }
+    }
+
+    // One line of text in `role`, muted or in the text colour.
+    private void write_line(mut scope& s, std::str content, std::ui::text_role role, bool faint) {
+        if (!s.visible) {
+            return;
+        }
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(role, if (faint) { t.colors.text_muted } else { t.colors.text });
+        std::ui::vec2 extent = s.ctx.faces.measure(content, style);
+        f32 room = s.ctx.room();
+        f32 line = s.ctx.faces.line_height(style);
+        if (extent.x <= room || s.ctx.top().row) {
+            std::ui::rect r = s.ctx.place(extent.x, extent.y.max(line));
+            _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, r.origin(), content, style);
+            return;
+        }
+        usize lines = s.ctx.faces.wrap(content, style, room).len();
+        std::ui::rect r = s.ctx.place(room, line * cast::round<f32>(lines));
+        _ = s.ctx.layers[s.layer_index].list.paragraph(mut s.ctx.faces, r.origin(), room, content, style);
+    }
+
+    // A button of `look` with the id `wid`; true when clicked.
+    private bool press_button(mut scope& s, std::str label, std::ui::variant look, u64 wid) {
+        if (!s.visible) {
+            return false;
+        }
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(std::ui::text_role::label, t.colors.text);
+        f32 label_width = s.ctx.faces.measure(label, style).x;
+        f32 padding = t.controls.button.padding * t.density;
+        std::ui::rect r = s.ctx.place((label_width + 2.0 * padding).round(), t.controls.button.height * t.density);
+        response resp = s.interact(wid, r);
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            s.ctx.painters.button(mut p, std::ui::button_part{ .bounds = r, .label = label, .kind = look, .state = resp.state });
+        }
+        return resp.clicked;
+    }
+
+    // A slider row: label, track and knob, value; works in f64.
+    private bool drag_slider(mut scope& s, u64 wid, std::str label, mut f64& value, f64 low, f64 high, f64 step, std::str shown) {
+        std::ui::theme t = s.ctx.look;
+        f32 height = t.controls.row_height * t.density;
+        f32 knob = t.controls.slider.knob_size * t.density;
+        std::ui::rect r = s.ctx.place(s.ctx.room(), height);
+        f32 label_width = label_column(mut s, label, r.width);
+        f32 value_width = 56.0 * t.density;
+        std::ui::rect area = std::ui::rect{ .x = r.x + label_width, .y = r.y, .width = r.width - label_width - value_width, .height = height };
+        std::ui::rect track = std::ui::rect{ .x = area.x + knob * 0.5, .y = r.y + ((height - knob) * 0.5).round(), .width = (area.width - knob).max(1.0), .height = knob };
+        response resp = s.interact(wid, area);
+        mut bool changed = false;
+        if (resp.state.pressed && high > low) {
+            f32 part = ((resp.cursor.x - track.x) / track.width).clamp(0.0, 1.0);
+            f64 v = low + cast<f64>(part) * (high - low);
+            if (v != value) {
+                value = v;
+                changed = true;
+            }
+        }
+        if (resp.has_focus) {
+            f64 moved = (value + arrow_steps(s.ctx.in) * step).clamp(low, high);
+            if (moved != value) {
+                value = moved;
+                changed = true;
+                s.ctx.focus_visible = true;
+            }
+        }
+        f32 fraction = if (high > low) { cast::round<f32>((value - low) / (high - low)) } else { 0.0 };
+        std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text);
+        std::ui::text_style number = t.style(std::ui::text_role::code, t.colors.text_muted);
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            f32 line = p.faces.line_height(style);
+            _ = p.text(std::ui::vec2{ .x = r.x, .y = r.y + ((height - line) * 0.5).round() }, label, style);
+            std::ui::slider_part part = std::ui::slider_part{ .bounds = track, .fraction = fraction, .state = resp.state };
+            s.ctx.painters.slider_track(mut p, part);
+            s.ctx.painters.slider_knob(mut p, part);
+            f32 number_line = p.faces.line_height(number);
+            _ = p.text(std::ui::vec2{ .x = area.right() + t.space.s, .y = r.y + ((height - number_line) * 0.5).round() }, shown, number);
+        }
+        return changed;
+    }
+
+    // The arrow keys of this frame as steps: right and up +1, left and down -1.
+    private f64 arrow_steps(std::ui::input& in) {
+        mut f64 n = 0.0;
+        for (std::ui::key_press k : in.keys) {
+            if (k.key == std::ui::key::right || k.key == std::ui::key::up) {
+                n += if (k.shift) { 10.0 } else { 1.0 };
+            } else if (k.key == std::ui::key::left || k.key == std::ui::key::down) {
+                n -= if (k.shift) { 10.0 } else { 1.0 };
+            }
+        }
+        return n;
+    }
+
+    // A section header or tree node; pushes the flow of what it holds and returns whether it is open.
+    private bool open_node(mut scope& s, u64 wid, std::str label, bool open_at_first, bool as_tree) {
+        if (!s.visible) {
+            s.ctx.layouts.push(s.ctx.top());
+            return false;
+        }
+        std::ui::theme t = s.ctx.look;
+        {
+            mut widget_state& st = s.ctx.state_of(wid);
+            if (st.seen_in_frame == 0) {
+                st.open = open_at_first;
+            }
+        }
+        f32 height = if (as_tree) { (t.controls.row_height - 4.0) * t.density } else { t.controls.row_height * t.density };
+        std::ui::rect r = s.ctx.place(s.ctx.room(), height);
+        response resp = s.interact(wid, r);
+        if (resp.clicked) {
+            mut widget_state& st = s.ctx.state_of(wid);
+            st.open = !st.open;
+        }
+        if (resp.has_focus) {
+            if (s.ctx.in.pressed(std::ui::key::right)) {
+                s.ctx.state_of(wid).open = true;
+            } else if (s.ctx.in.pressed(std::ui::key::left)) {
+                s.ctx.state_of(wid).open = false;
+            }
+        }
+        bool is_open = s.ctx.state_of(wid).open;
+        f32 amount = s.animate(wid, 0, if (is_open) { 1.0 } else { 0.0 });
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            std::ui::header_part part = std::ui::header_part{ .bounds = r, .label = label, .open = is_open, .amount = amount, .state = resp.state };
+            if (as_tree) {
+                s.ctx.painters.tree_node(mut p, part);
+            } else {
+                s.ctx.painters.section_header(mut p, part);
+            }
+        }
+        flow parent = s.ctx.top();
+        f32 indent = if (as_tree) { t.space.m + 4.0 } else { t.space.l };
+        f32 top = parent.cursor_y;
+        s.ctx.layouts.push(flow{
+            .left = parent.left + indent, .top = top, .width = parent.width - indent,
+            .cursor_x = parent.left + indent, .cursor_y = top, .bottom = top, .right = parent.left + indent, .gap = parent.gap,
+        });
+        if (as_tree && is_open) {
+            // A guide line along the children, drawn under them.
+            f32 x = r.x + 9.0;
+            s.ctx.layers[s.layer_index].list.line(std::ui::vec2{ .x = x, .y = r.bottom() }, std::ui::vec2{ .x = x, .y = r.bottom() + s.ctx.state_of(wid).size.y }, 1.0, t.colors.border);
+        }
+        return is_open;
+    }
+
+    // The width of a form row's label column: 30 % of the row, more for a longer label (up to half).
+    private f32 label_column(mut scope& s, std::str label, f32 row_width) {
+        std::ui::theme t = s.ctx.look;
+        f32 wanted = s.ctx.faces.measure(label, t.style(std::ui::text_role::body, t.colors.text)).x + t.space.m;
+        return (row_width * 0.3).max(wanted).min(row_width * 0.5).round();
+    }
+
+    // A form row: the label on the left (30 %), and the field to its right, returned with the row's
+    // height.
+    private (std::ui::rect, f32) labelled_row(mut scope& s, std::str label) {
+        std::ui::theme t = s.ctx.look;
+        f32 height = t.controls.row_height * t.density;
+        std::ui::rect r = s.ctx.place(s.ctx.room(), height);
+        f32 label_width = label_column(mut s, label, r.width);
+        std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text);
+        f32 line = s.ctx.faces.line_height(style);
+        _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = r.x, .y = r.y + ((height - line) * 0.5).round() }, label, style);
+        f32 inset = 2.0 * t.density;
+        return (std::ui::rect{ .x = r.x + label_width, .y = r.y + inset, .width = r.width - label_width, .height = height - 2.0 * inset }, height);
+    }
+
+    // The byte offset in `text` nearest to `x` pixels from its start.
+    private usize offset_at(mut std::ui::fonts& f, std::str text, std::ui::text_style style, f32 x) {
+        mut usize at = 0;
+        mut f32 left = 0.0;
+        while (at < text.len()) {
+            (char c, usize n) = std::ui::char_at(text, at);
+            f32 right = f.measure(text.slice(0, at + n), style).x;
+            if (x < (left + right) * 0.5) {
+                return at;
+            }
+            left = right;
+            at += n;
+        }
+        return text.len();
+    }
+
+    // A one-line text field in `field`: starts typing when `start`, edits `text` with the frame's
+    // keys while typing, and draws the field, the selection, the text and the caret. Returns
+    // (changed, Enter pressed).
+    private (bool, bool) text_field(mut scope& s, u64 wid, mut std::string& text, std::ui::rect field, response resp, bool start) {
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text);
+        f32 pad = t.space.s;
+        std::ui::rect inner = std::ui::rect{ .x = field.x + pad, .y = field.y, .width = (field.width - 2.0 * pad).max(1.0), .height = field.height };
+        mut bool changed = false;
+        mut bool done = false;
+        if (start && s.ctx.editing != wid) {
+            s.ctx.editing = wid;
+            s.ctx.focused = wid;
+            s.ctx.caret_phase = 0.0;
+            mut std::ui::text_edit& e = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{});
+            if (!resp.state.pressed) {
+                e.select_all(text.as_str());
+            }
+        }
+        bool typing = s.ctx.editing == wid;
+        if (typing) {
+            if (resp.state.pressed) {
+                f32 scrolled = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{}).scroll;
+                usize at = offset_at(mut s.ctx.faces, text.as_str(), style, resp.cursor.x - inner.x + scrolled);
+                mut std::ui::text_edit& e = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{});
+                e.place(text.as_str(), at, !s.ctx.in.mouse_pressed);
+                s.ctx.caret_phase = 0.0;
+            }
+            {
+                mut std::ui::text_edit& e = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{});
+                if (e.apply(mut text, s.ctx.in, mut s.ctx.clipboard)) {
+                    changed = true;
+                }
+            }
+            if (!s.ctx.in.keys.is_empty()) {
+                s.ctx.caret_phase = 0.0;
+            }
+            if (s.ctx.in.pressed(std::ui::key::enter)) {
+                s.ctx.editing = 0;
+                done = true;
+            }
+        }
+        bool caret_shown = s.ctx.editing == wid;
+
+        // Where the caret and the selection are, in pixels; the field scrolls to keep the caret in.
+        mut usize cursor = 0;
+        mut usize anchor = 0;
+        mut f32 scroll = 0.0;
+        if (caret_shown) {
+            std::ui::text_edit& e = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{});
+            cursor = e.cursor.min(text.len());
+            anchor = e.anchor.min(text.len());
+            scroll = e.scroll;
+        }
+        f32 caret_x = s.ctx.faces.measure(text.as_str().slice(0, cursor), style).x;
+        f32 anchor_x = s.ctx.faces.measure(text.as_str().slice(0, anchor), style).x;
+        if (caret_x - scroll > inner.width - 2.0) {
+            scroll = caret_x - inner.width + 2.0;
+        }
+        if (caret_x < scroll) {
+            scroll = caret_x;
+        }
+        if (!caret_shown) {
+            scroll = 0.0;
+        } else {
+            s.ctx.edits.get_or_insert(wid, std::ui::text_edit{}).scroll = scroll;
+        }
+        f32 line = s.ctx.faces.line_height(style);
+        f32 text_y = field.y + ((field.height - line) * 0.5).round();
+        f32 phase = s.ctx.caret_phase;
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            s.ctx.painters.field(mut p, std::ui::field_part{ .bounds = field, .editing = caret_shown, .state = resp.state });
+            p.list.push_clip(inner);
+            if (caret_shown && cursor != anchor) {
+                f32 from = caret_x.min(anchor_x) - scroll;
+                f32 to = caret_x.max(anchor_x) - scroll;
+                p.list.fill(std::ui::rect{ .x = inner.x + from, .y = text_y, .width = to - from, .height = line }, t.colors.primary.with_alpha(0.3), 2.0);
+            }
+            _ = p.text(std::ui::vec2{ .x = inner.x - scroll, .y = text_y }, text.as_str(), style);
+            if (caret_shown && phase < 0.6) {
+                f32 x = (inner.x + caret_x - scroll).round() + 0.5;
+                p.list.line(std::ui::vec2{ .x = x, .y = text_y + 1.0 }, std::ui::vec2{ .x = x, .y = text_y + line - 1.0 }, 1.5, t.colors.primary);
+            }
+            p.list.pop_clip();
+        }
+        return (changed, done);
+    }
+
+    // A number in a field (drag, number): dragged sideways at `speed` per pixel, typed after a click
+    // without moving, changed by arrows while focused; kept in [low, high] when `bounded`.
+    private bool number_field(mut scope& s, u64 wid, std::str label, mut f64& value, f64 low, f64 high, f64 speed, bool bounded, bool is_float) {
+        (std::ui::rect field, f32 height) = labelled_row(mut s, label);
+        return number_box(mut s, wid, field, mut value, low, high, speed, bounded, is_float);
+    }
+
+    // The field of number_field at `field` (without a label): vectors and colours put several in a row.
+    private bool number_box(mut scope& s, u64 wid, std::ui::rect field, mut f64& value, f64 low, f64 high, f64 speed, bool bounded, bool is_float) {
+        std::ui::theme t = s.ctx.look;
+        response resp = s.interact(wid, field);
+        mut bool changed = false;
+        f64 before = value;
+
+        if (s.ctx.editing == wid) {
+            // Typing a number: Enter takes it, Escape (in the context) drops it.
+            mut std::string typed = std::take(mut s.ctx.number_text);
+            (bool edited, bool done) = text_field(mut s, wid, mut typed, field, resp, false);
+            if (done) {
+                match (typed.as_str().trim().parse<f64>()) {
+                    std::some(v) => { value = if (bounded) { v.clamp(low, high) } else { v }; },
+                    std::none => {},
+                }
+            }
+            s.ctx.number_text = move typed;
+            return value != before;
+        }
+
+        if (resp.state.pressed && s.ctx.in.mouse_pressed) {
+            s.ctx.press_at = resp.cursor;
+            s.ctx.drag_start = value;
+        }
+        f32 moved = resp.cursor.x - s.ctx.press_at.x;
+        if (resp.state.pressed && moved.abs() > 3.0) {
+            value = s.ctx.drag_start + cast<f64>(moved) * speed;
+            if (!is_float) {
+                value = value.round();
+            }
+        }
+        bool typed_click = resp.clicked && s.ctx.in.mouse_released && moved.abs() <= 3.0;
+        if (typed_click || (resp.has_focus && s.ctx.activate)) {
+            s.ctx.number_text = std::string::from(if (is_float) { two_decimals(value) } else { whole_number(value) }.as_str());
+            s.ctx.editing = wid;
+            s.ctx.focused = wid;
+            mut std::ui::text_edit& e = s.ctx.edits.get_or_insert(wid, std::ui::text_edit{});
+            e.select_all(s.ctx.number_text.as_str());
+        }
+        if (resp.has_focus) {
+            value += arrow_steps(s.ctx.in) * speed * 10.0;
+            if (!is_float) {
+                value = value.round();
+            }
+        }
+        if (bounded) {
+            value = value.clamp(low, high);
+        }
+        changed = value != before;
+
+        std::string shown = if (is_float) { two_decimals(value) } else { whole_number(value) };
+        std::ui::text_style style = t.style(std::ui::text_role::code, t.colors.text);
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            s.ctx.painters.field(mut p, std::ui::field_part{ .bounds = field, .editing = false, .state = resp.state });
+            if (bounded && high > low) {
+                f32 fraction = cast::round<f32>((value - low) / (high - low)).clamp(0.0, 1.0);
+                std::ui::rect done = field.shrunk(2.0);
+                p.list.fill(std::ui::rect{ .x = done.x, .y = done.y, .width = done.width * fraction, .height = done.height }, t.colors.primary.with_alpha(0.22), (t.radius.small - 2.0).max(0.0));
+            }
+            p.centered_text(field, shown.as_str(), style);
+            // Arrows hint that the value can be dragged.
+            f32 cy = field.y + field.height * 0.5;
+            color_hint(mut p, field, cy, resp.state.hover);
+        }
+        return changed;
+    }
+
+    // Small left and right arrows at the ends of a number field, stronger when hovered.
+    private void color_hint(mut std::ui::painter& p, std::ui::rect field, f32 cy, f32 hover) {
+        std::ui::color c = p.tokens.colors.text_faint.with_alpha(0.35 + 0.65 * hover);
+        p.list.regular_polygon(std::ui::vec2{ .x = field.x + 9.0, .y = cy }, 3.5, 3, 270.0, c);
+        p.list.regular_polygon(std::ui::vec2{ .x = field.right() - 9.0, .y = cy }, 3.5, 3, 90.0, c);
+    }
+
+    // The end of a scroll area (or of a window of a fixed height) showing `area` of content
+    // `content` pixels high: the wheel over it (if no inner area used it), the bar on its right
+    // (dragging its thumb), the offset kept in range.
+    private void finish_scroll(mut context& c, u64 owner, std::ui::rect area, f32 content, usize layer_index, u64 window) {
+        mut f32 offset = c.state_of(owner).scroll;
+        f32 most = (content - area.height).max(0.0);
+        if (!c.scroll_used && c.in.scroll != 0.0 && c.hover_window == window && area.contains(c.in.cursor)) {
+            offset -= c.in.scroll * 48.0;
+            c.scroll_used = true;
+        }
+        if (most > 0.0) {
+            std::ui::rect track = std::ui::rect{ .x = area.right() - 9.0, .y = area.y + 4.0, .width = 6.0, .height = (area.height - 8.0).max(8.0) };
+            f32 thumb_height = (track.height * area.height / content).max(24.0).min(track.height);
+            response bar = c.respond(std::hash_combine(owner, 7), track.expanded(3.0), window, area, false);
+            if (bar.state.pressed) {
+                if (c.in.mouse_pressed) {
+                    c.press_at = c.in.cursor;
+                    c.drag_start = cast<f64>(offset);
+                }
+                f32 travel = (track.height - thumb_height).max(1.0);
+                offset = cast::round<f32>(c.drag_start) + (c.in.cursor.y - c.press_at.y) * most / travel;
+            }
+            offset = offset.clamp(0.0, most);
+            std::ui::rect thumb = std::ui::rect{ .x = track.x, .y = track.y + (track.height - thumb_height) * offset / most, .width = track.width, .height = thumb_height };
+            mut std::ui::painter p = std::ui::painter{ .list = c.layers[layer_index].list, .faces = c.faces, .tokens = c.look };
+            c.painters.scrollbar(mut p, std::ui::scrollbar_part{ .track = track, .thumb = thumb, .state = bar.state });
+        } else {
+            offset = 0.0;
+        }
+        mut widget_state& s = c.state_of(owner);
+        s.scroll = offset;
+        s.content = content;
+    }
+
+    // ---- UIs from types --------------------------------------------------------------------------------
+
+    // What an editor made from a type needs on its way down the fields: the paths hidden by the
+    // form's conditions, the messages of its rules over the whole value, whether editing is off.
+    private view struct pass {
+        std::span<std::string> hidden;
+        std::span<std::string> message_paths;
+        std::span<std::string> messages;
+        bool                   locked;
+        // The stored forms that reach the value being shown, with the value's path relative to
+        // each form's type.
+        std::span<active_form> active;
+    }
+
+    // A stored form (ctx.set_form or with_form) that applies below a value of its type.
+    private struct active_form {
+        bool        scoped = false;
+        usize       index = 0;
+        std::string prefix = default;
+    }
+
+    // `active` with `name` added to every prefix (`[]` for the elements of a list).
+    private std::darray<active_form> extend_active(std::span<active_form> active, std::str name) {
+        mut std::darray<active_form> out = default;
+        for (active_form& a : active) {
+            out.push(active_form{ .scoped = a.scoped, .index = a.index, .prefix = join_path(a.prefix.as_str(), name) });
+        }
+        return out;
+    }
+
+    // The widget set in use: the innermost with_widgets scope's, else widget_sets::tool().
+    private std::ui::widget_set current_widgets(context& c) {
+        return if (c.widget_stack.is_empty()) { std::ui::widget_sets::tool() } else { c.widget_stack[c.widget_stack.len() - 1] };
+    }
+
+    // Whether a function with @ui::field_widget{ .for_type = V } exists.
+    private template<type V>
+    compile_time bool has_field_widget() {
+        for compile_time (std::meta::function fw : std::meta::functions_with<std::ui::field_widget>()) {
+            compile_time type target = fw.annotation<std::ui::field_widget>().value_or(std::ui::field_widget{}).for_type;
+            if compile_time (std::is_same<target, V>()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A number with − and + buttons beside its value; `step` per press, arrows while focused.
+    private bool step_box(mut scope& s, u64 wid, std::ui::rect area, mut f64& value, f64 low, f64 high, f64 step, bool is_float) {
+        std::ui::theme t = s.ctx.look;
+        f32 button = area.height;
+        std::ui::rect minus = std::ui::rect{ .x = area.x, .y = area.y, .width = button, .height = area.height };
+        std::ui::rect plus = std::ui::rect{ .x = area.right() - button, .y = area.y, .width = button, .height = area.height };
+        std::ui::rect middle = std::ui::rect{ .x = minus.right() + 4.0, .y = area.y, .width = (area.width - 2.0 * button - 8.0).max(0.0), .height = area.height };
+        std::ui::rect clip = s.ctx.layers[s.layer_index].list.current_clip();
+        response focus = s.ctx.respond(wid, middle, s.window, clip, true);
+        response down = s.ctx.respond(std::hash_combine(wid, 1), minus, s.window, clip, false);
+        response up = s.ctx.respond(std::hash_combine(wid, 2), plus, s.window, clip, false);
+        f64 before = value;
+        if (down.clicked) {
+            value -= step;
+            s.ctx.focused = wid;
+        }
+        if (up.clicked) {
+            value += step;
+            s.ctx.focused = wid;
+        }
+        if (focus.has_focus) {
+            value += arrow_steps(s.ctx.in) * step;
+        }
+        value = value.clamp(low, high);
+        if (!is_float) {
+            value = value.round();
+        }
+        std::string shown = if (is_float) { two_decimals(value) } else { whole_number(value) };
+        {
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            s.ctx.painters.field(mut p, std::ui::field_part{ .bounds = middle, .editing = false, .state = focus.state });
+            p.centered_text(middle, shown.as_str(), t.style(std::ui::text_role::code, t.colors.text));
+            s.ctx.painters.button(mut p, std::ui::button_part{ .bounds = minus, .label = "−", .kind = std::ui::variant::secondary, .state = down.state });
+            s.ctx.painters.button(mut p, std::ui::button_part{ .bounds = plus, .label = "+", .kind = std::ui::variant::secondary, .state = up.state });
+        }
+        return value != before;
+    }
+
+    // The first part of a path and the rest after its '.'.
+    private (std::str, std::str) split_run_time(std::str path) {
+        return match (path.find(".")) {
+            std::some(i) => (path.slice(0, i), path.slice(i + 1, path.len())),
+            std::none    => (path, ""),
+        };
+    }
+
+    // `parent.name`, or `name` at the top.
+    private std::string join_path(std::str parent, std::str name) {
+        return if (parent.is_empty()) { std::string::from(name) } else { std::format(f"{parent}.{name}") };
+    }
+
+    // A field's spec from its annotations; `fallback` is the label made from its name.
+    private std::ui::field_spec make_spec(std::str fallback, std::option<std::ui::label> label, std::option<std::ui::tooltip> tip,
+                                          std::option<std::ui::range> limits, std::option<std::ui::step> step, std::option<std::ui::unit> unit,
+                                          std::option<std::ui::widget> widget, std::option<std::ui::group> group,
+                                          bool read_only, bool hidden, bool flatten, bool is_number) {
+        mut std::ui::field_spec spec = std::ui::field_spec{
+            .label = std::string::from(fallback), .hidden = hidden, .read_only = read_only, .flatten = flatten, .is_number = is_number,
+        };
+        match (label)  { std::some(l) => { spec.label = std::string::from(l.text); },   std::none => {}, }
+        match (tip)    { std::some(t) => { spec.tooltip = std::string::from(t.text); }, std::none => {}, }
+        match (limits) { std::some(r) => { spec.has_range = true; spec.min = r.min; spec.max = r.max; }, std::none => {}, }
+        match (step)   { std::some(v) => { spec.step = v.value; },   std::none => {}, }
+        match (unit)   { std::some(u) => { spec.unit = std::string::from(u.text); },    std::none => {}, }
+        match (widget) { std::some(w) => { spec.widget = w.kind; },  std::none => {}, }
+        match (group)  { std::some(g) => { spec.group = std::string::from(g.name); },   std::none => {}, }
+        return spec;
+    }
+
+    // A form row whose value is only shown.
+    private void read_only_row(mut scope& s, std::str label, std::str shown) {
+        if (!s.visible) {
+            return;
+        }
+        (std::ui::rect field, f32 height) = labelled_row(mut s, label);
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(std::ui::text_role::body, t.colors.text_muted);
+        f32 line = s.ctx.faces.line_height(style);
+        _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = field.x + t.space.s, .y = field.y + ((field.height - line) * 0.5).round() }, shown, style);
+    }
+
+    // A rule's message under a field, in the value column, in the theme's danger colour.
+    private void rule_message(mut scope& s, std::str message) {
+        if (!s.visible) {
+            return;
+        }
+        std::ui::theme t = s.ctx.look;
+        std::ui::text_style style = t.style(std::ui::text_role::caption, t.colors.danger);
+        f32 room = s.ctx.room();
+        f32 line = s.ctx.faces.line_height(style);
+        std::ui::rect r = s.ctx.place(room, line);
+        _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = r.x + (room * 0.3).round(), .y = r.y }, message, style);
+    }
+
+    // Whether all of an enum's alternatives are without payloads, and how many there are.
+    private template<type E>
+    compile_time bool payload_free() {
+        for (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if (a.has_payload) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private template<type E>
+    compile_time usize alternative_count() {
+        return std::meta::alternatives<E>().len();
+    }
+
+    // The editor of one value of type V at `path` (draft 35 §7.2).
+    private template<type V, type R>
+    std::ui::edit edit_value(mut scope& s, mut V& value, std::ui::field_spec& spec, std::str path, std::ui::form<R>& rules, pass& p) {
+        mut std::ui::edit result = default;
+        if (!s.visible) {
+            return result;
+        }
+        std::string shown_label = if (spec.unit.is_empty()) { spec.label.clone() } else { std::format(f"{spec.label} ({spec.unit})") };
+        std::str name = shown_label.as_str();
+        bool locked = spec.read_only || p.locked;
+        mut bool changed = false;
+        std::ui::widget_set set = current_widgets(s.ctx);
+        if compile_time (has_field_widget<V>()) {
+            mut scope keyed = s.id(path);
+            for compile_time (std::meta::function fw : std::meta::functions_with<std::ui::field_widget>()) {
+                compile_time type target = fw.annotation<std::ui::field_widget>().value_or(std::ui::field_widget{}).for_type;
+                if compile_time (std::is_same<target, V>()) {
+                    std::ui::edit own = fw.call(mut keyed, name, mut value);
+                    if (own.changed && own.path.is_empty()) {
+                        changed = true;
+                    } else {
+                        result.merge(move own);
+                    }
+                }
+            }
+        } else if compile_time (std::implements<V, inspectable>()) {
+            mut scope keyed = s.id(path);
+            result.merge(value.inspect(mut keyed));
+        } else if compile_time (std::is_same<V, bool>()) {
+            if (locked) {
+                read_only_row(mut s, name, if (value) { "On" } else { "Off" });
+            } else {
+                mut scope keyed = s.id(path);
+                changed = match (spec.widget) {
+                    std::ui::widget_kind::checkbox => keyed.checkbox(name, mut value),
+                    std::ui::widget_kind::toggle   => keyed.toggle(name, mut value),
+                    _                              => keyed.boolean(name, mut value),
+                };
+            }
+        } else if compile_time (std::is_integer<V>() || std::is_float<V>()) {
+            if (locked) {
+                std::string shown = if compile_time (std::is_float<V>()) { two_decimals(to_f64(value)) } else { whole_number(to_f64(value)) };
+                read_only_row(mut s, name, shown.as_str());
+            } else {
+                mut scope keyed = s.id(path);
+                // The annotation's or form's widget, else the widget set's choice.
+                std::ui::number_widget kind = if (spec.widget == std::ui::widget_kind::slider) { std::ui::number_widget::slider }
+                                              else if (spec.widget == std::ui::widget_kind::drag) { std::ui::number_widget::drag }
+                                              else if (spec.has_range) { set.ranged } else { set.unranged };
+                f64 low = if (spec.has_range) { spec.min } else { -1.0e300 };
+                f64 high = if (spec.has_range) { spec.max } else { 1.0e300 };
+                if (kind == std::ui::number_widget::stepper) {
+                    f64 step = if (spec.step > 0.0) { spec.step } else if (spec.has_range && std::is_float<V>()) { (spec.max - spec.min) / 20.0 } else { 1.0 };
+                    changed = keyed.stepper(name, mut value, from_f64<V>(low), from_f64<V>(high), from_f64<V>(step));
+                } else if (spec.has_range && kind == std::ui::number_widget::slider) {
+                    changed = keyed.slider(name, mut value, from_f64<V>(spec.min), from_f64<V>(spec.max));
+                } else if (spec.has_range) {
+                    changed = keyed.number(name, mut value, from_f64<V>(spec.min), from_f64<V>(spec.max));
+                } else {
+                    f64 speed = if (spec.step > 0.0) { spec.step } else if compile_time (std::is_float<V>()) { 0.05 } else { 0.25 };
+                    changed = keyed.drag(name, mut value, speed);
+                }
+            }
+            match (rules.find(path)) {
+                std::some(o) => {
+                    for (usize i : 0..o.number_rules.len()) {
+                        match (o.number_rules[i](to_f64(value))) {
+                            std::ui::verdict::error(message) => {
+                                rule_message(mut s, message.as_str());
+                                result.valid = false;
+                            },
+                            std::ui::verdict::ok => {},
+                        }
+                    }
+                },
+                std::none => {},
+            }
+        } else if compile_time (std::is_same<V, std::string>()) {
+            if (locked) {
+                read_only_row(mut s, name, value.as_str());
+            } else {
+                mut scope keyed = s.id(path);
+                changed = keyed.input_text(name, mut value);
+            }
+            match (rules.find(path)) {
+                std::some(o) => {
+                    for (usize i : 0..o.text_rules.len()) {
+                        match (o.text_rules[i](value.as_str())) {
+                            std::ui::verdict::error(message) => {
+                                rule_message(mut s, message.as_str());
+                                result.valid = false;
+                            },
+                            std::ui::verdict::ok => {},
+                        }
+                    }
+                },
+                std::none => {},
+            }
+        } else if compile_time (std::meta::is_enum<V>()) {
+            if compile_time (payload_free<V>()) {
+                if (locked) {
+                    read_only_row(mut s, name, std::meta::name_of(value));
+                } else {
+                    mut scope keyed = s.id(path);
+                    bool few = alternative_count<V>() <= cast<usize>(set.segment_limit);
+                    bool automatic = spec.widget == std::ui::widget_kind::automatic;
+                    if (automatic && set.radio_buttons && alternative_count<V>() <= 8) {
+                        changed = keyed.radio(name, mut value);
+                    } else if (spec.widget == std::ui::widget_kind::segmented || (automatic && few)) {
+                        changed = keyed.segmented(name, mut value);
+                    } else {
+                        changed = keyed.choice(name, mut value);
+                    }
+                }
+            } else if (locked) {
+                read_only_row(mut s, name, std::meta::name_of(value));
+            } else {
+                mut scope keyed = s.id(path);
+                result.merge(edit_payload_enum<V, R>(mut keyed, mut value, spec, name, path, rules, p));
+            }
+        } else if compile_time (is_components<V>()) {
+            if (locked) {
+                std::string shown = components_text<V>(value);
+                read_only_row(mut s, name, shown.as_str());
+            } else {
+                changed = edit_components<V>(mut s, name, mut value, path, spec);
+            }
+        } else if compile_time (std::ui::is_optional<V>()) {
+            compile_time type inner_type = std::meta::template_args<V>()[0];
+            mut scope keyed = s.id(path);
+            mut bool present = value.is_some();
+            if (locked) {
+                read_only_row(mut keyed, name, if (present) { "Set" } else { "None" });
+            } else if (keyed.checkbox(name, mut present)) {
+                changed = true;
+                if (present) {
+                    inner_type fresh = default;
+                    value = std::some(move fresh);
+                } else {
+                    value = std::none;
+                }
+            }
+            mut std::ui::field_spec inner_spec = spec.clone();
+            inner_spec.label = std::string::from("Value");
+            inner_spec.tooltip.clear();
+            match (mut value) {
+                std::some(inner) => { result.merge(edit_value<inner_type, R>(mut keyed, mut inner, inner_spec, path, rules, p)); },
+                std::none => {},
+            }
+        } else if compile_time (std::ui::is_list<V>()) {
+            result.merge(edit_list<V, R>(mut s, mut value, spec, name, path, rules, p, locked));
+        } else if compile_time (std::meta::is_struct<V>() || std::meta::is_class<V>()) {
+            pass inner = pass{ .hidden = p.hidden, .message_paths = p.message_paths, .messages = p.messages, .locked = locked, .active = p.active };
+            if (spec.flatten) {
+                result.merge(edit_fields<V, R>(mut s, mut value, rules, inner, path, ""));
+            } else {
+                mut scope keyed = s.id(path);
+                mut scope node = keyed.tree(name, false);
+                result.merge(edit_fields<V, R>(mut node, mut value, rules, inner, path, ""));
+            }
+        } else {
+            read_only_row(mut s, name, std::type_name<V>());
+        }
+        if (!spec.tooltip.is_empty()) {
+            s.tooltip(spec.tooltip.as_str());
+        }
+        for (usize i : 0..p.message_paths.len()) {
+            if (p.message_paths[i].as_str() == path) {
+                rule_message(mut s, p.messages[i].as_str());
+                result.valid = false;
+            }
+        }
+        if (changed) {
+            result.changed = true;
+            result.path = std::string::from(path);
+        }
+        return result;
+    }
+
+    // The editors of T's fields under `prefix`; `only_group` "" shows the fields outside groups and
+    // one section per group (where its first field is), else only that group's fields. Methods with
+    // @ui::action come last, as buttons.
+    private template<type T, type R>
+    std::ui::edit edit_fields(mut scope& s, mut T& value, std::ui::form<R>& rules, pass& p, std::str prefix, std::str only_group) {
+        mut std::ui::edit result = default;
+        if (!s.visible) {
+            return result;
+        }
+        mut std::darray<std::string> opened = default;
+        // The stored forms that reach T's fields: those reaching T from above, and those for T.
+        mut std::darray<active_form> active = default;
+        for (active_form& a : p.active) {
+            active.push(active_form{ .scoped = a.scoped, .index = a.index, .prefix = a.prefix.clone() });
+        }
+        for (usize i : 0..s.ctx.context_forms.len()) {
+            if (s.ctx.context_forms[i].type_id == std::meta::type_id<T>()) {
+                active.push(active_form{ .scoped = false, .index = i });
+            }
+        }
+        for (usize i : 0..s.ctx.scoped_forms.len()) {
+            if (s.ctx.scoped_forms[i].type_id == std::meta::type_id<T>()) {
+                active.push(active_form{ .scoped = true, .index = i });
+            }
+        }
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            std::string path = join_path(prefix, f.name);
+            std::string fallback = std::ui::label_of(f.name);
+            mut std::ui::field_spec spec = make_spec(fallback.as_str(), f.annotation<std::ui::label>(), f.annotation<std::ui::tooltip>(),
+                                                     f.annotation<std::ui::range>(), f.annotation<std::ui::step>(), f.annotation<std::ui::unit>(),
+                                                     f.annotation<std::ui::widget>(), f.annotation<std::ui::group>(),
+                                                     f.has<std::ui::read_only>(), f.has<std::ui::hidden>(), f.has<std::ui::flatten>(),
+                                                     std::ui::class_of_type<ft>() == std::ui::path_class::number);
+            // The context's forms, then the scopes' (inner over outer), then the call's.
+            for (u32 round : 0..2) {
+                bool scoped_pass = round == 1;
+                for (active_form& a : active) {
+                    if (a.scoped == scoped_pass) {
+                        std::string relative = join_path(a.prefix.as_str(), f.name);
+                        if (a.scoped) {
+                            std::ui::apply_overrides(s.ctx.scoped_forms[a.index].overrides.as_span(), s.ctx.scoped_forms[a.index].hide_unlisted, relative.as_str(), mut spec);
+                        } else {
+                            std::ui::apply_overrides(s.ctx.context_forms[a.index].overrides.as_span(), s.ctx.context_forms[a.index].hide_unlisted, relative.as_str(), mut spec);
+                        }
+                    }
+                }
+            }
+            rules.apply(path.as_str(), mut spec);
+            for (std::string& h : p.hidden) {
+                if (h.as_str() == path.as_str()) {
+                    spec.hidden = true;
+                }
+            }
+            if (!spec.hidden) {
+                bool here = if (only_group.is_empty()) { spec.group.is_empty() } else { spec.group.as_str() == only_group };
+                if (here) {
+                    std::darray<active_form> below = extend_active(active.as_span(), f.name);
+                    pass inner = pass{ .hidden = p.hidden, .message_paths = p.message_paths, .messages = p.messages, .locked = p.locked, .active = below.as_span() };
+                    result.merge(edit_value<ft, R>(mut s, mut f.get(mut value), spec, path.as_str(), rules, inner));
+                } else if (only_group.is_empty()) {
+                    mut bool seen = false;
+                    for (std::string& g : opened) {
+                        seen = seen || g.as_str() == spec.group.as_str();
+                    }
+                    if (!seen) {
+                        opened.push(spec.group.clone());
+                        mut scope keyed = s.id(spec.group.as_str());
+                        mut scope section_scope = keyed.section(spec.group.as_str(), true);
+                        result.merge(edit_fields<T, R>(mut section_scope, mut value, rules, p, prefix, spec.group.as_str()));
+                    }
+                }
+            }
+        }
+        if (only_group.is_empty() && !p.locked) {
+            for compile_time (std::meta::function m : std::meta::methods<T>()) {
+                if compile_time (m.has<std::ui::action>()) {
+                    if compile_time (m.parameters.len() == 0 && !m.is_static) {
+                        std::string action_path = join_path(prefix, m.name);
+                        mut std::ui::field_spec visible = make_spec("", std::none, std::none, std::none, std::none, std::none, std::none, std::none, false, false, false, false);
+                        rules.apply(action_path.as_str(), mut visible);
+                        if (visible.hidden) {
+                            continue;
+                        }
+                        std::static_str given = m.annotation<std::ui::action>().value_or(std::ui::action{}).label;
+                        std::string text = if (given.is_empty()) { std::ui::label_of(m.name) } else { std::string::from(given) };
+                        mut scope keyed = s.id(m.name);
+                        if (keyed.button(text.as_str())) {
+                            if compile_time (m.is_mut) {
+                                _ = m.call(mut value);
+                            } else {
+                                _ = m.call(value);
+                            }
+                            result.changed = true;
+                            result.committed = true;
+                            result.path = join_path(prefix, m.name);
+                        }
+                        match (m.annotation<std::ui::tooltip>()) {
+                            std::some(tip) => keyed.tooltip(tip.text),
+                            std::none => {},
+                        }
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    // The editor of the field at `rest` below `prefix`.
+    private template<type T, type R>
+    std::ui::edit field_at(mut scope& s, mut T& value, std::ui::form<R>& rules, pass& p, std::str rest, std::str prefix) {
+        (std::str head, std::str tail) = split_run_time(rest);
+        mut std::ui::edit result = default;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if (f.name == head) {
+                compile_time type ft = f.type;
+                std::string path = join_path(prefix, f.name);
+                if (tail.is_empty()) {
+                    std::string fallback = std::ui::label_of(f.name);
+                    mut std::ui::field_spec spec = make_spec(fallback.as_str(), f.annotation<std::ui::label>(), f.annotation<std::ui::tooltip>(),
+                                                             f.annotation<std::ui::range>(), f.annotation<std::ui::step>(), f.annotation<std::ui::unit>(),
+                                                             f.annotation<std::ui::widget>(), f.annotation<std::ui::group>(),
+                                                             f.has<std::ui::read_only>(), false, false,
+                                                             std::ui::class_of_type<ft>() == std::ui::path_class::number);
+                    rules.apply(path.as_str(), mut spec);
+                    result = edit_value<ft, R>(mut s, mut f.get(mut value), spec, path.as_str(), rules, p);
+                } else {
+                    if compile_time (std::meta::is_struct<ft>() || std::meta::is_class<ft>()) {
+                        result = field_at<ft, R>(mut s, mut f.get(mut value), rules, p, tail, path.as_str());
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    // An editor made from a type over a whole value: the form's conditions and rules over the
+    // value first, then the fields; `committed` once the change is finished.
+    private template<type T>
+    std::ui::edit run_inspect(mut scope& s, mut T& value, std::ui::form<T>& rules, u64 root, std::str single) {
+        mut std::darray<std::string> hidden = default;
+        mut std::darray<std::string> message_paths = default;
+        mut std::darray<std::string> messages = default;
+        for (usize i : 0..rules.conditions.len()) {
+            if (!rules.conditions[i](value)) {
+                hidden.push(rules.condition_paths[i].clone());
+            }
+        }
+        for (usize i : 0..rules.across.len()) {
+            match (rules.across[i](value)) {
+                std::ui::verdict::error(message) => {
+                    message_paths.push(rules.across_paths[i].clone());
+                    messages.push(message.clone());
+                },
+                std::ui::verdict::ok => {},
+            }
+        }
+        mut std::darray<active_form> no_forms = default;
+        pass p = pass{ .hidden = hidden.as_span(), .message_paths = message_paths.as_span(), .messages = messages.as_span(), .locked = false, .active = no_forms.as_span() };
+        mut std::ui::edit e = if (single.is_empty()) { edit_fields<T, T>(mut s, mut value, rules, p, "", "") } else { field_at<T, T>(mut s, mut value, rules, p, single, "") };
+        if (!messages.is_empty()) {
+            e.valid = false;
+        }
+        // Finished: no drag held and nothing typed; a change made while one is goes on until then.
+        bool busy = s.ctx.in.mouse_down || s.ctx.editing != 0;
+        if (e.changed && busy) {
+            s.ctx.pending_commit = root;
+            s.ctx.pending_path = e.path.clone();
+            e.committed = false;
+        } else if (e.changed) {
+            e.committed = true;
+        } else if (s.ctx.pending_commit == root && !busy) {
+            s.ctx.pending_commit = 0;
+            e.path = std::take(mut s.ctx.pending_path);
+            e.committed = true;
+        }
+        if (!e.valid) {
+            e.committed = false;
+        }
+        return e;
+    }
+
+    // std::math's vectors and colours: their f32 fields side by side.
+    private template<type V>
+    compile_time bool is_components() {
+        return std::is_same<V, std::math::vec2>() || std::is_same<V, std::math::vec3>() || std::is_same<V, std::math::vec4>() ||
+               std::is_same<V, std::math::color>();
+    }
+
+    // "1.00, 2.00, 3.00".
+    private template<type V>
+    std::string components_text(V& value) {
+        mut std::string out = default;
+        for compile_time (std::meta::field f : std::meta::fields<V>()) {
+            if (!out.is_empty()) {
+                out.push_str(", ");
+            }
+            out.push_str(two_decimals(cast<f64>(f.get(value))).as_str());
+        }
+        return out;
+    }
+
+    // The colour that marks the n-th axis: x red, y green, z blue, the rest grey.
+    private std::ui::color axis_color(std::ui::theme& t, usize n) {
+        return if (n == 0) { std::ui::color::hex(0xe5534b) } else if (n == 1) { std::ui::color::hex(0x3fb950) }
+               else if (n == 2) { std::ui::color::hex(0x4f7cff) } else { t.colors.text_faint };
+    }
+
+    // A vector's or a colour's fields as number fields in one row, each marked with its axis'
+    // colour; a colour gets a swatch first and keeps its parts in 0..1.
+    private template<type V>
+    bool edit_components(mut scope& s, std::str label, mut V& value, std::str path, std::ui::field_spec& spec) {
+        (std::ui::rect area, f32 row_height) = labelled_row(mut s, label);
+        std::ui::theme t = s.ctx.look;
+        bool is_color = std::is_same<V, std::math::color>();
+        f32 gap = 4.0;
+        mut f32 x = area.x;
+        if compile_time (std::is_same<V, std::math::color>()) {
+            std::ui::rect swatch = std::ui::rect{ .x = area.x, .y = area.y, .width = area.height, .height = area.height };
+            f32 radius = t.radius.small.min(area.height * 0.5);
+            s.ctx.layers[s.layer_index].list.fill(swatch, value.with_alpha(1.0), radius);
+            s.ctx.layers[s.layer_index].list.stroke(swatch, t.colors.border, radius, 1.0);
+            x += area.height + gap;
+        }
+        f32 count = cast::round<f32>(std::meta::fields<V>().len());
+        f32 cell = ((area.right() - x - gap * (count - 1.0)) / count).max(8.0);
+        u64 base = std::hash_combine(s.id_base, std::hash(path));
+        f64 speed = if (spec.step > 0.0) { spec.step } else if (is_color) { 0.005 } else { 0.05 };
+        mut bool changed = false;
+        for compile_time (std::meta::field f : std::meta::fields<V>()) {
+            std::ui::rect box = std::ui::rect{ .x = x + (cell + gap) * cast::round<f32>(f.index), .y = area.y, .width = cell, .height = area.height };
+            mut f64 part = cast<f64>(f.get(value));
+            bool bounded = is_color || spec.has_range;
+            f64 low = if (is_color) { 0.0 } else { spec.min };
+            f64 high = if (is_color) { 1.0 } else { spec.max };
+            if (number_box(mut s, std::hash_combine(base, cast<u64>(f.index)), box, mut part, low, high, speed, bounded, true)) {
+                f.get(mut value) = cast::round<f32>(part);
+                changed = true;
+            }
+            std::ui::color mark = axis_color(t, f.index);
+            s.ctx.layers[s.layer_index].list.fill(std::ui::rect{ .x = box.x + 1.0, .y = box.y + 4.0, .width = 3.0, .height = box.height - 8.0 }, mark, 1.5);
+        }
+        return changed;
+    }
+
+    // An enum with payloads: a combo for the alternative, then the payload's editor.
+    private template<type V, type R>
+    std::ui::edit edit_payload_enum(mut scope& s, mut V& value, std::ui::field_spec& spec, std::str name, std::str path, std::ui::form<R>& rules, pass& p) {
+        mut std::ui::edit result = default;
+        mut std::darray<std::string> names = default;
+        mut usize index = 0;
+        for compile_time (std::meta::alternative a : std::meta::alternatives<V>()) {
+            if (a.is(value)) {
+                index = names.len();
+            }
+            match (a.annotation<std::ui::label>()) {
+                std::some(given) => names.push(std::string::from(given.text)),
+                std::none        => names.push(std::ui::label_of(a.name)),
+            }
+        }
+        mut std::darray<std::str> shown = default;
+        for (std::string& n : names) {
+            shown.push(n.as_str());
+        }
+        mut usize picked = index;
+        if (s.combo(name, mut picked, shown.as_span())) {
+            mut usize k = 0;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<V>()) {
+                if (k == picked) {
+                    if compile_time (a.has_payload) {
+                        compile_time type payload_type = a.payload;
+                        payload_type fresh = default;
+                        value = a.make(move fresh);
+                    } else {
+                        value = a.make();
+                    }
+                }
+                k += 1;
+            }
+            result.changed = true;
+            result.path = std::string::from(path);
+        }
+        for compile_time (std::meta::alternative a : std::meta::alternatives<V>()) {
+            if compile_time (a.has_payload) {
+                compile_time type payload_type = a.payload;
+                match (a.get(mut value)) {
+                    std::some(payload) => {
+                        mut std::ui::field_spec inner = spec.clone();
+                        inner.label = std::string::from("Value");
+                        inner.tooltip.clear();
+                        result.merge(edit_value<payload_type, R>(mut s, mut payload, inner, path, rules, p));
+                    },
+                    std::none => {},
+                }
+            }
+        }
+        return result;
+    }
+
+    // A std::darray: a tree node with an editor per element (a "×" removes it), and "Add".
+    // Elements are at the path `path[]`.
+    private template<type V, type R>
+    std::ui::edit edit_list(mut scope& s, mut V& value, std::ui::field_spec& spec, std::str name, std::str path, std::ui::form<R>& rules, pass& p, bool locked) {
+        compile_time type element = std::meta::template_args<V>()[0];
+        mut std::ui::edit result = default;
+        mut scope keyed = s.id(path);
+        mut scope node = keyed.tree(name, false);
+        if (!node.open()) {
+            return result;
+        }
+        node.muted(f"{value.len()} items");
+        std::string element_path = std::format(f"{path}[]");
+        mut std::option<usize> remove = std::none;
+        // The stored forms' paths of the elements: `name[]` (the caller added `name`).
+        mut std::darray<active_form> for_elements = default;
+        for (active_form& a : p.active) {
+            for_elements.push(active_form{ .scoped = a.scoped, .index = a.index, .prefix = std::format(f"{a.prefix}[]") });
+        }
+        pass element_pass = pass{ .hidden = p.hidden, .message_paths = p.message_paths, .messages = p.messages, .locked = p.locked, .active = for_elements.as_span() };
+        bool as_tree = (std::meta::is_struct<element>() || std::meta::is_class<element>()) && !is_components<element>() &&
+                       !std::is_same<element, std::string>() && !std::ui::is_list<element>() && !std::ui::is_optional<element>();
+        for (usize i : 0..value.len()) {
+            mut scope item = node.id(i);
+            std::string label = std::format(f"#{i}");
+            mut std::ui::field_spec es = spec.clone();
+            es.label = label.clone();
+            es.tooltip.clear();
+            if (as_tree) {
+                result.merge(edit_value<element, R>(mut item, mut value[i], es, element_path.as_str(), rules, element_pass));
+                if (!locked && item.button("Remove")) {
+                    remove = std::some(i);
+                }
+            } else {
+                mut scope line = item.row();
+                {
+                    mut scope wide = line.width(std::ui::fill(1.0));
+                    result.merge(edit_value<element, R>(mut wide, mut value[i], es, element_path.as_str(), rules, element_pass));
+                }
+                if (!locked && line.button("×", std::ui::variant::ghost)) {
+                    remove = std::some(i);
+                }
+            }
+        }
+        match (remove) {
+            std::some(i) => {
+                _ = value.remove(i);
+                result.changed = true;
+                result.path = std::string::from(path);
+            },
+            std::none => {},
+        }
+        if (!locked && node.button("Add")) {
+            element fresh = default;
+            value.push(move fresh);
+            result.changed = true;
+            result.path = std::string::from(path);
+        }
+        return result;
+    }
+
+    // A value moving to `target` smoothly (pixels): a tenth of the way per 1/140 s.
+    private f32 follow(mut context& c, u64 key, f32 target) {
+        mut f32& v = c.animations.get_or_insert(key, target);
+        f32 part = (c.dt * 14.0).min(1.0);
+        v = v + (target - v) * part;
+        if ((target - v).abs() < 0.5) {
+            v = target;
+        }
+        return v;
+    }
+
+    // The labels of an enum's payload-free alternatives (@ui::label or the name), and which one
+    // `value` holds.
+    private template<type E>
+    void alternative_names(E& value, mut std::darray<std::string>& names, mut usize& index) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if compile_time (!a.has_payload) {
+                if (a.is(value)) {
+                    index = names.len();
+                }
+                match (a.annotation<std::ui::label>()) {
+                    std::some(given) => names.push(std::string::from(given.text)),
+                    std::none        => names.push(std::ui::label_of(a.name)),
+                }
+            }
+        }
+    }
+
+    // `value` set to the n-th payload-free alternative of E.
+    private template<type E>
+    void set_alternative(mut E& value, usize n) {
+        mut usize k = 0;
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if compile_time (!a.has_payload) {
+                if (k == n) {
+                    value = a.make();
+                }
+                k += 1;
+            }
+        }
+    }
+
+    // A table cell's text.
+    private template<type V>
+    std::string cell_text(V& value) {
+        if compile_time (std::is_same<V, bool>()) {
+            return std::string::from(if (value) { "Yes" } else { "No" });
+        } else if compile_time (std::is_float<V>()) {
+            return two_decimals(cast<f64>(value));
+        } else if compile_time (std::is_integer<V>()) {
+            return std::format(f"{value}");
+        } else if compile_time (std::is_same<V, std::string>()) {
+            return value.clone();
+        } else if compile_time (std::meta::is_enum<V>()) {
+            return std::ui::label_of(std::meta::name_of(value));
+        } else if compile_time (is_components<V>()) {
+            return components_text<V>(value);
+        } else {
+            return std::string::from(std::type_name<V>());
+        }
+    }
+
+    // -1, 0 or 1: `a` before, with or after `b` in a table's column (numbers, bools, texts, enums by
+    // declaration order); other types compare equal.
+    private template<type V>
+    i32 compare_cells(V& a, V& b) {
+        if compile_time (std::is_integer<V>() || std::is_float<V>()) {
+            return if (a < b) { -1 } else if (b < a) { 1 } else { 0 };
+        } else if compile_time (std::is_same<V, bool>()) {
+            return if (a == b) { 0 } else if (!a) { -1 } else { 1 };
+        } else if compile_time (std::is_same<V, std::string>()) {
+            return match (a.as_str() <=> b.as_str()) {
+                std::ordering::less    => -1,
+                std::ordering::greater => 1,
+                _                      => 0,
+            };
+        } else if compile_time (std::meta::is_enum<V>() && payload_free<V>()) {
+            usize x = alternative_index<V>(a);
+            usize y = alternative_index<V>(b);
+            return if (x < y) { -1 } else if (y < x) { 1 } else { 0 };
+        } else {
+            return 0;
+        }
+    }
+
+    private template<type E>
+    usize alternative_index(E& value) {
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if (a.is(value)) {
+                return a.index;
+            }
+        }
+        return 0;
+    }
+
+    // The visible columns of T (fields without @ui::hidden).
+    private template<type T>
+    compile_time usize column_count() {
+        mut usize n = 0;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (!f.has<std::ui::hidden>()) {
+                n += 1;
+            }
+        }
+        return n;
+    }
+
+    // Rows `a` and `b` compared by visible column `column`.
+    private template<type T>
+    i32 compare_rows(T& a, T& b, usize column) {
+        mut usize k = 0;
+        mut i32 result = 0;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (!f.has<std::ui::hidden>()) {
+                if (k == column) {
+                    compile_time type ft = f.type;
+                    result = compare_cells<ft>(f.get(a), f.get(b));
+                }
+                k += 1;
+            }
+        }
+        return result;
+    }
+
+    // The table of scope.table: the header (a click sorts), the rows in view, the scroll bar.
+    private template<type T>
+    std::option<usize> draw_table(mut scope& s, u64 wid, std::span<T> rows, f32 height) {
+        std::ui::theme t = s.ctx.look;
+        usize columns = column_count<T>();
+        f32 row_height = (t.controls.row_height - 2.0) * t.density;
+        f32 header_height = row_height + 2.0;
+        std::ui::rect whole = s.ctx.place(s.ctx.room(), height.max(header_height + row_height));
+        f32 column_width = (whole.width - 12.0) / cast::round<f32>(columns.max(1));
+        std::ui::rect header = std::ui::rect{ .x = whole.x, .y = whole.y, .width = whole.width, .height = header_height };
+        std::ui::rect body = std::ui::rect{ .x = whole.x, .y = header.bottom(), .width = whole.width, .height = whole.height - header_height };
+        std::ui::rect clip = s.ctx.layers[s.layer_index].list.current_clip();
+        std::ui::text_style head_style = t.style(std::ui::text_role::label, t.colors.text_muted);
+        std::ui::text_style cell_style = t.style(std::ui::text_role::body, t.colors.text);
+
+        // The header: a click sorts by the column, again the other way, a third time not at all.
+        {
+            widget_state st = s.ctx.state_of(wid);
+            mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+            s.ctx.painters.table_header(mut p, std::ui::table_header_part{ .bounds = header, .sorted = st.sort_column, .descending = st.descending });
+        }
+        mut usize k = 0;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if compile_time (!f.has<std::ui::hidden>()) {
+                std::ui::rect cell = std::ui::rect{ .x = header.x + column_width * cast::round<f32>(k), .y = header.y, .width = column_width, .height = header_height };
+                response r = s.ctx.respond(std::hash_combine(wid, cast<u64>(k) + 1), cell, s.window, clip, false);
+                if (r.clicked) {
+                    mut widget_state& st = s.ctx.state_of(wid);
+                    if (st.sort_column != k + 1) {
+                        st.sort_column = k + 1;
+                        st.descending = false;
+                    } else if (!st.descending) {
+                        st.descending = true;
+                    } else {
+                        st.sort_column = 0;
+                    }
+                }
+                mut std::string title = std::ui::label_of(f.name);
+                std::option<std::ui::label> named = f.annotation<std::ui::label>();
+                match (named) {
+                    std::some(given) => { title = std::string::from(given.text); },
+                    std::none        => {},
+                }
+                widget_state st = s.ctx.state_of(wid);
+                std::ui::text_style shown = if (r.state.hover > 0.0) { t.style(std::ui::text_role::label, t.colors.text) } else { head_style };
+                f32 line = s.ctx.faces.line_height(shown);
+                s.ctx.layers[s.layer_index].list.push_clip(cell);
+                f32 used = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = cell.x + t.space.s, .y = cell.y + ((header_height - line) * 0.5).round() }, title.as_str(), shown);
+                if (st.sort_column == k + 1) {
+                    std::ui::vec2 at = std::ui::vec2{ .x = cell.x + t.space.s + used + 8.0, .y = cell.y + header_height * 0.5 };
+                    s.ctx.layers[s.layer_index].list.regular_polygon(at, 4.0, 3, if (st.descending) { 180.0 } else { 0.0 }, t.colors.primary);
+                }
+                s.ctx.layers[s.layer_index].list.pop_clip();
+                k += 1;
+            }
+        }
+
+        // The order of the rows.
+        widget_state now = s.ctx.state_of(wid);
+        mut std::darray<usize> order = std::darray<usize>::with_capacity(rows.len());
+        for (usize i : 0..rows.len()) {
+            order.push(i);
+        }
+        if (now.sort_column > 0) {
+            usize column = now.sort_column - 1;
+            bool descending = now.descending;
+            order.sort_by([rows, column, descending](usize a, usize b) {
+                i32 c = compare_rows<T>(rows[a], rows[b], column);
+                bool before = if (descending) { c > 0 } else { c < 0 };
+                return before;
+            });
+        }
+
+        // Up and down move the selection while the table has the focus.
+        response whole_response = s.ctx.respond(wid, body, s.window, clip, true);
+        mut std::option<usize> clicked = std::none;
+        mut usize selected = now.selected;
+        if (whole_response.has_focus && !rows.is_empty()) {
+            mut usize position = 0;
+            for (usize i : 0..order.len()) {
+                if (selected > 0 && order[i] == selected - 1) {
+                    position = i;
+                }
+            }
+            if (s.ctx.in.pressed(std::ui::key::down)) {
+                position = if (selected == 0) { 0 } else { (position + 1).min(order.len() - 1) };
+                selected = order[position] + 1;
+                clicked = std::some(order[position]);
+                mut widget_state& body_state = s.ctx.state_of(std::hash_combine(wid, 999));
+                f32 top = cast::round<f32>(position) * row_height;
+                if (top + row_height > body_state.scroll + body.height) {
+                    body_state.scroll = top + row_height - body.height;
+                }
+            } else if (s.ctx.in.pressed(std::ui::key::up)) {
+                position = if (position > 0) { position - 1 } else { 0 };
+                selected = order[position] + 1;
+                clicked = std::some(order[position]);
+                mut widget_state& body_state = s.ctx.state_of(std::hash_combine(wid, 999));
+                f32 top = cast::round<f32>(position) * row_height;
+                if (top < body_state.scroll) {
+                    body_state.scroll = top;
+                }
+            }
+        }
+
+        // The rows in view only.
+        u64 body_id = std::hash_combine(wid, 999);
+        u64 rows_id = std::hash_combine(wid, 998);
+        s.ctx.touch(body_id);
+        f32 offset = s.ctx.state_of(body_id).scroll;
+        usize first = cast::saturate<usize>((offset / row_height).floor());
+        usize visible = cast::saturate<usize>((body.height / row_height).ceil()) + 1;
+        usize last = (first + visible).min(order.len());
+        s.ctx.layers[s.layer_index].list.push_clip(body);
+        f32 line = s.ctx.faces.line_height(cell_style);
+        for (usize position : first..last) {
+            usize index = order[position];
+            std::ui::rect row_rect = std::ui::rect{ .x = body.x, .y = body.y + cast::round<f32>(position) * row_height - offset, .width = body.width - 12.0, .height = row_height };
+            response r = s.ctx.respond(std::hash_combine(rows_id, cast<u64>(position)), row_rect, s.window, body, false);
+            if (r.clicked) {
+                selected = index + 1;
+                clicked = std::some(index);
+                s.ctx.focused = wid;
+            }
+            {
+                mut std::ui::painter p = std::ui::painter{ .list = s.ctx.layers[s.layer_index].list, .faces = s.ctx.faces, .tokens = s.ctx.look };
+                s.ctx.painters.table_row(mut p, std::ui::table_row_part{ .bounds = row_rect, .index = position, .selected = selected == index + 1, .state = r.state });
+            }
+            mut usize c = 0;
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (!f.has<std::ui::hidden>()) {
+                    compile_time type ft = f.type;
+                    std::string text = cell_text<ft>(f.get(rows[index]));
+                    std::ui::rect cell = std::ui::rect{ .x = row_rect.x + column_width * cast::round<f32>(c), .y = row_rect.y, .width = column_width, .height = row_height };
+                    s.ctx.layers[s.layer_index].list.push_clip(cell);
+                    _ = s.ctx.layers[s.layer_index].list.text(mut s.ctx.faces, std::ui::vec2{ .x = cell.x + t.space.s, .y = cell.y + ((row_height - line) * 0.5).round() }, text.as_str(), cell_style);
+                    s.ctx.layers[s.layer_index].list.pop_clip();
+                    c += 1;
+                }
+            }
+        }
+        finish_scroll(mut s.ctx, body_id, body, cast::round<f32>(order.len()) * row_height, s.layer_index, s.window);
+        s.ctx.layers[s.layer_index].list.pop_clip();
+        if (whole_response.state.focused) {
+            s.ctx.layers[s.layer_index].list.stroke(whole.expanded(2.0), t.colors.focus, t.radius.small, 2.0);
+        }
+        s.ctx.state_of(wid).selected = selected;
+        return clicked;
+    }
+}

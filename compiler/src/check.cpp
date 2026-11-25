@@ -1,6 +1,7 @@
 #include "edax/simd_intrinsics.hpp"
 #include "edax/llvm_backend.hpp"
 #include "edax/check.hpp"
+#include "edax/std_library.hpp"
 #include "edax/ast_walk.hpp"
 
 #include "edax/ast_clone.hpp"
@@ -593,7 +594,8 @@ public:
         const Symbol* mode = program_.build_mode_class;
         if (!mode) return;
         for (const char* name : {"optimization", "debug_info", "overflow", "shifts", "bounds", "run_time_checks", "panic",
-                                 "link_time_optimization", "allow_undefined_behavior", "float_determinism", "sanitize", "std_optimization"}) {
+                                 "link_time_optimization", "allow_undefined_behavior", "float_determinism", "sanitize", "std_optimization",
+                                 "stop_debugger_on_panic"}) {
             std::shared_ptr<const ct::Value> v = evaluator().mode_setting(mode, name);
             if (!v) continue;
             program_.mode_settings[name] = v->kind == ct::Value::Kind::boolean ? (v->boolean ? "true" : "false")
@@ -918,6 +920,24 @@ private:
         return false;
     }
 
+    // Equal, counting a template's parameters as equal by name: a template's .edh and its .ed
+    // block declare their parameters separately, and in a callable type (`std::function<bool(T&)>`)
+    // the checker meets both while it checks the template.
+    static bool same_up_to_params(const Type* a, const Type* b) {
+        if (a == b) return true;
+        if (!a || !b || a->kind != b->kind) return false;
+        if (a->is(Kind::type_param)) return a->name == b->name;
+        if (a->is(Kind::reference) || a->is(Kind::pointer)) return a->is_mut == b->is_mut && same_up_to_params(a->inner, b->inner);
+        if (a->is(Kind::function) || a->is(Kind::fn_ptr) || a->is(Kind::tuple)) {
+            if (a->args.size() != b->args.size() || a->bits != b->bits || a->is_size != b->is_size) return false;
+            for (std::size_t i = 0; i < a->args.size(); ++i) {
+                if (!same_up_to_params(a->args[i], b->args[i])) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     // 0 = exact, 1 = upcast, -1 = not assignable. `from` is the value's type, `to` the target.
     int assign_cost(const Type* from, const Type* to) {
         if (!from || !to) return 0;
@@ -926,6 +946,7 @@ private:
         const Type* t = types::strip_ref(to);
         if (f->is_unknown() || t->is_unknown()) return 0;
         if (f == t || f->is(Kind::never)) return 0;
+        if ((f->is(Kind::function) || f->is(Kind::fn_ptr)) && same_up_to_params(f, t)) return 0;
         if (f->is(Kind::external) && t->is(Kind::external)) {
             // An f-string is a std::format_args: it doesn't become text without std::format (spec 19).
             if (f->name == "std::format_args" && t->name != "std::format_args") return -1;
@@ -1643,7 +1664,7 @@ private:
                 }
             }
             if (!v.init) {
-                if (d.kind == DeclKind::field && compile_time_only(lower(*v.type)) && v.storage != Storage::compile_time) {
+                if (d.kind == DeclKind::field && compile_time_only(lower(*v.type)) && v.storage != Storage::compile_time && !annotation_type(self)) {
                     run_time_use(v.type->span, lower(*v.type), std::format("'{}' is a field", v.name),
                                  "values of a struct or class exist at run time");
                 }
@@ -1686,7 +1707,7 @@ private:
                 if (auto c = evaluate(*v.init, std::format("the initial value of thread_local '{}' is computed at compile time", v.name))) {
                     v.init->constant = c;
                 }
-            } else if (compile_time_only(declared)) {
+            } else if (compile_time_only(declared) && !(d.kind == DeclKind::field && annotation_type(self))) {
                 run_time_use(v.type->span, declared,
                              std::format("'{}' is {}", v.name, d.kind == DeclKind::field ? "a field" : "a static variable"),
                              "declare it 'compile_time'");
@@ -1843,6 +1864,12 @@ private:
     }
 
     // --- compile time (spec 15, 26) -------------------------------------------------------
+
+    // An annotation's struct: its values exist only at compile time, so its fields may be types
+    // (`type for_type = void;`, spec 29).
+    static bool annotation_type(const Symbol* self) {
+        return self && self->decl && self->decl->kind == DeclKind::struct_ && self->decl->as<TypeDecl>().is_annotation;
+    }
 
     // Types whose values exist only at compile time: `type`, std::meta data, lists of them.
     bool compile_time_only(const Type* t) const {
@@ -2115,6 +2142,7 @@ private:
     // checks are evaluated when the arguments happen to be known.
     void run_entry_checks(const Symbol* callee, CallExpr& c, const std::vector<Expr*>& args) {
         if (fn_.is_compile_time) return;   // compile-time code: the evaluator runs them when it calls
+        if (fn_.generic) return;           // a template's body: its instances run them, with known types
         if (own_entry_fails()) return;     // a body that is never reached
         const Decl* d = callee->definition ? callee->definition : callee->decl;
         if (!d || d->kind != DeclKind::function) return;
@@ -2486,7 +2514,9 @@ private:
             Place base = place_of(*m.object);
             p          = base;
             p.name     = (base.name.empty() ? "" : base.name + ".") + ast::to_string(m.name);
-            if (objt->is(Kind::reference) && base.local == nullptr) p.is_mutable = objt->is_mut;
+            // An element (`this.items[i].n`) is as mutable as its container, as for locals: the
+            // reference type is the operator[] overload picked before the target was known.
+            if (objt->is(Kind::reference) && base.local == nullptr && m.object->kind != ExprKind::index) p.is_mutable = objt->is_mut;
             if (!base.is_place) {
                 p.is_place     = true;   // fields of temporaries: writable but pointless; not our concern here
                 p.is_mutable   = true;
@@ -3413,6 +3443,18 @@ private:
         }
         std::error_code ec;
         fs::path        path = fs::path(rel).is_absolute() ? fs::path(rel) : fs::path(source_path(c.span)).parent_path() / rel;
+        // The standard library's own files (fonts) are built into edaxc, like its source.
+        if (std::string from = path.lexically_normal().generic_string(); from.starts_with("<std>/")) {
+            std::string_view stored = std_resource(std::string_view(from).substr(6));
+            if (stored.data()) {
+                auto v    = std::make_shared<ct::Value>();
+                v->kind   = ct::Value::Kind::string;
+                v->type   = result;
+                v->string = std::string(stored);
+                c.constant = v;
+                return result;
+            }
+        }
         std::ifstream   in(path, std::ios::binary);
         if (!in) {
             note(error(DiagCode::E4201, c.args[0]->span, std::format("cannot read '{}'", path.lexically_normal().string()), "no such file"),
@@ -3941,7 +3983,9 @@ private:
         }
         const Symbol* option = std_item("option");
         if (!option) return set(c, tc_.error());
-        return set(c, tc_.instance(option, {tc_.reference(lower_owned(alt, *alt->alternative->payload), false)}));
+        // `a.get(mut value)`: the payload as a mutable reference (editing it in place).
+        if (marked) require_mutable(place_of(*arg.as<UnaryExpr>().operand), *arg.as<UnaryExpr>().operand, "change the payload of");
+        return set(c, tc_.instance(option, {tc_.reference(lower_owned(alt, *alt->alternative->payload), marked)}));
     }
 
     // `m.call(value, args...)` (spec 26): checked and compiled like `value.name(args...)`, so it
@@ -4784,6 +4828,9 @@ private:
                             if (o->kind == s->kind && (m == module_ || !o->is_private)) overloads.push_back(o);
                         }
                     }
+                    // A function reached by reflection (`f.call(...)` over functions_with, spec 26)
+                    // may be in a module this one doesn't import: the library calling the program's.
+                    if (overloads.empty()) overloads.push_back(s);
                 } else {
                     for (Symbol* o : s->parent->members[s->name]) {
                         if (o->kind == s->kind) overloads.push_back(o);
@@ -7154,6 +7201,35 @@ public:
 
     static bool inside(Span inner, Span outer) { return inner.file == outer.file && inner.begin >= outer.begin && inner.end <= outer.end; }
 
+    bool hidden_decl(const Decl* d) {
+        const AnnotationUse* u = d ? sema::find_annotation(d->annotations, "std::diagnostic_frame") : nullptr;
+        if (!u || !u->value_symbol) return false;
+        std::shared_ptr<const ct::Value> v = u->value_symbol->ct_value;
+        if (!v) v = Checker(program_, diags_, this).ensure_constant(u->value_symbol);
+        return v && !v->elements.empty() && v->elements[0].kind == ct::Value::Kind::boolean && v->elements[0].boolean;
+    }
+
+    // Whether `s` lies in a free function marked `@std::diagnostic_frame{ .hide = true }`: a library
+    // helper (a compile_time check) that a hidden template calls; its errors move to the call too.
+    bool in_hidden_helper(Span s) {
+        for (const auto& [name, mod] : program_.modules) {
+            for (const auto* f : {&mod->header, &mod->source}) {
+                if (!*f || (*f)->id != s.file) continue;
+                for (const DeclPtr& d : (*f)->ast.decls) {
+                    if (d->kind != DeclKind::function || !inside(s, d->span)) continue;
+                    if (hidden_decl(d.get())) return true;
+                    // A body in the .ed: its annotations are on the declaration in the .edh.
+                    if (mod->header) {
+                        for (const DeclPtr& h : mod->header->ast.decls) {
+                            if (h->kind == DeclKind::function && h->name == d->name && h->ns == d->ns && hidden_decl(h.get())) return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     void add_frame(std::size_t mark, const Symbol* templ, const Symbol* inst, std::optional<Span> site) {
         if (diags_.size() == mark) return;
         std::vector<Diagnostic> made   = diags_.take_since(mark);
@@ -7165,7 +7241,7 @@ public:
             }
             const Decl* src = templ->definition ? templ->definition : templ->decl;
             if (hidden) {
-                if (site && src && inside(d.span, src->span)) {   // in the library's code: at the call that reached it
+                if (site && src && (inside(d.span, src->span) || in_hidden_helper(d.span))) {   // in the library's code: at the call that reached it
                     bool noted = false;
                     for (const Note& n : d.notes) noted = noted || n.message.starts_with("inside the library");
                     if (!noted) d.notes.push_back(Note{std::format("inside the library, in '{}'", templ->name), d.span});

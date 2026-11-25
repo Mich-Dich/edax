@@ -1,0 +1,2022 @@
+// The Edax standard library: module std::ui (see ui.edh).
+
+namespace std::ui {
+    // ---- themes ---------------------------------------------------------------------------------------
+
+    // An OKLCH colour, opaque.
+    private color lch(f32 l, f32 c, f32 h) {
+        return color::from_oklch(std::math::oklch{ .l = l, .c = c, .h = h }, 1.0);
+    }
+
+    // `fg` made lighter or darker (towards `towards_light`) until it has `ratio` contrast on `bg`.
+    private color with_contrast(color fg, color bg, f32 ratio, bool towards_light) {
+        mut color c = fg;
+        for (u32 i : 0..40) {
+            if (c.contrast(bg) >= ratio) {
+                return c;
+            }
+            c = c.lighter(if (towards_light) { 0.02 } else { -0.02 });
+        }
+        return c;
+    }
+
+    struct type_scale {
+        type_style of(text_role role) {
+            return match (role) {
+                text_role::caption => this.caption,
+                text_role::body    => this.body,
+                text_role::label   => this.label,
+                text_role::title   => this.title,
+                text_role::heading => this.heading,
+                text_role::display => this.display,
+                text_role::code    => this.code,
+            };
+        }
+    }
+
+    private f32 mix_f32(f32 a, f32 b, f32 t) {
+        return std::math::lerp(a, b, t);
+    }
+
+    private shadow_style mix_shadow(shadow_style& a, shadow_style& b, f32 t) {
+        return shadow_style{ .offset_y = mix_f32(a.offset_y, b.offset_y, t), .blur = mix_f32(a.blur, b.blur, t), .opacity = mix_f32(a.opacity, b.opacity, t) };
+    }
+
+    struct radius_scale {
+        static radius_scale rounded() {
+            return radius_scale{};
+        }
+
+        static radius_scale sharp() {
+            return radius_scale{ .small = 0.0, .medium = 0.0, .large = 0.0, .full = 0.0 };
+        }
+
+        static radius_scale subtle() {
+            return radius_scale{ .small = 2.0, .medium = 3.0, .large = 4.0, .full = 5.0 };
+        }
+    }
+
+    struct theme {
+        static theme from_accent(color accent, brightness mode) {
+            std::math::oklch a = accent.to_oklch();
+            f32 h = a.h;
+            f32 tint = (a.c * 0.15).min(0.02);
+            bool is_dark = mode == brightness::dark;
+            mut palette p = default;
+            if (is_dark) {
+                p.background = lch(0.165, tint, h);
+                p.surface = lch(0.205, tint, h);
+                p.surface_raised = lch(0.245, tint, h);
+                p.surface_sunken = lch(0.145, tint, h);
+                p.border = lch(0.315, tint * 1.2, h);
+                p.primary = lch(0.66, a.c.max(0.08), h);
+                p.primary_hover = lch(0.71, a.c.max(0.08), h);
+                p.primary_pressed = lch(0.6, a.c.max(0.08), h);
+                p.text = lch(0.95, 0.006, h);
+                p.text_muted = with_contrast(lch(0.74, tint, h), p.surface, 4.5, true);
+                p.text_faint = lch(0.56, tint, h);
+                p.success = lch(0.74, 0.15, 155.0);
+                p.warning = lch(0.81, 0.14, 75.0);
+                p.danger = lch(0.67, 0.19, 25.0);
+                p.shadow = color::black();
+            } else {
+                p.background = lch(0.975, tint * 0.4, h);
+                p.surface = color::white();
+                p.surface_raised = color::white();
+                p.surface_sunken = lch(0.955, tint * 0.6, h);
+                p.border = lch(0.9, tint, h);
+                p.primary = lch(0.56, a.c.max(0.08), h);
+                p.primary_hover = lch(0.52, a.c.max(0.08), h);
+                p.primary_pressed = lch(0.47, a.c.max(0.08), h);
+                p.text = lch(0.22, tint, h);
+                p.text_muted = with_contrast(lch(0.5, tint, h), p.surface, 4.5, false);
+                p.text_faint = lch(0.68, tint, h);
+                p.success = lch(0.6, 0.15, 155.0);
+                p.warning = lch(0.7, 0.15, 70.0);
+                p.danger = lch(0.57, 0.2, 25.0);
+                p.shadow = lch(0.2, tint, h);
+            }
+            p.on_primary = if (color::white().contrast(p.primary) >= 3.0) { color::white() } else { lch(0.18, tint, h) };
+            p.focus = p.primary.with_alpha(0.55);
+            mut theme t = theme{ .mode = mode, .colors = p };
+            if (!is_dark) {
+                t.shadow = elevation_scale{
+                    .level1 = shadow_style{ .offset_y = 1.0, .blur = 3.0, .opacity = 0.12 },
+                    .level2 = shadow_style{ .offset_y = 4.0, .blur = 14.0, .opacity = 0.14 },
+                    .level3 = shadow_style{ .offset_y = 14.0, .blur = 36.0, .opacity = 0.2 },
+                };
+            }
+            return t;
+        }
+
+        static theme dark() {
+            return theme::from_accent(color::hex(0x4f7cff), brightness::dark);
+        }
+
+        static theme light() {
+            return theme::from_accent(color::hex(0x4f7cff), brightness::light);
+        }
+
+        static theme mix(theme& a, theme& b, f32 t) {
+            palette x = a.colors;
+            palette y = b.colors;
+            palette p = palette{
+                .background = x.background.mix(y.background, t),
+                .surface = x.surface.mix(y.surface, t),
+                .surface_raised = x.surface_raised.mix(y.surface_raised, t),
+                .surface_sunken = x.surface_sunken.mix(y.surface_sunken, t),
+                .primary = x.primary.mix(y.primary, t),
+                .primary_hover = x.primary_hover.mix(y.primary_hover, t),
+                .primary_pressed = x.primary_pressed.mix(y.primary_pressed, t),
+                .on_primary = x.on_primary.mix(y.on_primary, t),
+                .text = x.text.mix(y.text, t),
+                .text_muted = x.text_muted.mix(y.text_muted, t),
+                .text_faint = x.text_faint.mix(y.text_faint, t),
+                .border = x.border.mix(y.border, t),
+                .focus = x.focus.mix(y.focus, t),
+                .success = x.success.mix(y.success, t),
+                .warning = x.warning.mix(y.warning, t),
+                .danger = x.danger.mix(y.danger, t),
+                .shadow = x.shadow.mix(y.shadow, t),
+            };
+            return theme{
+                .mode = if (t < 0.5) { a.mode } else { b.mode },
+                .colors = p,
+                .typography = if (t < 0.5) { a.typography } else { b.typography },
+                .space = spacing_scale{
+                    .xs = mix_f32(a.space.xs, b.space.xs, t), .s = mix_f32(a.space.s, b.space.s, t), .m = mix_f32(a.space.m, b.space.m, t),
+                    .l = mix_f32(a.space.l, b.space.l, t), .xl = mix_f32(a.space.xl, b.space.xl, t), .xxl = mix_f32(a.space.xxl, b.space.xxl, t),
+                },
+                .radius = radius_scale{
+                    .small = mix_f32(a.radius.small, b.radius.small, t), .medium = mix_f32(a.radius.medium, b.radius.medium, t),
+                    .large = mix_f32(a.radius.large, b.radius.large, t), .full = mix_f32(a.radius.full, b.radius.full, t),
+                },
+                .shadow = elevation_scale{
+                    .level1 = mix_shadow(a.shadow.level1, b.shadow.level1, t),
+                    .level2 = mix_shadow(a.shadow.level2, b.shadow.level2, t),
+                    .level3 = mix_shadow(a.shadow.level3, b.shadow.level3, t),
+                },
+                .motion = motion_scale{ .fast = mix_f32(a.motion.fast, b.motion.fast, t), .normal = mix_f32(a.motion.normal, b.motion.normal, t), .slow = mix_f32(a.motion.slow, b.motion.slow, t) },
+                .controls = if (t < 0.5) { a.controls } else { b.controls },
+                .density = mix_f32(a.density, b.density, t),
+            };
+        }
+
+        text_style style(text_role role, color c) {
+            type_style s = this.typography.of(role);
+            return text_style{ .face = s.face, .size = s.size * this.density, .line_height = s.line_height, .color = c };
+        }
+
+        shadow_style elevation(u32 level) {
+            if (level == 1) { return this.shadow.level1; }
+            if (level == 2) { return this.shadow.level2; }
+            if (level >= 3) { return this.shadow.level3; }
+            return shadow_style{};
+        }
+    }
+
+    // ---- text -------------------------------------------------------------------------------------------
+
+    (char, usize) char_at(std::str text, usize at) {
+        u8 b0 = text.byte(at);
+        if (b0 < 0x80) {
+            return (cast::checked<char>(cast<u32>(b0)).value_or('?'), 1);
+        }
+        usize n = if ((b0 >> 5) == 6) { 2 } else if ((b0 >> 4) == 14) { 3 } else if ((b0 >> 3) == 30) { 4 } else { 0 };
+        if (n == 0 || at + n > text.len()) {
+            return ('\u{fffd}', 1);
+        }
+        mut u32 code = cast<u32>(b0) & (if (n == 2) { 0x1fu32 } else if (n == 3) { 0x0fu32 } else { 0x07u32 });
+        for (usize i : 1..n) {
+            u8 b = text.byte(at + i);
+            if ((b >> 6) != 2) {
+                return ('\u{fffd}', 1);
+            }
+            code = (code << 6) | (cast<u32>(b) & 0x3f);
+        }
+        return (cast::checked<char>(code).value_or('\u{fffd}'), n);
+    }
+
+    private compile_time u32 atlas_columns = 1024;
+
+    // A whole number of pixels as an f32.
+    private f32 whole_pixels(u32 v) {
+        return cast::round<f32>(cast<f64>(v));
+    }
+
+    class fonts {
+    public:
+        static fonts make() {
+            return fonts::from_faces(std::text::font::default_sans(), std::text::font::default_sans_semibold(), std::text::font::default_mono());
+        }
+
+        static fonts from_faces(std::text::font regular, std::text::font semibold, std::text::font mono) {
+            mut fonts f = fonts{ .regular_face = move regular, .semibold_face = move semibold, .mono_face = move mono };
+            f.atlas_data.resize(cast<usize>(atlas_columns) * 256, 0);
+            f.rows = 256;
+            return f;
+        }
+
+        vec2 measure(std::str text, text_style& style) mut {
+            mut f32 x = 0.0;
+            mut char previous = '\0';
+            mut usize at = 0;
+            while (at < text.len()) {
+                (char c, usize n) = char_at(text, at);
+                x += this.advance(style.face, previous, c, style.size);
+                previous = c;
+                at += n;
+            }
+            return vec2{ .x = x, .y = this.line_height(style) };
+        }
+
+        f32 line_height(text_style& style) {
+            return (style.size * style.line_height).round();
+        }
+
+        f32 baseline(text_style& style) {
+            std::text::line_metrics m = this.metrics(style.face);
+            f32 extent = (m.ascent - m.descent) * style.size;
+            return ((this.line_height(style) - extent) * 0.5 + m.ascent * style.size).round();
+        }
+
+        std::darray<text_line> wrap(std::str text, text_style& style, f32 width) mut {
+            mut std::darray<text_line> lines = default;
+            mut usize start = 0;
+            mut usize at = 0;
+            mut f32 x = 0.0;
+            mut char previous = '\0';
+            // The last space of the line: where it breaks, and the line's width before the space.
+            mut usize break_at = 0;
+            mut f32 break_width = 0.0;
+            mut bool has_break = false;
+            while (at < text.len()) {
+                (char c, usize n) = char_at(text, at);
+                if (c == '\n') {
+                    lines.push(text_line{ .start = start, .end = at, .width = x });
+                    at += n;
+                    start = at;
+                    x = 0.0;
+                    previous = '\0';
+                    has_break = false;
+                    continue;
+                }
+                f32 step = this.advance(style.face, previous, c, style.size);
+                if (c == ' ') {
+                    break_at = at;
+                    break_width = x;
+                    has_break = true;
+                } else if (x + step > width && has_break) {
+                    lines.push(text_line{ .start = start, .end = break_at, .width = break_width });
+                    start = break_at + 1;
+                    at = start;
+                    x = 0.0;
+                    previous = '\0';
+                    has_break = false;
+                    continue;
+                }
+                x += step;
+                previous = c;
+                at += n;
+            }
+            lines.push(text_line{ .start = start, .end = text.len(), .width = x });
+            return lines;
+        }
+
+        atlas_glyph glyph(font_face face, char c) mut {
+            u64 key = (cast<u64>(cast<u8>(face)) << 32) | cast<u64>(cast<u32>(c));
+            match (this.glyphs.get(key)) {
+                std::some(g) => return g,
+                std::none    => {},
+            }
+            std::text::distance_field field = {
+                std::text::font& f = this.font_of(face);
+                f.render_distance_field(f.glyph_index(c), glyph_atlas_size, glyph_atlas_spread)
+            };
+            mut atlas_glyph g = atlas_glyph{ .width = whole_pixels(field.width), .height = whole_pixels(field.height), .left = field.left, .top = field.top };
+            if (field.width > 0) {
+                if (this.pen_x + field.width + 1 > atlas_columns) {
+                    this.pen_x = 1;
+                    this.pen_y += this.row_height + 1;
+                    this.row_height = 0;
+                }
+                while (this.pen_y + field.height + 1 > this.rows) {
+                    this.rows *= 2;
+                    this.atlas_data.resize(cast<usize>(atlas_columns) * cast<usize>(this.rows), 0);
+                }
+                for (u32 y : 0..field.height) {
+                    for (u32 x : 0..field.width) {
+                        usize to = cast<usize>(this.pen_y + y) * cast<usize>(atlas_columns) + cast<usize>(this.pen_x + x);
+                        this.atlas_data[to] = field.pixels[cast<usize>(y) * cast<usize>(field.width) + cast<usize>(x)];
+                    }
+                }
+                g.x = whole_pixels(this.pen_x);
+                g.y = whole_pixels(this.pen_y);
+                this.pen_x += field.width + 1;
+                if (field.height > this.row_height) {
+                    this.row_height = field.height;
+                }
+                this.changes += 1;
+            }
+            _ = this.glyphs.insert(key, g);
+            return g;
+        }
+
+        f32 advance(font_face face, char previous, char c, f32 size) {
+            std::text::font& f = this.font_of(face);
+            u16 g = f.glyph_index(c);
+            mut f32 a = f.advance(g);
+            if (previous != '\0') {
+                a += f.kerning(f.glyph_index(previous), g);
+            }
+            return a * size;
+        }
+
+        std::text::line_metrics metrics(font_face face) {
+            return this.font_of(face).metrics();
+        }
+
+        u32 atlas_width() { return atlas_columns; }
+        u32 atlas_height() { return this.rows; }
+        std::darray<u8>& atlas_pixels() { return this.atlas_data; }
+        u64 version() { return this.changes; }
+
+    private:
+        std::text::font& font_of(font_face which) {
+            if (which == font_face::semibold) {
+                return this.semibold_face;
+            }
+            if (which == font_face::mono) {
+                return this.mono_face;
+            }
+            return this.regular_face;
+        }
+
+        std::text::font regular_face;
+        std::text::font semibold_face;
+        std::text::font mono_face;
+        std::hash_map<u64, atlas_glyph> glyphs = default;
+        std::darray<u8> atlas_data = default;
+        u32 rows = 0;
+        u32 pen_x = 1;
+        u32 pen_y = 1;
+        u32 row_height = 0;
+        u64 changes = 1;
+    }
+
+    // ---- drawing ------------------------------------------------------------------------------------------
+
+    struct texture {
+        static texture font_atlas() {
+            return texture{ .id = 0xffffffff };
+        }
+    }
+
+    // The corner of a box quad at (x, y): the vertex with the box's parameters.
+    private vertex box_corner(f32 x, f32 y, vec2 center, vec2 half, u32 packed, f32 radius, f32 stroke, f32 blur, shape_kind kind, f32 u, f32 v) {
+        return vertex{
+            .x = x, .y = y, .u = u, .v = v, .color = packed,
+            .local_x = x - center.x, .local_y = y - center.y,
+            .half_width = half.x, .half_height = half.y,
+            .radius = radius, .stroke = stroke, .blur = blur,
+            .kind = cast<f32>(cast<u8>(kind)),
+        };
+    }
+
+    struct draw_list {
+        void clear() mut {
+            this.vertices.clear();
+            this.indices.clear();
+            this.commands.clear();
+            this.clip_stack.clear();
+            this.texture_in_use = false;
+        }
+
+        void begin(vec2 size) mut {
+            this.clear();
+            this.screen = rect{ .width = size.x, .height = size.y };
+        }
+
+        void push_clip(rect r) mut {
+            rect inner = this.current_clip().intersection(r);
+            this.clip_stack.push(inner);
+        }
+
+        void pop_clip() mut {
+            _ = this.clip_stack.pop();
+        }
+
+        rect current_clip() {
+            if (this.clip_stack.is_empty()) {
+                return this.screen;
+            }
+            return this.clip_stack[this.clip_stack.len() - 1];
+        }
+
+        void fill(rect r, color c, f32 radius) mut {
+            add_box(mut this, r, c, c, radius, 0.0, 0.0);
+        }
+
+        void fill_gradient(rect r, color top, color bottom, f32 radius) mut {
+            add_box(mut this, r, top, bottom, radius, 0.0, 0.0);
+        }
+
+        void stroke(rect r, color c, f32 radius, f32 width) mut {
+            add_box(mut this, r, c, c, radius, width, 0.0);
+        }
+
+        void shadow(rect r, f32 radius, shadow_style s, color c) mut {
+            if (s.opacity <= 0.0) {
+                return;
+            }
+            rect moved = r.translated(vec2{ .y = s.offset_y });
+            color tinted = c.with_alpha(c.a * s.opacity);
+            add_box(mut this, moved, tinted, tinted, radius, 0.0, (s.blur * 0.5).max(0.5));
+        }
+
+        void circle(vec2 center, f32 radius, color c) mut {
+            add_box(mut this, rect{ .x = center.x - radius, .y = center.y - radius, .width = 2.0 * radius, .height = 2.0 * radius }, c, c, radius, 0.0, 0.0);
+        }
+
+        void circle_stroke(vec2 center, f32 radius, color c, f32 width) mut {
+            add_box(mut this, rect{ .x = center.x - radius, .y = center.y - radius, .width = 2.0 * radius, .height = 2.0 * radius }, c, c, radius, width, 0.0);
+        }
+
+        void line(vec2 from, vec2 to, f32 width, color c) mut {
+            vec2 d = to - from;
+            f32 length = d.length();
+            if (length <= 0.0) {
+                this.circle(from, width * 0.5, c);
+                return;
+            }
+            vec2 along = d / length;
+            vec2 across = along.perpendicular();
+            vec2 center = (from + to) * 0.5;
+            f32 hx = length * 0.5 + width * 0.5;
+            f32 hy = width * 0.5;
+            f32 ex = hx + 1.0;
+            f32 ey = hy + 1.0;
+            use_command(mut this, texture{}, false);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 packed = c.packed();
+            f32 kind = cast<f32>(cast<u8>(shape_kind::box));
+            std::array<f32, 4> sx = [-1.0, 1.0, 1.0, -1.0];
+            std::array<f32, 4> sy = [-1.0, -1.0, 1.0, 1.0];
+            for (usize i : 0..4) {
+                f32 lx = sx[i] * ex;
+                f32 ly = sy[i] * ey;
+                vec2 p = center + along * lx + across * ly;
+                this.vertices.push(vertex{
+                    .x = p.x, .y = p.y, .color = packed, .local_x = lx, .local_y = ly,
+                    .half_width = hx, .half_height = hy, .radius = hy, .kind = kind,
+                });
+            }
+            add_indices(mut this, base);
+        }
+
+        void image(texture picture, rect r, rect uv, color tint, f32 radius) mut {
+            shape_kind kind = if (radius > 0.0) { shape_kind::textured_box } else { shape_kind::textured };
+            use_command(mut this, picture, true);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            vec2 center = r.center();
+            vec2 half = r.size() * 0.5;
+            u32 packed = tint.packed();
+            f32 rr = radius.min(half.x.min(half.y));
+            this.vertices.push(box_corner(r.left(), r.top(), center, half, packed, rr, 0.0, 0.0, kind, uv.left(), uv.top()));
+            this.vertices.push(box_corner(r.right(), r.top(), center, half, packed, rr, 0.0, 0.0, kind, uv.right(), uv.top()));
+            this.vertices.push(box_corner(r.right(), r.bottom(), center, half, packed, rr, 0.0, 0.0, kind, uv.right(), uv.bottom()));
+            this.vertices.push(box_corner(r.left(), r.bottom(), center, half, packed, rr, 0.0, 0.0, kind, uv.left(), uv.bottom()));
+            add_indices(mut this, base);
+        }
+
+        void fill_polygon(std::span<vec2> points, color c) mut {
+            usize n = points.len();
+            if (n < 3) {
+                return;
+            }
+            mut vec2 centroid = default;
+            mut f32 doubled_area = 0.0;
+            for (usize i : 0..n) {
+                vec2 p = points[i];
+                vec2 q = points[(i + 1) % n];
+                centroid = centroid + p;
+                doubled_area += p.x * q.y - q.x * p.y;
+            }
+            centroid = centroid / cast::round<f32>(n);
+            f32 outward = if (doubled_area >= 0.0) { 1.0 } else { -1.0 };
+            use_command(mut this, texture{}, false);
+            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 inside = c.packed();
+            u32 outside = c.with_alpha(0.0).packed();
+            this.vertices.push(solid_vertex(centroid, inside));
+            for (usize i : 0..n) {
+                vec2 p = points[i];
+                vec2 before = edge_normal(points[(i + n - 1) % n], p, outward);
+                vec2 after = edge_normal(p, points[(i + 1) % n], outward);
+                vec2 sum = before + after;
+                vec2 m = if (sum.length() < 0.000001) { after } else { sum.normalized() };
+                f32 reach = 0.5 / m.dot(after).max(0.25);
+                this.vertices.push(solid_vertex(p - m * reach, inside));
+                this.vertices.push(solid_vertex(p + m * reach, outside));
+            }
+            for (usize i : 0..n) {
+                u32 a_in = base + 1 + cast::truncate<u32>(2 * i);
+                u32 b_in = base + 1 + cast::truncate<u32>(2 * ((i + 1) % n));
+                this.indices.push(base);
+                this.indices.push(a_in);
+                this.indices.push(b_in);
+                this.indices.push(a_in);
+                this.indices.push(a_in + 1);
+                this.indices.push(b_in + 1);
+                this.indices.push(a_in);
+                this.indices.push(b_in + 1);
+                this.indices.push(b_in);
+            }
+            count_indices(mut this, cast::truncate<u32>(9 * n));
+        }
+
+        void stroke_polygon(std::span<vec2> points, bool closed, f32 width, color c) mut {
+            usize n = points.len();
+            if (n < 2) {
+                return;
+            }
+            for (usize i : 0..(n - 1)) {
+                this.line(points[i], points[i + 1], width, c);
+            }
+            if (closed && n > 2) {
+                this.line(points[n - 1], points[0], width, c);
+            }
+        }
+
+        void star(vec2 center, f32 outer, f32 inner, u32 points, f32 rotation, color c) mut {
+            u32 count = points.max(2) * 2;
+            mut std::darray<vec2> corners = default;
+            for (u32 i : 0..count) {
+                f32 radius = if (i % 2 == 0) { outer } else { inner };
+                corners.push(around(center, radius, rotation + whole_pixels(i) * 360.0 / whole_pixels(count)));
+            }
+            this.fill_polygon(corners.as_span(), c);
+        }
+
+        void regular_polygon(vec2 center, f32 radius, u32 sides, f32 rotation, color c) mut {
+            u32 count = sides.max(3);
+            mut std::darray<vec2> corners = default;
+            for (u32 i : 0..count) {
+                corners.push(around(center, radius, rotation + whole_pixels(i) * 360.0 / whole_pixels(count)));
+            }
+            this.fill_polygon(corners.as_span(), c);
+        }
+
+        void tick(rect r, f32 width, color c) mut {
+            std::array<vec2, 3> stroke_points = [
+                vec2{ .x = r.left(), .y = r.top() + r.height * 0.55 },
+                vec2{ .x = r.left() + r.width * 0.38, .y = r.bottom() - r.height * 0.08 },
+                vec2{ .x = r.right(), .y = r.top() + r.height * 0.12 },
+            ];
+            this.stroke_polygon(stroke_points.as_span(), false, width, c);
+        }
+
+        void append(draw_list& other) mut {
+            u32 shift = cast::truncate<u32>(this.vertices.len());
+            u32 index_shift = cast::truncate<u32>(this.indices.len());
+            for (vertex v : other.vertices) {
+                this.vertices.push(v);
+            }
+            for (u32 i : other.indices) {
+                this.indices.push(i + shift);
+            }
+            for (draw_command cmd : other.commands) {
+                mut draw_command moved = cmd;
+                moved.first_index += index_shift;
+                this.commands.push(moved);
+            }
+            this.texture_in_use = other.texture_in_use;
+        }
+
+        f32 text(mut fonts& f, vec2 at, std::str content, text_style style) mut {
+            f32 baseline = at.y + f.baseline(style);
+            f32 k = style.size / glyph_atlas_size;
+            u32 packed = style.color.packed();
+            f32 kind = cast<f32>(cast<u8>(shape_kind::text));
+            mut f32 x = at.x;
+            mut char previous = '\0';
+            mut usize index = 0;
+            while (index < content.len()) {
+                (char c, usize n) = char_at(content, index);
+                x += f.advance(style.face, previous, c, style.size) - f.advance(style.face, '\0', c, style.size);
+                atlas_glyph g = f.glyph(style.face, c);
+                if (g.width > 0.0) {
+                    use_command(mut this, texture::font_atlas(), true);
+                    u32 base = cast::truncate<u32>(this.vertices.len());
+                    f32 x0 = x + g.left * k;
+                    f32 y0 = baseline + g.top * k;
+                    f32 x1 = x0 + g.width * k;
+                    f32 y1 = y0 + g.height * k;
+                    this.vertices.push(vertex{ .x = x0, .y = y0, .u = g.x, .v = g.y, .color = packed, .kind = kind });
+                    this.vertices.push(vertex{ .x = x1, .y = y0, .u = g.x + g.width, .v = g.y, .color = packed, .kind = kind });
+                    this.vertices.push(vertex{ .x = x1, .y = y1, .u = g.x + g.width, .v = g.y + g.height, .color = packed, .kind = kind });
+                    this.vertices.push(vertex{ .x = x0, .y = y1, .u = g.x, .v = g.y + g.height, .color = packed, .kind = kind });
+                    add_indices(mut this, base);
+                }
+                x += f.advance(style.face, '\0', c, style.size);
+                previous = c;
+                index += n;
+            }
+            return x - at.x;
+        }
+
+        f32 paragraph(mut fonts& f, vec2 at, f32 width, std::str content, text_style style) mut {
+            std::darray<text_line> lines = f.wrap(content, style, width);
+            f32 step = f.line_height(style);
+            mut f32 y = at.y;
+            for (text_line l : lines) {
+                _ = this.text(mut f, vec2{ .x = at.x, .y = y }, content.slice(l.start, l.end), style);
+                y += step;
+            }
+            return y - at.y;
+        }
+    }
+
+    // Makes the last command the one for the current clip and, when `textured`, for
+    // `picture`; starts a new command when it can't be.
+    private void use_command(mut draw_list& list, texture picture, bool textured) {
+        rect clip = list.current_clip();
+        if (!list.commands.is_empty()) {
+            usize last = list.commands.len() - 1;
+            draw_command cmd = list.commands[last];
+            bool same_clip = cmd.clip == clip;
+            if (same_clip && (!textured || !list.texture_in_use || cmd.image == picture)) {
+                if (textured && !list.texture_in_use) {
+                    list.commands[last].image = picture;
+                    list.texture_in_use = true;
+                }
+                return;
+            }
+        }
+        list.commands.push(draw_command{
+            .clip = clip,
+            .image = if (textured) { picture } else { texture{} },
+            .first_index = cast::truncate<u32>(list.indices.len()),
+        });
+        list.texture_in_use = textured;
+    }
+
+    // A vertex of a polygon: its colour only.
+    private vertex solid_vertex(vec2 p, u32 packed) {
+        return vertex{ .x = p.x, .y = p.y, .color = packed, .kind = cast<f32>(cast<u8>(shape_kind::solid)) };
+    }
+
+    // The unit normal of the edge from `p` to `q`, pointing out of a polygon of orientation `outward`.
+    private vec2 edge_normal(vec2 p, vec2 q, f32 outward) {
+        vec2 d = q - p;
+        f32 length = d.length();
+        if (length <= 0.0) {
+            return vec2{};
+        }
+        return vec2{ .x = d.y / length * outward, .y = -d.x / length * outward };
+    }
+
+    // The point `radius` from `center` in direction `degrees` (0 up, clockwise on screen).
+    private vec2 around(vec2 center, f32 radius, f32 degrees) {
+        f32 a = degrees * std::math::pi / 180.0;
+        return vec2{ .x = center.x + a.sin() * radius, .y = center.y - a.cos() * radius };
+    }
+
+    // `count` more indices in the last command.
+    private void count_indices(mut draw_list& list, u32 count) {
+        usize last = list.commands.len() - 1;
+        list.commands[last].index_count += count;
+    }
+
+    // Two triangles over the four vertices from `base`, into the last command.
+    private void add_indices(mut draw_list& list, u32 base) {
+        list.indices.push(base);
+        list.indices.push(base + 1);
+        list.indices.push(base + 2);
+        list.indices.push(base);
+        list.indices.push(base + 2);
+        list.indices.push(base + 3);
+        usize last = list.commands.len() - 1;
+        list.commands[last].index_count += 6;
+    }
+
+    // A box quad, one pixel larger than the box (blur: larger by the blur) for the edge.
+    private void add_box(mut draw_list& list, rect r, color top, color bottom, f32 radius, f32 width, f32 blur) {
+        if (r.width <= 0.0 || r.height <= 0.0) {
+            return;
+        }
+        use_command(mut list, texture{}, false);
+        u32 base = cast::truncate<u32>(list.vertices.len());
+        vec2 center = r.center();
+        vec2 half = r.size() * 0.5;
+        f32 rr = radius.min(half.x.min(half.y)).max(0.0);
+        rect e = r.expanded(1.0 + blur * 2.0);
+        u32 t = top.packed();
+        u32 b = bottom.packed();
+        list.vertices.push(box_corner(e.left(), e.top(), center, half, t, rr, width, blur, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.right(), e.top(), center, half, t, rr, width, blur, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.right(), e.bottom(), center, half, b, rr, width, blur, shape_kind::box, 0.0, 0.0));
+        list.vertices.push(box_corner(e.left(), e.bottom(), center, half, b, rr, width, blur, shape_kind::box, 0.0, 0.0));
+        add_indices(mut list, base);
+    }
+
+    // ---- painters and skins -------------------------------------------------------------------------
+
+    view class painter {
+    public:
+        f32 text(vec2 at, std::str content, text_style style) mut {
+            return this.list.text(mut this.faces, at, content, style);
+        }
+
+        void centered_text(rect r, std::str content, text_style style) mut {
+            vec2 extent = this.faces.measure(content, style);
+            vec2 at = vec2{ .x = r.x + ((r.width - extent.x) * 0.5).round(), .y = r.y + ((r.height - extent.y) * 0.5).round() };
+            _ = this.list.text(mut this.faces, at, content, style);
+        }
+
+        vec2 measure(std::str content, text_style style) mut {
+            return this.faces.measure(content, style);
+        }
+    }
+
+    struct slider_part {
+        vec2 knob_center() {
+            return vec2{ .x = this.bounds.x + this.bounds.width * this.fraction.clamp(0.0, 1.0), .y = this.bounds.y + this.bounds.height * 0.5 };
+        }
+    }
+
+    class skin {
+    public:
+        static skin standard() {
+            return skin{
+                .button = [](mut painter& p, button_part& b) { paint::button(mut p, b); },
+                .checkbox = [](mut painter& p, check_part& c) { paint::checkbox(mut p, c); },
+                .toggle = [](mut painter& p, toggle_part& t) { paint::toggle(mut p, t); },
+                .slider_track = [](mut painter& p, slider_part& s) { paint::slider_track(mut p, s); },
+                .slider_knob = [](mut painter& p, slider_part& s) { paint::slider_knob(mut p, s); },
+                .progress = [](mut painter& p, progress_part& g) { paint::progress(mut p, g); },
+                .section_header = [](mut painter& p, header_part& h) { paint::section_header(mut p, h); },
+                .window = [](mut painter& p, window_part& w) { paint::window(mut p, w); },
+                .card = [](mut painter& p, card_part& c) { paint::card(mut p, c); },
+                .tree_node = [](mut painter& p, header_part& h) { paint::tree_node(mut p, h); },
+                .field = [](mut painter& p, field_part& f) { paint::field(mut p, f); },
+                .popup = [](mut painter& p, popup_part& u) { paint::popup(mut p, u); },
+                .list_item = [](mut painter& p, item_part& i) { paint::list_item(mut p, i); },
+                .tooltip = [](mut painter& p, tooltip_part& t) { paint::tooltip(mut p, t); },
+                .scrollbar = [](mut painter& p, scrollbar_part& s) { paint::scrollbar(mut p, s); },
+                .segments = [](mut painter& p, segments_part& s) { paint::segments(mut p, s); },
+                .tab = [](mut painter& p, item_part& t) { paint::tab(mut p, t); },
+                .tab_bar = [](mut painter& p, tabs_part& t) { paint::tab_bar(mut p, t); },
+                .radio = [](mut painter& p, check_part& r) { paint::radio(mut p, r); },
+                .table_header = [](mut painter& p, table_header_part& h) { paint::table_header(mut p, h); },
+                .table_row = [](mut painter& p, table_row_part& r) { paint::table_row(mut p, r); },
+            };
+        }
+    }
+
+    // Black or white, whichever reads better on `bg`.
+    private color readable_on(color bg) {
+        return if (color::white().contrast(bg) >= color::black().contrast(bg)) { color::white() } else { color::black() };
+    }
+
+    // What a button of each variant is drawn with.
+    private struct button_colors {
+        color fill = default;
+        color hover = default;
+        color pressed = default;
+        color label = default;
+        color edge = default;
+        bool  raised = false;
+    }
+
+    private button_colors colors_of(theme& t, variant kind) {
+        palette c = t.colors;
+        f32 step = if (t.mode == brightness::dark) { 0.04 } else { -0.04 };
+        return match (kind) {
+            variant::primary => button_colors{ .fill = c.primary, .hover = c.primary_hover, .pressed = c.primary_pressed, .label = c.on_primary, .edge = color::transparent(), .raised = true },
+            variant::secondary => button_colors{ .fill = c.surface_raised, .hover = c.surface_raised.lighter(step), .pressed = c.surface_raised.lighter(-step * 0.5), .label = c.text, .edge = c.border },
+            variant::ghost => button_colors{ .fill = c.surface_raised.with_alpha(0.0), .hover = c.surface_raised, .pressed = c.surface_raised.lighter(-step * 0.5), .label = c.text, .edge = color::transparent() },
+            variant::outline => button_colors{ .fill = c.primary.with_alpha(0.0), .hover = c.primary.with_alpha(0.12), .pressed = c.primary.with_alpha(0.2), .label = c.primary, .edge = c.primary },
+            variant::danger => button_colors{ .fill = c.danger, .hover = c.danger.lighter(0.05), .pressed = c.danger.lighter(-0.05), .label = readable_on(c.danger), .edge = color::transparent(), .raised = true },
+            variant::success => button_colors{ .fill = c.success, .hover = c.success.lighter(0.05), .pressed = c.success.lighter(-0.05), .label = readable_on(c.success), .edge = color::transparent(), .raised = true },
+        };
+    }
+
+    // `c` faded when the widget is disabled.
+    private color enabled(color c, interaction& state) {
+        return if (state.disabled) { c.with_alpha(c.a * 0.45) } else { c };
+    }
+
+    namespace paint {
+        void button(mut painter& p, button_part& b) {
+            button_colors k = colors_of(p.tokens, b.kind);
+            button_style style = p.tokens.controls.button;
+            f32 radius = p.tokens.radius.medium;
+            rect r = b.bounds.translated(vec2{ .y = b.state.press });
+            color fill = enabled(k.fill.mix(k.hover, b.state.hover).mix(k.pressed, b.state.press), b.state);
+            if (k.raised && style.raised && !b.state.disabled) {
+                p.list.shadow(r, radius, p.tokens.elevation(1), p.tokens.colors.shadow.with_alpha(p.tokens.colors.shadow.a * (1.0 - b.state.press)));
+            }
+            if (style.gradient && fill.a > 0.0) {
+                p.list.fill_gradient(r, fill.lighter(0.03), fill, radius);
+            } else {
+                p.list.fill(r, fill, radius);
+            }
+            if (k.edge.a > 0.0) {
+                p.list.stroke(r, enabled(k.edge, b.state), radius, 1.0);
+            }
+            if (b.state.focused) {
+                p.list.stroke(r.expanded(3.0), p.tokens.colors.focus, radius + 3.0, 2.0);
+            }
+            p.centered_text(r, b.label, p.tokens.style(text_role::label, enabled(k.label, b.state)));
+        }
+
+        void checkbox(mut painter& p, check_part& c) {
+            palette colors = p.tokens.colors;
+            checkbox_style style = p.tokens.controls.checkbox;
+            f32 radius = p.tokens.radius.small.min(c.bounds.width * 0.3);
+            color edge = colors.border.mix(colors.text_muted, c.state.hover);
+            p.list.fill(c.bounds, enabled(colors.surface_sunken, c.state), radius);
+            p.list.stroke(c.bounds, enabled(edge, c.state), radius, 1.0);
+            if (c.amount > 0.0) {
+                p.list.fill(c.bounds, enabled(colors.primary.with_alpha(c.amount), c.state), radius);
+                color mark = enabled(colors.on_primary.with_alpha(c.amount), c.state);
+                f32 size = c.bounds.width;
+                match (style.mark) {
+                    tick_shape::tick => p.list.tick(c.bounds.shrunk(size * 0.24), (size * 0.12).max(1.5), mark),
+                    tick_shape::cross => {
+                        rect inner = c.bounds.shrunk(size * 0.28);
+                        p.list.line(inner.origin(), vec2{ .x = inner.right(), .y = inner.bottom() }, (size * 0.12).max(1.5), mark);
+                        p.list.line(vec2{ .x = inner.right(), .y = inner.top() }, vec2{ .x = inner.left(), .y = inner.bottom() }, (size * 0.12).max(1.5), mark);
+                    },
+                    tick_shape::square => p.list.fill(c.bounds.shrunk(size * 0.28), mark, radius * 0.5),
+                    tick_shape::dot => p.list.circle(c.bounds.center(), size * 0.2, mark),
+                }
+            }
+            if (c.state.focused) {
+                p.list.stroke(c.bounds.expanded(3.0), colors.focus, radius + 3.0, 2.0);
+            }
+        }
+
+        void toggle(mut painter& p, toggle_part& t) {
+            palette colors = p.tokens.colors;
+            rect r = t.bounds;
+            f32 radius = p.tokens.radius.full;
+            color off = colors.surface_sunken.mix(colors.border, 0.5 + 0.5 * t.state.hover);
+            p.list.fill(r, enabled(off.mix(colors.primary, t.amount), t.state), radius);
+            if (t.amount < 1.0) {
+                p.list.stroke(r, enabled(colors.text_faint.with_alpha(0.5 * (1.0 - t.amount)), t.state), radius, 1.0);
+            }
+            f32 inset = 3.0;
+            f32 knob = r.height - 2.0 * inset;
+            f32 x = std::math::lerp(r.x + inset, r.right() - inset - knob, t.amount);
+            rect k = rect{ .x = x, .y = r.y + inset, .width = knob, .height = knob };
+            p.list.shadow(k, radius, p.tokens.elevation(1), colors.shadow);
+            p.list.fill(k, enabled(color::white().mix(colors.text_muted, 0.15 * (1.0 - t.amount)), t.state), (radius - inset).max(0.0));
+            p.list.stroke(k, enabled(colors.border.with_alpha(0.8 * (1.0 - t.amount)), t.state), (radius - inset).max(0.0), 1.0);
+            if (t.state.focused) {
+                p.list.stroke(r.expanded(3.0), colors.focus, radius + 3.0, 2.0);
+            }
+        }
+
+        void slider_track(mut painter& p, slider_part& s) {
+            palette colors = p.tokens.colors;
+            slider_style style = p.tokens.controls.slider;
+            f32 h = style.track_height;
+            rect track = rect{ .x = s.bounds.x, .y = s.bounds.y + (s.bounds.height - h) * 0.5, .width = s.bounds.width, .height = h };
+            f32 radius = p.tokens.radius.full;
+            p.list.fill(track, enabled(colors.surface_sunken.mix(colors.border, 0.6), s.state), radius);
+            if (style.fill_track) {
+                rect done = rect{ .x = track.x, .y = track.y, .width = track.width * s.fraction.clamp(0.0, 1.0), .height = h };
+                p.list.fill(done, enabled(colors.primary, s.state), radius);
+            }
+        }
+
+        void slider_knob(mut painter& p, slider_part& s) {
+            slider_style style = p.tokens.controls.slider;
+            f32 size = style.knob_size * (1.0 + 0.12 * s.state.hover - 0.06 * s.state.press);
+            color fill = enabled(color::white(), s.state);
+            color edge = enabled(p.tokens.colors.primary, s.state);
+            knob(mut p, style.knob, s.knob_center(), size, fill, edge);
+            if (s.state.focused) {
+                p.list.circle_stroke(s.knob_center(), size * 0.5 + 4.0, p.tokens.colors.focus, 2.0);
+            }
+        }
+
+        void knob(mut painter& p, knob_shape shape, vec2 center, f32 size, color fill, color edge) {
+            f32 r = size * 0.5;
+            shadow_style lift = p.tokens.elevation(1);
+            match (shape) {
+                knob_shape::circle => {
+                    p.list.shadow(rect{ .x = center.x - r, .y = center.y - r, .width = size, .height = size }, r, lift, p.tokens.colors.shadow);
+                    p.list.circle(center, r, edge);
+                    p.list.circle(center, r - 2.0, fill);
+                },
+                knob_shape::square => {
+                    rect box = rect{ .x = center.x - r, .y = center.y - r, .width = size, .height = size };
+                    f32 radius = p.tokens.radius.small;
+                    p.list.shadow(box, radius, lift, p.tokens.colors.shadow);
+                    p.list.fill(box, edge, radius);
+                    p.list.fill(box.shrunk(2.0), fill, (radius - 2.0).max(0.0));
+                },
+                knob_shape::diamond => {
+                    p.list.regular_polygon(center, r * 1.2, 4, 0.0, edge);
+                    p.list.regular_polygon(center, r * 1.2 - 2.8, 4, 0.0, fill);
+                },
+                knob_shape::star => {
+                    p.list.star(center, r * 1.3, r * 0.6, 5, 0.0, edge);
+                    p.list.star(center, r * 1.3 - 3.0, r * 0.6 - 1.4, 5, 0.0, fill);
+                },
+                knob_shape::bar => {
+                    rect bar = rect{ .x = center.x - size * 0.2, .y = center.y - r * 1.1, .width = size * 0.4, .height = size * 1.1 };
+                    p.list.shadow(bar, 2.0, lift, p.tokens.colors.shadow);
+                    p.list.fill(bar, edge, p.tokens.radius.small.min(size * 0.2));
+                },
+            }
+        }
+
+        void progress(mut painter& p, progress_part& g) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.full;
+            p.list.fill(g.bounds, colors.surface_sunken.mix(colors.border, 0.6), radius);
+            f32 fraction = g.fraction.clamp(0.0, 1.0);
+            if (fraction > 0.0) {
+                rect done = rect{ .x = g.bounds.x, .y = g.bounds.y, .width = (g.bounds.width * fraction).max(g.bounds.height.min(g.bounds.width)), .height = g.bounds.height };
+                p.list.fill_gradient(done, colors.primary_hover, colors.primary, radius);
+            }
+        }
+
+        void section_header(mut painter& p, header_part& h) {
+            palette colors = p.tokens.colors;
+            if (h.state.hover > 0.0) {
+                p.list.fill(h.bounds, colors.surface_raised.with_alpha(h.state.hover), p.tokens.radius.small);
+            }
+            f32 arrow = 5.0;
+            vec2 center = vec2{ .x = h.bounds.x + 12.0, .y = h.bounds.y + h.bounds.height * 0.5 };
+            p.list.regular_polygon(center, arrow, 3, 90.0 + 90.0 * h.amount, colors.text_muted);
+            text_style style = p.tokens.style(text_role::label, colors.text);
+            f32 height = p.faces.line_height(style);
+            _ = p.text(vec2{ .x = h.bounds.x + 24.0, .y = h.bounds.y + ((h.bounds.height - height) * 0.5).round() }, h.label, style);
+        }
+
+        void window(mut painter& p, window_part& w) {
+            palette colors = p.tokens.colors;
+            window_style style = p.tokens.controls.window;
+            f32 radius = p.tokens.radius.large;
+            p.list.shadow(w.bounds, radius, p.tokens.elevation(style.elevation), colors.shadow);
+            p.list.fill(w.bounds, colors.surface, radius);
+            if (style.separate_title) {
+                p.list.fill(w.title_bar, colors.surface_raised, radius);
+                f32 corner = radius.min(w.title_bar.height * 0.5);
+                p.list.fill(rect{ .x = w.title_bar.x, .y = w.title_bar.bottom() - corner, .width = w.title_bar.width, .height = corner }, colors.surface_raised, 0.0);
+            }
+            p.list.line(vec2{ .x = w.title_bar.x + 1.0, .y = w.title_bar.bottom() }, vec2{ .x = w.title_bar.right() - 1.0, .y = w.title_bar.bottom() }, 1.0, colors.border);
+            p.list.stroke(w.bounds, colors.border, radius, 1.0);
+            text_style style_of_title = p.tokens.style(text_role::title, colors.text);
+            f32 height = p.faces.line_height(style_of_title);
+            _ = p.text(vec2{ .x = w.title_bar.x + style.padding, .y = w.title_bar.y + ((w.title_bar.height - height) * 0.5).round() }, w.title, style_of_title);
+            color grip = colors.text_faint.with_alpha(0.35 + 0.65 * w.grip.hover);
+            vec2 corner = vec2{ .x = w.bounds.right() - 4.0, .y = w.bounds.bottom() - 4.0 };
+            for (u32 i : 1..4) {
+                f32 d = 4.0 * cast<f32>(cast::truncate<u16>(i));
+                p.list.line(vec2{ .x = corner.x - d, .y = corner.y }, vec2{ .x = corner.x, .y = corner.y - d }, 1.2, grip);
+            }
+        }
+
+        void card(mut painter& p, card_part& c) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.medium;
+            p.list.fill(c.bounds, colors.surface_raised, radius);
+            p.list.stroke(c.bounds, colors.border.with_alpha(0.7), radius, 1.0);
+        }
+
+        void tree_node(mut painter& p, header_part& h) {
+            palette colors = p.tokens.colors;
+            if (h.state.hover > 0.0) {
+                p.list.fill(h.bounds, colors.surface_raised.with_alpha(0.7 * h.state.hover), p.tokens.radius.small);
+            }
+            vec2 center = vec2{ .x = h.bounds.x + 9.0, .y = h.bounds.y + h.bounds.height * 0.5 };
+            p.list.regular_polygon(center, 4.0, 3, 90.0 + 90.0 * h.amount, colors.text_faint.mix(colors.text, h.state.hover));
+            text_style style = p.tokens.style(text_role::body, colors.text);
+            f32 height = p.faces.line_height(style);
+            _ = p.text(vec2{ .x = h.bounds.x + 20.0, .y = h.bounds.y + ((h.bounds.height - height) * 0.5).round() }, h.label, style);
+            if (h.state.focused) {
+                p.list.stroke(h.bounds.expanded(2.0), colors.focus, p.tokens.radius.small + 2.0, 2.0);
+            }
+        }
+
+        void field(mut painter& p, field_part& f) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.small.min(f.bounds.height * 0.5);
+            p.list.fill(f.bounds, enabled(colors.surface_sunken, f.state), radius);
+            color edge = if (f.editing) { colors.primary } else { colors.border.mix(colors.text_muted, f.state.hover) };
+            p.list.stroke(f.bounds, enabled(edge, f.state), radius, if (f.editing) { 1.5 } else { 1.0 });
+            if (f.state.focused && !f.editing) {
+                p.list.stroke(f.bounds.expanded(3.0), colors.focus, radius + 3.0, 2.0);
+            }
+        }
+
+        void popup(mut painter& p, popup_part& u) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.medium;
+            p.list.shadow(u.bounds, radius, p.tokens.elevation(2), colors.shadow);
+            p.list.fill(u.bounds, colors.surface_raised, radius);
+            p.list.stroke(u.bounds, colors.border, radius, 1.0);
+        }
+
+        void list_item(mut painter& p, item_part& i) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.small;
+            if (i.selected) {
+                p.list.fill(i.bounds, colors.primary.with_alpha(0.16), radius);
+            }
+            if (i.state.hover > 0.0) {
+                p.list.fill(i.bounds, colors.text.with_alpha(0.07 * i.state.hover), radius);
+            }
+            text_style style = p.tokens.style(text_role::body, if (i.selected) { colors.primary } else { colors.text });
+            f32 height = p.faces.line_height(style);
+            _ = p.text(vec2{ .x = i.bounds.x + 10.0, .y = i.bounds.y + ((i.bounds.height - height) * 0.5).round() }, i.label, style);
+            if (i.selected) {
+                f32 size = 10.0;
+                p.list.tick(rect{ .x = i.bounds.right() - 10.0 - size, .y = i.bounds.y + (i.bounds.height - size) * 0.5, .width = size, .height = size }, 1.8, colors.primary);
+            }
+        }
+
+        void tooltip(mut painter& p, tooltip_part& t) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.small;
+            color back = colors.text;
+            p.list.shadow(t.bounds, radius, p.tokens.elevation(1), colors.shadow);
+            p.list.fill(t.bounds, back, radius);
+            p.centered_text(t.bounds, t.text, p.tokens.style(text_role::caption, colors.background));
+        }
+
+        void tab(mut painter& p, item_part& t) {
+            palette colors = p.tokens.colors;
+            if (t.state.hover > 0.0) {
+                p.list.fill(t.bounds.shrunk(2.0), colors.text.with_alpha(0.05 * t.state.hover), p.tokens.radius.small);
+            }
+            color c = if (t.selected) { colors.text } else { colors.text_muted.mix(colors.text, 0.6 * t.state.hover) };
+            p.centered_text(t.bounds, t.label, p.tokens.style(text_role::label, c));
+            if (t.state.focused) {
+                p.list.stroke(t.bounds.shrunk(1.0), colors.focus, p.tokens.radius.small, 2.0);
+            }
+        }
+
+        void tab_bar(mut painter& p, tabs_part& t) {
+            palette colors = p.tokens.colors;
+            p.list.fill(rect{ .x = t.bar.x, .y = t.bar.bottom() - 1.0, .width = t.bar.width, .height = 1.0 }, colors.border, 0.0);
+            p.list.fill(t.indicator, colors.primary, p.tokens.radius.full);
+        }
+
+        void radio(mut painter& p, check_part& r) {
+            palette colors = p.tokens.colors;
+            vec2 center = r.bounds.center();
+            f32 radius = r.bounds.width * 0.5;
+            p.list.circle(center, radius, enabled(colors.surface_sunken, r.state));
+            p.list.circle_stroke(center, radius, enabled(colors.border.mix(colors.text_muted, r.state.hover).mix(colors.primary, r.amount), r.state), 1.5);
+            if (r.amount > 0.0) {
+                p.list.circle(center, radius * 0.5 * r.amount, enabled(colors.primary, r.state));
+            }
+            if (r.state.focused) {
+                p.list.circle_stroke(center, radius + 3.0, colors.focus, 2.0);
+            }
+        }
+
+        void table_header(mut painter& p, table_header_part& h) {
+            palette colors = p.tokens.colors;
+            p.list.fill(h.bounds, colors.surface_raised, 0.0);
+            p.list.fill(rect{ .x = h.bounds.x, .y = h.bounds.bottom() - 1.0, .width = h.bounds.width, .height = 1.0 }, colors.border, 0.0);
+        }
+
+        void table_row(mut painter& p, table_row_part& r) {
+            palette colors = p.tokens.colors;
+            if (r.index % 2 == 1) {
+                p.list.fill(r.bounds, colors.text.with_alpha(0.025), 0.0);
+            }
+            if (r.state.hover > 0.0) {
+                p.list.fill(r.bounds, colors.text.with_alpha(0.06 * r.state.hover), 0.0);
+            }
+            if (r.selected) {
+                p.list.fill(r.bounds, colors.primary.with_alpha(0.2), 0.0);
+                p.list.fill(rect{ .x = r.bounds.x, .y = r.bounds.y, .width = 2.0, .height = r.bounds.height }, colors.primary, 0.0);
+            }
+        }
+
+        void segments(mut painter& p, segments_part& s) {
+            palette colors = p.tokens.colors;
+            f32 radius = p.tokens.radius.small.min(s.track.height * 0.5);
+            p.list.fill(s.track, colors.surface_sunken, radius);
+            p.list.stroke(s.track, colors.border.mix(colors.text_muted, s.state.hover * 0.5), radius, 1.0);
+            rect thumb = s.thumb.shrunk(2.0);
+            p.list.shadow(thumb, (radius - 2.0).max(0.0), p.tokens.elevation(1), colors.shadow);
+            p.list.fill(thumb, colors.surface_raised.lighter(if (p.tokens.mode == brightness::dark) { 0.04 } else { 0.0 }), (radius - 2.0).max(0.0));
+            p.list.stroke(thumb, colors.border, (radius - 2.0).max(0.0), 1.0);
+            if (s.state.focused) {
+                p.list.stroke(s.track.expanded(3.0), colors.focus, radius + 3.0, 2.0);
+            }
+        }
+
+        void scrollbar(mut painter& p, scrollbar_part& s) {
+            palette colors = p.tokens.colors;
+            f32 grow = 2.0 * s.state.hover;
+            rect thumb = rect{ .x = s.thumb.x - grow, .y = s.thumb.y, .width = s.thumb.width + grow, .height = s.thumb.height };
+            if (s.state.hover > 0.0) {
+                p.list.fill(s.track, colors.text.with_alpha(0.05 * s.state.hover), p.tokens.radius.full);
+            }
+            p.list.fill(thumb, colors.text_faint.with_alpha(0.45 + 0.4 * s.state.hover + 0.15 * s.state.press), p.tokens.radius.full);
+        }
+    }
+
+    // ---- sizes ------------------------------------------------------------------------------------------
+
+    length px(f32 pixels) {
+        return length{ .kind = length_kind::px, .value = pixels };
+    }
+
+    length fill(f32 weight) {
+        return length{ .kind = length_kind::fill, .value = weight };
+    }
+
+    length percent(f32 p) {
+        return length{ .kind = length_kind::percent, .value = p };
+    }
+
+    // ---- input ------------------------------------------------------------------------------------------
+
+    struct input {
+        bool pressed(key k) {
+            for (key_press press : this.keys) {
+                if (press.key == k) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool pressed_with_control(key k) {
+            for (key_press press : this.keys) {
+                if (press.key == k && press.control) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    // ---- text editing -----------------------------------------------------------------------------------
+
+    // The start of the character before byte `at`.
+    private usize previous_boundary(std::str text, usize at) {
+        if (at == 0) {
+            return 0;
+        }
+        mut usize i = at - 1;
+        while (i > 0 && (text.byte(i) & 0xc0) == 0x80) {
+            i -= 1;
+        }
+        return i;
+    }
+
+    // The start of the character after the one at byte `at`.
+    private usize next_boundary(std::str text, usize at) {
+        if (at >= text.len()) {
+            return text.len();
+        }
+        mut usize i = at + 1;
+        while (i < text.len() && (text.byte(i) & 0xc0) == 0x80) {
+            i += 1;
+        }
+        return i;
+    }
+
+    private bool is_space_at(std::str text, usize at) {
+        u8 b = text.byte(at);
+        return b == 32 || b == 9 || b == 10;
+    }
+
+    // The start of the word before `at` (spaces before it skipped).
+    private usize previous_word(std::str text, usize at) {
+        mut usize i = at;
+        while (i > 0 && is_space_at(text, previous_boundary(text, i))) {
+            i = previous_boundary(text, i);
+        }
+        while (i > 0 && !is_space_at(text, previous_boundary(text, i))) {
+            i = previous_boundary(text, i);
+        }
+        return i;
+    }
+
+    // The end of the word after `at` (spaces before it skipped).
+    private usize next_word(std::str text, usize at) {
+        mut usize i = at;
+        while (i < text.len() && is_space_at(text, i)) {
+            i = next_boundary(text, i);
+        }
+        while (i < text.len() && !is_space_at(text, i)) {
+            i = next_boundary(text, i);
+        }
+        return i;
+    }
+
+    // `text` with the bytes from..to replaced by `with`.
+    private std::string spliced(std::str text, usize from, usize to, std::str with) {
+        mut std::string out = std::string::with_capacity(text.len() - (to - from) + with.len());
+        out.push_str(text.slice(0, from));
+        out.push_str(with);
+        out.push_str(text.slice(to, text.len()));
+        return out;
+    }
+
+    // Only the printable characters of `typed` (no control characters).
+    private std::string printable(std::str typed) {
+        mut std::string out = default;
+        mut usize i = 0;
+        while (i < typed.len()) {
+            (char c, usize n) = char_at(typed, i);
+            if (cast<u32>(c) >= 32 && cast<u32>(c) != 127) {
+                out.push(c);
+            }
+            i += n;
+        }
+        return out;
+    }
+
+    struct text_edit {
+        bool has_selection() {
+            return this.cursor != this.anchor;
+        }
+
+        (usize, usize) selection() {
+            return if (this.cursor < this.anchor) { (this.cursor, this.anchor) } else { (this.anchor, this.cursor) };
+        }
+
+        void select_all(std::str text) mut {
+            this.anchor = 0;
+            this.cursor = text.len();
+        }
+
+        void place(std::str text, usize at, bool extend) mut {
+            this.cursor = at.min(text.len());
+            if (!extend) {
+                this.anchor = this.cursor;
+            }
+        }
+
+        bool apply(mut std::string& text, input& in, mut std::string& clipboard) mut {
+            this.cursor = this.cursor.min(text.len());
+            this.anchor = this.anchor.min(text.len());
+            mut bool changed = false;
+            for (key_press k : in.keys) {
+                (usize from, usize to) = this.selection();
+                if (k.control && k.key == key::a) {
+                    this.select_all(text.as_str());
+                } else if (k.control && (k.key == key::c || k.key == key::x)) {
+                    if (from < to) {
+                        clipboard.clear();
+                        clipboard.push_str(text.as_str().slice(from, to));
+                        if (k.key == key::x) {
+                            replace_selection(mut this, mut text, "");
+                            changed = true;
+                        }
+                    }
+                } else if (k.control && k.key == key::v) {
+                    if (!clipboard.is_empty()) {
+                        std::string pasted = printable(clipboard.as_str());
+                        replace_selection(mut this, mut text, pasted.as_str());
+                        changed = true;
+                    }
+                } else if (k.control && k.key == key::z) {
+                    match (this.undo_steps.pop()) {
+                        std::some(before) => {
+                            this.redo_steps.push(text.clone());
+                            text = before;
+                            this.cursor = text.len();
+                            this.anchor = this.cursor;
+                            changed = true;
+                        },
+                        std::none => {},
+                    }
+                } else if (k.control && k.key == key::y) {
+                    match (this.redo_steps.pop()) {
+                        std::some(after) => {
+                            this.undo_steps.push(text.clone());
+                            text = after;
+                            this.cursor = text.len();
+                            this.anchor = this.cursor;
+                            changed = true;
+                        },
+                        std::none => {},
+                    }
+                } else if (k.key == key::left || k.key == key::right) {
+                    bool left = k.key == key::left;
+                    if (from < to && !k.shift) {
+                        this.cursor = if (left) { from } else { to };
+                    } else if (k.control) {
+                        this.cursor = if (left) { previous_word(text.as_str(), this.cursor) } else { next_word(text.as_str(), this.cursor) };
+                    } else {
+                        this.cursor = if (left) { previous_boundary(text.as_str(), this.cursor) } else { next_boundary(text.as_str(), this.cursor) };
+                    }
+                    if (!k.shift) {
+                        this.anchor = this.cursor;
+                    }
+                } else if (k.key == key::home || k.key == key::end) {
+                    this.cursor = if (k.key == key::home) { 0 } else { text.len() };
+                    if (!k.shift) {
+                        this.anchor = this.cursor;
+                    }
+                } else if (k.key == key::backspace || k.key == key::delete) {
+                    if (from == to) {
+                        bool back = k.key == key::backspace;
+                        usize other = if (back && k.control) { previous_word(text.as_str(), this.cursor) }
+                                      else if (back) { previous_boundary(text.as_str(), this.cursor) }
+                                      else if (k.control) { next_word(text.as_str(), this.cursor) }
+                                      else { next_boundary(text.as_str(), this.cursor) };
+                        this.anchor = other;
+                    }
+                    if (this.has_selection()) {
+                        replace_selection(mut this, mut text, "");
+                        changed = true;
+                    }
+                }
+            }
+            if (!in.typed.is_empty()) {
+                std::string typed = printable(in.typed.as_str());
+                if (!typed.is_empty()) {
+                    replace_selection(mut this, mut text, typed.as_str());
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+    }
+
+    // Replaces the selection of `edit` in `text` by `with` (an undo step first); the caret ends
+    // after the inserted text.
+    private void replace_selection(mut text_edit& edit, mut std::string& text, std::str with) {
+        (usize from, usize to) = edit.selection();
+        edit.undo_steps.push(text.clone());
+        if (edit.undo_steps.len() > 100) {
+            _ = edit.undo_steps.remove(0);
+        }
+        edit.redo_steps.clear();
+        std::string next = spliced(text.as_str(), from, to, with);
+        text = next;
+        edit.cursor = from + with.len();
+        edit.anchor = edit.cursor;
+    }
+
+    // ---- UIs from types: the checks of the annotations ----------------------------------------------------
+
+    struct range {
+        compile_time check (annotation.min <= annotation.max)
+            else f"@ui::range: min ({annotation.min}) is larger than max ({annotation.max})";
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@ui::range works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct step {
+        compile_time check (annotation.value > 0.0) else "@ui::step: the step must be larger than 0";
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@ui::step works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct unit {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@ui::unit works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct widget {
+        compile_time check {
+            compile_time type t = annotated.type;
+            bool number = std::is_integer<t>() || std::is_float<t>();
+            bool boolean = std::is_same<t, bool>();
+            bool choice = std::meta::is_enum<t>();
+            widget_kind k = annotation.kind;
+            if ((k == widget_kind::slider || k == widget_kind::drag) && !number) {
+                std::compile_error(f"@ui::widget: a slider or drag field needs a number; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+            if ((k == widget_kind::checkbox || k == widget_kind::toggle) && !boolean) {
+                std::compile_error(f"@ui::widget: a checkbox or toggle needs a bool; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+            if ((k == widget_kind::segmented || k == widget_kind::combo) && !choice) {
+                std::compile_error(f"@ui::widget: segments or a combo need an enum; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    // ---- UIs from types: field paths ------------------------------------------------------------------
+
+    template<type T>
+    compile_time path_class class_of_type() {
+        if (std::is_integer<T>() || std::is_float<T>()) {
+            return path_class::number;
+        }
+        if (std::is_same<T, bool>()) {
+            return path_class::boolean;
+        }
+        if (std::is_same<T, std::string>()) {
+            return path_class::text;
+        }
+        if (std::meta::is_enum<T>()) {
+            return path_class::choice;
+        }
+        if (is_list<T>()) {
+            return path_class::list;
+        }
+        if (std::meta::is_struct<T>() || std::meta::is_class<T>()) {
+            return path_class::group;
+        }
+        return path_class::other;
+    }
+
+    // The first part of a path and the rest after its '.'.
+    private compile_time (std::str, std::str) split_path(std::str path) {
+        return match (path.find(".")) {
+            std::some(i) => (path.slice(0, i), path.slice(i + 1, path.len())),
+            std::none    => (path, ""),
+        };
+    }
+
+    template<type T>
+    compile_time bool is_list() {
+        if compile_time (std::meta::template_args<T>().len() >= 1) {
+            compile_time type e = std::meta::template_args<T>()[0];
+            return std::is_same<T, std::darray<e>>();
+        } else {
+            return false;
+        }
+    }
+
+    template<type T>
+    compile_time bool is_optional() {
+        if compile_time (std::meta::template_args<T>().len() >= 1) {
+            compile_time type e = std::meta::template_args<T>()[0];
+            return std::is_same<T, std::option<e>>();
+        } else {
+            return false;
+        }
+    }
+
+    // `rest` in the elements of the list type `L` (after `name[]`).
+    private template<type L>
+    compile_time path_class class_in_list(std::str rest) {
+        if compile_time (is_list<L>()) {
+            compile_time type e = std::meta::template_args<L>()[0];
+            if (rest.is_empty()) {
+                return class_of_type<e>();
+            }
+            if compile_time (std::meta::is_struct<e>() || std::meta::is_class<e>()) {
+                return class_of_path<e>(rest);
+            } else {
+                return path_class::missing;
+            }
+        } else {
+            return path_class::missing;
+        }
+    }
+
+    template<type T>
+    compile_time path_class class_of_path(std::str path) {
+        (std::str whole, std::str rest) = split_path(path);
+        bool elements = whole.ends_with("[]");
+        std::str head = if (elements) { whole.slice(0, whole.len() - 2) } else { whole };
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if (f.name == head) {
+                compile_time type ft = f.type;
+                if (elements) {
+                    return class_in_list<ft>(rest);
+                }
+                if (rest.is_empty()) {
+                    return class_of_type<ft>();
+                }
+                if compile_time (std::meta::is_struct<ft>() || std::meta::is_class<ft>()) {
+                    return class_of_path<ft>(rest);
+                } else {
+                    return path_class::missing;
+                }
+            }
+        }
+        return path_class::missing;
+    }
+
+    // The edit distance of two names (at most 64 bytes; longer ones are far from everything).
+    private compile_time usize name_distance(std::str a, std::str b) {
+        if (a.len() > 64 || b.len() > 64) {
+            return 99;
+        }
+        mut std::array<usize, 65> previous = default;
+        mut std::array<usize, 65> current = default;
+        for (usize j : 0..=b.len()) {
+            previous[j] = j;
+        }
+        for (usize i : 1..=a.len()) {
+            current[0] = i;
+            for (usize j : 1..=b.len()) {
+                usize cost = if (a.slice(i - 1, i) == b.slice(j - 1, j)) { 0 } else { 1 };
+                current[j] = (previous[j] + 1).min(current[j - 1] + 1).min(previous[j - 1] + cost);
+            }
+            previous = current;
+        }
+        return previous[b.len()];
+    }
+
+    template<type T>
+    compile_time std::static_str nearest_field(std::str path) {
+        (std::str whole, std::str rest) = split_path(path);
+        std::str head = if (whole.ends_with("[]")) { whole.slice(0, whole.len() - 2) } else { whole };
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            if (f.name == head) {
+                compile_time type ft = f.type;
+                if compile_time (is_list<ft>()) {
+                    compile_time type et = std::meta::template_args<ft>()[0];
+                    if compile_time (std::meta::is_struct<et>() || std::meta::is_class<et>()) {
+                        return if (rest.is_empty()) { "" } else { nearest_field<et>(rest) };
+                    } else {
+                        return "";
+                    }
+                }
+                if compile_time (std::meta::is_struct<ft>() || std::meta::is_class<ft>()) {
+                    return if (rest.is_empty()) { "" } else { nearest_field<ft>(rest) };
+                } else {
+                    return "";
+                }
+            }
+        }
+        mut std::static_str best = "";
+        mut usize best_distance = 3;
+        for (std::meta::field f : std::meta::fields<T>()) {
+            usize d = name_distance(head, f.name);
+            if (d < best_distance) {
+                best = f.name;
+                best_distance = d;
+            }
+        }
+        return best;
+    }
+
+    // The class of a field in an error message.
+    private compile_time std::static_str class_word(path_class c) {
+        return match (c) {
+            path_class::missing => "missing",
+            path_class::number  => "number",
+            path_class::text    => "text",
+            path_class::boolean => "bool",
+            path_class::choice  => "enum",
+            path_class::group   => "struct",
+            path_class::list    => "list",
+            path_class::other   => "other",
+        };
+    }
+
+    template<type T>
+    compile_time bool require_path(std::str path, path_class wanted, std::str what) {
+        path_class found = class_of_path<T>(path);
+        if (found == path_class::missing) {
+            std::static_str near = nearest_field<T>(path);
+            if (near.is_empty()) {
+                std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'");
+            } else {
+                std::compile_error(f"'{std::type_name<T>()}' has no field '{path}'; did you mean '{near}'?");
+            }
+            return false;
+        }
+        if (wanted != path_class::other && found != wanted) {
+            std::compile_error(f"{what} needs a {class_word(wanted)} field; '{path}' is a {class_word(found)} field of '{std::type_name<T>()}'");
+            return false;
+        }
+        return true;
+    }
+
+    std::string label_of(std::str name) {
+        mut std::string out = std::string::with_capacity(name.len());
+        mut usize i = 0;
+        while (i < name.len()) {
+            (char c, usize n) = char_at(name, i);
+            if (c == '_') {
+                out.push(' ');
+            } else if (i == 0 && cast<u32>(c) >= 97 && cast<u32>(c) <= 122) {
+                out.push(cast::checked<char>(cast<u32>(c) - 32).value_or(c));
+            } else {
+                out.push(c);
+            }
+            i += n;
+        }
+        return out;
+    }
+
+    // ---- UIs from types: rules ------------------------------------------------------------------------
+
+    // The number of characters (not bytes) of `text`.
+    private usize char_count(std::str text) {
+        mut usize n = 0;
+        for (usize i : 0..text.len()) {
+            if ((text.byte(i) & 0xc0) != 0x80) {
+                n += 1;
+            }
+        }
+        return n;
+    }
+
+    namespace rules {
+        text_rule not_empty() {
+            return [](std::str t) {
+                return if (t.trim().is_empty()) { verdict::error(std::string::from("must not be empty")) } else { verdict::ok };
+            };
+        }
+
+        text_rule min_length(usize n) {
+            return [n](std::str t) {
+                return if (char_count(t) >= n) { verdict::ok } else { verdict::error(std::format(f"at least {n} characters")) };
+            };
+        }
+
+        text_rule max_length(usize n) {
+            return [n](std::str t) {
+                return if (char_count(t) <= n) { verdict::ok } else { verdict::error(std::format(f"at most {n} characters")) };
+            };
+        }
+
+        text_rule email() {
+            return [](std::str t) {
+                bool spaces = t.contains(" ");
+                bool shaped = match (t.find("@")) {
+                    std::some(at) => at > 0 && match (t.slice(at + 1, t.len()).find(".")) {
+                        std::some(dot) => dot > 0 && at + 1 + dot + 1 < t.len(),
+                        std::none      => false,
+                    },
+                    std::none => false,
+                };
+                return if (shaped && !spaces) { verdict::ok } else { verdict::error(std::string::from("not an email address")) };
+            };
+        }
+
+        number_rule at_least(f64 min) {
+            return [min](f64 v) {
+                return if (v >= min) { verdict::ok } else { verdict::error(std::format(f"at least {min}")) };
+            };
+        }
+
+        number_rule at_most(f64 max) {
+            return [max](f64 v) {
+                return if (v <= max) { verdict::ok } else { verdict::error(std::format(f"at most {max}")) };
+            };
+        }
+    }
+
+    // ---- UIs from types: results and forms ------------------------------------------------------------
+
+    struct edit {
+        void merge(edit other) mut {
+            if (other.changed || other.committed) {
+                this.path = other.path.clone();
+            }
+            this.changed = this.changed || other.changed;
+            this.committed = this.committed || other.committed;
+            this.valid = this.valid && other.valid;
+        }
+    }
+
+    template<type T>
+    class form {
+    public:
+        static form<T> annotated() {
+            return form<T>{};
+        }
+
+        form<T> label(compile_time std::static_str path, std::str text) move {
+            if compile_time (!require_path<T>(path, path_class::other, "a label")) {}
+            this.entry(path).label = std::some(std::string::from(text));
+            return this;
+        }
+
+        form<T> tooltip(compile_time std::static_str path, std::str text) move {
+            if compile_time (!require_path<T>(path, path_class::other, "a tooltip")) {}
+            this.entry(path).tooltip = std::some(std::string::from(text));
+            return this;
+        }
+
+        form<T> unit(compile_time std::static_str path, std::str text) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a unit")) {}
+            this.entry(path).unit = std::some(std::string::from(text));
+            return this;
+        }
+
+        form<T> group(compile_time std::static_str path, std::str name) move {
+            if compile_time (!require_path<T>(path, path_class::other, "a group")) {}
+            this.entry(path).group = std::some(std::string::from(name));
+            return this;
+        }
+
+        form<T> range(compile_time std::static_str path, f64 low, f64 high) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a range")) {}
+            mut field_override& o = this.entry(path);
+            o.min = std::some(low);
+            o.max = std::some(high);
+            return this;
+        }
+
+        form<T> min(compile_time std::static_str path, f64 value) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a minimum")) {}
+            this.entry(path).min = std::some(value);
+            return this;
+        }
+
+        form<T> max(compile_time std::static_str path, f64 value) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a maximum")) {}
+            this.entry(path).max = std::some(value);
+            return this;
+        }
+
+        form<T> step(compile_time std::static_str path, f64 value) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a step")) {}
+            this.entry(path).step = std::some(value);
+            return this;
+        }
+
+        form<T> show(compile_time std::static_str path) move {
+            if compile_time (!require_path<T>(path, path_class::other, "show")) {}
+            this.entry(path).hidden = std::some(false);
+            return this;
+        }
+
+        form<T> hide(compile_time std::static_str path) move {
+            if compile_time (!require_path<T>(path, path_class::other, "hide")) {}
+            this.entry(path).hidden = std::some(true);
+            return this;
+        }
+
+        form<T> read_only(compile_time std::static_str path) move {
+            if compile_time (!require_path<T>(path, path_class::other, "read_only")) {}
+            this.entry(path).read_only = std::some(true);
+            return this;
+        }
+
+        form<T> editable(compile_time std::static_str path) move {
+            if compile_time (!require_path<T>(path, path_class::other, "editable")) {}
+            this.entry(path).read_only = std::some(false);
+            return this;
+        }
+
+        form<T> widget(compile_time std::static_str path, widget_kind kind) move {
+            if compile_time (!require_path<T>(path, path_class::other, "a widget")) {}
+            this.entry(path).widget = std::some(kind);
+            return this;
+        }
+
+        form<T> hide_all() move {
+            this.hide_unlisted = true;
+            return this;
+        }
+
+        form<T> rule(compile_time std::static_str path, text_rule test) move {
+            if compile_time (!require_path<T>(path, path_class::text, "a text rule")) {}
+            this.entry(path).text_rules.push(move test);
+            return this;
+        }
+
+        form<T> rule_number(compile_time std::static_str path, number_rule test) move {
+            if compile_time (!require_path<T>(path, path_class::number, "a number rule")) {}
+            this.entry(path).number_rules.push(move test);
+            return this;
+        }
+
+        form<T> rule_across(compile_time std::static_str path, std::function<verdict(T&)> test) move {
+            if compile_time (!require_path<T>(path, path_class::other, "a rule")) {}
+            this.across_paths.push(std::string::from(path));
+            this.across.push(move test);
+            return this;
+        }
+
+        form<T> visible_if(compile_time std::static_str path, std::function<bool(T&)> condition) move {
+            if compile_time (!require_path<T>(path, path_class::other, "visible_if")) {}
+            this.condition_paths.push(std::string::from(path));
+            this.conditions.push(move condition);
+            return this;
+        }
+
+        std::option<field_override&> find(std::str path) {
+            for (usize i : 0..this.overrides.len()) {
+                if (this.overrides[i].path.as_str() == path) {
+                    return std::some(this.overrides[i]);
+                }
+            }
+            return std::none;
+        }
+
+        void apply(std::str path, mut field_spec& spec) {
+            apply_overrides(this.overrides.as_span(), this.hide_unlisted, path, mut spec);
+        }
+
+        form<T> range_all(f64 low, f64 high) move {
+            mut field_override& o = this.entry("*");
+            o.min = std::some(low);
+            o.max = std::some(high);
+            return this;
+        }
+
+        form<T> step_all(f64 value) move {
+            this.entry("*").step = std::some(value);
+            return this;
+        }
+
+        bool is_plain() {
+            return this.overrides.is_empty() && !this.hide_unlisted && this.across.is_empty() && this.conditions.is_empty();
+        }
+
+        mut field_override& entry(std::str path) mut {
+            for (usize i : 0..this.overrides.len()) {
+                if (this.overrides[i].path.as_str() == path) {
+                    return this.overrides[i];
+                }
+            }
+            this.overrides.push(field_override{ .path = std::string::from(path) });
+            usize last = this.overrides.len() - 1;
+            return this.overrides[last];
+        }
+    }
+
+    // ---- UIs from types: copies and undo ----------------------------------------------------------------
+
+    template<type T>
+    T snapshot(T& value) {
+        if compile_time (std::is_integer<T>() || std::is_float<T>() || std::is_same<T, bool>() || std::is_same<T, char>() || std::meta::is_enum<T>()) {
+            return value;
+        } else if compile_time (std::is_same<T, std::string>()) {
+            return value.clone();
+        } else if compile_time (is_list<T>()) {
+            compile_time type element = std::meta::template_args<T>()[0];
+            mut T out = default;
+            for (element& x : value) {
+                out.push(snapshot<element>(x));
+            }
+            return out;
+        } else if compile_time (is_optional<T>()) {
+            compile_time type element = std::meta::template_args<T>()[0];
+            return match (value) {
+                std::some(x) => std::some(snapshot<element>(x)),
+                std::none    => std::none,
+            };
+        } else {
+            mut T out = default;
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                compile_time type ft = f.type;
+                f.get(mut out) = snapshot<ft>(f.get(value));
+            }
+            return out;
+        }
+    }
+
+    template<type T>
+    class undo_history {
+    public:
+        static undo_history<T> make(usize limit) {
+            return undo_history<T>{ .limit = limit.max(1) };
+        }
+
+        void record(edit& e, T& value) mut {
+            if (this.current.is_none()) {
+                this.current = std::some(snapshot<T>(value));
+                return;
+            }
+            if (!e.committed) {
+                return;
+            }
+            match (std::take(mut this.current)) {
+                std::some(before) => this.back.push(move before),
+                std::none => {},
+            }
+            if (this.back.len() > this.limit) {
+                _ = this.back.remove(0);
+            }
+            this.forward.clear();
+            this.current = std::some(snapshot<T>(value));
+        }
+
+        bool undo(mut T& value) mut {
+            match (this.back.pop()) {
+                std::some(before) => {
+                    match (std::take(mut this.current)) {
+                        std::some(now) => this.forward.push(move now),
+                        std::none => {},
+                    }
+                    value = snapshot<T>(before);
+                    this.current = std::some(move before);
+                    return true;
+                },
+                std::none => { return false; },
+            }
+        }
+
+        bool redo(mut T& value) mut {
+            match (this.forward.pop()) {
+                std::some(after) => {
+                    match (std::take(mut this.current)) {
+                        std::some(now) => this.back.push(move now),
+                        std::none => {},
+                    }
+                    value = snapshot<T>(after);
+                    this.current = std::some(move after);
+                    return true;
+                },
+                std::none => { return false; },
+            }
+        }
+
+        bool can_undo() {
+            return !this.back.is_empty();
+        }
+
+        bool can_redo() {
+            return !this.forward.is_empty();
+        }
+
+        usize len() {
+            return this.back.len();
+        }
+    }
+
+    // ---- UIs from types: applying overrides -------------------------------------------------------------
+
+    struct field_spec {
+        field_spec clone() {
+            return field_spec{
+                .label = this.label.clone(), .group = this.group.clone(), .tooltip = this.tooltip.clone(), .unit = this.unit.clone(),
+                .has_range = this.has_range, .min = this.min, .max = this.max, .step = this.step, .hidden = this.hidden,
+                .read_only = this.read_only, .widget = this.widget, .flatten = this.flatten, .is_number = this.is_number,
+            };
+        }
+    }
+
+    // `o`'s changes made to `spec`.
+    private void apply_one(field_override& o, mut field_spec& spec) {
+        match (o.label)     { std::some(v) => { spec.label = v.clone(); },   std::none => {}, }
+        match (o.group)     { std::some(v) => { spec.group = v.clone(); },   std::none => {}, }
+        match (o.tooltip)   { std::some(v) => { spec.tooltip = v.clone(); }, std::none => {}, }
+        match (o.unit)      { std::some(v) => { spec.unit = v.clone(); },    std::none => {}, }
+        match (o.min)       { std::some(v) => { spec.min = v; spec.has_range = true; }, std::none => {}, }
+        match (o.max)       { std::some(v) => { spec.max = v; spec.has_range = true; }, std::none => {}, }
+        match (o.step)      { std::some(v) => { spec.step = v; },            std::none => {}, }
+        match (o.hidden)    { std::some(v) => { spec.hidden = v; },          std::none => {}, }
+        match (o.read_only) { std::some(v) => { spec.read_only = v; },       std::none => {}, }
+        match (o.widget)    { std::some(v) => { spec.widget = v; },          std::none => {}, }
+    }
+
+    void apply_overrides(std::span<field_override> overrides, bool hide_unlisted, std::str path, mut field_spec& spec) {
+        if (hide_unlisted) {
+            // Shown only when it, a field inside it, or a group around it is shown.
+            mut bool shown = false;
+            for (field_override& o : overrides) {
+                if (!o.hidden.value_or(true)) {
+                    std::str p = o.path.as_str();
+                    bool below = p.len() > path.len() && p.starts_with(path) && p.byte(path.len()) == 46;
+                    bool above = path.len() > p.len() && path.starts_with(p) && path.byte(p.len()) == 46;
+                    if (p == path || below || above) {
+                        shown = true;
+                    }
+                }
+            }
+            spec.hidden = !shown;
+        }
+        if (spec.is_number) {
+            for (field_override& o : overrides) {
+                if (o.path.as_str() == "*") {
+                    apply_one(o, mut spec);
+                }
+            }
+        }
+        for (field_override& o : overrides) {
+            if (o.path.as_str() == path) {
+                apply_one(o, mut spec);
+            }
+        }
+    }
+
+    // ---- UIs from types: widget sets ---------------------------------------------------------------------
+
+    namespace widget_sets {
+        widget_set tool() {
+            return widget_set{ .density = 0.9 };
+        }
+
+        widget_set touch() {
+            return widget_set{ .ranged = number_widget::stepper, .unranged = number_widget::stepper, .segment_limit = 5, .density = 1.25 };
+        }
+
+        widget_set gamepad() {
+            return widget_set{ .ranged = number_widget::stepper, .unranged = number_widget::stepper, .segment_limit = 0, .radio_buttons = true, .density = 1.1 };
+        }
+    }
+}

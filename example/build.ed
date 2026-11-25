@@ -44,6 +44,13 @@ namespace build {
         g.add_executable(std::build::edax_target{ .name = "annotations", .root = "annotations.ed" });
         // Several windows with std::windowing: OpenGL and Vulkan (windowing/README.md).
         g.add_executable(std::build::edax_target{ .name = "windowing", .root = "windowing/main.ed" });
+        // The std::ui spike (milestone M0): an immediate-mode UI over the windowing example's GL setup.
+        g.add_executable(std::build::edax_target{ .name = "ui_spike", .root = "ui_spike/main.ed" });
+        g.add_test(std::build::edax_target{ .name = "ui_spike_test", .root = "ui_spike/test.ed" });
+        // std::ui's core (milestone M1): themes, text, shapes and images through one draw list.
+        g.add_executable(std::build::edax_target{ .name = "ui_gallery", .root = "ui_gallery/main.ed" });
+        g.add_executable(std::build::edax_target{ .name = "ui_widgets", .root = "ui_widgets/main.ed" });
+        g.add_executable(std::build::edax_target{ .name = "editor", .root = "editor/main.ed" });
 
         // ffi links a C library built from native/stats.c, and libm.
         std::build::target stats = g.add_c_library(std::build::c_target{ .name = "stats" });

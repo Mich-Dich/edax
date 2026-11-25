@@ -1,0 +1,137 @@
+// ui_spike/renderer (see renderer.edh).
+
+import std;
+import ui_spike::ui;
+
+namespace ui {
+    namespace wnd = std::windowing;
+    namespace gl = std::graphics::opengl;
+
+    private compile_time std::static_str vertex_source =
+        "#version 330 core\nlayout(location = 0) in vec2 position;\nlayout(location = 1) in vec2 uv;\nlayout(location = 2) in vec4 color;\nuniform vec2 screen;\nout vec2 v_uv;\nout vec4 v_color;\nvoid main() {\n    v_uv = uv;\n    v_color = color;\n    gl_Position = vec4(position.x / screen.x * 2.0 - 1.0, 1.0 - position.y / screen.y * 2.0, 0.0, 1.0);\n}\n";
+
+    private compile_time std::static_str fragment_source =
+        "#version 330 core\nin vec2 v_uv;\nin vec4 v_color;\nuniform sampler2D atlas;\nout vec4 result;\nvoid main() {\n    result = vec4(v_color.rgb, v_color.a * texture(atlas, v_uv).r);\n}\n";
+
+    // Compiles one shader stage; the error is the driver's log.
+    private std::result<u32, std::string> compile_stage(gl::functions<gl_33>& f, u32 kind, std::static_str source) {
+        unsafe {
+            u32 shader = f.glCreateShader(kind);
+            std::raw_ptr<u8> text = source.as_ptr();
+            i32 length = cast::saturate<i32>(source.len());
+            f.glShaderSource(shader, 1, &text, &length);
+            f.glCompileShader(shader);
+            mut i32 ok = 0;
+            f.glGetShaderiv(shader, gl::GL_COMPILE_STATUS, mut &ok);
+            if (ok == 0) {
+                mut std::raw::array<u8, 1024> log = default;
+                mut i32 written = 0;
+                f.glGetShaderInfoLog(shader, 1024, mut &written, cast::reinterpret<std::raw_ptr<mut u8>>(mut &log));
+                return std::error(std::string::from(std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&log), cast::saturate<usize>(written))));
+            }
+            return std::ok(shader);
+        }
+    }
+
+    class renderer {
+    public:
+        static std::result<renderer, std::string> make(wnd::opengl::frame& frame) {
+            gl::functions<gl_33> f = gl::functions<gl_33>::load(frame)?;
+            u32 vs = compile_stage(f, gl::GL_VERTEX_SHADER, vertex_source)?;
+            u32 fs = compile_stage(f, gl::GL_FRAGMENT_SHADER, fragment_source)?;
+            mut renderer r = renderer{ .f = f };
+            std::span<u8> pixels = std::embed("font_9x18.a8");
+            unsafe {
+                r.program = f.glCreateProgram();
+                f.glAttachShader(r.program, vs);
+                f.glAttachShader(r.program, fs);
+                f.glLinkProgram(r.program);
+                r.screen = f.glGetUniformLocation(r.program, c"screen");
+
+                f.glGenVertexArrays(1, mut &r.vao);
+                f.glGenBuffers(1, mut &r.vbo);
+                f.glGenBuffers(1, mut &r.ebo);
+                f.glBindVertexArray(r.vao);
+                f.glBindBuffer(gl::GL_ARRAY_BUFFER, r.vbo);
+                f.glBindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, r.ebo);
+                i32 stride = cast::saturate<i32>(std::size_of<vertex>());
+                f.glEnableVertexAttribArray(0);
+                f.glVertexAttribPointer(0, 2, gl::GL_FLOAT, 0, stride, cast::reinterpret<std::raw_ptr<u8>>(0usize));
+                f.glEnableVertexAttribArray(1);
+                f.glVertexAttribPointer(1, 2, gl::GL_FLOAT, 0, stride, cast::reinterpret<std::raw_ptr<u8>>(8usize));
+                f.glEnableVertexAttribArray(2);
+                f.glVertexAttribPointer(2, 4, gl::GL_UNSIGNED_BYTE, 1, stride, cast::reinterpret<std::raw_ptr<u8>>(16usize));
+                f.glBindVertexArray(0);
+
+                f.glGenTextures(1, mut &r.font);
+                f.glBindTexture(gl::GL_TEXTURE_2D, r.font);
+                f.glPixelStorei(gl::GL_UNPACK_ALIGNMENT, 1);
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, cast::truncate<i32>(gl::GL_NEAREST));
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, cast::truncate<i32>(gl::GL_NEAREST));
+                f.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_R8, 144, 108, 0, gl::GL_RED, gl::GL_UNSIGNED_BYTE, &pixels[0]);
+            }
+            return std::ok(move r);
+        }
+
+        void draw(wnd::opengl::frame& frame, draw_list& list) mut {
+            if (list.indices.is_empty()) {
+                return;
+            }
+            wnd::size fb = frame.framebuffer_size();
+            gl::functions<gl_33>& fns = this.f;
+            unsafe {
+                fns.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                fns.glEnable(gl::GL_BLEND);
+                fns.glBlendFunc(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
+                fns.glUseProgram(this.program);
+                fns.glUniform2f(this.screen, cast::round<f32>(cast<f64>(fb.width)), cast::round<f32>(cast<f64>(fb.height)));
+                fns.glActiveTexture(gl::GL_TEXTURE0);
+                fns.glBindTexture(gl::GL_TEXTURE_2D, this.font);
+                fns.glBindVertexArray(this.vao);
+                fns.glBindBuffer(gl::GL_ARRAY_BUFFER, this.vbo);
+                fns.glBufferData(gl::GL_ARRAY_BUFFER, cast::saturate<isize>(list.vertices.len() * std::size_of<vertex>()),
+                               cast::reinterpret<std::raw_ptr<u8>>(&list.vertices[0]), gl::GL_STREAM_DRAW);
+                fns.glBindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, this.ebo);
+                fns.glBufferData(gl::GL_ELEMENT_ARRAY_BUFFER, cast::saturate<isize>(list.indices.len() * 4),
+                               cast::reinterpret<std::raw_ptr<u8>>(&list.indices[0]), gl::GL_STREAM_DRAW);
+                fns.glDrawElements(gl::GL_TRIANGLES, cast::saturate<i32>(list.indices.len()), gl::GL_UNSIGNED_INT, nullptr);
+                fns.glBindVertexArray(0);
+                fns.glDisable(gl::GL_BLEND);
+            }
+        }
+
+        std::darray<u8> read_pixels(wnd::opengl::frame& frame) {
+            wnd::size fb = frame.framebuffer_size();
+            usize row = cast<usize>(fb.width) * 4;
+            mut std::darray<u8> bottom_up = default;
+            bottom_up.resize(row * cast<usize>(fb.height), 0);
+            unsafe {
+                this.f.glPixelStorei(gl::GL_PACK_ALIGNMENT, 1);
+                this.f.glReadPixels(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height), gl::GL_RGBA, gl::GL_UNSIGNED_BYTE,
+                                    cast::reinterpret<std::raw_ptr<mut u8>>(mut &bottom_up[0]));
+            }
+            mut std::darray<u8> top_down = std::darray<u8>::with_capacity(bottom_up.len());
+            for (usize y : 0..cast<usize>(fb.height)) {
+                usize from = (cast<usize>(fb.height) - 1 - y) * row;
+                for (usize i : 0..row) {
+                    top_down.push(bottom_up[from + i]);
+                }
+            }
+            return top_down;
+        }
+
+        std::graphics::opengl::functions<gl_33>& functions() {
+            return this.f;
+        }
+
+    private:
+        std::graphics::opengl::functions<gl_33> f;
+        u32 program = 0;
+        u32 vao = 0;
+        u32 vbo = 0;
+        u32 ebo = 0;
+        u32 font = 0;
+        i32 screen = 0;
+    }
+
+}

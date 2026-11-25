@@ -19,4 +19,9 @@ struct StdModule {
 // The library's modules; the first is `std` itself, which the others build on.
 std::span<const StdModule> std_modules();
 
+// A binary file of the standard library (a font), by its path below library/std
+// ("text/fonts/DMSans-Regular.ttf"); a view with no data when there is none. `std::embed` in a
+// std module reads these instead of the disk.
+std::string_view std_resource(std::string_view path);
+
 } // namespace edax

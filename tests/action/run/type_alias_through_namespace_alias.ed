@@ -1,0 +1,21 @@
+// RUN: edaxc run %s
+// A `compile_time type` alias reached through a namespace alias builds values and reaches static
+// members: `ui::vec2{ ... }` with `namespace ui = std::ui;` and `compile_time type vec2 = ...` there.
+import std;
+
+namespace lib {
+    struct point {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        static point origin() { return point{}; }
+    }
+    compile_time type p = point;
+}
+
+namespace l = lib;
+
+void main() {
+    l::p a = l::p{ .x = 2.0, .y = 3.0 };
+    l::p o = l::p::origin();
+    std::println(f"{a.x} {a.y} {o.x}");
+}

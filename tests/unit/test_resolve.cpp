@@ -123,13 +123,18 @@ TEST_CASE("resolve: std names are accepted unchecked once std is imported") {
 
 TEST_CASE("resolve: this.") {
     CHECK_EQ(codes_of("struct s { u32 v = 0; u32 get() { return this.v; } }"), std::string());
-    CHECK_EQ(codes_of("struct s { u32 v = 0; u32 get() { return v; } }"), std::string("E3026"));
+    CHECK_EQ(codes_of("struct s { u32 v = 0; u32 get() { return v; } }"), std::string());   // a bare member is `this.v`
+    CHECK_EQ(codes_of("struct s { u32 v = 0; void set(u32 v) mut { } }"), std::string("E3028"));
+    CHECK_EQ(codes_of("struct s { u32 v = 0; static u32 get() { return v; } }"), std::string("E3027"));
+    CHECK_EQ(codes_of("u32 f() { return 1; }\nstruct s { u32 f() { return 2; } u32 g() { return f(); } }"), std::string("E3026"));
     CHECK_EQ(codes_of("struct s { u32 v = 0; static u32 get() { return this.v; } }"), std::string("E3027"));
     CHECK_EQ(codes_of("struct s { u32 v = 0; u32 get() { return this.w; } }"), std::string("E3025"));
 }
 
 TEST_CASE("resolve: inherited members are found through 'this.'") {
     CHECK_EQ(codes_of("open class a {\npublic:\n    u32 v = 0;\n}\nclass b : a {\npublic:\n    u32 get() { return this.v; }\n}\n"),
+             std::string());
+    CHECK_EQ(codes_of("open class a {\npublic:\n    u32 v = 0;\n}\nclass b : a {\npublic:\n    u32 get() { return v; }\n}\n"),
              std::string());
 }
 

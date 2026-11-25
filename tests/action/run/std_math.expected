@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+5.0 5.0 0.8 -4.0
+true false 90.0
+std::math::rect { x: 50.0, y: 10.0, width: 60.0, height: 10.0 }
+ffff7c4f ffff7c4f
+true ff000000
+true
+--- stderr

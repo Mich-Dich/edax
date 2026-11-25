@@ -84,7 +84,7 @@ namespace std::build {
     struct path {
         compile_time std::static_str stem() { return ""; }
         compile_time std::static_str extension() { return ""; }
-        compile_time std::build::path with_extension(std::static_str extension) { return this; }
+        compile_time std::build::path with_extension(std::static_str ext) { return this; }
     }
 
     template<type T>

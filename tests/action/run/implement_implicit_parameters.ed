@@ -1,0 +1,28 @@
+// RUN: edaxc run %s
+// Methods of `implement I for T` with `implicit compile_time` parameters: the call's own site is
+// passed, as for a method written in the type (a UI's own widgets on the library's scope type).
+import std;
+
+struct scope {
+    u32 depth = 0;
+}
+
+interface widgets {
+    std::static_str where_called(implicit compile_time std::call_site where);
+    u32 line(compile_time u32 offset, implicit compile_time std::call_site where);
+}
+
+implement widgets for scope {
+    std::static_str where_called(implicit compile_time std::call_site where) override { return where.function_name; }
+    u32 line(compile_time u32 offset, implicit compile_time std::call_site where) override { return where.line + offset; }
+}
+
+void caller(scope& s) {
+    std::println(s.where_called());
+}
+
+void main() {
+    scope s = scope{};
+    caller(s);
+    std::println(f"{s.line(100)}");
+}

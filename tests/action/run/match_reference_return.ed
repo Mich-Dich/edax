@@ -1,0 +1,26 @@
+// RUN: edaxc run %s
+// A function returning a reference may return a `match` or an `if` whose branches name fields:
+// the result is the field itself, not a copy that is destroyed (was a double free).
+import std;
+enum which : u8 { a, b }
+class holder {
+public:
+    std::string& pick(which w) {
+        return match (w) {
+            which::a => this.first,
+            which::b => this.second,
+        };
+    }
+    std::string first = std::string::from("first, long enough to be on the heap");
+    std::string second = std::string::from("second, long enough to be on the heap");
+    std::string& pick_if(bool want_first) {
+        return if (want_first) { this.first } else { this.second };
+    }
+}
+
+void main() {
+    holder h = holder{};
+    std::println(h.pick(which::b).as_str());
+    std::println(h.pick(which::a).as_str());
+    std::println(h.pick_if(false).as_str());
+}

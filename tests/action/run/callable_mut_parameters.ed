@@ -1,0 +1,43 @@
+// RUN: edaxc run %s
+// `mut T&` parameters in callable types: `std::function<void(mut painter&)>`, `std::fn_ptr<...>`.
+// A stored callback can change what it is given (a UI skin's painters draw into a list), and the
+// call site marks the argument with `mut` as for any function.
+import std;
+
+struct canvas {
+    u32 shapes = 0;
+}
+
+view class painter {
+public:
+    mut canvas& target;
+    u32& scale;
+}
+
+class skin {
+public:
+    std::function<void(mut painter&, u32)> button;
+}
+
+void main() {
+    mut u32 x = 1;
+    std::function<void(mut u32&)> inc = [](mut u32& v) { v += 1; };
+    inc(mut x);
+    std::fn_ptr<void(mut u32&, u32)> add = [](mut u32& v, u32 k) { v += k; };
+    add(mut x, 5);
+    std::println(f"{x}");
+
+    mut canvas c = default;
+    u32 scale = 2;
+    mut skin s = skin{ .button = [](mut painter& p, u32 n) { p.target.shapes += n * p.scale; } };
+    {
+        mut painter p = painter{ .target = c, .scale = scale };
+        s.button(mut p, 3);
+    }
+    s.button = [](mut painter& p, u32 n) { p.target.shapes += 100; };
+    {
+        mut painter p = painter{ .target = c, .scale = scale };
+        s.button(mut p, 3);
+    }
+    std::println(f"{c.shapes}");
+}

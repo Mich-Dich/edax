@@ -1,0 +1,17 @@
+exit: 0
+--- stdout
+styled scope restores the theme: true
+typed: 'hello world', wants keyboard true
+cut and pasted twice: 'hello worldworld', clipboard 'world'
+undo: 'hello world'
+after Enter, typing: false
+gravity after one arrow step: 10.31
+gravity typed: 3.5
+gravity dragged left: 0.0
+wants mouse over the list: true
+mode: 2
+quality: high
+Save pressed with Enter: 1
+tooltip drawn: true, escape drops focus: true
+after Escape: false, duplicates 0
+--- stderr

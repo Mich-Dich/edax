@@ -2,4 +2,4 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_shift.ed:8:21: panic: shift count out of range for u32
+tests/action/run/panic_shift.ed:8:21: panic in main: shift count out of range for u32 in '1u32 << s': 32 (must be below 32)

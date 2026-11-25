@@ -1,0 +1,237 @@
+// ui_spike/ui: milestone M0 of the std::ui roadmap (docs/design/drafts/35-ui-roadmap.md).
+//
+// A throwaway immediate-mode UI that tests the parts of draft 35 which depend on the language:
+//
+//   - scopes that borrow their parent mutably, so Begin/End can't be mismatched (§10.2)
+//   - widget ids from `implicit compile_time std::call_site` (§10.2)
+//   - field names as `compile_time std::static_str`, checked at the call (§7.1, §7.8.1)
+//   - editors made from a type's fields and annotations (`inspect`, §7)
+//   - input as plain data (`ui::input`), so frames can be run without a window (roadmap §3)
+//
+// It draws flat rectangles and a 9x18 bitmap font; looks are M1's job. Findings: README.md.
+
+import std;
+
+namespace ui {
+    namespace wnd = std::windowing;
+
+    // ---- geometry and colours ----------------------------------------------------------------------
+
+    @std::derive::formattable
+    struct vec2 {
+        f32 x = 0.0;
+        f32 y = 0.0;
+    }
+
+    @std::derive::formattable
+    struct rect {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 w = 0.0;
+        f32 h = 0.0;
+
+        // Whether `p` is inside (left and top edges included).
+        bool contains(vec2 p);
+    }
+
+    // An sRGB colour with alpha, packed as the bytes r, g, b, a (r in the lowest byte).
+    struct color {
+        u32 packed = 0xff000000;
+
+        static color rgb(u8 r, u8 g, u8 b);
+        static color rgba(u8 r, u8 g, u8 b, u8 a);
+    }
+
+    // ---- input --------------------------------------------------------------------------------------
+
+    // One frame of input, in UI terms. Filled from a window (from_window) or by a test.
+    struct input {
+        vec2 cursor = default;
+        bool mouse_down = false;
+        // The left button went down / up during this frame.
+        bool mouse_pressed = false;
+        bool mouse_released = false;
+        // Wheel steps this frame, positive away from the user.
+        f32  scroll = 0.0;
+
+        // The left mouse button and the cursor of `state` (window units).
+        static input from_window(wnd::input_state& state);
+    }
+
+    // ---- drawing ------------------------------------------------------------------------------------
+
+    // One corner of a triangle: position in pixels, place in the font atlas, colour.
+    struct vertex {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 u = 0.0;
+        f32 v = 0.0;
+        u32 color = 0;
+    }
+
+    // What a frame draws: triangles over the font atlas (font.edh describes it).
+    struct draw_list {
+        std::darray<vertex> vertices = default;
+        std::darray<u32>    indices = default;
+
+        void clear() mut;
+        // A filled rectangle; returns the index of its first vertex (see move_rect).
+        usize fill(rect r, color c) mut;
+        // Moves the rectangle whose first vertex is `first` to `r` and recolours it.
+        void move_rect(usize first, rect r, color c) mut;
+        // Text in the bitmap font, top-left at `at`; one line, ASCII.
+        void text(vec2 at, std::str s, color c) mut;
+    }
+
+    // The width of `s` in the bitmap font.
+    f32 text_width(std::str s);
+
+    // The size of a glyph cell of the bitmap font, in pixels.
+    compile_time f32 glyph_width = 9.0;
+    compile_time f32 glyph_height = 18.0;
+
+    // ---- annotations read by inspect and field ------------------------------------------------------
+
+    // Slider bounds for a number field.
+    annotation(std::meta::target::field) struct range {
+        f64 min = 0.0;
+        f64 max = 1.0;
+    }
+
+    // The field isn't shown.
+    annotation(std::meta::target::field) struct hidden { }
+
+    // The field is shown, not edited.
+    annotation(std::meta::target::field) struct read_only { }
+
+    // ---- the immediate-mode API ---------------------------------------------------------------------
+
+    // What a widget remembers between frames.
+    struct widget_state {
+        bool open = false;
+        vec2 position = default;
+        // Set when the widget was seen this frame (duplicate-id check).
+        u64  seen_in_frame = 0;
+    }
+
+    // The place where the next widget goes, and how wide the scope is.
+    struct layout {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 width = 0.0;
+        // Bottom of everything placed so far.
+        f32 bottom = 0.0;
+    }
+
+    // Everything that lives longer than a frame: widget states, input, the draw list.
+    // A wnd::input_layer: wnd::route(events, ctx, input) gives the UI the events first.
+    class context : wnd::input_layer {
+    public:
+        static context make();
+
+        // Starts a frame of `size` (framebuffer pixels) with this frame's input. The frame borrows
+        // the context: nothing else uses it until the frame is finished.
+        frame begin_frame(input frame_input, vec2 frame_size) mut;
+
+        // What the last finished frame drew.
+        draw_list& draw_data();
+
+        // Whether the UI uses the mouse (the cursor is over one of its windows, or a drag runs).
+        bool wants_mouse();
+
+        // Mouse events over the UI's windows are consumed.
+        wnd::routing on_event(wnd::event e, wnd::input_state& state) mut override;
+
+        // The number of widgets whose id was used twice in the last frame.
+        u32 duplicate_ids();
+
+        // ---- used by frame and scope ----
+        u64  frame_number = 0;
+        input in = default;
+        vec2 size = default;
+        draw_list list = default;
+        std::hash_map<u64, widget_state> states = default;
+        std::darray<rect> window_rects = default;
+        std::darray<rect> last_window_rects = default;
+        std::darray<layout> layouts = default;
+        u64  hot = 0;
+        u64  active = 0;
+        vec2 drag_offset = default;
+        u32  duplicates = 0;
+        u32  last_duplicates = 0;
+
+        mut widget_state& state_of(u64 id) mut;
+        bool hovered(rect r);
+        mut layout& top() mut;
+        rect place(f32 width, f32 height) mut;
+    }
+
+    // A frame being built. Borrows the context; finish() ends it.
+    view class frame {
+    public:
+        // A movable window, placed at `start` the first time.
+        scope window(std::str title, vec2 start, implicit compile_time std::call_site where) mut;
+
+        // Ends the frame; the draw list is then ctx.draw_data().
+        void finish() move;
+
+        mut context& ctx;
+    }
+
+    // A place widgets go: a window, a tree node, an id scope. Borrows its parent mutably until it
+    // ends at its `}`, so widgets can only go into the innermost open scope.
+    view class scope {
+    public:
+        // False when the scope is collapsed: widgets then do nothing.
+        bool open();
+
+        // A line of text.
+        void text(std::format_args message) mut;
+
+        // A button; true in the frame it was clicked.
+        @std::must_use
+        bool button(std::str label, implicit compile_time std::call_site where) mut;
+
+        // A checkbox; true in the frame `value` changed.
+        bool checkbox(std::str label, mut bool& value, implicit compile_time std::call_site where) mut;
+
+        // A horizontal slider over [min, max]; true in the frames `value` changed.
+        template<type T>
+        bool slider(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut;
+
+        // A collapsible node; its widgets go into the returned scope.
+        scope tree(std::str label, implicit compile_time std::call_site where) mut;
+
+        // A scope whose ids include `key`: for widgets made in a loop.
+        template<type K>
+        scope id(K key, implicit compile_time std::call_site where) mut;
+
+        // The editor of one field of `value`, from its type and annotations. A misspelled name is
+        // a compile error at the call.
+        @std::diagnostic_frame{ .hide = true }
+        template<type T>
+        bool field(mut T& value, compile_time std::static_str name, implicit compile_time std::call_site where) mut;
+
+        // An editor for every field of `value`, nested structs as tree nodes.
+        template<type T>
+        bool inspect(std::str label, mut T& value, implicit compile_time std::call_site where) mut;
+
+        // The editors of `value`'s fields, in this scope (inspect without the tree node).
+        template<type T>
+        bool inspect_fields(mut T& value) mut;
+
+        ~scope();
+
+        mut context& ctx;
+        u64  id_base = 0;
+        bool visible = true;
+        // 0: shares the parent's layout; 1: pushed a layout; 2: a window (pushed a layout and a background).
+        u8   kind = 0;
+        usize background = 0;
+        rect  title_bar = default;
+    }
+
+    // Whether `T` has a field called `name`.
+    template<type T>
+    compile_time bool has_field(std::static_str name);
+}

@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+caller
+127
+--- stderr

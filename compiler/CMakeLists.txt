@@ -32,7 +32,8 @@ target_include_directories(edax PUBLIC include)
 # Each module is a .edh and a .ed in library/std: `std` is std.*, `std::filesystem` is
 # filesystem.*. The first one is the core module.
 set(EDAX_STD_MODULES std filesystem env build build/mode thread time meta derive log parallel
-    graphics windowing/core windowing/bindings windowing/x11 windowing)
+    graphics windowing/core windowing/bindings windowing/x11 windowing
+    math image text/font ui ui/opengl ui/immediate ui/platform ui/routing)
 set(EDAX_STD_ENTRIES "")
 set(EDAX_STD_TEXTS "")
 # A text becomes a function that joins pieces of at most 60000 characters at startup: C++ only
@@ -76,6 +77,24 @@ foreach(registry gl.xml vk.xml)
     file(READ ${file} registry_text)
     edax_std_text("${registry_text}" registry_call)
     string(APPEND EDAX_STD_REGISTRIES "    if (file == \"${registry}\") return ${registry_call};\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
+endforeach()
+# Binary files of the library (fonts), embedded as byte arrays: std::embed in a std module reads
+# them from edaxc (check.cpp, std_resource).
+set(EDAX_STD_RESOURCES text/fonts/DMSans-Regular.ttf text/fonts/DMSans-SemiBold.ttf text/fonts/DejaVuSansMono.ttf
+    ui/shader.vert ui/shader.frag)
+set(EDAX_STD_RESOURCE_DATA "")
+set(EDAX_STD_RESOURCE_LOOKUP "")
+set(edax_resource_index 0)
+foreach(resource ${EDAX_STD_RESOURCES})
+    set(file ${PROJECT_SOURCE_DIR}/library/std/${resource})
+    file(READ ${file} resource_hex HEX)
+    file(SIZE ${file} resource_size)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," resource_bytes "${resource_hex}")
+    string(REGEX REPLACE "((0x..,){32})" "\\1\n    " resource_bytes "${resource_bytes}")
+    string(APPEND EDAX_STD_RESOURCE_DATA "const unsigned char std_resource_${edax_resource_index}[] = {\n    ${resource_bytes}\n};\n\n")
+    string(APPEND EDAX_STD_RESOURCE_LOOKUP "    if (path == \"${resource}\") return {reinterpret_cast<const char*>(std_resource_${edax_resource_index}), ${resource_size}};\n")
+    math(EXPR edax_resource_index "${edax_resource_index} + 1")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
 endforeach()
 configure_file(src/std_library.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp @ONLY)

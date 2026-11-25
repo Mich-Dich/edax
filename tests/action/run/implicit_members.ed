@@ -1,0 +1,33 @@
+// RUN: edaxc run %s
+// Members are named bare in methods: `points` is `this.points` (classes).
+import std;
+struct vec2 {
+    f32 x = 0.0;
+    f32 y = 0.0;
+    f32 cross(vec2 o) { return x * o.y - y * o.x; }
+}
+usize next_index(usize i, usize n) { return (i + 1) % n; }
+class polygon {
+public:
+    static polygon named(std::str name) { return polygon{ .label = std::string::from(name) }; }
+    void add(vec2 p) mut { points.push(p); }
+    usize corners() { return points.len(); }
+    f32 area() {
+        mut f32 twice = 0.0;
+        for (usize i : 0..points.len()) {
+            twice += points[i].cross(points[next_index(i, points.len())]);
+        }
+        return twice.abs() / 2.0;
+    }
+    std::str name() { return label; }
+    ~polygon() { std::println(f"{label} is gone"); }
+private:
+    std::string       label;
+    std::darray<vec2> points = default;
+}
+i32 main() {
+    mut polygon p = polygon::named("square");
+    p.add(vec2{ .x = 0.0, .y = 0.0 }); p.add(vec2{ .x = 2.0, .y = 0.0 }); p.add(vec2{ .x = 2.0, .y = 2.0 }); p.add(vec2{ .x = 0.0, .y = 2.0 });
+    std::println(f"{p.name()}: {p.corners()} corners, area {p.area()}");
+    return 0;
+}

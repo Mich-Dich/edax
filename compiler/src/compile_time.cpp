@@ -1672,7 +1672,11 @@ struct Evaluator::Impl {
             return integer(name == "size_of" ? l.size : l.align, usize());
         }
         if (name == "meta::result_of") {   // what calling a callable gives (spec 26): the result type of a lambda
-            if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) return Value::of_type(t->args.back(), c.type);
+            if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) {
+                // A lambda in a template not instantiated yet may have a result not known yet.
+                if (t->args.empty() || !t->args.back() || t->args.back()->is_unknown()) unknown();
+                return Value::of_type(t->args.back(), c.type);
+            }
             if (t->is_unknown() || t->is(Kind::type_param)) unknown();
             failed(c.span, std::format("std::meta::result_of needs a lambda or callable type, not {}", types::to_string(t)), "not callable");
         }

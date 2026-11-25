@@ -249,7 +249,7 @@ namespace std::windowing {
         void set_title(std::str title) mut;
         // The window's icon (copied by the window system).
         void set_icon(image& icon) mut;
-        void set_cursor_mode(cursor_mode mode) mut;
+        void set_cursor_mode(cursor_mode new_mode) mut;
         void set_cursor(cursor_shape shape) mut;
 
         window_mode mode();
@@ -269,8 +269,8 @@ namespace std::windowing {
         std::windowing::size framebuffer_size();
         std::windowing::point position();
         scale content_scale();
-        void set_size(std::windowing::size size) mut;
-        void set_position(std::windowing::point position) mut;
+        void set_size(std::windowing::size new_size) mut;
+        void set_position(std::windowing::point new_position) mut;
 
         bool is_focused();
         bool is_minimized();

@@ -1,0 +1,18 @@
+// The Edax standard library: module std::ui::platform, std::ui with std::windowing's windows.
+//
+//     win.drain_events(mut events);
+//     mut im::frame f = ctx.begin_frame(ui::input_of(win.input(), events.as_span(), 0.0), ui::window_size(win.size()));
+//
+// Loaded for programs that use std::ui and std::windowing.
+
+namespace std::ui {
+    // One frame of a window's input in UI terms: the mouse from `state`, keys (with repeats) and
+    // typed text from the frame's `events`; `dt` as in ui::input (0: measured by the context).
+    input input_of(std::windowing::input_state& state, std::span<std::windowing::event> events, f32 dt);
+
+    // The UI's key for a window's key, if the UI uses it.
+    std::option<key> key_of(std::windowing::key k);
+
+    // A window's size in UI units (pixels).
+    vec2 window_size(std::windowing::size size);
+}

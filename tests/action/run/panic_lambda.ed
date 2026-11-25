@@ -1,0 +1,10 @@
+// RUN: edaxc run %s
+// A panic names the function it happens in: here a lambda inside `main` (crash handling,
+// phase A). The operand's value is part of the message.
+import std;
+
+void main() {
+    auto negate = [](i32 s) { return -s; };
+    std::println(f"{negate(7)}");
+    std::println(f"{negate(-2147483648)}");
+}

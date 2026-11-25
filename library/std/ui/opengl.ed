@@ -1,0 +1,221 @@
+// The Edax standard library: module std::ui::opengl (see ui/opengl.edh).
+
+namespace std::ui::opengl {
+    namespace gl = std::graphics::opengl;
+    namespace wnd = std::windowing;
+
+    private compile_time std::static_str vertex_source = std::embed_text("shader.vert");
+
+    // shape: radius, stroke, blur, kind (std::ui::shape_kind). The output is premultiplied.
+    private compile_time std::static_str fragment_source = std::embed_text("shader.frag");
+
+    // Compiles one shader stage; the error is the driver's log.
+    private template<std::graphics::api A>
+    std::result<u32, std::string> compile_stage(gl::functions<A>& f, u32 stage, std::static_str source) {
+        unsafe {
+            u32 shader = f.glCreateShader(stage);
+            std::raw_ptr<u8> text = source.as_ptr();
+            i32 length = cast::saturate<i32>(source.len());
+            f.glShaderSource(shader, 1, &text, &length);
+            f.glCompileShader(shader);
+            mut i32 ok = 0;
+            f.glGetShaderiv(shader, gl::GL_COMPILE_STATUS, mut &ok);
+            if (ok == 0) {
+                mut std::raw::array<u8, 2048> log = default;
+                mut i32 written = 0;
+                f.glGetShaderInfoLog(shader, 2048, mut &written, cast::reinterpret<std::raw_ptr<mut u8>>(mut &log));
+                return std::error(std::string::from(std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&log), cast::saturate<usize>(written))));
+            }
+            return std::ok(shader);
+        }
+    }
+
+    // A byte offset into the vertex buffer as the pointer glVertexAttribPointer takes.
+    private std::raw_ptr<u8> offset_of(usize bytes) {
+        return unsafe { cast::reinterpret<std::raw_ptr<u8>>(bytes) };
+    }
+
+    template<std::graphics::api A>
+    class renderer {
+    public:
+        static std::result<renderer<A>, std::string> make(std::windowing::opengl::frame& frame) {
+            gl::functions<A> f = gl::functions<A>::load(frame)?;
+            u32 vs = compile_stage(f, gl::GL_VERTEX_SHADER, vertex_source)?;
+            u32 fs = compile_stage(f, gl::GL_FRAGMENT_SHADER, fragment_source)?;
+            mut renderer<A> r = renderer<A>{ .gl_functions = f };
+            unsafe {
+                r.program = f.glCreateProgram();
+                f.glAttachShader(r.program, vs);
+                f.glAttachShader(r.program, fs);
+                f.glLinkProgram(r.program);
+                mut i32 linked = 0;
+                f.glGetProgramiv(r.program, gl::GL_LINK_STATUS, mut &linked);
+                if (linked == 0) {
+                    return std::error(std::string::from("std::ui::opengl: the shader program doesn't link"));
+                }
+                f.glDeleteShader(vs);
+                f.glDeleteShader(fs);
+                r.screen_location = f.glGetUniformLocation(r.program, c"screen");
+                r.image_location = f.glGetUniformLocation(r.program, c"image");
+
+                f.glGenVertexArrays(1, mut &r.vao);
+                f.glGenBuffers(1, mut &r.vbo);
+                f.glGenBuffers(1, mut &r.ebo);
+                f.glBindVertexArray(r.vao);
+                f.glBindBuffer(gl::GL_ARRAY_BUFFER, r.vbo);
+                f.glBindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, r.ebo);
+                i32 stride = cast::saturate<i32>(std::size_of<std::ui::vertex>());
+                f.glEnableVertexAttribArray(0);
+                f.glVertexAttribPointer(0, 2, gl::GL_FLOAT, 0, stride, offset_of(0));
+                f.glEnableVertexAttribArray(1);
+                f.glVertexAttribPointer(1, 2, gl::GL_FLOAT, 0, stride, offset_of(8));
+                f.glEnableVertexAttribArray(2);
+                f.glVertexAttribPointer(2, 4, gl::GL_UNSIGNED_BYTE, 1, stride, offset_of(16));
+                f.glEnableVertexAttribArray(3);
+                f.glVertexAttribPointer(3, 4, gl::GL_FLOAT, 0, stride, offset_of(20));
+                f.glEnableVertexAttribArray(4);
+                f.glVertexAttribPointer(4, 4, gl::GL_FLOAT, 0, stride, offset_of(36));
+                f.glBindVertexArray(0);
+
+                // White, for shapes without an image.
+                std::array<u8, 4> white = [255, 255, 255, 255];
+                f.glGenTextures(1, mut &r.white);
+                f.glBindTexture(gl::GL_TEXTURE_2D, r.white);
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, cast::truncate<i32>(gl::GL_NEAREST));
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, cast::truncate<i32>(gl::GL_NEAREST));
+                f.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA8, 1, 1, 0, gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &white[0]);
+
+                f.glGenTextures(1, mut &r.atlas);
+                f.glBindTexture(gl::GL_TEXTURE_2D, r.atlas);
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, cast::truncate<i32>(gl::GL_LINEAR));
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, cast::truncate<i32>(gl::GL_LINEAR));
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S, cast::truncate<i32>(gl::GL_CLAMP_TO_EDGE));
+                f.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T, cast::truncate<i32>(gl::GL_CLAMP_TO_EDGE));
+            }
+            return std::ok(move r);
+        }
+
+        void draw(std::windowing::opengl::frame& frame, std::ui::draw_list& list, std::ui::fonts& f) mut {
+            gl::functions<A>& fns = this.gl_functions;
+            if (f.version() != this.atlas_version) {
+                std::darray<u8>& data = f.atlas_pixels();
+                unsafe {
+                    fns.glBindTexture(gl::GL_TEXTURE_2D, this.atlas);
+                    fns.glPixelStorei(gl::GL_UNPACK_ALIGNMENT, 1);
+                    fns.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_R8, cast::saturate<i32>(f.atlas_width()), cast::saturate<i32>(f.atlas_height()), 0,
+                                     gl::GL_RED, gl::GL_UNSIGNED_BYTE, &data[0]);
+                }
+                this.atlas_version = f.version();
+            }
+            if (list.indices.is_empty()) {
+                return;
+            }
+            wnd::size fb = frame.framebuffer_size();
+            wnd::size window_size = frame.window().size();
+            // The list is in window units; the framebuffer may have more pixels (HiDPI).
+            f32 scale_x = cast::round<f32>(cast<f64>(fb.width)) / cast::round<f32>(cast<f64>(window_size.width)).max(1.0);
+            f32 scale_y = cast::round<f32>(cast<f64>(fb.height)) / cast::round<f32>(cast<f64>(window_size.height)).max(1.0);
+            unsafe {
+                fns.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                fns.glEnable(gl::GL_BLEND);
+                fns.glBlendFunc(gl::GL_ONE, gl::GL_ONE_MINUS_SRC_ALPHA);
+                fns.glDisable(gl::GL_DEPTH_TEST);
+                fns.glDisable(gl::GL_CULL_FACE);
+                fns.glEnable(gl::GL_SCISSOR_TEST);
+                fns.glUseProgram(this.program);
+                fns.glUniform2f(this.screen_location, cast::round<f32>(cast<f64>(window_size.width)), cast::round<f32>(cast<f64>(window_size.height)));
+                fns.glUniform1i(this.image_location, 0);
+                fns.glActiveTexture(gl::GL_TEXTURE0);
+                fns.glBindVertexArray(this.vao);
+                fns.glBindBuffer(gl::GL_ARRAY_BUFFER, this.vbo);
+                fns.glBufferData(gl::GL_ARRAY_BUFFER, cast::saturate<isize>(list.vertices.len() * std::size_of<std::ui::vertex>()),
+                                 cast::reinterpret<std::raw_ptr<u8>>(&list.vertices[0]), gl::GL_STREAM_DRAW);
+                fns.glBindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, this.ebo);
+                fns.glBufferData(gl::GL_ELEMENT_ARRAY_BUFFER, cast::saturate<isize>(list.indices.len() * 4),
+                                 cast::reinterpret<std::raw_ptr<u8>>(&list.indices[0]), gl::GL_STREAM_DRAW);
+                for (std::ui::draw_command cmd : list.commands) {
+                    if (cmd.index_count == 0) {
+                        continue;
+                    }
+                    std::ui::rect c = cmd.clip;
+                    i32 x0 = cast::saturate<i32>((c.left() * scale_x).floor());
+                    i32 y0 = cast::saturate<i32>((c.top() * scale_y).floor());
+                    i32 x1 = cast::saturate<i32>((c.right() * scale_x).ceil());
+                    i32 y1 = cast::saturate<i32>((c.bottom() * scale_y).ceil());
+                    i32 height = cast::saturate<i32>(fb.height);
+                    fns.glScissor(x0, height - y1, (x1 - x0).max(0), (y1 - y0).max(0));
+                    u32 name = if (cmd.image.id == 0) { this.white }
+                               else if (cmd.image == std::ui::texture::font_atlas()) { this.atlas }
+                               else { cmd.image.id };
+                    fns.glBindTexture(gl::GL_TEXTURE_2D, name);
+                    fns.glDrawElements(gl::GL_TRIANGLES, cast::saturate<i32>(cmd.index_count), gl::GL_UNSIGNED_INT,
+                                       offset_of(cast<usize>(cmd.first_index) * 4));
+                }
+                fns.glBindVertexArray(0);
+                fns.glDisable(gl::GL_SCISSOR_TEST);
+                fns.glDisable(gl::GL_BLEND);
+            }
+        }
+
+        std::ui::texture upload(std::image::rgba8& picture) mut {
+            mut u32 name = 0;
+            gl::functions<A>& fns = this.gl_functions;
+            unsafe {
+                fns.glGenTextures(1, mut &name);
+                fns.glBindTexture(gl::GL_TEXTURE_2D, name);
+                fns.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, cast::truncate<i32>(gl::GL_LINEAR));
+                fns.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, cast::truncate<i32>(gl::GL_LINEAR));
+                fns.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S, cast::truncate<i32>(gl::GL_CLAMP_TO_EDGE));
+                fns.glTexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_T, cast::truncate<i32>(gl::GL_CLAMP_TO_EDGE));
+                fns.glPixelStorei(gl::GL_UNPACK_ALIGNMENT, 1);
+                fns.glTexImage2D(gl::GL_TEXTURE_2D, 0, gl::GL_RGBA8, cast::saturate<i32>(picture.width), cast::saturate<i32>(picture.height), 0,
+                                 gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, &picture.pixels[0]);
+            }
+            return std::ui::texture{ .id = name, .width = picture.width, .height = picture.height };
+        }
+
+        void release(std::ui::texture t) mut {
+            if (t.id == 0 || t == std::ui::texture::font_atlas()) {
+                return;
+            }
+            u32 name = t.id;
+            unsafe { this.gl_functions.glDeleteTextures(1, &name); }
+        }
+
+        std::image::rgba8 read_pixels(std::windowing::opengl::frame& frame) {
+            wnd::size fb = frame.framebuffer_size();
+            usize row = cast<usize>(fb.width) * 4;
+            mut std::darray<u8> bottom_up = default;
+            bottom_up.resize(row * cast<usize>(fb.height), 0);
+            unsafe {
+                this.gl_functions.glPixelStorei(gl::GL_PACK_ALIGNMENT, 1);
+                this.gl_functions.glReadPixels(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height), gl::GL_RGBA, gl::GL_UNSIGNED_BYTE,
+                                      cast::reinterpret<std::raw_ptr<mut u8>>(mut &bottom_up[0]));
+            }
+            mut std::darray<u8> top_down = std::darray<u8>::with_capacity(bottom_up.len());
+            for (usize y : 0..cast<usize>(fb.height)) {
+                usize from = (cast<usize>(fb.height) - 1 - y) * row;
+                for (usize i : 0..row) {
+                    top_down.push(bottom_up[from + i]);
+                }
+            }
+            return std::image::rgba8{ .width = fb.width, .height = fb.height, .pixels = move top_down };
+        }
+
+        std::graphics::opengl::functions<A>& functions() {
+            return this.gl_functions;
+        }
+
+    private:
+        gl::functions<A> gl_functions;
+        u32 program = 0;
+        u32 vao = 0;
+        u32 vbo = 0;
+        u32 ebo = 0;
+        u32 white = 0;
+        u32 atlas = 0;
+        u64 atlas_version = 0;
+        i32 screen_location = 0;
+        i32 image_location = 0;
+    }
+}

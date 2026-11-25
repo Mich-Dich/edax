@@ -51,6 +51,15 @@ events → draw the main window → draw the tool windows that need it → frame
 | sandbox (Ctrl+Shift+N) | OpenGL Compatibility 2.1, `sharing::independent` | a share group of its own, with its own `functions<opengl_legacy>` |
 | Vulkan (Ctrl+K) | `sys.create_vulkan_window(..., vulkan)`, the program's own VkInstance | the title shows the surface size from `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` |
 
+The main window has a **debug overlay** made with [`std::ui::immediate`](../../docs/design/stdlib/ui/immediate.md):
+the frame rate, the box's place and size as number fields and a slider, a pause toggle, buttons that
+open the other windows, and a light/dark switch that fades. It sees the window's events first: while
+it is typed into (or the keyboard moves its focus with Tab), the keys don't move the box, and the
+wheel over it doesn't resize the box. It is drawn by `std::ui::opengl::renderer<opengl>` over the
+scissored clears, in the same frame.
+
+![The debug overlay](overlay.png)
+
 Every OpenGL window has a small marker in its top-right corner: **green** when the texture made in
 the share group's own context exists in that window's context (`glIsTexture`), **red** when it
 doesn't. The main window and the inspectors are green, the sandbox is red: that's sharing, visible.
@@ -65,7 +74,8 @@ doesn't. The main window and the inspectors are green, the sandbox is red: that'
 | Ctrl+N | open an inspector (Esc in it closes it) |
 | Ctrl+Shift+N | open or close the sandbox |
 | Ctrl+K | open or close the Vulkan window |
-| Esc | quit |
+| Esc | quit (in the overlay: closes its list, stops typing, drops its focus first) |
+| Tab | moves the focus through the overlay's widgets; Enter or Space presses, arrows change numbers |
 
 ## Language features on the way
 

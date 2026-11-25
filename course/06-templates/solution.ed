@@ -8,25 +8,25 @@ public:
     // Adds a value; when the ring is full the oldest one is dropped (and returned).
     std::option<T> push(T value) mut {
         compile_time check (N > 0) else "a ring needs room for at least one value";
-        usize slot = (this.start + this.count) % N;
-        std::option<T> dropped = std::replace(mut this.slots[slot], std::some(move value));
-        if (this.count == N) {
-            this.start = (this.start + 1) % N;
+        usize slot = (start + count) % N;
+        std::option<T> dropped = std::replace(mut slots[slot], std::some(move value));
+        if (count == N) {
+            start = (start + 1) % N;
         } else {
-            this.count += 1;
+            count += 1;
         }
         return dropped;
     }
 
     std::option<T> pop() mut {
-        if (this.count == 0) { return std::none; }
-        std::option<T> value = std::take(mut this.slots[this.start]);
-        this.start = (this.start + 1) % N;
-        this.count -= 1;
+        if (count == 0) { return std::none; }
+        std::option<T> value = std::take(mut slots[start]);
+        start = (start + 1) % N;
+        count -= 1;
         return value;
     }
 
-    usize len() { return this.count; }
+    usize len() { return count; }
 
 private:
     std::array<std::option<T>, N> slots = default;

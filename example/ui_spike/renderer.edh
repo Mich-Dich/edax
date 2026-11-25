@@ -1,0 +1,29 @@
+// ui_spike/renderer: draws a ui::draw_list with OpenGL 3.3 core (one shader, one draw call).
+
+import std;
+import ui_spike::ui;
+
+namespace ui {
+    namespace wnd = std::windowing;
+
+    // The OpenGL version the spike renders with.
+    compile_time std::graphics::api gl_33 = std::graphics::api{
+        .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+
+    // The GL objects of the UI: program, buffers, the font texture. Made in the context of the
+    // frame passed to make(); used with frames of windows in the same share group.
+    class renderer {
+    public:
+        // Loads the functions from `frame`, compiles the shader, uploads the font.
+        static std::result<renderer, std::string> make(wnd::opengl::frame& frame);
+
+        // Draws `list` over what the frame already shows.
+        void draw(wnd::opengl::frame& frame, draw_list& list) mut;
+
+        // The frame's pixels, top row first, RGBA (for screenshots and tests).
+        std::darray<u8> read_pixels(wnd::opengl::frame& frame);
+
+        // The OpenGL functions, for the program's own drawing.
+        std::graphics::opengl::functions<gl_33>& functions();
+    }
+}

@@ -15,12 +15,16 @@ std::string join(std::initializer_list<std::string_view> pieces) {
     return out;
 }
 
-@EDAX_STD_TEXTS@} // namespace
+@EDAX_STD_TEXTS@@EDAX_STD_RESOURCE_DATA@} // namespace
 
 std::span<const StdModule> std_modules() {
     static const StdModule modules[] = {
 @EDAX_STD_ENTRIES@    };
     return modules;
+}
+
+std::string_view std_resource(std::string_view path) {
+@EDAX_STD_RESOURCE_LOOKUP@    return {};
 }
 
 std::string_view std_registry(std::string_view file) {

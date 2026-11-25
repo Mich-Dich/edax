@@ -2,4 +2,4 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_no_destructors.ed:16:12: panic: integer overflow in '+' (u8)
+tests/action/run/panic_no_destructors.ed:16:12: panic in main: integer overflow in 'a + 1' (u8): 255 + 1

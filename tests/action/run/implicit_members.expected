@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+square: 4 corners, area 4.0
+square is gone
+--- stderr

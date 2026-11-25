@@ -171,19 +171,19 @@ namespace std::thread {
             else f"the thread's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
 
         R join() move {
-            std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+            std::raw_ptr<mut thread_packet<R>> shared = this.packet;
             this.packet = nullptr;
-            unsafe { return join_thread(this.thread, packet).expect("the thread produced no result"); }
+            unsafe { return join_thread(this.thread, shared).expect("the thread produced no result"); }
         }
 
         void detach() move {
-            std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+            std::raw_ptr<mut thread_packet<R>> shared = this.packet;
             this.packet = nullptr;
             unsafe {
                 _ = pthread_detach(this.thread);
-                if (std::raw::atomic_exchange(&(*packet).state, detached, std::memory_order::acquire_release) == finished) {
-                    std::raw::drop(packet);   // it already ended: its result is dropped here
-                    std::raw::free(packet);
+                if (std::raw::atomic_exchange(&(*shared).state, detached, std::memory_order::acquire_release) == finished) {
+                    std::raw::drop(shared);   // it already ended: its result is dropped here
+                    std::raw::free(shared);
                 }
             }
         }
@@ -206,9 +206,9 @@ namespace std::thread {
             else f"the thread's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
 
         R join() move {
-            std::raw_ptr<mut thread_packet<R>> packet = this.packet;
+            std::raw_ptr<mut thread_packet<R>> shared = this.packet;
             this.packet = nullptr;
-            unsafe { return join_thread(this.thread, packet).expect("the thread produced no result"); }
+            unsafe { return join_thread(this.thread, shared).expect("the thread produced no result"); }
         }
 
         ~scoped_handle() {

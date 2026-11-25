@@ -1,0 +1,104 @@
+// The Edax standard library: module std::text::font, TrueType fonts and signed distance fields.
+//
+// Reads TrueType fonts (the `glyf` outlines; CFF fonts are not supported), maps characters to
+// glyphs, gives their metrics and kerning (the `kern` table), and renders a glyph as a signed
+// distance field: a small 8-bit image whose value is the distance to the outline, 128 on the edge.
+// A GPU draws text from a distance field sharply at any size and scale with one sample and a
+// smoothstep, which is how std::ui draws its text.
+//
+// The library brings three fonts, built into edaxc (library/std/text/fonts, licences there):
+// DM Sans in two weights and DejaVu Sans Mono, cut to Latin-1, Latin Extended-A and a few symbols.
+//
+//     std::text::font sans = std::text::font::default_sans();
+//     u16 g = sans.glyph_index('A');
+//     std::text::distance_field sdf = sans.render_distance_field(g, 32.0, 4.0);   // 32 px, 4 px of distance
+//
+// Loaded when a program names `std::text::font` (or `std::ui`).
+
+namespace std::text {
+    // Why a font couldn't be read.
+    enum font_error : u8 {
+        // Not a TrueType font (CFF/OpenType-PostScript fonts are not supported).
+        not_truetype,
+        // A table every TrueType font needs (head, hhea, hmtx, maxp, loca, glyf, cmap) is missing.
+        missing_table,
+        // No Unicode character map of format 4 or 12.
+        no_unicode_map,
+        // A table points outside the file.
+        damaged,
+    }
+
+    // Line metrics in ems (multiply by the size in pixels): the ascent is above the baseline and
+    // positive, the descent below and negative.
+    @std::derive::formattable
+    struct line_metrics {
+        f32 ascent = 0.0;
+        f32 descent = 0.0;
+        f32 line_gap = 0.0;
+    }
+
+    // A glyph's box in ems, y up from the baseline, x right from the pen.
+    @std::derive::formattable
+    struct glyph_box {
+        f32 x0 = 0.0;
+        f32 y0 = 0.0;
+        f32 x1 = 0.0;
+        f32 y1 = 0.0;
+    }
+
+    // One point of a flattened outline, in ems (y up).
+    struct outline_point {
+        f32 x = 0.0;
+        f32 y = 0.0;
+    }
+
+    // A glyph's outline as closed polygons: the curves are split into short lines.
+    struct outline {
+        std::darray<outline_point> points = default;
+        // The index after the last point of each contour.
+        std::darray<u32> contour_ends = default;
+        glyph_box box = default;
+    }
+
+    // A glyph rendered as a signed distance field.
+    struct distance_field {
+        u32 width = 0;
+        u32 height = 0;
+        // Where the image's top-left corner is, in pixels from the pen position on the baseline
+        // (y down): the image starts at (pen.x + left, baseline + top).
+        f32 left = 0.0;
+        f32 top = 0.0;
+        // The pixel size and distance range it was made for: a value of 255 is `spread` pixels
+        // inside the outline, 0 is `spread` pixels outside, 128 is the edge.
+        f32 size = 0.0;
+        f32 spread = 0.0;
+        // width * height bytes, rows top to bottom.
+        std::darray<u8> pixels = default;
+    }
+
+    // A TrueType font. Owns a copy of the file.
+    class font {
+    public:
+        // Reads a font file.
+        static std::result<font, font_error> parse(std::span<u8> data);
+
+        // The fonts std brings: DM Sans regular and semi-bold, DejaVu Sans Mono.
+        static font default_sans();
+        static font default_sans_semibold();
+        static font default_mono();
+
+        // The glyph of `c`, or 0 (the font's "missing" glyph).
+        u16 glyph_index(char c);
+        u16 glyph_count();
+        line_metrics metrics();
+        // How far the pen moves after `glyph`, in ems.
+        f32 advance(u16 glyph);
+        // The extra advance between `left` and `right` (negative: closer), in ems.
+        f32 kerning(u16 left, u16 right);
+        // The flattened outline of `glyph`, curves split finely enough for `pixel_size`.
+        outline outline_of(u16 glyph, f32 pixel_size);
+        // `glyph` at `pixel_size` pixels per em as a distance field reaching `spread` pixels out
+        // from the outline. A glyph without an outline (space) gives a 0 x 0 field.
+        distance_field render_distance_field(u16 glyph, f32 pixel_size, f32 spread);
+    }
+}

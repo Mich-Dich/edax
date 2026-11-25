@@ -119,7 +119,7 @@ The RUN line may point at any file, e.g. `// RUN: edaxc check examples/employees
 exits with the *program's* status, so a `// RUN: edaxc run %s` test records what the
 program printed and how it ended. `tests/action/run/` holds these: one program per language
 area (arithmetic, control flow, structs, enums, formatting, globals, modules, evaluation
-order) plus one test per kind of panic. A panic prints `file:line:col: panic: message` on
+order) plus one test per kind of panic. A panic prints `file:line:col: panic in function: message` on
 stderr and aborts, which the runner records as `exit: 134` (128 + SIGABRT):
 
 ```
@@ -127,7 +127,7 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_overflow.ed:8:12: panic: integer overflow in '+' (u8)
+tests/action/run/panic_overflow.ed:8:12: panic in main: integer overflow in 'a + a' (u8): 200 + 200
 ```
 
 `tests/action/build/` covers the `build` command itself: modes, output paths, E6001 for

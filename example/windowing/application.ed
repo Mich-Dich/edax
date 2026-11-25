@@ -6,6 +6,8 @@ namespace demo {
     namespace wnd = std::windowing;
     namespace gl = std::graphics::opengl;
     namespace vk = std::graphics::vulkan;
+    namespace ui = std::ui;
+    namespace im = std::ui::immediate;
 
     // ---- drawing --------------------------------------------------------------------------------------
     //
@@ -334,17 +336,28 @@ namespace demo {
     private:
         // The main window's events through the key bindings, then the box.
         void handle_main_window() mut {
-            mut std::darray<wnd::event> events = std::take(mut this.events);
-            this.main_window.drain_events(mut events);
-            for (wnd::event e : events) {
+            mut std::darray<wnd::event> queue = std::take(mut this.events);
+            this.main_window.drain_events(mut queue);
+            // The debug overlay is the first input layer: while it is typed into or the keyboard moves
+            // its focus, it takes the keys (an Escape that stops its typing doesn't also quit); over
+            // it, it takes mouse buttons and the wheel. The bindings see what is left.
+            {
+                mut im::router layer = im::router{ .ctx = this.overlay };
+                wnd::route(mut queue, mut layer, this.main_window.input());
+            }
+            this.build_overlay(ui::input_of(this.main_window.input(), queue.as_span(), 0.0));
+            for (wnd::event e : queue) {
                 match (this.keys.action_for(e)) {
                     std::some(a) => this.act(a),
                     std::none    => {},
                 }
             }
-            this.events = move events;
+            this.events = move queue;
 
-            movement m = read_movement(this.main_window.input());
+            mut movement m = if (this.overlay.wants_keyboard()) { movement{} } else { read_movement(this.main_window.input()) };
+            if (this.overlay.wants_mouse()) {
+                m.grow = 0.0;
+            }
             if (m.looking != this.looking) {        // mouse look: the cursor is held in the window
                 this.looking = m.looking;
                 this.main_window.set_cursor_mode(if (m.looking) { wnd::cursor_mode::captured } else { wnd::cursor_mode::normal });
@@ -354,6 +367,66 @@ namespace demo {
                 this.box_size = clamp(this.box_size + m.grow, 16.0, 400.0);
                 this.box_x = clamp(this.box_x + m.dx, 0.0, cast<f64>(fb.width) - this.box_size);
                 this.box_y = clamp(this.box_y + m.dy, 0.0, cast<f64>(fb.height) - this.box_size);
+            }
+        }
+
+        // The debug overlay (std::ui::immediate): frame rate, the box, the windows. Buttons act
+        // after the frame, when the overlay no longer borrows the application.
+        void build_overlay(ui::input in) mut {
+            mut bool wants_inspector = false;
+            mut bool wants_sandbox = false;
+            mut bool wants_vulkan = false;
+            mut bool light = this.light_overlay;
+            wnd::size size = this.main_window.size();
+            f64 max_x = cast<f64>(size.width) - this.box_size;
+            f64 max_y = cast<f64>(size.height) - this.box_size;
+            {
+                mut im::frame f = this.overlay.begin_frame(move in, ui::window_size(size));
+                {
+                    mut im::scope w = f.window("Debug", ui::rect{ .x = ui::window_size(size).x - 336.0, .y = 16.0, .width = 320.0 });
+                    w.text(f"{this.fps} fps");
+                    w.muted(f"{opengl}, share group {this.group.id()}");
+                    {
+                        mut im::scope box = w.section("Box", true);
+                        _ = box.number("x", mut this.box_x, 0.0, max_x.max(0.0));
+                        _ = box.number("y", mut this.box_y, 0.0, max_y.max(0.0));
+                        _ = box.slider("size", mut this.box_size, 16.0, 400.0);
+                        box.tooltip("The wheel resizes it too");
+                        _ = box.toggle("Paused", mut this.paused);
+                    }
+                    {
+                        mut im::scope windows = w.section("Windows", true);
+                        windows.muted(f"{this.inspectors.len()} inspectors");
+                        mut im::scope buttons = windows.row();
+                        if (buttons.button("Inspector")) {
+                            wants_inspector = true;
+                        }
+                        buttons.tooltip("Ctrl+N");
+                        if (buttons.button("Sandbox")) {
+                            wants_sandbox = true;
+                        }
+                        buttons.tooltip("Ctrl+Shift+N");
+                        if (buttons.button("Vulkan")) {
+                            wants_vulkan = true;
+                        }
+                        buttons.tooltip("Ctrl+K");
+                    }
+                    _ = w.toggle("Light overlay", mut light);
+                }
+                f.finish();
+            }
+            if (light != this.light_overlay) {
+                this.light_overlay = light;
+                this.overlay.set_theme(if (light) { ui::theme::light() } else { ui::theme::dark() });
+            }
+            if (wants_inspector) {
+                this.open_inspector();
+            }
+            if (wants_sandbox) {
+                this.toggle_sandbox();
+            }
+            if (wants_vulkan) {
+                this.toggle_vulkan();
             }
         }
 
@@ -377,10 +450,10 @@ namespace demo {
         // Every other window's events: each window has its own queue. Closed windows are dropped,
         // and dropping a window closes it.
         void handle_tool_windows() mut {
-            mut std::darray<wnd::event> events = std::take(mut this.events);
+            mut std::darray<wnd::event> queue = std::take(mut this.events);
             for (mut inspector& i : this.inspectors) {
-                i.win.drain_events(mut events);
-                for (wnd::event e : events) {
+                i.win.drain_events(mut queue);
+                for (wnd::event e : queue) {
                     match (e) {
                         wnd::event::key(k) => {
                             if (k.key == wnd::key::escape && k.action == wnd::key_action::pressed) {
@@ -393,20 +466,20 @@ namespace demo {
             }
             this.inspectors.retain([](inspector& i) { return !i.win.should_close(); });
             bool sandbox_open = match (mut this.sandbox) {
-                std::some(s) => s.update(mut events),
+                std::some(s) => s.update(mut queue),
                 std::none    => false,
             };
             if (!sandbox_open) {
                 this.sandbox = std::none;
             }
             bool vulkan_open = match (mut this.vulkan) {
-                std::some(v) => v.update(mut events),
+                std::some(v) => v.update(mut queue),
                 std::none    => false,
             };
             if (!vulkan_open) {
                 this.vulkan = std::none;
             }
-            this.events = move events;
+            this.events = move queue;
         }
 
         void draw_main_window() mut {
@@ -421,6 +494,16 @@ namespace demo {
             fill(this.gl, fb, cast::saturate<i32>(this.box_x), cast::saturate<i32>(this.box_y),
                  cast::saturate<i32>(this.box_size), cast::saturate<i32>(this.box_size), box);
             sharing_marker(this.gl, fb, this.texture);
+            if (this.overlay_renderer.is_none()) {
+                match (ui::opengl::renderer<opengl>::make(frame)) {
+                    std::ok(r)    => { this.overlay_renderer = std::some(move r); },
+                    std::error(e) => std::log::error(f"debug overlay: {e}"),
+                }
+            }
+            match (mut this.overlay_renderer) {
+                std::some(r) => r.draw(frame, this.overlay.draw_data(), this.overlay.fonts()),
+                std::none    => {},
+            }
             frame.present();
         }
 
@@ -517,7 +600,7 @@ namespace demo {
             }
             match (vulkan_view::open(mut this.system)) {
                 std::ok(v)    => { this.vulkan = std::some(move v); },
-                std::error(e) => std::log::error(f"{vulkan}: {e}"),
+                std::error(e) => std::log::error(f"{demo::vulkan}: {e}"),
             }
         }
 
@@ -533,6 +616,11 @@ namespace demo {
         std::option<sandbox_window>    sandbox = std::none;
         std::option<vulkan_view>       vulkan = std::none;
         std::darray<wnd::event>        events = default;
+        // The debug overlay: its widgets' state, and its renderer (made with the main window's
+        // first frame).
+        im::context                    overlay = im::context::create(ui::theme::dark());
+        std::option<ui::opengl::renderer<opengl>> overlay_renderer = std::none;
+        bool                           light_overlay = false;
         f64                            box_x = 100.0;
         f64                            box_y = 100.0;
         f64                            box_size = 80.0;

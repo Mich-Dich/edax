@@ -1,0 +1,62 @@
+// RUN: edaxc run %s
+// std::ui's look is replaceable: radius presets, control tokens (knob shapes, tick shapes, bool
+// widget), polygons and stars in the draw list, and skins whose painters a program replaces.
+import std;
+namespace ui = std::ui;
+
+void main() {
+    ui::theme t = ui::theme::dark();
+    mut ui::theme sharp = t;
+    sharp.radius = ui::radius_scale::sharp();
+    sharp.controls.slider.knob = ui::knob_shape::star;
+    sharp.controls.boolean = ui::bool_widget::checkbox;
+    std::println(f"sharp: {sharp.radius.medium} {sharp.radius.full}, knob {sharp.controls.slider.knob}, bool {sharp.controls.boolean}");
+
+    mut ui::draw_list list = default;
+    list.begin(ui::vec2{ .x = 200.0, .y = 200.0 });
+    list.star(ui::vec2{ .x = 50.0, .y = 50.0 }, 20.0, 8.0, 5, 0.0, t.colors.warning);
+    // 1 centre + 2 per corner (inner and fringe), 9 indices per corner
+    std::println(f"star: {list.vertices.len()} vertices, {list.indices.len()} indices, {list.commands.len()} command");
+    list.regular_polygon(ui::vec2{ .x = 100.0, .y = 100.0 }, 10.0, 6, 0.0, t.colors.primary);
+    std::println(f"+ hexagon: {list.vertices.len()} vertices, still {list.commands.len()} command");
+    ui::vertex top = list.vertices[2];
+    std::println(f"first star point (its fringe) at the top: {top.y < 30.0 && top.y > 27.0}");
+
+    mut ui::fonts fonts = ui::fonts::make();
+    mut ui::skin s = ui::skin::standard();
+    s.slider_knob = [](mut ui::painter& p, ui::slider_part& k) {
+        p.list.star(k.knob_center(), 12.0, 5.0, 5, 0.0, p.tokens.colors.warning);
+    };
+    mut ui::draw_list drawn = default;
+    drawn.begin(ui::vec2{ .x = 400.0, .y = 100.0 });
+    ui::slider_part part = ui::slider_part{ .bounds = ui::rect{ .x = 10.0, .y = 10.0, .width = 200.0, .height = 20.0 }, .fraction = 0.5 };
+    std::println(f"knob centre {part.knob_center().x} {part.knob_center().y}");
+    {
+        mut ui::painter p = ui::painter{ .list = drawn, .faces = fonts, .tokens = sharp };
+        s.slider_track(mut p, part);
+    }
+    usize after_track = drawn.vertices.len();
+    {
+        mut ui::painter p = ui::painter{ .list = drawn, .faces = fonts, .tokens = sharp };
+        s.slider_knob(mut p, part);
+    }
+    std::println(f"custom star knob: {drawn.vertices.len() - after_track} vertices");
+
+    usize before = drawn.vertices.len();
+    {
+        mut ui::painter p = ui::painter{ .list = drawn, .faces = fonts, .tokens = sharp };
+        s.button(mut p, ui::button_part{ .bounds = ui::rect{ .x = 10.0, .y = 40.0, .width = 90.0, .height = 34.0 }, .label = "Save", .kind = ui::variant::primary, .state = default });
+        std::array<ui::knob_shape, 5> shapes = [ui::knob_shape::circle, ui::knob_shape::square, ui::knob_shape::diamond, ui::knob_shape::star, ui::knob_shape::bar];
+        for (ui::knob_shape shape : shapes) {
+            ui::paint::knob(mut p, shape, ui::vec2{ .x = 50.0, .y = 50.0 }, 18.0, ui::color::white(), t.colors.primary);
+        }
+    }
+    std::println(f"standard button and knobs drew: {drawn.vertices.len() > before}");
+    std::array<ui::tick_shape, 4> marks = [ui::tick_shape::tick, ui::tick_shape::cross, ui::tick_shape::square, ui::tick_shape::dot];
+    for (ui::tick_shape mark : marks) {
+        sharp.controls.checkbox.mark = mark;
+        mut ui::painter q = ui::painter{ .list = drawn, .faces = fonts, .tokens = sharp };
+        s.checkbox(mut q, ui::check_part{ .bounds = ui::rect{ .x = 10.0, .y = 80.0, .width = 18.0, .height = 18.0 }, .checked = true, .amount = 1.0 });
+    }
+    std::println(f"all shapes drawn, {drawn.commands.len()} commands");
+}

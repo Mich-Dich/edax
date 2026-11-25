@@ -1,0 +1,17 @@
+// RUN: edaxc run %s
+// std::math: vectors, rectangles, colours and OKLCH.
+import std;
+namespace m = std::math;
+
+void main() {
+    m::vec2 a = m::vec2{ .x = 3.0, .y = 4.0 };
+    std::println(f"{a.length()} {(a + m::vec2::splat(1.0) * 2.0).x} {a.normalized().y} {a.perpendicular().x}");
+    m::rect r = m::rect{ .x = 10.0, .y = 10.0, .width = 100.0, .height = 50.0 };
+    std::println(f"{r.contains(m::vec2{ .x = 10.0, .y = 10.0 })} {r.contains(m::vec2{ .x = 110.0, .y = 20.0 })} {r.shrunk(5.0).width}");
+    std::println(f"{r.intersection(m::rect{ .x = 50.0, .y = 0.0, .width = 100.0, .height = 20.0 })}");
+    m::color accent = m::color::hex(0x4f7cff);
+    std::println(f"{accent.packed():x} {m::color::from_oklch(accent.to_oklch(), 1.0).packed():x}");
+    std::println(f"{m::color::white().contrast(m::color::black()) > 20.9} {m::color::black().mix(m::color::white(), 0.0).packed():x}");
+    m::color out_of_gamut = m::color::from_oklch(m::oklch{ .l = 0.7, .c = 0.4, .h = 140.0 }, 1.0);
+    std::println(f"{out_of_gamut.r >= 0.0 && out_of_gamut.g <= 1.0 && out_of_gamut.b >= 0.0}");
+}

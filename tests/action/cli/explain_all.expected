@@ -79,9 +79,9 @@ E3022  error    wrong kind of name (type, value or module)
 E3023  error    module is not imported
 E3024  error    item is private
 E3025  error    no such member or alternative
-E3026  error    members are accessed through 'this.'
+E3026  error    a bare name is both a member and an outer item
 E3027  error    'this' is only available in non-static methods
-E3028  error    name already declared in this function (no shadowing)
+E3028  error    name already declared in this function, or a member's name (no shadowing)
 E3030  error    'break' or 'continue' outside a loop
 E3031  error    'mut' marks call arguments and match subjects only
 E3032  error    only local variables and by-value parameters can be moved

@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+drawn: true, duplicates 0, wants mouse false
+clicks after one click on Save: 1, wants mouse over the window true
+speed after dragging right: 10.0
+fading: radius between true
+after the fade: radius 0.0, bool widget checkbox
+star knobs change the drawing: true, duplicates 0
+--- stderr

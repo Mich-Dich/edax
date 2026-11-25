@@ -1,0 +1,178 @@
+// The Edax standard library: module std::math, vectors, rectangles and colours.
+//
+// The first part of std::math (game_engine_additions, roadmap M1 of std::ui): what a UI and a 2-D
+// renderer need. Every type is a plain copy type of f32s with C layout, so arrays of them can go
+// to the GPU as they are. Loaded when a program names `std::math` (or `std::ui`, which uses it).
+
+namespace std::math {
+    // π as an f32.
+    compile_time f32 pi = 3.14159265358979;
+
+    // `a` when `t` is 0, `b` when `t` is 1, the straight line between them otherwise.
+    f32 lerp(f32 a, f32 b, f32 t);
+
+    // 0 below `edge0`, 1 above `edge1`, a smooth (Hermite) step in between.
+    f32 smoothstep(f32 edge0, f32 edge1, f32 x);
+
+    // ---- vectors ------------------------------------------------------------------------------------
+
+    @std::derive::formattable
+    struct vec2 {
+        f32 x = 0.0;
+        f32 y = 0.0;
+
+        // Both components `v`.
+        static vec2 splat(f32 v);
+
+        f32 dot(vec2& other);
+        f32 length();
+        f32 length_squared();
+        // This vector scaled to length 1; the zero vector stays zero.
+        vec2 normalized();
+        // Rotated by 90° counter-clockwise (in a y-up system): (-y, x).
+        vec2 perpendicular();
+        vec2 abs();
+        // The smaller / larger component of each pair.
+        vec2 min(vec2& other);
+        vec2 max(vec2& other);
+        vec2 lerp(vec2& to, f32 t);
+
+        vec2 operator+(vec2& other);
+        vec2 operator-(vec2& other);
+        // Component by component.
+        vec2 operator*(vec2& other);
+        vec2 operator*(f32 k);
+        vec2 operator/(f32 k);
+        vec2 operator-();
+        bool operator==(vec2& other) = default;
+    }
+
+    @std::derive::formattable
+    struct vec3 {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 z = 0.0;
+
+        static vec3 splat(f32 v);
+
+        f32 dot(vec3& other);
+        vec3 cross(vec3& other);
+        f32 length();
+        vec3 normalized();
+        vec3 lerp(vec3& to, f32 t);
+
+        vec3 operator+(vec3& other);
+        vec3 operator-(vec3& other);
+        vec3 operator*(f32 k);
+        vec3 operator/(f32 k);
+        vec3 operator-();
+        bool operator==(vec3& other) = default;
+    }
+
+    @std::derive::formattable
+    struct vec4 {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 z = 0.0;
+        f32 w = 0.0;
+
+        static vec4 splat(f32 v);
+
+        f32 dot(vec4& other);
+        vec4 lerp(vec4& to, f32 t);
+
+        vec4 operator+(vec4& other);
+        vec4 operator-(vec4& other);
+        vec4 operator*(f32 k);
+        bool operator==(vec4& other) = default;
+    }
+
+    // ---- rectangles -------------------------------------------------------------------------------
+
+    // An axis-aligned rectangle: its top-left corner and its size. y grows downwards, as on screens.
+    @std::derive::formattable
+    struct rect {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 width = 0.0;
+        f32 height = 0.0;
+
+        // The rectangle between two corners, in any order.
+        static rect from_corners(vec2 a, vec2 b);
+        static rect at(vec2 origin, vec2 size);
+
+        f32 left();
+        f32 top();
+        f32 right();
+        f32 bottom();
+        vec2 origin();
+        vec2 size();
+        vec2 center();
+        // Whether `p` is inside; the left and top edges are inside, the right and bottom ones aren't.
+        bool contains(vec2 p);
+        bool overlaps(rect& other);
+        // The common part; a rectangle of size 0 when they don't overlap.
+        rect intersection(rect& other);
+        // The smallest rectangle containing both.
+        rect united(rect& other);
+        // Smaller by `d` on every side (larger for a negative `d`); never smaller than size 0.
+        rect shrunk(f32 d);
+        rect expanded(f32 d);
+        rect translated(vec2 by);
+        bool is_empty();
+        bool operator==(rect& other) = default;
+    }
+
+    // ---- colours ------------------------------------------------------------------------------------
+
+    // A colour in OKLCH, the cylindrical form of OKLab: perceptual lightness `l` (0 black, 1 white),
+    // chroma `c` (0 grey, about 0.37 at most for sRGB colours) and hue `h` in degrees. Equal steps
+    // in `l` look equally large, which makes it the space to derive shades of a theme in.
+    @std::derive::formattable
+    struct oklch {
+        f32 l = 0.0;
+        f32 c = 0.0;
+        f32 h = 0.0;
+    }
+
+    // An sRGB colour with straight (not premultiplied) alpha, every channel in [0, 1]: what
+    // colour pickers, CSS and image files mean by a colour.
+    @std::derive::formattable
+    struct color {
+        f32 r = 0.0;
+        f32 g = 0.0;
+        f32 b = 0.0;
+        f32 a = 1.0;
+
+        // `0xRRGGBB`, opaque: `color::hex(0x4F7CFF)`.
+        static color hex(u32 rgb);
+        // `0xRRGGBBAA`.
+        static color hex_alpha(u32 rgba);
+        static color rgb8(u8 r, u8 g, u8 b);
+        static color rgba8(u8 r, u8 g, u8 b, u8 a);
+        static color from_oklch(oklch& c, f32 alpha);
+        static color white();
+        static color black();
+        static color transparent();
+
+        oklch to_oklch();
+        // The same colour with alpha `alpha`.
+        color with_alpha(f32 alpha);
+        // Between this colour (t = 0) and `to` (t = 1), mixed in OKLab, so the middle of two
+        // colours of equal lightness keeps that lightness. Alpha is mixed linearly.
+        color mix(color& to, f32 t);
+        // Lighter or darker by `amount` in OKLCH lightness (negative: darker), clamped.
+        color lighter(f32 amount);
+        // The relative luminance of WCAG 2 (0 black, 1 white).
+        f32 luminance();
+        // The WCAG 2 contrast ratio with `other`, from 1 to 21 (ignores alpha).
+        f32 contrast(color& other);
+        // Packed as the bytes r, g, b, a (r in the lowest byte): GL_RGBA + GL_UNSIGNED_BYTE.
+        u32 packed();
+        bool operator==(color& other) = default;
+    }
+
+    // An sRGB channel in [0, 1] to linear light, and back.
+    f32 srgb_to_linear(f32 v);
+    f32 linear_to_srgb(f32 v);
+}

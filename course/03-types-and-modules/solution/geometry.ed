@@ -3,10 +3,10 @@ import std;
 
 namespace geo {
     struct vec2 {
-        vec2 operator+(vec2& other) { return vec2{ .x = this.x + other.x, .y = this.y + other.y }; }
-        vec2 operator-(vec2& other) { return vec2{ .x = this.x - other.x, .y = this.y - other.y }; }
-        f32  cross(vec2& other) { return this.x * other.y - this.y * other.x; }
-        f32  length() { return (this.x * this.x + this.y * this.y).sqrt(); }
+        vec2 operator+(vec2& other) { return vec2{ .x = x + other.x, .y = y + other.y }; }
+        vec2 operator-(vec2& other) { return vec2{ .x = x - other.x, .y = y - other.y }; }
+        f32  cross(vec2& other) { return x * other.y - y * other.x; }
+        f32  length() { return (x * x + y * y).sqrt(); }
     }
 
     class polygon {
@@ -15,29 +15,29 @@ namespace geo {
             return polygon{ .label = std::string::from(name) };   // points: its default (empty)
         }
 
-        void add(vec2 p) mut { this.points.push(p); }
+        void add(vec2 p) mut { points.push(p); }
 
-        usize corners() { return this.points.len(); }
+        usize corners() { return points.len(); }
 
         f32 area() {
             mut f32 twice = 0.0;
-            for (usize i : 0..this.points.len()) {
-                twice += this.points[i].cross(this.points[next(i, this.points.len())]);
+            for (usize i : 0..points.len()) {
+                twice += points[i].cross(points[next(i, points.len())]);
             }
             return twice.abs() / 2.0;
         }
 
         f32 perimeter() {
             mut f32 sum = 0.0;
-            for (usize i : 0..this.points.len()) {
-                sum += (this.points[next(i, this.points.len())] - this.points[i]).length();
+            for (usize i : 0..points.len()) {
+                sum += (points[next(i, points.len())] - points[i]).length();
             }
             return sum;
         }
 
-        std::str name() { return this.label; }
+        std::str name() { return label; }
 
-        ~polygon() { std::println(f"{this.label} is gone"); }
+        ~polygon() { std::println(f"{label} is gone"); }
 
     private:
         std::string       label;

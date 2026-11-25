@@ -1,0 +1,65 @@
+// The Edax standard library: module std::ui::platform (see platform.edh).
+
+namespace std::ui {
+    input input_of(std::windowing::input_state& state, std::span<std::windowing::event> events, f32 dt) {
+        std::windowing::position p = state.cursor();
+        mut input in = input{
+            .cursor = vec2{ .x = cast::round<f32>(p.x), .y = cast::round<f32>(p.y) },
+            .mouse_down = state.mouse_down(std::windowing::mouse_button::left),
+            .mouse_pressed = state.mouse_pressed(std::windowing::mouse_button::left),
+            .mouse_released = state.mouse_released(std::windowing::mouse_button::left),
+            .scroll = cast::round<f32>(state.scroll().y),
+            .dt = dt,
+        };
+        for (std::windowing::event e : events) {
+            match (e) {
+                std::windowing::event::key(k) => {
+                    if (k.action != std::windowing::key_action::released) {
+                        match (key_of(k.key)) {
+                            std::some(mapped) => in.keys.push(key_press{ .key = mapped, .shift = k.modifiers.shift, .control = k.modifiers.control }),
+                            std::none => {},
+                        }
+                    }
+                },
+                std::windowing::event::text(c) => {
+                    if (!state.modifiers().control) {
+                        in.typed.push(c);
+                    }
+                },
+                _ => {},
+            }
+        }
+        return in;
+    }
+
+    std::option<key> key_of(std::windowing::key k) {
+        return match (k) {
+            std::windowing::key::tab          => std::some(key::tab),
+            std::windowing::key::enter        => std::some(key::enter),
+            std::windowing::key::keypad_enter => std::some(key::enter),
+            std::windowing::key::escape       => std::some(key::escape),
+            std::windowing::key::space        => std::some(key::space),
+            std::windowing::key::backspace    => std::some(key::backspace),
+            std::windowing::key::delete       => std::some(key::delete),
+            std::windowing::key::left         => std::some(key::left),
+            std::windowing::key::right        => std::some(key::right),
+            std::windowing::key::up           => std::some(key::up),
+            std::windowing::key::down         => std::some(key::down),
+            std::windowing::key::home         => std::some(key::home),
+            std::windowing::key::end          => std::some(key::end),
+            std::windowing::key::page_up      => std::some(key::page_up),
+            std::windowing::key::page_down    => std::some(key::page_down),
+            std::windowing::key::a            => std::some(key::a),
+            std::windowing::key::c            => std::some(key::c),
+            std::windowing::key::v            => std::some(key::v),
+            std::windowing::key::x            => std::some(key::x),
+            std::windowing::key::y            => std::some(key::y),
+            std::windowing::key::z            => std::some(key::z),
+            _                                 => std::none,
+        };
+    }
+
+    vec2 window_size(std::windowing::size size) {
+        return vec2{ .x = cast::round<f32>(cast<f64>(size.width)), .y = cast::round<f32>(cast<f64>(size.height)) };
+    }
+}

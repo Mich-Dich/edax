@@ -170,6 +170,11 @@ private:
         if (name == "std::windowing" || name.starts_with("std::windowing::")) return {"std::windowing"};
         if (name == "std::graphics") return {"std::graphics", "std::windowing"};
         if (name == "std::graphics::opengl" || name == "std::graphics::vulkan") return {name};
+        // std::ui and the modules it builds on; its OpenGL renderer only for programs that also
+        // name OpenGL (see ui_opengl_named).
+        if (name == "std::ui" || name == "std::ui::opengl" || name == "std::ui::platform") return {"std::ui"};
+        if (name == "std::ui::immediate" || name == "std::ui::routing") return {"std::ui::immediate"};
+        if (name == "std::math" || name == "std::image" || name == "std::text::font") return {name, "std::ui"};
         return {};
     }
     static bool on_demand(std::string_view name) { return !on_demand_triggers(name).empty(); }
@@ -189,17 +194,38 @@ private:
         return false;
     }
 
+    // std::ui::opengl (the renderer) is loaded for programs that name std::ui and OpenGL
+    // (`ui::opengl::renderer` after `namespace ui = std::ui;`), and it brings std::windowing,
+    // std::graphics and std::graphics::opengl, which it uses.
+    bool ui_opengl_named() const {
+        return program_names({"std::ui::opengl"}) || (program_names({"std::ui"}) && program_names({"opengl"}));
+    }
+
+    bool wanted(std::string_view name) const {
+        bool ui_gl = ui_opengl_named();
+        if (name == "std::ui::opengl") return ui_gl;
+        // std::ui::platform (input from a window) for programs that use std::ui with windows.
+        if (name == "std::ui::platform") return program_names({"std::ui"}) && (ui_gl || program_names({"std::windowing"}));
+        // std::ui::routing (the immediate context as an input layer) when both are used.
+        if (name == "std::ui::routing") return program_names({"std::ui::immediate"}) && (ui_gl || program_names({"std::windowing"}));
+        if (ui_gl && (name == "std::windowing" || name.starts_with("std::windowing::") || name == "std::graphics" ||
+                      name == "std::graphics::opengl")) {
+            return true;
+        }
+        return program_names(on_demand_triggers(name));
+    }
+
     // Loads the on-demand std modules that some loaded file names.
     void load_named_std() {
         if (!program_.std_module) return;
         for (const StdModule& m : std_modules()) {
             if (!on_demand(m.name) || program_.modules.count(std::string(m.name))) continue;
-            if (program_names(on_demand_triggers(m.name))) add_std_module(m);
+            if (wanted(m.name)) add_std_module(m);
         }
         // The modules made from the Khronos registries (graphics_registry.cpp), made the first time
         // a program names them.
         for (std::string_view name : {std::string_view("std::graphics::opengl"), std::string_view("std::graphics::vulkan")}) {
-            if (program_.modules.count(std::string(name)) || !program_names(on_demand_triggers(name))) continue;
+            if (program_.modules.count(std::string(name)) || !wanted(name)) continue;
             if (const StdModule* m = generated_std_module(name)) add_std_module(*m);
         }
     }

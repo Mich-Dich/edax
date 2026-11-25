@@ -1,0 +1,45 @@
+// RUN: edaxc run %s
+// std::image: PNG of every colour type (RGBA, RGB, grey, palette with transparency, 1-bit,
+// grey + alpha) against the pixels PIL reads, and PNG and QOI round trips.
+import std;
+
+void verify(std::str name, std::span<u8> file) {
+    match (std::image::decode_png(file)) {
+        std::ok(img) => {
+            std::array<u32, 4> xs = [0, 5, 36, 20];
+            std::array<u32, 4> ys = [0, 3, 22, 10];
+            for (usize i : 0..4) {
+                u32 p = img.pixel(xs[i], ys[i]);
+                std::println(f"{name} {p & 255} {(p >> 8) & 255} {(p >> 16) & 255} {p >> 24}");
+            }
+        },
+        std::error(e) => std::println(f"{name} error {e}"),
+    }
+}
+
+bool same(std::image::rgba8& a, std::image::rgba8& b) {
+    if (a.width != b.width || a.height != b.height || a.pixels.len() != b.pixels.len()) {
+        return false;
+    }
+    for (usize i : 0..a.pixels.len()) {
+        if (a.pixels[i] != b.pixels[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    verify("rgba", std::embed("image_data/rgba.png"));
+    verify("rgb", std::embed("image_data/rgb.png"));
+    verify("grey", std::embed("image_data/grey.png"));
+    verify("pal", std::embed("image_data/pal.png"));
+    verify("bw", std::embed("image_data/bw.png"));
+    verify("la", std::embed("image_data/la.png"));
+    std::image::rgba8 img = std::image::decode_png(std::embed("image_data/rgba.png")).expect("png");
+    std::darray<u8> qoi = std::image::encode_qoi(img);
+    std::println(f"qoi round trip {same(img, std::image::decode_qoi(qoi.as_span()).expect("qoi"))}");
+    std::darray<u8> png = std::image::encode_png(img);
+    std::println(f"png round trip {same(img, std::image::decode_png(png.as_span()).expect("png again"))}");
+    std::println(f"not a png: {std::image::decode_png(qoi.as_span()).is_error()}");
+}

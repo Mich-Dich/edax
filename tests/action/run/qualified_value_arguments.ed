@@ -1,0 +1,25 @@
+// RUN: edaxc run %s
+// A qualified compile_time constant as a template value argument (`functions<ui::gl_33>`), also
+// through a namespace alias: a value, not a type.
+import std;
+
+namespace config {
+    compile_time u32 lanes = 4;
+    namespace inner {
+        compile_time std::static_str label = "inner";
+    }
+}
+
+namespace cfg = config::inner;
+
+template<u32 N>
+struct buffer {
+    static u32 size() { return N; }
+}
+
+template<std::static_str S>
+std::static_str echo() { return S; }
+
+void main() {
+    std::println(f"{buffer<config::lanes>::size()} {echo<config::inner::label>()} {echo<cfg::label>()}");
+}

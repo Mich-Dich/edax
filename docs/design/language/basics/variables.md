@@ -9,7 +9,7 @@
 - **`=` is the only way to initialize.** `T x{...};`, `T x(...);` and `T x;` are compile errors.
 - **Immutable by default.** You can only assign to the variable, call `mut` methods on it or pass it as `mut` if it is declared `mut`.
 - **Mutability belongs to the variable, not to fields.** If the variable is `mut`, all its fields can be changed; if not, none can. Fields have no `mut` marker.
-- **No shadowing.** You can't declare a name that is already visible in an enclosing scope of the same function.
+- **No shadowing.** You can't declare a name that is already visible in an enclosing scope of the same function. In a method the members are visible too: a local or parameter can't take a member's name (see [Classes](../user-types/classes.md)).
 
 ```edax
 u32 x = 5;                          // immutable

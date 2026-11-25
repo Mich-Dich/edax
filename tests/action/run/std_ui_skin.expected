@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+sharp: 0.0 0.0, knob star, bool checkbox
+star: 21 vertices, 90 indices, 1 command
++ hexagon: 34 vertices, still 1 command
+first star point (its fringe) at the top: true
+knob centre 110.0 20.0
+custom star knob: 21 vertices
+standard button and knobs drew: true
+all shapes drawn, 1 commands
+--- stderr

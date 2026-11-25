@@ -15,9 +15,12 @@ inclusion. Types come in two kinds: plain `struct`s and encapsulated `class`es.
 - **Construction uses designated fields only:** `vec2{ .x = 1.0 }`, in any order. A field left out
   takes its declared default; leaving out a field with no default is an error. There are no
   constructors: a class offers `static` factory methods (`polygon::named("x")`).
-- **Members are always `this.x`**, never a bare `x`. Inside a method, `this` is a reference: an
-  immutable one, or a mutable one in a method marked `mut` (written after the parameters, like
-  C++'s `const` but the other way round).
+- **Members are named bare, as in C++:** `points.push(p)` in a method is `this.points.push(p)`.
+  Unlike C++, nothing can hide a member: a local or parameter may not take a member's name
+  (`void set(u32 value) mut` in a class with a field `value` is an error), and a name that is
+  both a member and a free function must be written out (`this.next()`). Inside a method, `this`
+  is a reference: an immutable one, or a mutable one in a method marked `mut` (written after the
+  parameters, like C++'s `const` but the other way round).
 - Field names and method names share one scope: a field `owner` and a method `owner()` clash.
 - `==` is opt-in: `bool operator==(vec2& other) = default;`. Operators are methods or free
   functions in the type's own namespace and module.
@@ -70,5 +73,8 @@ Hints:
 2. Remove `= 0.0` from `vec2::y` and see which lines of `main.ed` break.
 3. Write a `polygon` method `scaled(f32 k)` that returns a new polygon. Can it be a non-`mut`
    method? Does it need `clone()`?
-4. Write a second module `shapes.edh` that also declares a `geo::polygon` (in its own
+4. Give `polygon` a method `void rename(std::str label) mut`. What does the compiler say, and
+   why is that better than C++'s silent shadowing? Then add a free function `corners()` next to
+   the method and call `corners()` inside a method.
+5. Write a second module `shapes.edh` that also declares a `geo::polygon` (in its own
    `namespace geo` block) and import both. Where is the error reported, and why there?

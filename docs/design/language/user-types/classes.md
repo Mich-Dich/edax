@@ -8,10 +8,26 @@ A `class` provides **encapsulation**: hidden state, invariants and resource owne
 C++-style labels: `public:`, `protected:`, `private:`. Public and protected members are declared in the `.edh`; private members exist only in the `.ed` (see [Headers, Sources and Modules](../organization/modules.md)).
 
 ### Methods and `this`
-- `this` is an implicit, immutable reference to the object. **Members are always accessed through `this.`**: write `this.value`, not `value`.
+- `this` is an implicit, immutable reference to the object.
+- **Inside a method, a member is named by its bare name**: `value` is `this.value`, `helper()` is `this.helper()`. Members inherited from a base class count too (its public and protected ones). `this.value` is still allowed and means the same; `this` itself is how the object is passed on (`register(this)`).
+  ```edax
+  class polygon {
+  public:
+      void add(vec2 p) mut { points.push(p); }
+      usize corners() { return points.len(); }
+      std::str name() { return label; }
+  private:
+      std::string       label;
+      std::darray<vec2> points = default;
+  }
+  ```
+- **A bare name has one meaning.** Locals and parameters come first, then members, then the items of the enclosing namespaces; and the rules keep these from overlapping:
+  - No local or parameter of a method may take the name of a member it can see (E3028, the no-shadowing rule of [Variables](../basics/variables.md)): `void set(u32 value) mut` in a class with a field `value` is an error. Static methods have no object, so their parameters may take field names (`static counter make(u32 value)`).
+  - A member and a namespace item with the same name can't be used bare (E3026): write `this.next()` for the method, or qualify the other one (`geometry::next(...)`).
+  - A static method has no object: a bare field name there is an error (E3027). Static members are named through their type: `counter::starting_at(5)`.
 - A method that changes the object ends with **`mut`**:
   ```edax
-  void inc() mut { this.value += 1; }
+  void inc() mut { value += 1; }
   ```
   Inside a `mut` method, `this` is a mutable reference.
 - `mut` methods can only be called on `mut` variables or through `mut` references:
@@ -77,16 +93,16 @@ namespace counting {
     class counter {
     public:
         u32 get() {
-            return this.value;
+            return value;
         }
         void inc() mut {
-            this.value += 1;
+            value += 1;
         }
         static counter starting_at(u32 value) {
             return counter{ .value = value };     // private field is visible here
         }
         ~counter() {
-            std::println(f"counter dropped at {this.value}");
+            std::println(f"counter dropped at {value}");
         }
     private:
         u32 value = 0;
@@ -108,5 +124,5 @@ std::exit_code main() {
 
 ## Rationale
 - **Trailing `mut`:** it works like C++'s trailing `const`, but inverted to match immutable-by-default. The marker is on the declaration, so it shows up in the header where users of the class read it.
-- **Explicit `this.`:** you can always tell a member from a local or a parameter. This is also why parameters can share a name with a field (`value` vs `this.value`).
+- **Bare member names, no shadowing:** `this.` on every member access is noise that C++ programmers don't write. Because no local or parameter may take a member's name, and a name that is both a member and a namespace item must be written out, a bare name in a method still means exactly one thing; you never have to look further than the class to tell a member from a local. The cost: a method's parameters can't reuse field names (`set_size(size new_size)`), and a base class that adds a public member can break a derived method that uses the name for a local - loudly, never by changing what the code means.
 - **Bitwise moves only:** moving can never run user code or fail, so `move` costs exactly what it looks like. The trade-off is that a type can't hold a pointer into itself; such structures use indices or a heap allocation.

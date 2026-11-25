@@ -1,0 +1,43 @@
+// The Edax standard library: module std::ui::opengl, drawing std::ui's draw lists with OpenGL.
+//
+//     mut ui::opengl::renderer<gl_33> renderer = {
+//         mut wnd::opengl::frame frame = win.begin_frame();
+//         ui::opengl::renderer<gl_33>::make(frame)?
+//     };
+//     ...
+//     mut wnd::opengl::frame frame = win.begin_frame();
+//     draw_game(frame);
+//     renderer.draw(frame, list, fonts);           // over what the game drew
+//     frame.present();
+//
+// One shader, one vertex format, one draw call per command (clip rectangle and texture). Needs
+// OpenGL 3.3 core or newer (OpenGL ES 3.0 later). Loaded for programs that name std::ui and
+// OpenGL; it brings std::windowing and std::graphics::opengl.
+
+namespace std::ui::opengl {
+    // The GL objects of the UI: program, vertex array, buffers, the font atlas, a white texture
+    // and the images uploaded through it. Made in the context of the frame passed to make();
+    // usable with frames of every window in the same share group.
+    template<std::graphics::api A>
+    class renderer {
+    public:
+        // Loads OpenGL's functions from `frame`, compiles the shader, makes the buffers.
+        // The error is the driver's message.
+        static std::result<renderer<A>, std::string> make(std::windowing::opengl::frame& frame);
+
+        // Draws `list` over what the frame already shows. Uploads the atlas of `f` first when
+        // glyphs were added to it since the last draw.
+        void draw(std::windowing::opengl::frame& frame, std::ui::draw_list& list, std::ui::fonts& f) mut;
+
+        // An image as a texture for draw_list.image(); linear filtering, clamped edges.
+        std::ui::texture upload(std::image::rgba8& picture) mut;
+        // Frees a texture made by upload().
+        void release(std::ui::texture t) mut;
+
+        // What the frame shows now, top row first (screenshots, tests).
+        std::image::rgba8 read_pixels(std::windowing::opengl::frame& frame);
+
+        // OpenGL's functions, for the program's own drawing.
+        std::graphics::opengl::functions<A>& functions();
+    }
+}

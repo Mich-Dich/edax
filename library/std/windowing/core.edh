@@ -241,10 +241,10 @@ namespace std::windowing {
         void record_key(key k, key_action action) mut;
         void record_button(mouse_button b, button_action action) mut;
         void record_cursor(position p) mut;
-        void record_scroll(position delta) mut;
+        void record_scroll(position step) mut;
         void record_text(char c) mut;
-        void record_hover(bool inside) mut;
-        void record_modifiers(std::windowing::modifiers held, bool caps, bool num) mut;
+        void record_hover(bool is_inside) mut;
+        void record_modifiers(std::windowing::modifiers now_held, bool caps_on, bool num_on) mut;
         void release_all() mut;
         void next_frame() mut;
     }

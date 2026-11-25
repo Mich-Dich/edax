@@ -37,7 +37,8 @@ employees.retain([](employee& e) { return e.age >= 30; });
 - A lambda is `std::sendable` / `std::shareable` when its captures are (see [Threads](../../stdlib/concurrency/threads.md)). `std::thread::spawn` takes any sendable lambda; one with reference captures becomes a borrowing (scoped) thread.
 - To store a callable, use `std::function<R(Args...)>`. It **always** puts the callable on the heap, and the type makes that visible.
 - Lambdas with no captures convert to `std::fn_ptr<R(Args...)>`, a plain function pointer for callbacks and FFI.
-- A `std::function` owns its callable: it is moved, never copied or cloned. A field of a callable type is called like a method: `this.on_click(n)`.
+- A parameter of a callable type may be a mutable reference: `std::function<void(mut ui::painter&, ui::button_part&)>`. The call marks the argument as any call does: `skin.button(mut p, part)`. A stored callback can then change what it is given (a UI skin's painters draw into a list).
+- A `std::function` owns its callable: it is moved, never copied or cloned. A field of a callable type is called like a method: `on_click(n)` (or `this.on_click(n)`).
 
 ### Changing captured values
 - `[mut count = 0u32]` (or `[mut move state]`, `[mut x]`) declares a captured value that the lambda may change. Such a lambda's call is `mut`: it is called through a `mut` variable or a `mut` parameter (`template<type F> void each(mut F f)`), and moving it keeps its state.

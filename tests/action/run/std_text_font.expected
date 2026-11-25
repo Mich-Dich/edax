@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+352 glyphs, A 1, V 102, missing 0
+std::text::line_metrics { ascent: 0.992, descent: -0.31, line_gap: 0.0 }
+advance A 0.664, kerning AV -0.097 < 0: true
+o: 2 contours
+é: 2 contours (composite)
+l: 15x39, inside true, corner outside true
+mono: i and W as wide: true
+not a font: true
+--- stderr

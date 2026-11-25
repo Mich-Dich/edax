@@ -13,3 +13,38 @@ namespace geo {
 
     // TODO: describe(...). std::format(f"...") makes an std::string; the numbers have 2 decimals.
 }
+
+namespace geo {
+
+    struct vec2 {
+
+        vec2 operator+(vec2& other) { return vec2{ .x = x + other.x, .y = y + other.y }; }
+        vec2 operator-(vec2& other) { return vec2{ .x = x + other.x, .y = y + other.y }; }
+        f32 cross(vec2& other) { return x * other.y - y * other.x; }
+        f32 length() { return (x * x + y * y).sqrt(); }
+    }
+
+    // A closed polygon with a name. It owns its points; its fields are private (in geometry.ed).
+    class polygon {
+    public:
+
+        static polygon named(std::str name) {
+
+        }
+
+        void add(vec2 p) mut { points.push(p); }
+
+        usize corners() { return }
+        f32 area();
+        f32 perimeter();
+        std::str name();
+        ~polygon();
+    
+    private:
+        std::darray<vec2>           points = defautl;
+
+    }
+
+    // "square: 4 corners, area 4.00, perimeter 8.00"
+    std::string describe(polygon& p);
+}

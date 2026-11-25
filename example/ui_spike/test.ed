@@ -1,0 +1,125 @@
+// ui_spike/test: frames run without a window, with scripted input (`edaxc test --root=example`).
+
+import std;
+import ui_spike::ui;
+
+namespace spike_test {
+    struct settings {
+        @ui::range{ .min = 0.0, .max = 10.0 }
+        f32 volume = 5.0;
+        bool muted = false;
+    }
+
+    struct state {
+        u32 clicks = 0;
+        settings audio = default;
+        std::darray<u32> items = default;
+    }
+
+    // One frame of a small UI: a window with a button, a list of buttons and the settings.
+    void build(mut ui::frame& f, mut state& s) {
+        mut ui::scope w = f.window("Test", ui::vec2{ .x = 0.0, .y = 0.0 });
+        if (w.button("Click")) {
+            s.clicks += 1;
+        }
+        for (u32 item : s.items) {
+            mut ui::scope row = w.id(item);
+            if (row.button("Same label")) {
+                s.clicks += 100;
+            }
+        }
+        _ = w.field(mut s.audio, "volume");
+    }
+
+    void run(mut ui::context& ctx, mut state& s, ui::input in) {
+        mut ui::frame f = ctx.begin_frame(in, ui::vec2{ .x = 800.0, .y = 600.0 });
+        build(mut f, mut s);
+        f.finish();
+    }
+
+    ui::input at(f32 x, f32 y) {
+        return ui::input{ .cursor = ui::vec2{ .x = x, .y = y } };
+    }
+}
+
+// The window's title bar is 24 px, padding 8, rows 24 + 4: the button is at y 32..56, the first
+// list row at 60, the second at 88, the slider at 116 (from x 118).
+@std::test
+void a_click_is_a_press_and_a_release_on_the_same_widget() {
+    mut ui::context ctx = ui::context::make();
+    mut spike_test::state s = default;
+    spike_test::run(mut ctx, mut s, spike_test::at(20.0, 40.0));
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 20.0, .y = 40.0 }, .mouse_down = true, .mouse_pressed = true });
+    run_time check (s.clicks == 0) else f"pressed only: {s.clicks} clicks";
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 20.0, .y = 40.0 }, .mouse_released = true });
+    run_time check (s.clicks == 1) else f"after release: {s.clicks} clicks";
+}
+
+@std::test
+void equal_labels_in_a_loop_are_different_widgets() {
+    mut ui::context ctx = ui::context::make();
+    mut spike_test::state s = default;
+    s.items.push(7);
+    s.items.push(8);
+    spike_test::run(mut ctx, mut s, spike_test::at(20.0, 98.0));
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 20.0, .y = 98.0 }, .mouse_down = true, .mouse_pressed = true });
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 20.0, .y = 98.0 }, .mouse_released = true });
+    run_time check (s.clicks == 100) else f"second row: {s.clicks}";
+    run_time check (ctx.duplicate_ids() == 0) else f"{ctx.duplicate_ids()} duplicates";
+}
+
+@std::test
+void a_dragged_field_slider_changes_the_value_within_its_range() {
+    mut ui::context ctx = ui::context::make();
+    mut spike_test::state s = default;
+    spike_test::run(mut ctx, mut s, spike_test::at(200.0, 70.0));
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 200.0, .y = 70.0 }, .mouse_down = true, .mouse_pressed = true });
+    spike_test::run(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 5000.0, .y = 70.0 }, .mouse_down = true });
+    run_time check (s.audio.volume == 10.0) else f"dragged far right: {s.audio.volume}";
+}
+
+namespace spike_test {
+    // A widget of the program's own, called like the library's: `w.toggle(...)`.
+    interface own_widgets {
+        bool toggle(std::str label, mut bool& on, implicit compile_time std::call_site where) mut;
+    }
+
+    implement own_widgets for ui::scope {
+        bool toggle(std::str label, mut bool& on, implicit compile_time std::call_site where) mut override {
+            return this.checkbox(label, mut on, where);
+        }
+    }
+}
+
+@std::test
+void own_widgets_get_the_call_site_of_their_caller() {
+    mut ui::context ctx = ui::context::make();
+    mut bool a = false;
+    mut bool b = false;
+    for (u32 frame : 0..2) {
+        mut ui::frame f = ctx.begin_frame(spike_test::at(0.0, 0.0), ui::vec2{ .x = 800.0, .y = 600.0 });
+        {
+            mut ui::scope w = f.window("Own", ui::vec2{});
+            _ = w.toggle("same", mut a);
+            _ = w.toggle("same", mut b);
+        }
+        f.finish();
+    }
+    run_time check (ctx.duplicate_ids() == 0) else f"{ctx.duplicate_ids()} duplicates: the call site wasn't the caller's";
+}
+
+@std::test
+void equal_labels_from_one_call_site_are_reported() {
+    mut ui::context ctx = ui::context::make();
+    for (u32 frame : 0..2) {
+        mut ui::frame f = ctx.begin_frame(spike_test::at(0.0, 0.0), ui::vec2{ .x = 800.0, .y = 600.0 });
+        {
+            mut ui::scope w = f.window("Loop", ui::vec2{});
+            for (u32 i : 0..3) {
+                _ = w.button("row");
+            }
+        }
+        f.finish();
+    }
+    run_time check (ctx.duplicate_ids() == 2) else f"{ctx.duplicate_ids()} duplicates, expected 2";
+}

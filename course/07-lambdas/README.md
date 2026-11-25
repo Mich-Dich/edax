@@ -36,7 +36,7 @@ mut auto next = [mut n = 0u32]() { n += 1; return n; };     // state the lambda 
 - `std::function` is move-only; it is never copied.
 - `std::function<void(), std::sendable>` adds a bound: it can only hold lambdas that may be sent
   to another thread (lesson 10).
-- A field holding a callable is called like a method: `this.on_click(n)`.
+- A field holding a callable is called like a method: `on_click(n)`.
 
 ## The std algorithms take lambdas
 

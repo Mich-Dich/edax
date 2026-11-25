@@ -1161,6 +1161,29 @@ private:
                     decl->wrap = parse_block();
                     continue;
                 }
+                // `type for_type = void;` in an annotation: a field whose value is a type (spec 29),
+                // not an associated type.
+                if (decl->is_annotation && at(TokenKind::kw_type) && peek(1).kind == TokenKind::identifier &&
+                    (peek(2).kind == TokenKind::eq || peek(2).kind == TokenKind::semicolon)) {
+                    Modifiers fm = parse_modifiers(ctx);
+                    auto field = std::make_unique<VariableDecl>(DeclKind::field, fm.start);
+                    apply_common(*field, fm);
+                    field->access = access;
+                    Path p;
+                    p.span = cur().span;
+                    PathSegment seg;
+                    seg.name = "type";
+                    seg.span = cur().span;
+                    p.segments.push_back(std::move(seg));
+                    field->type      = std::make_unique<NamedType>(advance().span, std::move(p));
+                    field->name_span = cur().span;
+                    field->name      = expect_identifier("the name of the field");
+                    if (accept(TokenKind::eq)) field->init = parse_expr();
+                    expect(TokenKind::semicolon, "after a field");
+                    field->span = from(fm.start);
+                    decl->members.push_back(std::move(field));
+                    continue;
+                }
                 if (DeclPtr member = parse_member(ctx, access)) decl->members.push_back(std::move(member));
             } catch (const ParseError&) {
                 synchronize(false);
@@ -1685,6 +1708,18 @@ private:
             auto fn   = std::make_unique<FunctionType>(start, std::move(type));
             if (!at(TokenKind::r_paren)) {
                 do {
+                    if (at(TokenKind::kw_mut)) {   // `void(mut painter&)`: a parameter that is a mutable reference
+                        Span    m   = advance().span;
+                        TypePtr ref = parse_type({});
+                        if (ref->kind != TypeKind::reference) {
+                            report(DiagCode::E2003, from(m), "'mut' in a function type marks a reference parameter: write 'mut T&'",
+                                   "not a reference");
+                        } else {
+                            ref->as<ReferenceType>().is_mut = true;
+                        }
+                        fn->params.push_back(std::move(ref));
+                        continue;
+                    }
                     fn->params.push_back(parse_type({}));
                 } while (accept(TokenKind::comma));
             }

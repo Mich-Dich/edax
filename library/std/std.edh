@@ -87,11 +87,13 @@ namespace std {
         void format(mut std::formatter& out);
     }
 
-    // What a panic hook is told: the message, where the panic happened and on which thread.
+    // What a panic hook is told: the message, where the panic happened (and in which function:
+    // `geo::polygon::area`, `lambda in main`; empty when unknown) and on which thread.
     view struct panic_info {
-        std::str       message;
-        std::call_site where;
-        std::str       thread_name;
+        std::str        message;
+        std::call_site  where;
+        std::static_str function;
+        std::str        thread_name;
     }
 
     // Installs the hook every panic calls on the panicking thread before the panic is printed
@@ -286,6 +288,9 @@ namespace std {
         usize len();
         bool is_empty();
         T& operator[](usize i);
+
+        // The address of the first element, for C and graphics APIs (glBufferData).
+        std::raw_ptr<T> as_ptr();
 
         // The elements `from..to`; panics when out of bounds.
         span<T> slice(usize from, usize to);
@@ -902,10 +907,10 @@ namespace std {
         T load(std::memory_order order);
 
         // Writes `value`. `order`: relaxed, release or sequentially_consistent.
-        void store(T value, std::memory_order order);
+        void store(T desired, std::memory_order order);
 
         // Writes `value` and returns the old value.
-        T exchange(T value, std::memory_order order);
+        T exchange(T desired, std::memory_order order);
 
         // If the value is `expected`, makes it `desired` and returns `ok(expected)`; otherwise
         // returns `error(actual)`.

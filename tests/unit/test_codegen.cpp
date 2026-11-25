@@ -212,3 +212,35 @@ TEST_CASE("driver: a missing linker is reported") {
     CHECK(contains(r.err, "linker"));
     std::filesystem::remove_all(src.parent_path());
 }
+
+// --- panics: function names, values, the debugger stop (crash handling, phases A and D) ----------
+
+TEST_CASE("codegen: a panic's location names the function it happens in") {
+    Generated g = generate("u32 area(u32 w, u32 h) { return w * h; }\nu32 main() { return area(70000, 70000); }");
+    CHECK_EQ(g.codes, std::string());
+    CHECK(contains(g.ir, "c\"area\\00\""));
+    CHECK(std::regex_search(g.ir, std::regex(R"(@edax_loc\S* = private constant \{ ptr, i32, i32, ptr \} \{ ptr @\S+, i32 1, i32 \d+, ptr @\S+ \})")));
+}
+
+TEST_CASE("codegen: an overflow panic carries the expression and both operands") {
+    Generated g = generate("u32 area(u32 w, u32 h) { return w * h; }\nu32 main() { return area(70000, 70000); }");
+    // The template: the message, then \01 / \02 where the signed / unsigned operands go.
+    CHECK(contains(g.ir, "integer overflow in 'w * h' (u32): \\02 * \\02"));
+    CHECK(contains(g.ir, "call void @edax_panic_values("));
+    CHECK(contains(g.ir, "!edax.message"));
+}
+
+TEST_CASE("codegen: a panic stops an attached debugger at the panicking line, then ends the process") {
+    Generated g = generate("i32 neg(i32 x) { return -x; }\nu32 main() { return cast::truncate<u32>(neg(5)); }");
+    CHECK_EQ(g.codes, std::string());
+    CHECK(std::regex_search(g.ir, std::regex(R"(call void @edax_panic_values\([^\n]*\n\s*call void @llvm\.debugtrap\(\)[^\n]*\n\s*call void @edax_panic_end\(i1 true\))")));
+}
+
+TEST_CASE("codegen: stop_debugger_on_panic() == false leaves out the debugger stop") {
+    Project p({{"main.ed", "i32 neg(i32 x) { return -x; }\nu32 main() { return cast::truncate<u32>(neg(5)); }"}});
+    REQUIRE(!p.diags.has_errors());
+    p.program.mode_settings["stop_debugger_on_panic"] = "false";
+    std::string ir = edax::generate_llvm_ir(p.program, p.sources, p.diags);
+    CHECK(std::regex_search(ir, std::regex(R"(call void @edax_panic_values\([^\n]*\n\s*call void @edax_panic_end\(i1 false\))")));
+    CHECK(!std::regex_search(ir, std::regex(R"(call void @edax_panic_values\([^\n]*\n\s*call void @llvm\.debugtrap)")));
+}

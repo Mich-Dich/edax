@@ -1,0 +1,309 @@
+// The Edax standard library: module std::math (see math.edh).
+
+namespace std::math {
+    f32 lerp(f32 a, f32 b, f32 t) {
+        return a + (b - a) * t;
+    }
+
+    f32 smoothstep(f32 edge0, f32 edge1, f32 x) {
+        f32 t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    struct vec2 {
+        static vec2 splat(f32 v) { return vec2{ .x = v, .y = v }; }
+
+        f32 dot(vec2& other) { return this.x * other.x + this.y * other.y; }
+        f32 length() { return this.length_squared().sqrt(); }
+        f32 length_squared() { return this.x * this.x + this.y * this.y; }
+
+        vec2 normalized() {
+            f32 n = this.length();
+            if (n == 0.0) {
+                return this;
+            }
+            return vec2{ .x = this.x / n, .y = this.y / n };
+        }
+
+        vec2 perpendicular() { return vec2{ .x = -this.y, .y = this.x }; }
+        vec2 abs() { return vec2{ .x = this.x.abs(), .y = this.y.abs() }; }
+        vec2 min(vec2& other) { return vec2{ .x = this.x.min(other.x), .y = this.y.min(other.y) }; }
+        vec2 max(vec2& other) { return vec2{ .x = this.x.max(other.x), .y = this.y.max(other.y) }; }
+        vec2 lerp(vec2& to, f32 t) { return vec2{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t) }; }
+
+        vec2 operator+(vec2& other) { return vec2{ .x = this.x + other.x, .y = this.y + other.y }; }
+        vec2 operator-(vec2& other) { return vec2{ .x = this.x - other.x, .y = this.y - other.y }; }
+        vec2 operator*(vec2& other) { return vec2{ .x = this.x * other.x, .y = this.y * other.y }; }
+        vec2 operator*(f32 k) { return vec2{ .x = this.x * k, .y = this.y * k }; }
+        vec2 operator/(f32 k) { return vec2{ .x = this.x / k, .y = this.y / k }; }
+        vec2 operator-() { return vec2{ .x = -this.x, .y = -this.y }; }
+    }
+
+    struct vec3 {
+        static vec3 splat(f32 v) { return vec3{ .x = v, .y = v, .z = v }; }
+
+        f32 dot(vec3& other) { return this.x * other.x + this.y * other.y + this.z * other.z; }
+
+        vec3 cross(vec3& other) {
+            return vec3{
+                .x = this.y * other.z - this.z * other.y,
+                .y = this.z * other.x - this.x * other.z,
+                .z = this.x * other.y - this.y * other.x,
+            };
+        }
+
+        f32 length() { return this.dot(this).sqrt(); }
+
+        vec3 normalized() {
+            f32 n = this.length();
+            if (n == 0.0) {
+                return this;
+            }
+            return vec3{ .x = this.x / n, .y = this.y / n, .z = this.z / n };
+        }
+
+        vec3 lerp(vec3& to, f32 t) {
+            return vec3{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t), .z = std::math::lerp(this.z, to.z, t) };
+        }
+
+        vec3 operator+(vec3& other) { return vec3{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z }; }
+        vec3 operator-(vec3& other) { return vec3{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z }; }
+        vec3 operator*(f32 k) { return vec3{ .x = this.x * k, .y = this.y * k, .z = this.z * k }; }
+        vec3 operator/(f32 k) { return vec3{ .x = this.x / k, .y = this.y / k, .z = this.z / k }; }
+        vec3 operator-() { return vec3{ .x = -this.x, .y = -this.y, .z = -this.z }; }
+    }
+
+    struct vec4 {
+        static vec4 splat(f32 v) { return vec4{ .x = v, .y = v, .z = v, .w = v }; }
+
+        f32 dot(vec4& other) { return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w; }
+
+        vec4 lerp(vec4& to, f32 t) {
+            return vec4{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t),
+                         .z = std::math::lerp(this.z, to.z, t), .w = std::math::lerp(this.w, to.w, t) };
+        }
+
+        vec4 operator+(vec4& other) { return vec4{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z, .w = this.w + other.w }; }
+        vec4 operator-(vec4& other) { return vec4{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z, .w = this.w - other.w }; }
+        vec4 operator*(f32 k) { return vec4{ .x = this.x * k, .y = this.y * k, .z = this.z * k, .w = this.w * k }; }
+    }
+
+    struct rect {
+        static rect from_corners(vec2 a, vec2 b) {
+            vec2 low = a.min(b);
+            vec2 high = a.max(b);
+            return rect{ .x = low.x, .y = low.y, .width = high.x - low.x, .height = high.y - low.y };
+        }
+
+        static rect at(vec2 origin, vec2 size) {
+            return rect{ .x = origin.x, .y = origin.y, .width = size.x, .height = size.y };
+        }
+
+        f32 left() { return this.x; }
+        f32 top() { return this.y; }
+        f32 right() { return this.x + this.width; }
+        f32 bottom() { return this.y + this.height; }
+        vec2 origin() { return vec2{ .x = this.x, .y = this.y }; }
+        vec2 size() { return vec2{ .x = this.width, .y = this.height }; }
+        vec2 center() { return vec2{ .x = this.x + this.width * 0.5, .y = this.y + this.height * 0.5 }; }
+
+        bool contains(vec2 p) {
+            return p.x >= this.x && p.y >= this.y && p.x < this.x + this.width && p.y < this.y + this.height;
+        }
+
+        bool overlaps(rect& other) {
+            return this.x < other.right() && other.x < this.right() && this.y < other.bottom() && other.y < this.bottom();
+        }
+
+        rect intersection(rect& other) {
+            f32 l = this.x.max(other.x);
+            f32 t = this.y.max(other.y);
+            f32 r = this.right().min(other.right());
+            f32 b = this.bottom().min(other.bottom());
+            return rect{ .x = l, .y = t, .width = (r - l).max(0.0), .height = (b - t).max(0.0) };
+        }
+
+        rect united(rect& other) {
+            f32 l = this.x.min(other.x);
+            f32 t = this.y.min(other.y);
+            return rect{ .x = l, .y = t, .width = this.right().max(other.right()) - l, .height = this.bottom().max(other.bottom()) - t };
+        }
+
+        rect shrunk(f32 d) {
+            f32 w = (this.width - 2.0 * d).max(0.0);
+            f32 h = (this.height - 2.0 * d).max(0.0);
+            return rect{ .x = this.x + d, .y = this.y + d, .width = w, .height = h };
+        }
+
+        rect expanded(f32 d) { return this.shrunk(-d); }
+        rect translated(vec2 by) { return rect{ .x = this.x + by.x, .y = this.y + by.y, .width = this.width, .height = this.height }; }
+        bool is_empty() { return this.width <= 0.0 || this.height <= 0.0; }
+    }
+
+    f32 srgb_to_linear(f32 v) {
+        if (v <= 0.04045) {
+            return v / 12.92;
+        }
+        return ((v + 0.055) / 1.055).pow(2.4);
+    }
+
+    f32 linear_to_srgb(f32 v) {
+        if (v <= 0.0031308) {
+            return v * 12.92;
+        }
+        return 1.055 * v.pow(1.0 / 2.4) - 0.055;
+    }
+
+    // The cube root, also of negative numbers.
+    private f32 cube_root(f32 v) {
+        if (v < 0.0) {
+            return -((-v).pow(1.0 / 3.0));
+        }
+        return v.pow(1.0 / 3.0);
+    }
+
+    // OKLab (Björn Ottosson, 2020): L, a, b.
+    private struct oklab {
+        f32 l = 0.0;
+        f32 a = 0.0;
+        f32 b = 0.0;
+    }
+
+    private oklab lab_of(color& c) {
+        f32 r = srgb_to_linear(c.r);
+        f32 g = srgb_to_linear(c.g);
+        f32 bl = srgb_to_linear(c.b);
+        f32 l = cube_root(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl);
+        f32 m = cube_root(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl);
+        f32 s = cube_root(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl);
+        return oklab{
+            .l = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            .a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            .b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+        };
+    }
+
+    // Linear sRGB of an OKLab colour; may be outside [0, 1].
+    private vec3 linear_of(oklab& c) {
+        f32 l0 = c.l + 0.3963377774 * c.a + 0.2158037573 * c.b;
+        f32 m0 = c.l - 0.1055613458 * c.a - 0.0638541728 * c.b;
+        f32 s0 = c.l - 0.0894841775 * c.a - 1.2914855480 * c.b;
+        f32 l = l0 * l0 * l0;
+        f32 m = m0 * m0 * m0;
+        f32 s = s0 * s0 * s0;
+        return vec3{
+            .x = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+            .y = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+            .z = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+        };
+    }
+
+    private bool in_gamut(vec3& v) {
+        f32 e = 0.0001;
+        return v.x >= -e && v.x <= 1.0 + e && v.y >= -e && v.y <= 1.0 + e && v.z >= -e && v.z <= 1.0 + e;
+    }
+
+    private oklab lab_of_lch(oklch& c, f32 chroma) {
+        f32 h = c.h * std::math::pi / 180.0;
+        return oklab{ .l = c.l, .a = chroma * h.cos(), .b = chroma * h.sin() };
+    }
+
+    private color from_linear(vec3& v, f32 alpha) {
+        return color{
+            .r = linear_to_srgb(v.x.clamp(0.0, 1.0)),
+            .g = linear_to_srgb(v.y.clamp(0.0, 1.0)),
+            .b = linear_to_srgb(v.z.clamp(0.0, 1.0)),
+            .a = alpha,
+        };
+    }
+
+    // An 8-bit channel to [0, 1].
+    private f32 unit(u32 v) {
+        return cast<f32>(cast::truncate<u8>(v)) / 255.0;
+    }
+
+    // A channel in [0, 1] to 0..255, rounded.
+    private u32 byte_of(f32 v) {
+        return cast::saturate<u32>(v.clamp(0.0, 1.0) * 255.0 + 0.5);
+    }
+
+    struct color {
+        static color hex(u32 rgb) {
+            return color{ .r = unit(rgb >> 16), .g = unit(rgb >> 8), .b = unit(rgb), .a = 1.0 };
+        }
+
+        static color hex_alpha(u32 rgba) {
+            return color{ .r = unit(rgba >> 24), .g = unit(rgba >> 16), .b = unit(rgba >> 8), .a = unit(rgba) };
+        }
+
+        static color rgb8(u8 r, u8 g, u8 b) {
+            return color{ .r = cast<f32>(r) / 255.0, .g = cast<f32>(g) / 255.0, .b = cast<f32>(b) / 255.0, .a = 1.0 };
+        }
+
+        static color rgba8(u8 r, u8 g, u8 b, u8 a) {
+            return color{ .r = cast<f32>(r) / 255.0, .g = cast<f32>(g) / 255.0, .b = cast<f32>(b) / 255.0, .a = cast<f32>(a) / 255.0 };
+        }
+
+        // Out-of-gamut colours keep their lightness and hue and lose chroma until they fit.
+        static color from_oklch(oklch& c, f32 alpha) {
+            vec3 direct = linear_of(lab_of_lch(c, c.c));
+            if (in_gamut(direct)) {
+                return from_linear(direct, alpha);
+            }
+            mut f32 low = 0.0;
+            mut f32 high = c.c;
+            for (u32 i : 0..16) {
+                f32 middle = (low + high) * 0.5;
+                if (in_gamut(linear_of(lab_of_lch(c, middle)))) {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
+            }
+            return from_linear(linear_of(lab_of_lch(c, low)), alpha);
+        }
+
+        static color white() { return color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; }
+        static color black() { return color{ .a = 1.0 }; }
+        static color transparent() { return color{ .a = 0.0 }; }
+
+        oklch to_oklch() {
+            oklab lab = lab_of(this);
+            mut f32 h = lab.b.atan2(lab.a) * 180.0 / std::math::pi;
+            if (h < 0.0) {
+                h += 360.0;
+            }
+            return oklch{ .l = lab.l, .c = (lab.a * lab.a + lab.b * lab.b).sqrt(), .h = h };
+        }
+
+        color with_alpha(f32 alpha) {
+            return color{ .r = this.r, .g = this.g, .b = this.b, .a = alpha };
+        }
+
+        color mix(color& to, f32 t) {
+            oklab x = lab_of(this);
+            oklab y = lab_of(to);
+            oklab m = oklab{ .l = std::math::lerp(x.l, y.l, t), .a = std::math::lerp(x.a, y.a, t), .b = std::math::lerp(x.b, y.b, t) };
+            return from_linear(linear_of(m), std::math::lerp(this.a, to.a, t));
+        }
+
+        color lighter(f32 amount) {
+            oklch c = this.to_oklch();
+            return color::from_oklch(oklch{ .l = (c.l + amount).clamp(0.0, 1.0), .c = c.c, .h = c.h }, this.a);
+        }
+
+        f32 luminance() {
+            return 0.2126 * srgb_to_linear(this.r) + 0.7152 * srgb_to_linear(this.g) + 0.0722 * srgb_to_linear(this.b);
+        }
+
+        f32 contrast(color& other) {
+            f32 mine = this.luminance();
+            f32 theirs = other.luminance();
+            return (mine.max(theirs) + 0.05) / (mine.min(theirs) + 0.05);
+        }
+
+        u32 packed() {
+            return byte_of(this.r) | (byte_of(this.g) << 8) | (byte_of(this.b) << 16) | (byte_of(this.a) << 24);
+        }
+    }
+}

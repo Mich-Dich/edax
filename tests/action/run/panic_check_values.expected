@@ -1,0 +1,6 @@
+exit: 134
+--- stdout
+3
+--- stderr
+tests/action/run/panic_check_values.ed:13:21: panic in main: 10 doesn't split into 4 parts
+note: the check `total % parts == 0` is at tests/action/run/panic_check_values.ed:7:21

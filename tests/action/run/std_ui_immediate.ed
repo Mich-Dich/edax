@@ -1,0 +1,95 @@
+// RUN: edaxc run %s
+// std::ui::immediate without a window: frames are run with made-up input (ui::input), so clicks,
+// drags, sections, theme fades and replaced painters can be checked.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+struct settings {
+    bool  vsync = true;
+    bool  shadows = false;
+    f32   speed = 5.0;
+    i32   lives = 3;
+    u32   clicks = 0;
+}
+
+// One frame of the test UI; returns where the "Save" button and the speed slider ended up.
+(ui::rect, ui::rect) frame_of(mut im::context& ctx, mut settings& s, ui::input in) {
+    mut ui::rect save = default;
+    mut ui::rect slider = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 800.0, .y = 600.0 });
+        {
+            mut im::scope w = f.window("Settings", ui::rect{ .x = 20.0, .y = 20.0, .width = 360.0 });
+            w.heading("Video");
+            w.text(f"{s.clicks} saves");
+            _ = w.boolean("vsync", mut s.vsync);
+            _ = w.checkbox("shadows", mut s.shadows);
+            slider = w.allocate(ui::vec2{ .x = 0.0, .y = 0.0 });
+            _ = w.slider("speed", mut s.speed, 0.0, 10.0);
+            _ = w.slider("lives", mut s.lives, 0, 9);
+            {
+                mut im::scope more = w.section("More", false);
+                more.text(f"hidden unless open");
+                more.progress(0.5);
+            }
+            {
+                mut im::scope bar = w.row();
+                save = bar.allocate(ui::vec2{ .x = 0.0, .y = 0.0 });
+                if (bar.button("Save", ui::variant::primary)) {
+                    s.clicks += 1;
+                }
+                _ = bar.button("Cancel");
+            }
+        }
+        f.finish();
+    }
+    return (save, slider);
+}
+
+ui::input idle(ui::vec2 at) {
+    return ui::input{ .cursor = at, .dt = 0.016 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut settings s = default;
+    (ui::rect save, ui::rect slider) = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    std::println(f"drawn: {ctx.draw_data().vertices.len() > 0}, duplicates {ctx.duplicate_ids()}, wants mouse {ctx.wants_mouse()}");
+
+    // Click "Save": press and release over it.
+    ui::vec2 on_save = ui::vec2{ .x = save.x + 20.0, .y = save.y + 10.0 };
+    _ = frame_of(mut ctx, mut s, idle(on_save));
+    _ = frame_of(mut ctx, mut s, ui::input{ .cursor = on_save, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut s, ui::input{ .cursor = on_save, .mouse_released = true, .dt = 0.016 });
+    std::println(f"clicks after one click on Save: {s.clicks}, wants mouse over the window {ctx.wants_mouse()}");
+
+    // Drag the speed slider to its right end.
+    ui::vec2 on_track = ui::vec2{ .x = slider.x + 200.0, .y = slider.y + 15.0 };
+    _ = frame_of(mut ctx, mut s, ui::input{ .cursor = on_track, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut s, ui::input{ .cursor = ui::vec2{ .x = 790.0, .y = on_track.y }, .mouse_down = true, .dt = 0.016 });
+    std::println(f"speed after dragging right: {s.speed}");
+
+    // The bool widget follows the theme: a checkbox now.
+    mut ui::theme boxes = ui::theme::dark();
+    boxes.controls.boolean = ui::bool_widget::checkbox;
+    boxes.radius = ui::radius_scale::sharp();
+    ctx.set_theme(boxes);
+    _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    std::println(f"fading: radius between {ctx.theme().radius.medium > 0.0 && ctx.theme().radius.medium < 8.0}");
+    for (u32 i : 0..40) {
+        _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    }
+    std::println(f"after the fade: radius {ctx.theme().radius.medium}, bool widget {ctx.theme().controls.boolean}");
+
+    // A replaced painter is used by every slider.
+    ctx.skin().slider_knob = [](mut ui::painter& p, ui::slider_part& k) {
+        p.list.star(k.knob_center(), 12.0, 5.0, 5, 0.0, p.tokens.colors.warning);
+    };
+    _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    usize with_stars = ctx.draw_data().vertices.len();
+    ctx.skin() = ui::skin::standard();
+    _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
+    std::println(f"star knobs change the drawing: {with_stars != ctx.draw_data().vertices.len()}, duplicates {ctx.duplicate_ids()}");
+}

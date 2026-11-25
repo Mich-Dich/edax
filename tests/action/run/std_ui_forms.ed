@@ -1,0 +1,123 @@
+// RUN: edaxc run %s
+// UIs from types (draft 35 §7): inspect builds editors from fields and @ui annotations, a form
+// changes them for one call (ranges, hiding, labels, rules, visible_if, rules across fields),
+// field() edits one field by path, and ui::edit reports what changed and when it is committed.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+enum weapon : u8 { sword, bow, staff }
+
+struct movement {
+    @ui::range{ .min = 0.0, .max = 20.0 } @ui::unit{ .text = "m/s" }
+    @ui::tooltip{ .text = "Top speed on flat ground" }
+    f32  speed = 5.0;
+    @ui::widget{ .kind = ui::widget_kind::checkbox }
+    bool can_fly = false;
+}
+
+struct player {
+    @ui::group{ .name = "Identity" }
+    std::string name = default;
+    @ui::group{ .name = "Identity" } @ui::label{ .text = "Class" }
+    weapon equipped = weapon::sword;
+    movement move = default;
+    @ui::read_only
+    u32 health = 80;
+    @ui::hidden
+    u64 cache_key = 7;
+    i32 level = 1;
+
+    @ui::action{ .label = "Heal" }
+    void heal() mut {
+        this.health = 100;
+    }
+}
+
+struct seen {
+    ui::edit all = default;
+    ui::edit one = default;
+    usize drawn = 0;
+}
+
+seen frame_of(mut im::context& ctx, mut player& p, ui::input in, bool with_form) {
+    mut seen out = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 900.0, .y = 900.0 });
+        {
+            mut im::scope w = f.window("Inspector", ui::rect{ .x = 0.0, .y = 0.0, .width = 500.0 });
+            if (with_form) {
+                ui::form<player> designer = ui::form<player>::annotated()
+                    .range("move.speed", 0.0, 50.0)
+                    .show("cache_key")
+                    .label("level", "Experience level")
+                    .rule("name", ui::rules::min_length(3))
+                    .visible_if("move.can_fly", [](player& v) { return v.level >= 5; })
+                    .rule_across("level", [](player& v) {
+                        return if (v.level <= 99) { ui::verdict::ok } else { ui::verdict::error(std::string::from("at most 99")) };
+                    });
+                out.all = w.inspect("player", mut p, designer);
+            } else {
+                out.all = w.inspect("player", mut p);
+            }
+            out.one = w.field(mut p, "move.speed");
+        }
+        f.finish();
+    }
+    out.drawn = ctx.draw_data().vertices.len();
+    return out;
+}
+
+ui::input idle() {
+    return ui::input{ .cursor = ui::vec2{ .x = 899.0, .y = 899.0 }, .dt = 0.016 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut player p = default;
+    p.name = std::string::from("Al");
+    _ = frame_of(mut ctx, mut p, idle(), false);
+    seen plain = frame_of(mut ctx, mut p, idle(), false);
+    std::println(f"plain: changed {plain.all.changed}, valid {plain.all.valid}, {ctx.duplicate_ids()} duplicate ids");
+
+    _ = frame_of(mut ctx, mut p, idle(), true);
+    seen formed = frame_of(mut ctx, mut p, idle(), true);
+    std::println(f"form: valid {formed.all.valid} (name shorter than 3), more drawn: {formed.drawn > plain.drawn}");
+    p.name = std::string::from("Alice");
+    p.level = 120;
+    seen across = frame_of(mut ctx, mut p, idle(), true);
+    std::println(f"level 120: valid {across.all.valid}");
+    p.level = 6;
+    seen fine = frame_of(mut ctx, mut p, idle(), true);
+    std::println(f"level 6: valid {fine.all.valid}");
+
+    // Keyboard: Tab on and press right each time: the right arrow opens the "Move" node when it has
+    // the focus, the next Tab reaches its speed slider, and the arrow steps it (by a hundredth of
+    // the range).
+    mut u32 tabs = 0;
+    mut f32 before = p.move.speed;
+    mut seen last = default;
+    while (tabs < 30 && p.move.speed == before) {
+        mut ui::input tab = idle();
+        tab.keys.push(ui::key_press{ .key = ui::key::tab });
+        _ = frame_of(mut ctx, mut p, move tab, false);
+        mut ui::input right = idle();
+        right.keys.push(ui::key_press{ .key = ui::key::right });
+        last = frame_of(mut ctx, mut p, move right, false);
+        tabs += 1;
+    }
+    std::println(f"speed stepped to {p.move.speed} through {last.all.path}: committed {last.all.committed}");
+
+    // Heal through Tab and Enter.
+    tabs = 0;
+    while (tabs < 30 && p.health != 100) {
+        mut ui::input tab = idle();
+        tab.keys.push(ui::key_press{ .key = ui::key::tab });
+        _ = frame_of(mut ctx, mut p, move tab, false);
+        mut ui::input enter = idle();
+        enter.keys.push(ui::key_press{ .key = ui::key::enter });
+        last = frame_of(mut ctx, mut p, move enter, false);
+        tabs += 1;
+    }
+    std::println(f"healed: {p.health}, path {last.all.path}, committed {last.all.committed}, cache key kept {p.cache_key}");
+}

@@ -1,0 +1,23 @@
+// The Edax standard library: module std::ui::routing, std::ui::immediate as a std::windowing input
+// layer: the UI takes the events it uses before the game sees them.
+//
+//     {
+//         mut im::router layer = im::router{ .ctx = ctx };
+//         wnd::route(mut events, mut layer, win.input());
+//     }
+//     handle_game_events(events);                        // what the UI didn't take
+//     mut im::frame f = ctx.begin_frame(ui::input_of(win.input(), events.as_span(), 0.0), size);
+//
+// Loaded for programs that use std::ui::immediate and std::windowing.
+
+namespace std::ui::immediate {
+    // Takes key and text events while the context wants the keyboard (it is typed into, or the
+    // keyboard moves its focus), and mouse button and wheel events while it wants the mouse. The
+    // keys and text it takes are kept for the context's next frame.
+    view class router : std::windowing::input_layer {
+    public:
+        std::windowing::routing on_event(std::windowing::event e, std::windowing::input_state& input) mut override;
+
+        mut context& ctx;
+    }
+}

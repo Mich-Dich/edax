@@ -1,0 +1,86 @@
+// RUN: edaxc run %s
+// std::ui::immediate's layout without a window: widths (px, percent, fill shares in a row, fit),
+// grids, scroll areas (the wheel, kept in range) and windows resized by their grip, which then
+// keep their height and scroll.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+struct seen {
+    ui::rect fixed = default;
+    ui::rect filled = default;
+    ui::rect half = default;
+    ui::rect fitted = default;
+    std::darray<ui::rect> cells = default;
+    ui::rect first_line = default;
+    ui::rect window_end = default;
+}
+
+seen frame_of(mut im::context& ctx, ui::input in) {
+    mut seen out = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 900.0, .y = 700.0 });
+        {
+            mut im::scope w = f.window("Layout", ui::rect{ .x = 0.0, .y = 0.0, .width = 432.0 });
+            {
+                mut im::scope bar = w.row();
+                out.fixed = bar.width(ui::px(100.0)).allocate(ui::vec2{ .x = 10.0, .y = 20.0 });
+                out.filled = bar.width(ui::fill(1.0)).allocate(ui::vec2{ .x = 10.0, .y = 20.0 });
+                _ = bar.width(ui::fill(3.0)).allocate(ui::vec2{ .x = 10.0, .y = 20.0 });
+            }
+            out.half = w.width(ui::percent(50.0)).allocate(ui::vec2{ .x = 10.0, .y = 20.0 });
+            out.fitted = w.width(ui::fit).allocate(ui::vec2{ .x = 33.0, .y = 20.0 });
+            {
+                mut im::scope cells = w.grid(3);
+                for (u32 i : 0..5) {
+                    out.cells.push(cells.allocate(ui::vec2{ .x = cells.available_width(), .y = 20.0 + cast<f32>(cast::truncate<u16>(i)) }));
+                }
+            }
+            {
+                mut im::scope list = w.scroll(100.0);
+                for (u32 i : 0..20) {
+                    ui::rect line = list.allocate(ui::vec2{ .x = 50.0, .y = 22.0 });
+                    if (i == 0) {
+                        out.first_line = line;
+                    }
+                }
+            }
+            out.window_end = w.allocate(ui::vec2{});
+        }
+        f.finish();
+    }
+    return out;
+}
+
+ui::input at(ui::vec2 p, f32 wheel) {
+    return ui::input{ .cursor = p, .scroll = wheel, .dt = 0.016 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    _ = frame_of(mut ctx, at(ui::vec2{ .x = 899.0, .y = 699.0 }, 0.0));
+    seen s = frame_of(mut ctx, at(ui::vec2{ .x = 899.0, .y = 699.0 }, 0.0));
+    // The window is 432 wide with 16 padding: 400 for content, gaps of 8.
+    std::println(f"px {s.fixed.width}, fill 1 of 4: {s.filled.width} at {s.filled.x}, percent 50: {s.half.width}, fit {s.fitted.width}");
+    std::println(f"grid: {s.cells[0].x} {s.cells[1].x} {s.cells[2].x} / {s.cells[3].x} {s.cells[3].y - s.cells[0].y}, cell {s.cells[0].width}");
+
+    // The wheel over the scroll area moves its lines up; far down it stops at the end.
+    ui::vec2 over_list = ui::vec2{ .x = s.first_line.x + 20.0, .y = s.first_line.y + 20.0 };
+    _ = frame_of(mut ctx, at(over_list, -1.0));
+    seen scrolled = frame_of(mut ctx, at(over_list, 0.0));
+    std::println(f"one wheel step: first line moved up {s.first_line.y - scrolled.first_line.y}");
+    _ = frame_of(mut ctx, at(over_list, -100.0));
+    seen bottom = frame_of(mut ctx, at(over_list, 0.0));
+    // 20 lines of 22 with gaps of 8 are 592 high; 100 show.
+    std::println(f"at the end: moved {s.first_line.y - bottom.first_line.y}");
+
+    // Drag the window's grip up: the window keeps the new height, and its content scrolls.
+    f32 end = s.window_end.y;
+    ui::vec2 grip = ui::vec2{ .x = 428.0, .y = end + 12.0 };
+    _ = frame_of(mut ctx, ui::input{ .cursor = grip, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, ui::input{ .cursor = ui::vec2{ .x = 428.0, .y = 300.0 }, .mouse_down = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, ui::input{ .cursor = ui::vec2{ .x = 428.0, .y = 300.0 }, .mouse_released = true, .dt = 0.016 });
+    seen small = frame_of(mut ctx, at(ui::vec2{ .x = 200.0, .y = 100.0 }, -2.0));
+    seen moved = frame_of(mut ctx, at(ui::vec2{ .x = 200.0, .y = 100.0 }, 0.0));
+    std::println(f"resized window scrolls: {moved.fixed.y < small.fixed.y}, duplicates {ctx.duplicate_ids()}");
+}

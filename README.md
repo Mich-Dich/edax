@@ -90,8 +90,7 @@ Requires:
 - To link Edax programs: a system linker driver such as GCC or Clang as `cc` (or set `EDAX_CC` / `--cc=`)
 
 ```bash
-cmake -S . -B build -G Ninja
-cmake --build build
+cmake -S . -B build -G Ninja && cmake --build build -j10
 ```
 
 The binary is `build/compiler/edaxc`:

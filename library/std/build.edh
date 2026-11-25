@@ -131,7 +131,7 @@ namespace std::build {
         // The extension with its dot: `.slang`, or "".
         compile_time std::static_str extension();
         // The same path with another extension: `with_extension("spv")`.
-        compile_time std::build::path with_extension(std::static_str extension);
+        compile_time std::build::path with_extension(std::static_str ext);
     }
 
     // An external program a step runs (`g.find_program("slangc")`).

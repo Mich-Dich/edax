@@ -1,0 +1,49 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: @ui::range works on number fields; 'name' is a std::string
+    --> tests/action/check/ui_annotations.ed:8:5
+     |
+   8 |     @ui::range{ .min = 0.0, .max = 1.0 }
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
+    ::: <std>/ui.ed:1377:17
+     |
+1377 |                 std::compile_error(f"@ui::range works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+     |                 -------------------------------------------------------------------------------------------------------
+     = note: reported by this check
+
+error[E4210]: @ui::range: min (5.0) is larger than max (1.0)
+  --> tests/action/check/ui_annotations.ed:10:5
+   |
+10 |     @ui::range{ .min = 5.0, .max = 1.0 }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ fails the check of '@::std::ui::range'
+
+error[E4210]: @ui::unit works on number fields; 'flag' is a bool
+    --> tests/action/check/ui_annotations.ed:12:5
+     |
+  12 |     @ui::unit{ .text = "m" }
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^ check failed
+    ::: <std>/ui.ed:1396:17
+     |
+1396 |                 std::compile_error(f"@ui::unit works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+     |                 ------------------------------------------------------------------------------------------------------
+     = note: reported by this check
+
+error[E4210]: @ui::widget: a checkbox or toggle needs a bool; 'volume' is a f32
+    --> tests/action/check/ui_annotations.ed:14:5
+     |
+  14 |     @ui::widget{ .kind = ui::widget_kind::checkbox }
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
+    ::: <std>/ui.ed:1412:17
+     |
+1412 |                 std::compile_error(f"@ui::widget: a checkbox or toggle needs a bool; '{annotated.name}' is a {std::type_name<t>()}");
+     |                 --------------------------------------------------------------------------------------------------------------------
+     = note: reported by this check
+
+error[E4210]: @ui::step: the step must be larger than 0
+  --> tests/action/check/ui_annotations.ed:16:5
+   |
+16 |     @ui::step{ .value = 0.0 }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ fails the check of '@::std::ui::step'
+
+5 errors, 0 warnings

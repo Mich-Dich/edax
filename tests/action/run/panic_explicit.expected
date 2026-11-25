@@ -2,4 +2,4 @@ exit: 134
 --- stdout
 before
 --- stderr
-tests/action/run/panic_explicit.ed:8:5: panic: giving up with code 3
+tests/action/run/panic_explicit.ed:8:5: panic in main: giving up with code 3

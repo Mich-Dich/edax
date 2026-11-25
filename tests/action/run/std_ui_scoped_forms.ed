@@ -1,0 +1,113 @@
+// RUN: edaxc run %s
+// Forms for types (draft 35 §7.8.4): ctx.set_form and with_form scopes reach a type wherever it is
+// nested, with the precedence context < scope < call; range_all and step_all; widget sets
+// (§7.8.5: steppers in `touch`); and @ui::field_widget for a type the program doesn't own.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+namespace other_library {
+    // A type the program can't annotate.
+    struct temperature {
+        f32 kelvin = 293.0;
+        u32 shown = 0;
+    }
+}
+
+// The program's widget for it: inspect uses it for every temperature field.
+@ui::field_widget{ .for_type = other_library::temperature }
+ui::edit temperature_widget(mut im::scope& s, std::str label, mut other_library::temperature& t) {
+    t.shown += 1;
+    f32 celsius = t.kelvin - 273.15;
+    s.text(f"{label}: {celsius} C");
+    return ui::edit{};
+}
+
+struct triple {
+    f32 x = 0.0;
+    f32 y = 0.0;
+    f32 z = 0.0;
+}
+
+struct body {
+    @ui::flatten
+    triple position = default;
+    @ui::flatten
+    triple velocity = default;
+    other_library::temperature heat = default;
+}
+
+// The number of focusable widgets, and of times the temperature widget ran, in one frame.
+(usize, u32) frame_of(mut im::context& ctx, mut body& b, ui::input in, u32 variant) {
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 800.0, .y = 800.0 });
+        {
+            mut im::scope w = f.window("Bodies", ui::rect{ .x = 0.0, .y = 0.0, .width = 500.0 });
+            if (variant == 0) {
+                _ = w.inspect_fields(mut b);
+            } else if (variant == 1) {
+                // A scope: every triple below loses z.
+                mut im::scope tools = w.with_form(ui::form<triple>::annotated().hide("z").range_all(-10.0, 10.0));
+                _ = tools.inspect_fields(mut b);
+            } else if (variant == 2) {
+                // The call's form wins over the scope's: position.z is back.
+                mut im::scope tools = w.with_form(ui::form<triple>::annotated().hide("z"));
+                _ = tools.inspect_fields(mut b, ui::form<body>::annotated().show("position.z"));
+            } else {
+                mut im::scope touch = w.with_widgets(ui::widget_sets::touch());
+                _ = touch.inspect_fields(mut b);
+            }
+        }
+        f.finish();
+    }
+    return (ctx.focus_order.len(), b.heat.shown);
+}
+
+ui::input idle() {
+    return ui::input{ .cursor = ui::vec2{ .x = 799.0, .y = 799.0 }, .dt = 0.016 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut body b = default;
+    (usize plain, u32 shown) = frame_of(mut ctx, mut b, idle(), 0);
+    std::println(f"plain: {plain} focusable widgets, temperature widget ran {shown}x");
+    (usize scoped, u32 _a) = frame_of(mut ctx, mut b, idle(), 1);
+    std::println(f"with_form hiding z: {scoped} (two fewer)");
+    (usize called, u32 _b) = frame_of(mut ctx, mut b, idle(), 2);
+    std::println(f"the call shows position.z again: {called}");
+
+    // The context's form: velocity is hidden everywhere (a triple's paths are relative to it, so
+    // hiding comes from body's form).
+    ctx.set_form(ui::form<body>::annotated().hide("velocity"));
+    (usize context_level, u32 _c) = frame_of(mut ctx, mut b, idle(), 0);
+    std::println(f"ctx.set_form hiding velocity: {context_level}");
+    ctx.set_form(ui::form<body>::annotated());
+
+    // Touch: numbers without a range become steppers (step 1): Tab to the first one, press right.
+    mut usize tabs = 0;
+    while (tabs < 10 && b.position.x == 0.0) {
+        mut ui::input tab = idle();
+        tab.keys.push(ui::key_press{ .key = ui::key::tab });
+        _ = frame_of(mut ctx, mut b, move tab, 3);
+        mut ui::input right = idle();
+        right.keys.push(ui::key_press{ .key = ui::key::right });
+        _ = frame_of(mut ctx, mut b, move right, 3);
+        tabs += 1;
+    }
+    std::println(f"touch stepper: position.x {b.position.x} after {tabs} tab(s)");
+
+    // range_all: the scoped form's range makes x a slider in -10..10; a right arrow steps by 0.2.
+    b.position.x = 0.0;
+    tabs = 0;
+    while (tabs < 10 && b.position.x == 0.0) {
+        mut ui::input tab = idle();
+        tab.keys.push(ui::key_press{ .key = ui::key::tab });
+        _ = frame_of(mut ctx, mut b, move tab, 1);
+        mut ui::input right = idle();
+        right.keys.push(ui::key_press{ .key = ui::key::right });
+        _ = frame_of(mut ctx, mut b, move right, 1);
+        tabs += 1;
+    }
+    std::println(f"range_all slider: position.x {b.position.x}, duplicates {ctx.duplicate_ids()}");
+}

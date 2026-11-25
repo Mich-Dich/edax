@@ -41,9 +41,10 @@ gfx::vulkan::device d = gfx::vulkan::open_device(0);
 
 **Unqualified names** (`c`) inside namespace `a::b`:
 
-1. **Locals and parameters** of the current function. Members are always written `this.x` (see [Classes](../user-types/classes.md)), so they're never found here.
-2. **The enclosing namespaces:** `a::b`, then `a`, then the global namespace. Each level is searched.
-3. If the name exists at **more than one level**, it's an **ambiguity error**: write the full name.
+1. **Locals and parameters** of the current function.
+2. **In a method, the members** of its type and of its bases (see [Classes](../user-types/classes.md)). No local may take a member's name, and a name that is both a member and an item of step 3 is an error (write `this.x` or the full name), so the order never decides anything silently.
+3. **The enclosing namespaces:** `a::b`, then `a`, then the global namespace. Each level is searched.
+4. If the name exists at **more than one level**, it's an **ambiguity error**: write the full name.
 ```edax
 namespace app {
     void log(std::str text);

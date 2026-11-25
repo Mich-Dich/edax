@@ -1,0 +1,471 @@
+// The Edax standard library: module std::ui::immediate, immediate-mode widgets (draft 35 §10, §11).
+//
+//     namespace ui = std::ui;
+//     namespace im = std::ui::immediate;
+//
+//     mut im::context ctx = im::context::create(ui::theme::dark());
+//     while (...) {
+//         {
+//             mut im::frame f = ctx.begin_frame(ui::input_of(win.input(), events.as_span(), 0.0), ui::window_size(win.size()));
+//             {
+//                 mut im::scope w = f.window("Player", ui::rect{ .x = 40.0, .y = 40.0, .width = 360.0 });
+//                 w.slider("speed", mut speed, 0.0, 20.0);
+//                 if (w.button("Save")) { save(); }
+//             }
+//             f.finish();
+//         }
+//         renderer.draw(frame, ctx.draw_data(), ctx.fonts());
+//     }
+//
+// Widgets are methods of im::scope. A program's own widgets use the same calls (make_id,
+// allocate, interact, animate, painter: §11), as methods of its own interface implemented for
+// im::scope. How every widget looks comes from the context's theme (tokens) and skin (painters),
+// and both can be changed at any time: ctx.set_theme(t) fades to `t`, ctx.skin() replaces painters.
+//
+// Keyboard: Tab and Shift+Tab move the focus through the widgets, Enter and Space press the focused
+// one, arrows change focused sliders, numbers and combos, Escape closes a popup, stops editing or
+// drops the focus. The focus ring shows only while the keyboard is used.
+
+namespace std::ui::immediate {
+    // What a widget remembers between frames.
+    struct widget_state {
+        // Sections: expanded. Windows: made (placed) already.
+        bool        open = false;
+        // Windows: the top-left corner.
+        std::ui::vec2 position = default;
+        // Windows and cards: the size in the last frame (their background is drawn first, before
+        // their content is known).
+        std::ui::vec2 size = default;
+        // Windows: higher is in front.
+        u64         order = 0;
+        // The frame the widget was last seen in (the duplicate-id check).
+        u64         seen_in_frame = 0;
+        // Scroll areas and windows of a fixed height: how far the content is scrolled, and how
+        // high it was in the last frame. `sized`: a window whose height was given or dragged.
+        f32         scroll = 0.0;
+        f32         content = 0.0;
+        bool        sized = false;
+        // Tables: the column sorted by (0: none, else index + 1), its direction, the selected row
+        // (+1; 0: none).
+        usize       sort_column = 0;
+        bool        descending = false;
+        usize       selected = 0;
+        // Rows: what their widgets took in the last frame (fill shares what is left).
+        f32         fixed_width = 0.0;
+        f32         fill_weight = 0.0;
+        u32         items = 0;
+    }
+
+    // Where the next widget goes: a column (down) or a row (right).
+    struct flow {
+        // Content's left edge, top and width.
+        f32  left = 0.0;
+        f32  top = 0.0;
+        f32  width = 0.0;
+        // The next widget's corner.
+        f32  cursor_x = 0.0;
+        f32  cursor_y = 0.0;
+        // The bottom and the right of everything placed so far.
+        f32  bottom = 0.0;
+        f32  right = 0.0;
+        f32  gap = 0.0;
+        bool row = false;
+        // Grids: the number of columns (0: not a grid), the next cell's index, the current row's
+        // height.
+        u32  columns = 0;
+        u32  index = 0;
+        f32  row_height = 0.0;
+        // Rows: the widths of widgets not sized by `fill`, the weights of those that are, and the
+        // number of widgets, this frame and in the last one.
+        f32  fixed = 0.0;
+        f32  weights = 0.0;
+        u32  items = 0;
+        f32  last_fixed = 0.0;
+        f32  last_weights = 0.0;
+        u32  last_items = 0;
+    }
+
+    // One window's drawing in a frame; the frame stacks them by `order`.
+    struct layer {
+        u64               window = 0;
+        u64               order = 0;
+        std::ui::rect     bounds = default;
+        std::ui::draw_list list = default;
+    }
+
+    // A form kept by the context for one type (`ctx.set_form`, `scope.with_form`): what it changes.
+    struct stored_form {
+        u64 type_id = 0;
+        std::darray<std::ui::field_override> overrides = default;
+        bool hide_unlisted = false;
+    }
+
+    // What interact() found out about a widget.
+    @std::derive::formattable
+    struct response {
+        // hovered, pressed (held down on it), and the animated hover and press amounts.
+        std::ui::interaction state = default;
+        // Pressed and released on it, or pressed with Enter or Space while focused, this frame.
+        bool clicked = false;
+        // The widget has the keyboard focus (state.focused: and the focus ring shows).
+        bool has_focus = false;
+        // Where the cursor is.
+        std::ui::vec2 cursor = default;
+    }
+
+    // Everything that lives longer than a frame: per-id state, windows, animations, the theme, the
+    // skin, the fonts and the finished frame's draw list.
+    class context {
+    public:
+        static context create(std::ui::theme start);
+
+        // Starts a frame of `size` pixels with this frame's input. The frame borrows the context:
+        // nothing else uses it until the frame is finished.
+        frame begin_frame(std::ui::input frame_input, std::ui::vec2 size) mut;
+
+        // What the last finished frame drew.
+        std::ui::draw_list& draw_data();
+        std::ui::fonts& fonts();
+
+        // The theme in use (during a fade, the mix of the two).
+        std::ui::theme& theme();
+        // Fades to `next` over its `motion.slow` (radii, colours, sizes and spacing move; the
+        // shapes of controls switch half way).
+        void set_theme(std::ui::theme next) mut;
+        // Switches to `next` at once.
+        void set_theme_now(std::ui::theme next) mut;
+
+        // The painters of every kind of widget: replace one to change how that widget looks.
+        mut std::ui::skin& skin() mut;
+
+        // A form for every `T` the context's editors show, nested or not (draft 35 §7.8.4);
+        // weaker than with_form scopes and than the form passed to a call. Replaces an earlier one
+        // for `T`.
+        template<type T>
+        void set_form(std::ui::form<T> rules) mut;
+
+        // Whether the UI uses the mouse (the cursor is over one of its windows, or a drag runs):
+        // the game should then leave the mouse alone.
+        bool wants_mouse();
+        // Whether the UI uses the keyboard (text is being typed, or the keyboard moves the focus).
+        bool wants_keyboard();
+
+        // The text copied and cut in text fields (until std::windowing has a clipboard, only
+        // within the program).
+        std::str clipboard_text();
+        void set_clipboard_text(std::str text) mut;
+
+        // The number of widgets whose id was used twice in the last frame.
+        u32 duplicate_ids();
+
+        // ---- used by frame and scope (and own widgets) ----
+        std::ui::theme  look = default;
+        std::ui::theme  fade_from = default;
+        std::ui::theme  fade_to = default;
+        // 1: no fade running.
+        f32             fade = 1.0;
+        std::ui::skin   painters = std::ui::skin::standard();
+        std::ui::fonts  faces = std::ui::fonts::make();
+        std::ui::input  in = default;
+        std::ui::vec2   frame_size = default;
+        // Seconds since the last frame.
+        f32             dt = 0.0;
+        std::option<std::time::instant> last_frame_at = std::none;
+        u64             frame_number = 0;
+        u64             next_order = 0;
+        std::hash_map<u64, widget_state> states = default;
+        std::hash_map<u64, f32> animations = default;
+        std::darray<flow> layouts = default;
+        std::darray<layer> layers = default;
+        // The windows of the last frame, for hovering: which one is in front under the cursor.
+        std::darray<layer> last_windows = default;
+        std::ui::draw_list output = default;
+        // The window under the cursor (in front), the widget under the cursor, the widget holding
+        // the mouse.
+        u64             hover_window = 0;
+        u64             hot = 0;
+        u64             active = 0;
+        std::ui::vec2   drag_offset = default;
+        u32             duplicates = 0;
+        u32             last_duplicates = 0;
+        // Keyboard focus: the focused widget, whether the ring shows (keyboard in use), the
+        // focusable widgets of this frame and of the last one (Tab's order), and whether Enter or
+        // Space pressed the focused widget this frame.
+        u64             focused = 0;
+        bool            focus_visible = false;
+        std::darray<u64> focus_order = default;
+        std::darray<u64> last_focus_order = default;
+        bool            activate = false;
+        // The text field (or number being typed) that has the caret, its editing states, the
+        // clipboard, the text of a number being typed, and the caret's blink phase.
+        u64             editing = 0;
+        std::hash_map<u64, std::ui::text_edit> edits = default;
+        std::string     clipboard = default;
+        std::string     number_text = default;
+        f32             caret_phase = 0.0;
+        // Dragging numbers: where the press was and the value then.
+        std::ui::vec2   press_at = default;
+        f64             drag_start = 0.0;
+        // The combo whose list is open.
+        u64             open_popup = 0;
+        // The overlay (popups, tooltips): drawn over every window; an index into `layers`.
+        std::option<usize> overlay = std::none;
+        // The last widget that called interact (for tooltips), whether it is hovered, and the
+        // widget whose tooltip is waiting or showing, for how long.
+        u64             last_item = 0;
+        bool            last_item_hovered = false;
+        u64             tooltip_of = 0;
+        f32             tooltip_wait = 0.0;
+        bool            tooltip_seen = false;
+        // The themes replaced by styled scopes, innermost last.
+        std::darray<std::ui::theme> style_stack = default;
+        // The size of the next widget (scope.width), the wheel already used by an inner scroll
+        // area this frame, a window's size when its resize started.
+        std::option<std::ui::length> next_width = std::none;
+        bool            scroll_used = false;
+        std::ui::vec2   resize_from = default;
+        // Keys and text taken by a std::ui::routing router since the last frame; added to the
+        // next frame's input.
+        std::darray<std::ui::key_press> routed_keys = default;
+        std::string     routed_text = default;
+        // An editor made from a type (inspect, field) whose change isn't committed yet (a drag
+        // still held, text still typed), and the path of that change.
+        u64             pending_commit = 0;
+        std::string     pending_path = default;
+        // Forms for types: the context's (set_form) and those of with_form scopes, innermost last.
+        std::darray<stored_form> context_forms = default;
+        std::darray<stored_form> scoped_forms = default;
+        // The widget sets of with_widgets scopes, innermost last; none: widget_sets::tool().
+        std::darray<std::ui::widget_set> widget_stack = default;
+
+        mut widget_state& state_of(u64 id) mut;
+        mut flow& top() mut;
+        // Reserves `width` x `height` in the innermost flow.
+        std::ui::rect place(f32 width, f32 height) mut;
+        // The width left in the innermost flow (a column: all of it; a row: right of the cursor; a
+        // grid: a cell).
+        f32 room() mut;
+        // The next widget's width from scope.width(), taken (the next widget no longer sees it).
+        std::option<std::ui::length> take_next_width() mut;
+        // The width `size` gives in the innermost flow; `natural` for none and for `fit`.
+        f32 resolve_width(std::option<std::ui::length> size, f32 natural) mut;
+        // Marks `id` used in this frame; counts a second use.
+        void touch(u64 id) mut;
+        // An eased value moving to `target` (0 to 1) in `seconds`; the first call starts at `target`.
+        f32 ease(u64 key, f32 target, f32 seconds) mut;
+        // Hover, press, click and focus of `widget` at `r` in the window `window`, clipped to `clip`;
+        // a focusable widget joins Tab's order and takes the focus when pressed.
+        response respond(u64 widget, std::ui::rect r, u64 window, std::ui::rect clip, bool focusable) mut;
+        // The index of the overlay layer in `layers`, made the first time in a frame.
+        usize overlay_layer() mut;
+    }
+
+    // A type that draws its own editor: inspect and field use it wherever the type appears,
+    // nested in other types too (draft 35 §7.7).
+    interface inspectable {
+        std::ui::edit inspect(mut scope& s) mut;
+    }
+
+    // A frame being built. Borrows the context; finish() ends it.
+    view class frame {
+    public:
+        // A window that can be dragged by its title bar, resized by its bottom-right corner and
+        // brought to the front by a click; `start` places it the first time. A height of 0: as high
+        // as its content; otherwise (and after a resize) the content scrolls.
+        @std::must_use
+        scope window(std::str title, std::ui::rect start, implicit compile_time std::call_site where) mut;
+
+        // Ends the frame; ctx.draw_data() is then what it drew.
+        void finish() move;
+
+        mut context& ctx;
+    }
+
+    // A place widgets go: a window, a section, a card, a row. Borrows its parent mutably until it
+    // ends at its `}`, so widgets only go into the innermost open scope.
+    view class scope {
+    public:
+        // False when the scope is collapsed: its widgets then do nothing.
+        bool open();
+        // The tokens in use.
+        std::ui::theme& theme();
+
+        // ---- writing widgets (§11) ----
+
+        // The id of a widget under this scope: the scope's id, the call site and `key`.
+        u64 make_id(std::str key, std::call_site where);
+        // The width the next widget can take.
+        f32 available_width() mut;
+        // Reserves `size` in the flow and returns where it is.
+        std::ui::rect allocate(std::ui::vec2 size) mut;
+        // Hover, press and click of the widget `widget` at `r`.
+        response interact(u64 widget, std::ui::rect r) mut;
+        // A value of the widget moving to `target` (0 to 1) with the theme's `motion.normal`;
+        // `slot` tells a widget's values apart.
+        f32 animate(u64 widget, u32 slot, f32 target) mut;
+        // The widget's state between frames.
+        mut widget_state& state(u64 widget) mut;
+        // Draws into this scope's window with the current theme.
+        std::ui::painter painter() mut;
+
+        // ---- widgets ----
+
+        // A line of text, in the body style; `muted` in text_muted; `heading` in the title style.
+        void text(std::format_args message) mut;
+        void muted(std::format_args message) mut;
+        void heading(std::str title) mut;
+
+        // A button: secondary, or of the variant `look`. True in the frame it was clicked.
+        @std::must_use
+        bool button(std::str label, implicit compile_time std::call_site where) mut;
+        @std::must_use
+        bool button(std::str label, std::ui::variant look, implicit compile_time std::call_site where) mut;
+
+        // A bool as a checkbox, as a toggle, or as the theme says (controls.boolean). True in the
+        // frame `value` changed.
+        bool checkbox(std::str label, mut bool& value, implicit compile_time std::call_site where) mut;
+        bool toggle(std::str label, mut bool& value, implicit compile_time std::call_site where) mut;
+        bool boolean(std::str label, mut bool& value, implicit compile_time std::call_site where) mut;
+
+        // A number dragged over [min, max]; true in the frames `value` changed.
+        template<type T>
+        bool slider(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut;
+
+        // A number in a field: dragged sideways (`speed` per pixel), or typed after a click; arrows
+        // change it by `speed` * 10. `number` keeps it in [min, max] and shows how far it is.
+        template<type T>
+        bool drag(std::str label, mut T& value, f64 speed, implicit compile_time std::call_site where) mut;
+        template<type T>
+        bool number(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut;
+
+        // A one-line text field: click or Tab to type; Enter or Escape stop. True in the frames
+        // `content` changed.
+        bool input_text(std::str label, mut std::string& content, implicit compile_time std::call_site where) mut;
+
+        // One of `items`, chosen from a list that opens below the field; up and down change it
+        // while focused. True in the frame `selected` changed.
+        bool combo(std::str label, mut usize& selected, std::span<std::str> items, implicit compile_time std::call_site where) mut;
+        // An enum's alternatives (without payloads) in a combo, by name.
+        template<type E>
+        bool choice(std::str label, mut E& value, implicit compile_time std::call_site where) mut;
+
+        // An enum's alternatives (without payloads) side by side, the chosen one raised; left and
+        // right change it while focused.
+        template<type E>
+        bool segmented(std::str label, mut E& value, implicit compile_time std::call_site where) mut;
+
+        // One tab per alternative of an enum (without payloads); the chosen one is underlined. The
+        // program shows the page of `value` below it.
+        template<type E>
+        bool tabs(mut E& value, implicit compile_time std::call_site where) mut;
+        // An enum's alternatives as radio buttons under a label.
+        template<type E>
+        bool radio(std::str label, mut E& value, implicit compile_time std::call_site where) mut;
+
+        // A table of `rows`, `height` pixels high: one column per field (not @ui::hidden, labels
+        // as in inspect), sorted by a click on a header (again: the other way), a row selected by
+        // a click or by up and down while focused. Only the rows in view are drawn, so a hundred
+        // thousand cost what twenty do. Returns the row (an index into `rows`) clicked this frame.
+        template<type T>
+        std::option<usize> table(std::str label, std::span<T> rows, f32 height, implicit compile_time std::call_site where) mut;
+        // The row last selected in the table `label` made at `where`.
+        std::option<usize> table_selection(std::str label, implicit compile_time std::call_site where) mut;
+
+        // Ctrl+Z steps `value` back through `history`, Ctrl+Y or Ctrl+Shift+Z forward, while no text
+        // is typed. True when `value` changed.
+        template<type T>
+        bool undo_shortcuts(mut std::ui::undo_history<T>& history, mut T& value) mut;
+
+        // A number with − and + buttons beside its value (`step` per press; arrows too while focused).
+        template<type T>
+        bool stepper(std::str label, mut T& value, T min, T max, T step, implicit compile_time std::call_site where) mut;
+
+        // ---- UIs from types (draft 35 §7) ----
+
+        // Its editors use `rules` wherever a `T` appears inside, nested or in lists, unless a closer
+        // form says otherwise (§7.8.4).
+        @std::must_use
+        template<type T>
+        scope with_form(std::ui::form<T> rules) mut;
+        // Its editors choose widgets with `set` (§7.8.5); the set's density scales the theme.
+        @std::must_use
+        scope with_widgets(std::ui::widget_set set) mut;
+
+        // An editor for every field of `value`, from its type and its annotations (§7.2, §7.3),
+        // under a collapsible header; with `rules`, the form's changes for this call (§7.8).
+        template<type T>
+        std::ui::edit inspect(std::str label, mut T& value, implicit compile_time std::call_site where) mut;
+        template<type T>
+        std::ui::edit inspect(std::str label, mut T& value, std::ui::form<T>& rules, implicit compile_time std::call_site where) mut;
+        // The same editors in this scope, without a header.
+        template<type T>
+        std::ui::edit inspect_fields(mut T& value) mut;
+        template<type T>
+        std::ui::edit inspect_fields(mut T& value, std::ui::form<T>& rules) mut;
+        // The editor of one field: `path` names it (`"speed"`, `"movement.speed"`) and is checked
+        // at compile time.
+        @std::diagnostic_frame{ .hide = true }
+        template<type T>
+        std::ui::edit field(mut T& value, compile_time std::static_str path) mut;
+
+        // A small label shown next to the cursor when the widget before it is hovered for a moment.
+        void tooltip(std::str message) mut;
+
+        // A bar filled to `fraction` (0 to 1).
+        void progress(f32 fraction) mut;
+        // A thin line across.
+        void separator() mut;
+
+        // ---- containers ----
+
+        // A collapsible part with a header; open the first time when `open_at_first`.
+        @std::must_use
+        scope section(std::str label, bool open_at_first, implicit compile_time std::call_site where) mut;
+        // A node of a tree: like a section, smaller, with a guide line along its children.
+        @std::must_use
+        scope tree(std::str label, bool open_at_first, implicit compile_time std::call_site where) mut;
+        // Its widgets drawn with `look` (density, colours, radii, the shapes of controls); the
+        // parent's theme comes back at its `}`.
+        @std::must_use
+        scope styled(std::ui::theme look) mut;
+        // A raised box around its widgets.
+        @std::must_use
+        scope card(implicit compile_time std::call_site where) mut;
+        // Its widgets side by side; `fill` widths share what the others leave.
+        @std::must_use
+        scope row(implicit compile_time std::call_site where) mut;
+        // Its widgets in `columns` equal columns, left to right, then down.
+        @std::must_use
+        scope grid(u32 columns, implicit compile_time std::call_site where) mut;
+        // A part `height` pixels high whose content scrolls: the wheel over it, or the bar on its
+        // right.
+        @std::must_use
+        scope scroll(f32 height, implicit compile_time std::call_site where) mut;
+        // This scope, with the next widget's width given: `ui::px(120)`, `ui::fit`, `ui::fill(1)`,
+        // `ui::percent(50)`. `bar.width(ui::fill(1.0)).input_text("Filter", mut filter)`.
+        @std::must_use
+        scope width(std::ui::length size) mut;
+        // A scope whose ids include `key`: for widgets made in a loop.
+        @std::must_use
+        template<type K>
+        scope id(K key, implicit compile_time std::call_site where) mut;
+
+        ~scope();
+
+        mut context& ctx;
+        u64  id_base = 0;
+        bool visible = true;
+        // 0: shares the parent's flow; 1: a section or tree node; 2: a window; 3: a card; 4: a
+        // row; 5: a styled scope (shares the flow, restores the theme); 6: a scroll area; 7: a grid;
+        // 8: a with_form scope; 9: a with_widgets scope (restores the theme too).
+        u8   kind = 0;
+        // The window the scope draws into (an index into ctx.layers) and its id.
+        usize layer_index = 0;
+        u64  window = 0;
+        // Windows, cards, rows, scroll areas: the widget whose state keeps their size.
+        u64  owner = 0;
+        // Cards and rows: their own width from the parent's width() (the parent places them at
+        // their end).
+        std::option<std::ui::length> own_width = std::none;
+    }
+}

@@ -57,18 +57,18 @@ namespace std::windowing {
 
         void record_cursor(position p) mut { this.at = p; }
 
-        void record_scroll(position delta) mut {
-            this.pending_scroll.x += delta.x;
-            this.pending_scroll.y += delta.y;
+        void record_scroll(position step) mut {
+            this.pending_scroll.x += step.x;
+            this.pending_scroll.y += step.y;
         }
 
         void record_text(char c) mut { this.pending_text.push(c); }
-        void record_hover(bool inside) mut { this.inside = inside; }
+        void record_hover(bool is_inside) mut { this.inside = is_inside; }
 
-        void record_modifiers(std::windowing::modifiers held, bool caps, bool num) mut {
-            this.mods = held;
-            this.caps = caps;
-            this.num = num;
+        void record_modifiers(std::windowing::modifiers now_held, bool caps_on, bool num_on) mut {
+            this.mods = now_held;
+            this.caps = caps_on;
+            this.num = num_on;
         }
 
         // Focus lost: nothing is held any more (the key-up events go to another window).

@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+plain: changed false, valid true, 0 duplicate ids
+form: valid false (name shorter than 3), more drawn: true
+level 120: valid false
+level 6: valid true
+speed stepped to 5.2 through move.speed: committed true
+healed: 100, path heal, committed true, cache key kept 7
+--- stderr

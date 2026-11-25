@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+plain: 6 focusable widgets, temperature widget ran 1x
+with_form hiding z: 4 (two fewer)
+the call shows position.z again: 5
+ctx.set_form hiding velocity: 3
+touch stepper: position.x 1.0 after 2 tab(s)
+range_all slider: position.x 0.2, duplicates 0
+--- stderr

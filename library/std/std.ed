@@ -242,7 +242,7 @@ namespace std {
             unsafe { return malloc(size); }
         }
 
-        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override { free(block); }
+        unsafe void free(std::raw_ptr<mut u8> block, usize size, usize alignment) mut override { std::free(block); }
 
         unsafe std::raw_ptr<mut u8> reallocate(std::raw_ptr<mut u8> block, usize old_size, usize new_size, usize alignment) mut override {
             run_time check (!is_heap_sealed()) else "allocation after std::seal_heap()";
@@ -386,8 +386,8 @@ namespace std {
                     this.data = allocate_in<T, A>(mut this.alloc, n);
                 } else {
                     std::raw_ptr<mut T> old = this.data;
-                    usize room = this.room;
-                    this.data = reallocate_in<T, A>(mut this.alloc, old, room, n);
+                    usize spare = this.room;
+                    this.data = reallocate_in<T, A>(mut this.alloc, old, spare, n);
                 }
             }
             this.room = n;
@@ -407,14 +407,14 @@ namespace std {
             unsafe {
                 if (this.count == 0) {
                     std::raw_ptr<mut T> old = this.data;
-                    usize room = this.room;
-                    free_in<T, A>(mut this.alloc, old, room);
+                    usize spare = this.room;
+                    free_in<T, A>(mut this.alloc, old, spare);
                     this.data = nullptr;
                 } else {
                     std::raw_ptr<mut T> old = this.data;
-                    usize room = this.room;
-                    usize count = this.count;
-                    this.data = reallocate_in<T, A>(mut this.alloc, old, room, count);
+                    usize spare = this.room;
+                    usize filled = this.count;
+                    this.data = reallocate_in<T, A>(mut this.alloc, old, spare, filled);
                 }
             }
             this.room = this.count;
@@ -435,7 +435,7 @@ namespace std {
         }
 
         T swap_remove(usize i) mut {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "swap_remove position out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"swap_remove position {i} out of bounds (length {this.count})"; }
             this.count -= 1;
             unsafe {
                 T out = std::raw::read(this.data.offset(i));
@@ -456,12 +456,12 @@ namespace std {
         }
 
         T& operator[](usize i) {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"index {i} out of bounds (length {this.count})"; }
             unsafe { return *this.data.offset(i); }
         }
 
         mut T& operator[](usize i) mut {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"index {i} out of bounds (length {this.count})"; }
             unsafe { return *this.data.offset(i); }
         }
 
@@ -479,7 +479,7 @@ namespace std {
         }
 
         void insert(usize i, T value) mut {
-            if compile_time (checks_bounds()) { run_time check (i <= this.count) else "insert position out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i <= this.count) else f"insert position {i} out of bounds (length {this.count})"; }
             this.push(move value);   // makes room; the new value is moved into place below
             unsafe {
                 T last = std::raw::read(this.data.offset(this.count - 1));
@@ -489,7 +489,7 @@ namespace std {
         }
 
         T remove(usize i) mut {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "remove position out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"remove position {i} out of bounds (length {this.count})"; }
             unsafe {
                 T out = std::raw::read(this.data.offset(i));
                 std::raw::copy(this.data.offset(i), this.data.offset(i + 1), this.count - 1 - i);
@@ -502,8 +502,8 @@ namespace std {
             this.clear();
             unsafe {
                 std::raw_ptr<mut T> old = this.data;
-                usize room = this.room;
-                if (old) { free_in<T, A>(mut this.alloc, old, room); }
+                usize spare = this.room;
+                if (old) { free_in<T, A>(mut this.alloc, old, spare); }
             }
         }
 
@@ -781,22 +781,24 @@ namespace std {
     public:
         static unsafe span<T> from_raw(std::raw_ptr<T> data, usize count) { return span<T>{ .data = data, .count = count }; }
 
+        std::raw_ptr<T> as_ptr() { return this.data; }
+
         usize len() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
         T& operator[](usize i) {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"index {i} out of bounds (length {this.count})"; }
             unsafe { return *this.data.offset(i); }
         }
 
         span<T> slice(usize from, usize to) {
-            run_time check (from <= to && to <= this.count) else "span slice out of bounds";
+            run_time check (from <= to && to <= this.count) else f"span slice {from}..{to} out of bounds (length {this.count})";
             unsafe { return span<T>{ .data = this.data.offset(from), .count = to - from }; }
         }
 
         (span<T>, span<T>) split_at(usize i) move {
-            run_time check (i <= this.count) else "span split_at out of bounds";
+            run_time check (i <= this.count) else f"span split_at {i} out of bounds (length {this.count})";
             unsafe {
                 return (span<T>{ .data = this.data, .count = i },
                         span<T>{ .data = this.data.offset(i), .count = this.count - i });
@@ -823,7 +825,7 @@ namespace std {
         bool is_empty() { return this.count == 0; }
 
         mut T& operator[](usize i) {
-            if compile_time (checks_bounds()) { run_time check (i < this.count) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < this.count) else f"index {i} out of bounds (length {this.count})"; }
             unsafe { return *this.data.offset(i); }
         }
 
@@ -832,7 +834,7 @@ namespace std {
         }
 
         span_mut<T> slice(usize from, usize to) move {
-            run_time check (from <= to && to <= this.count) else "span slice out of bounds";
+            run_time check (from <= to && to <= this.count) else f"span slice {from}..{to} out of bounds (length {this.count})";
             unsafe { return span_mut<T>{ .data = this.data.offset(from), .count = to - from }; }
         }
 
@@ -873,7 +875,7 @@ namespace std {
         }
 
         (span_mut<T>, span_mut<T>) split_at(usize i) move {
-            run_time check (i <= this.count) else "span split_at out of bounds";
+            run_time check (i <= this.count) else f"span split_at {i} out of bounds (length {this.count})";
             unsafe {
                 return (span_mut<T>{ .data = this.data, .count = i },
                         span_mut<T>{ .data = this.data.offset(i), .count = this.count - i });
@@ -1055,38 +1057,38 @@ namespace std {
 
         void push_str(std::str text) mut {
             usize n = text.len();
-            usize len = this.len();
-            if (len + n > this.capacity()) { this.reserve(len + n); }
-            unsafe { std::raw::copy(this.bytes_mut().offset(len), text.as_ptr(), n); }
-            this.set_len(len + n);
+            usize length = this.len();
+            if (length + n > this.capacity()) { this.reserve(length + n); }
+            unsafe { std::raw::copy(this.bytes_mut().offset(length), text.as_ptr(), n); }
+            this.set_len(length + n);
         }
 
         void push(char c) mut {
             u32 code = cast<u32>(c);
-            usize len = this.len();
+            usize length = this.len();
             mut usize size = 4;
             if (code < 0x80) { size = 1; } else if (code < 0x800) { size = 2; } else if (code < 0x10000) { size = 3; }
-            if (len + size > this.capacity()) { this.reserve(len + size); }
+            if (length + size > this.capacity()) { this.reserve(length + size); }
             unsafe {
-                std::raw_ptr<mut u8> at = this.bytes_mut().offset(len);
+                std::raw_ptr<mut u8> at = this.bytes_mut().offset(length);
                 if (code < 0x80) {
                     std::raw::write(at, cast::truncate<u8>(code));
-                    this.set_len(len + 1);
+                    this.set_len(length + 1);
                 } else if (code < 0x800) {
                     std::raw::write(at, cast::truncate<u8>(0xC0 | (code >> 6)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(len + 2);
+                    this.set_len(length + 2);
                 } else if (code < 0x10000) {
                     std::raw::write(at, cast::truncate<u8>(0xE0 | (code >> 12)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
                     std::raw::write(at.offset(2), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(len + 3);
+                    this.set_len(length + 3);
                 } else {
                     std::raw::write(at, cast::truncate<u8>(0xF0 | (code >> 18)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | ((code >> 12) & 0x3F)));
                     std::raw::write(at.offset(2), cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
                     std::raw::write(at.offset(3), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(len + 4);
+                    this.set_len(length + 4);
                 }
             }
         }
@@ -1132,16 +1134,16 @@ namespace std {
     private:
         // Moves the text to a heap buffer of exactly `next` bytes (more than the capacity now).
         void grow_to(usize next) mut {
-            usize len = this.len();
+            usize length = this.len();
             unsafe {
                 if (this.on_heap()) {
                     std::raw_ptr<mut u8> data = std::raw::reallocate(this.heap_data(), next);
                     this.set_word(0, cast::reinterpret<u64>(data));
                 } else {
                     std::raw_ptr<mut u8> data = std::raw::allocate<u8>(next);
-                    std::raw::copy(data, this.bytes(), len);
+                    std::raw::copy(data, this.bytes(), length);
                     this.set_word(0, cast::reinterpret<u64>(data));
-                    this.set_word(1, cast<u64>(len));
+                    this.set_word(1, cast<u64>(length));
                 }
             }
             this.set_word(2, cast<u64>(next) | string_heap_bit);
@@ -1198,6 +1200,7 @@ namespace std {
         std::raw_ptr<u8> file;
         u32              line;
         u32              column;
+        std::raw_ptr<u8> function;   // a C string, or null
     }
 
     private static mut std::option<std::fn_ptr<void(std::panic_info&)>> panic_hook = std::none;
@@ -1226,6 +1229,7 @@ namespace std {
                         .line      = (*where).line,
                         .column    = (*where).column,
                     },
+                    .function    = if ((*where).function) { std::raw::static_str_from((*where).function, strlen((*where).function)) } else { "" },
                     .thread_name = std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(name_bytes), name_length),
                 };
                 match (panic_hook) {
@@ -1246,8 +1250,14 @@ namespace std {
         unsafe { return std::raw::read(text.as_ptr().offset(i)); }
     }
 
+    // `text.byte(i)`: byte `i` of the UTF-8 text; panics when out of bounds.
+    private u8 str_byte(std::str text, usize i) {
+        if compile_time (checks_bounds()) { run_time check (i < text.len()) else f"byte {i} out of bounds (length {text.len()})"; }
+        unsafe { return std::raw::read(text.as_ptr().offset(i)); }
+    }
+
     private std::str str_slice(std::str text, usize from, usize to) {
-        if compile_time (checks_bounds()) { run_time check (from <= to && to <= text.len()) else "slice out of bounds"; }
+        if compile_time (checks_bounds()) { run_time check (from <= to && to <= text.len()) else f"slice {from}..{to} out of bounds (length {text.len()})"; }
         unsafe { return std::raw::str_from(text.as_ptr().offset(from), to - from); }
     }
 
@@ -1957,9 +1967,9 @@ namespace std {
 
         ~unique_ptr() {
             unsafe {
-                std::raw_ptr<mut T> target = this.target;
-                std::raw::drop(target);
-                free_in<T, A>(mut this.alloc, target, 1);
+                std::raw_ptr<mut T> pointee = this.target;
+                std::raw::drop(pointee);
+                free_in<T, A>(mut this.alloc, pointee, 1);
             }
         }
 
@@ -2099,12 +2109,12 @@ namespace std {
         }
 
         T& operator[](usize i) {
-            if compile_time (checks_bounds()) { run_time check (i < N) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < N) else f"index {i} out of bounds (length {N})"; }
             unsafe { return *cast::reinterpret<std::raw_ptr<T>>(&this.items).offset(i); }
         }
 
         mut T& operator[](usize i) mut {
-            if compile_time (checks_bounds()) { run_time check (i < N) else "index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < N) else f"index {i} out of bounds (length {N})"; }
             unsafe { return *cast::reinterpret<std::raw_ptr<mut T>>(mut &this.items).offset(i); }
         }
 
@@ -2118,7 +2128,7 @@ namespace std {
         usize len() { return N; }
 
         bool test(usize i) {
-            if compile_time (checks_bounds()) { run_time check (i < N) else "bit index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < N) else f"bit index {i} out of bounds (size {N})"; }
             unsafe {
                 u64 word = *cast::reinterpret<std::raw_ptr<u64>>(&this.words).offset(i / 64);
                 return (word >> cast::truncate<u64>(i % 64)) & 1 == 1;
@@ -2126,7 +2136,7 @@ namespace std {
         }
 
         void set(usize i, bool value) mut {
-            if compile_time (checks_bounds()) { run_time check (i < N) else "bit index out of bounds"; }
+            if compile_time (checks_bounds()) { run_time check (i < N) else f"bit index {i} out of bounds (size {N})"; }
             unsafe {
                 std::raw_ptr<mut u64> word = cast::reinterpret<std::raw_ptr<mut u64>>(mut &this.words).offset(i / 64);
                 u64 mask = 1u64 << cast::truncate<u64>(i % 64);
@@ -2377,12 +2387,12 @@ namespace std {
         ~hash_map() {
             this.clear();
             unsafe {
-                std::raw_ptr<mut u8> ctrl = this.ctrl;
-                std::raw_ptr<mut hash_slot<K, V>> slots = this.slots;
+                std::raw_ptr<mut u8> control = this.ctrl;
+                std::raw_ptr<mut hash_slot<K, V>> slot_base = this.slots;
                 usize cap = this.capacity();
-                if (ctrl) {
-                    free_in<u64, A>(mut this.alloc, cast::reinterpret<std::raw_ptr<mut u64>>(ctrl), cap >> 3);
-                    free_in<hash_slot<K, V>, A>(mut this.alloc, slots, cap);
+                if (control) {
+                    free_in<u64, A>(mut this.alloc, cast::reinterpret<std::raw_ptr<mut u64>>(control), cap >> 3);
+                    free_in<hash_slot<K, V>, A>(mut this.alloc, slot_base, cap);
                 }
             }
         }
@@ -2959,8 +2969,8 @@ namespace std {
         }
 
         // Pushes `n` and its leftmost descendants.
-        unsafe void descend(std::raw_ptr<mut btree_node<K, V>> start) mut {
-            mut std::raw_ptr<mut btree_node<K, V>> n = start;
+        unsafe void descend(std::raw_ptr<mut btree_node<K, V>> node) mut {
+            mut std::raw_ptr<mut btree_node<K, V>> n = node;
             while (true) {
                 std::raw::write(this.node_at(this.depth), n);
                 std::raw::write(this.index_at(this.depth), 0u32);
@@ -3029,15 +3039,15 @@ namespace std {
             unsafe { return std::raw::atomic_load(&this.value, order); }
         }
 
-        void store(T value, std::memory_order order) {
+        void store(T desired, std::memory_order order) {
             compile_time check (order != std::memory_order::acquire && order != std::memory_order::acquire_release)
                 else f"an atomic store can't use '{order}' ordering (use release, relaxed or sequentially_consistent)";
-            unsafe { std::raw::atomic_store(&this.value, value, order); }
+            unsafe { std::raw::atomic_store(&this.value, desired, order); }
         }
 
-        T exchange(T value, std::memory_order order) {
+        T exchange(T desired, std::memory_order order) {
             compile_time check (true) else "";
-            unsafe { return std::raw::atomic_exchange(&this.value, value, order); }
+            unsafe { return std::raw::atomic_exchange(&this.value, desired, order); }
         }
 
         std::result<T, T> compare_exchange(T expected, T desired, std::memory_order success, std::memory_order failure) {
@@ -4277,18 +4287,18 @@ namespace std {
                 else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
 
             R join() move {
-                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                std::raw_ptr<mut pool_task_head<R>> header = this.head;
                 this.head = nullptr;
-                unsafe { return join_task(head).expect("the task produced no result"); }
+                unsafe { return join_task(header).expect("the task produced no result"); }
             }
 
             void detach() move {
-                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                std::raw_ptr<mut pool_task_head<R>> header = this.head;
                 this.head = nullptr;
                 unsafe {
-                    if (std::raw::atomic_exchange(&(*head).state, task_detached, std::memory_order::acquire_release) == task_finished) {
-                        std::raw::drop(head);
-                        std::raw::free(head);
+                    if (std::raw::atomic_exchange(&(*header).state, task_detached, std::memory_order::acquire_release) == task_finished) {
+                        std::raw::drop(header);
+                        std::raw::free(header);
                     }
                 }
             }
@@ -4310,9 +4320,9 @@ namespace std {
                 else f"the task's result type {std::type_name<R>()} can't be moved back to the thread that joins it (it isn't std::sendable)";
 
             R join() move {
-                std::raw_ptr<mut pool_task_head<R>> head = this.head;
+                std::raw_ptr<mut pool_task_head<R>> header = this.head;
                 this.head = nullptr;
-                unsafe { return join_task(head).expect("the task produced no result"); }
+                unsafe { return join_task(header).expect("the task produced no result"); }
             }
 
             ~scoped_task() {

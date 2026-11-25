@@ -12,26 +12,26 @@ namespace std::filesystem {
         path clone() { return path{ .text = this.text.clone() }; }
 
         path parent() {
-            std::str text = this.text;
-            mut usize end = text.len();
+            std::str chars = this.text;
+            mut usize end = chars.len();
             while (end > 0) {
                 end -= 1;
-                if (text.slice(end, end + 1) == "/") {
+                if (chars.slice(end, end + 1) == "/") {
                     if (end == 0) { return path::from("/"); }
-                    return path::from(text.slice(0, end));
+                    return path::from(chars.slice(0, end));
                 }
             }
             return path::from("");
         }
 
         std::str file_name() {
-            std::str text = this.text;
-            mut usize at = text.len();
+            std::str chars = this.text;
+            mut usize at = chars.len();
             while (at > 0) {
-                if (text.slice(at - 1, at) == "/") { return text.slice(at, text.len()); }
+                if (chars.slice(at - 1, at) == "/") { return chars.slice(at, chars.len()); }
                 at -= 1;
             }
-            return text;
+            return chars;
         }
 
         std::str extension() {

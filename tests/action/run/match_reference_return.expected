@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+second, long enough to be on the heap
+first, long enough to be on the heap
+second, long enough to be on the heap
+--- stderr

@@ -19,4 +19,4 @@ none
 some 5
 got 2
 --- stderr
-tests/action/run/std_core.ed:75:24: panic: 5 is odd
+tests/action/run/std_core.ed:75:24: panic in main: 5 is odd

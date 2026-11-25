@@ -1,0 +1,1167 @@
+// The Edax standard library: module std::ui, the core of the user-interface library.
+//
+// Draft 35 (docs/design/drafts/35-ui.md) describes the whole library; this module is its core
+// (roadmap M1): themes, text and the draw list. It knows nothing about immediate or retained mode
+// and doesn't call a graphics API: it turns shapes, text and images into `ui::draw_list`, plain
+// data that a renderer (std::ui::opengl) draws with one shader.
+//
+//     namespace ui = std::ui;
+//     ui::theme t = ui::theme::from_accent(ui::color::hex(0x4F7CFF), ui::brightness::dark);
+//     mut ui::fonts fonts = ui::fonts::make();
+//     mut ui::draw_list list = default;
+//     list.shadow(card, t.radius.large, t.shadow.level2);
+//     list.fill(card, t.colors.surface, t.radius.large);
+//     list.text(mut fonts, ui::vec2{ .x = 24.0, .y = 24.0 }, "Hello", t.style(ui::text_role::title, t.colors.text));
+//
+// Coordinates are pixels with y down. Colours are sRGB with straight alpha (std::math::color);
+// blending happens in sRGB, as in every UI toolkit.
+//
+// A look has three layers, each replaceable (draft 35 §3): the theme's tokens (colours, sizes,
+// radii, the shape of controls), and the skin: one painter function per kind of widget, which a
+// program can replace with its own (a star as a slider's knob, a sketchy button).
+
+namespace std::ui {
+    compile_time type vec2 = std::math::vec2;
+    compile_time type rect = std::math::rect;
+    compile_time type color = std::math::color;
+
+    // ---- themes ---------------------------------------------------------------------------------------
+
+    // Light text on dark surfaces, or dark text on light ones.
+    enum brightness : u8 {
+        dark,
+        light,
+    }
+
+    // A theme's colours, named by role: widgets ask for `surface` or `text_muted`, never for a value.
+    @std::derive::formattable
+    struct palette {
+        // Behind everything.
+        color background = default;
+        // Panels and cards.
+        color surface = default;
+        // On top of a surface: popups, menus, the cards of a card.
+        color surface_raised = default;
+        // Below a surface: input fields, wells, tracks.
+        color surface_sunken = default;
+        color primary = default;
+        color primary_hover = default;
+        color primary_pressed = default;
+        // Text and icons on `primary`.
+        color on_primary = default;
+        color text = default;
+        // Secondary text: labels, hints.
+        color text_muted = default;
+        // Disabled text, placeholders.
+        color text_faint = default;
+        color border = default;
+        // The ring around the focused widget.
+        color focus = default;
+        color success = default;
+        color warning = default;
+        color danger = default;
+        // The colour of shadows.
+        color shadow = default;
+    }
+
+    // Which of the theme's fonts a text uses.
+    enum font_face : u8 {
+        regular,
+        semibold,
+        mono,
+    }
+
+    // What a text is for; the theme gives each role a face and a size.
+    enum text_role : u8 {
+        caption,
+        body,
+        label,
+        title,
+        heading,
+        display,
+        code,
+    }
+
+    // A face, a size in pixels and a line height (a multiple of the size).
+    @std::derive::formattable
+    struct type_style {
+        font_face face = font_face::regular;
+        f32 size = 14.0;
+        f32 line_height = 1.4;
+    }
+
+    @std::derive::formattable
+    struct type_scale {
+        type_style caption = type_style{ .size = 12.0, .line_height = 1.35 };
+        type_style body = type_style{ .size = 14.0, .line_height = 1.45 };
+        type_style label = type_style{ .face = font_face::semibold, .size = 13.0, .line_height = 1.35 };
+        type_style title = type_style{ .face = font_face::semibold, .size = 17.0, .line_height = 1.3 };
+        type_style heading = type_style{ .face = font_face::semibold, .size = 22.0, .line_height = 1.25 };
+        type_style display = type_style{ .face = font_face::semibold, .size = 32.0, .line_height = 1.15 };
+        type_style code = type_style{ .face = font_face::mono, .size = 13.0, .line_height = 1.45 };
+
+        type_style of(text_role role);
+    }
+
+    // Distances in pixels (before the window's content scale).
+    @std::derive::formattable
+    struct spacing_scale {
+        f32 xs = 4.0;
+        f32 s = 8.0;
+        f32 m = 12.0;
+        f32 l = 16.0;
+        f32 xl = 24.0;
+        f32 xxl = 32.0;
+    }
+
+    // Corner radii in pixels; `full` makes pills and circles.
+    @std::derive::formattable
+    struct radius_scale {
+        f32 small = 4.0;
+        f32 medium = 8.0;
+        f32 large = 12.0;
+        f32 full = 9999.0;
+
+        // The default: rounded, pills for toggles and tracks.
+        static radius_scale rounded();
+        // Square corners everywhere, also for toggles and tracks.
+        static radius_scale sharp();
+        // Slightly rounded (2 / 3 / 4 px), square-ish toggles.
+        static radius_scale subtle();
+    }
+
+    // A drop shadow: how far down it falls, how soft it is, and how strong.
+    @std::derive::formattable
+    struct shadow_style {
+        f32 offset_y = 0.0;
+        f32 blur = 0.0;
+        f32 opacity = 0.0;
+    }
+
+    // Shadows for things lifted 1 (cards), 2 (popups) or 3 (dialogs) levels above the surface.
+    @std::derive::formattable
+    struct elevation_scale {
+        shadow_style level1 = shadow_style{ .offset_y = 1.0, .blur = 3.0, .opacity = 0.25 };
+        shadow_style level2 = shadow_style{ .offset_y = 4.0, .blur = 12.0, .opacity = 0.3 };
+        shadow_style level3 = shadow_style{ .offset_y = 12.0, .blur = 32.0, .opacity = 0.4 };
+    }
+
+    // ---- the shape of controls ------------------------------------------------------------------------
+
+    // The knob of a slider.
+    enum knob_shape : u8 {
+        circle,
+        square,
+        diamond,
+        star,
+        // A thin upright bar.
+        bar,
+    }
+
+    // What a checked checkbox shows.
+    enum tick_shape : u8 {
+        tick,
+        cross,
+        // A filled square.
+        square,
+        // A filled circle.
+        dot,
+    }
+
+    // Which widget edits a bool when the code doesn't say (`scope.boolean`, and `inspect` later).
+    enum bool_widget : u8 {
+        toggle,
+        checkbox,
+    }
+
+    // A button's kind (draft 35 §3.2).
+    enum variant : u8 {
+        primary,
+        secondary,
+        ghost,
+        outline,
+        danger,
+        success,
+    }
+
+    @std::derive::formattable
+    struct button_style {
+        f32  height = 34.0;
+        f32  padding = 16.0;
+        // Primary and danger buttons cast a shadow.
+        bool raised = true;
+        // A gradient from the hover colour at the top to the colour.
+        bool gradient = true;
+    }
+
+    @std::derive::formattable
+    struct slider_style {
+        f32        track_height = 6.0;
+        f32        knob_size = 18.0;
+        knob_shape knob = knob_shape::circle;
+        // The part left of the knob in the primary colour.
+        bool       fill_track = true;
+    }
+
+    @std::derive::formattable
+    struct toggle_style {
+        f32 width = 40.0;
+        f32 height = 22.0;
+    }
+
+    @std::derive::formattable
+    struct checkbox_style {
+        f32        size = 18.0;
+        tick_shape mark = tick_shape::tick;
+    }
+
+    @std::derive::formattable
+    struct window_style {
+        f32 title_height = 36.0;
+        f32 padding = 16.0;
+        // The shadow level 0-3 (elevation).
+        u32 elevation = 2;
+        // The title bar in `surface_raised`; otherwise it is part of the window.
+        bool separate_title = false;
+    }
+
+    // The sizes and shapes of the controls (the component tokens of a theme).
+    @std::derive::formattable
+    struct controls_style {
+        button_style   button = default;
+        slider_style   slider = default;
+        toggle_style   toggle = default;
+        checkbox_style checkbox = default;
+        window_style   window = default;
+        // The height of a row of a form (label and control).
+        f32            row_height = 30.0;
+        // The gap between widgets in a column or a row.
+        f32            gap = 8.0;
+        bool_widget    boolean = bool_widget::toggle;
+    }
+
+    // How long animations take, in seconds; all 0 turns animation off (reduced motion).
+    @std::derive::formattable
+    struct motion_scale {
+        f32 fast = 0.08;
+        f32 normal = 0.16;
+        f32 slow = 0.28;
+    }
+
+    // Everything a widget needs to know to look right: design tokens (draft 35 §3.1). A plain
+    // value: it can be built at compile time, compared, mixed and edited with `inspect`.
+    @std::derive::formattable
+    struct theme {
+        brightness      mode = brightness::dark;
+        palette         colors = default;
+        type_scale      typography = default;
+        spacing_scale   space = default;
+        radius_scale    radius = default;
+        elevation_scale shadow = default;
+        motion_scale    motion = default;
+        controls_style  controls = default;
+        // 1 comfortable, 0.8 compact (tools), 1.2 touch.
+        f32             density = 1.0;
+
+        // A whole theme from one colour: surfaces are tinted with its hue, `primary` is it at a
+        // lightness that reads well on them, text colours keep WCAG AA contrast. Computed in OKLCH.
+        static theme from_accent(color accent, brightness mode);
+        // The library's blue accent, dark or light.
+        static theme dark();
+        static theme light();
+
+        // `a` (t = 0) to `b` (t = 1): colours mixed in OKLab, sizes and timings linearly.
+        static theme mix(theme& a, theme& b, f32 t);
+
+        // The text style of `role` in colour `c`.
+        text_style style(text_role role, color c);
+        // The drop shadow of `level` 1-3 (0: none) in this theme's shadow colour.
+        shadow_style elevation(u32 level);
+    }
+
+    // ---- text -------------------------------------------------------------------------------------------
+
+    // How a text is drawn: face, size in pixels, line height, colour.
+    @std::derive::formattable
+    struct text_style {
+        font_face face = font_face::regular;
+        f32 size = 14.0;
+        f32 line_height = 1.4;
+        color color = default;
+    }
+
+    // The pixel size glyphs' distance fields are rendered at, and how far they reach (pixels at
+    // that size). One atlas then serves every text size.
+    compile_time f32 glyph_atlas_size = 40.0;
+    compile_time f32 glyph_atlas_spread = 5.0;
+
+    // Where a glyph's distance field is in the atlas, and how to place it; all in atlas pixels.
+    struct atlas_glyph {
+        // The field's top-left corner in the atlas.
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 width = 0.0;
+        f32 height = 0.0;
+        // Offset of the field's top-left corner from the pen on the baseline (y down).
+        f32 left = 0.0;
+        f32 top = 0.0;
+    }
+
+    // A line of wrapped text: bytes start..end of the text, and its width in pixels.
+    struct text_line {
+        usize start = 0;
+        usize end = 0;
+        f32 width = 0.0;
+    }
+
+    // The three faces of a theme and the atlas their glyphs are drawn from. Glyphs are rendered
+    // as distance fields the first time they are drawn (at glyph_atlas_size pixels), so one
+    // atlas serves every size. The renderer uploads the atlas again when `version()` changed.
+    class fonts {
+    public:
+        // The faces std brings (std::text::font): DM Sans regular and semi-bold, DejaVu Sans Mono.
+        static fonts make();
+        // Other faces.
+        static fonts from_faces(std::text::font regular, std::text::font semibold, std::text::font mono);
+
+        // The width of one line of `text`, and the line's height.
+        vec2 measure(std::str text, text_style& style) mut;
+        f32 line_height(text_style& style);
+        // From the top of a line to its baseline.
+        f32 baseline(text_style& style);
+        // The lines of `text` broken at spaces so that none is wider than `width` (a word wider
+        // than `width` gets a line of its own). '\n' breaks a line too.
+        std::darray<text_line> wrap(std::str text, text_style& style, f32 width) mut;
+
+        // The glyph of `c` in `face`, rendered into the atlas if it isn't there yet.
+        atlas_glyph glyph(font_face face, char c) mut;
+        // The pen advance and kerning of `c` after `previous` ('\0': none), in pixels at `size`.
+        f32 advance(font_face face, char previous, char c, f32 size);
+
+        // The line metrics of `face`, in ems.
+        std::text::line_metrics metrics(font_face face);
+
+        // The atlas: one byte per pixel (distance), rows top to bottom. It grows downwards, so
+        // glyphs keep their pixel positions; the shader divides by the atlas size.
+        u32 atlas_width();
+        u32 atlas_height();
+        std::darray<u8>& atlas_pixels();
+        // Changes whenever glyphs were added to the atlas.
+        u64 version();
+    }
+
+    // ---- drawing ------------------------------------------------------------------------------------------
+
+    // An image the renderer knows: its handle and size. `id` 0 draws as white.
+    @std::derive::formattable
+    struct texture {
+        u32 id = 0;
+        u32 width = 0;
+        u32 height = 0;
+
+        // The handle of the font atlas; renderers resolve it to their atlas texture.
+        static texture font_atlas();
+        bool operator==(texture& other) = default;
+    }
+
+    // What the fragment shader does with a vertex.
+    enum shape_kind : u8 {
+        // Colour times the texture.
+        textured,
+        // Text: the texture's red channel is a distance field; u and v are in texels.
+        text,
+        // A rounded box filled, outlined or blurred, from `local`, `half_size` and the parameters.
+        box,
+        // A rounded box filled with the texture (images with rounded corners).
+        textured_box,
+        // The vertex colour only (polygons: their edges are anti-aliased by an outer ring of
+        // transparent vertices).
+        solid,
+    }
+
+    // One corner of a triangle. Every shape is drawn with this one vertex format and one shader:
+    // rounded boxes, borders, shadows and circles are signed-distance shapes evaluated per pixel,
+    // so they are sharp at any scale with four vertices each.
+    struct vertex {
+        f32 x = 0.0;
+        f32 y = 0.0;
+        f32 u = 0.0;
+        f32 v = 0.0;
+        // sRGB, straight alpha, r in the lowest byte.
+        u32 color = 0;
+        // The position relative to the shape's centre, and half the shape's size (boxes).
+        f32 local_x = 0.0;
+        f32 local_y = 0.0;
+        f32 half_width = 0.0;
+        f32 half_height = 0.0;
+        f32 radius = 0.0;
+        // > 0: only an outline this wide.
+        f32 stroke = 0.0;
+        // > 0: blurred by this many pixels (shadows).
+        f32 blur = 0.0;
+        // A shape_kind.
+        f32 kind = 0.0;
+    }
+
+    // A run of triangles with one clip rectangle and one texture.
+    @std::derive::formattable
+    struct draw_command {
+        rect    clip = default;
+        texture image = default;
+        u32     first_index = 0;
+        u32     index_count = 0;
+    }
+
+    // Everything a frame draws, in order: vertices, indices into them, and commands. Plain data:
+    // renderers draw it, tests compare it. clear() keeps the capacity, so a frame that draws what
+    // the last one drew doesn't allocate.
+    struct draw_list {
+        std::darray<vertex> vertices = default;
+        std::darray<u32> indices = default;
+        std::darray<draw_command> commands = default;
+        // The clip rectangles pushed and not popped yet; the screen when empty.
+        std::darray<rect> clip_stack = default;
+        // The rectangle "no clip" stands for.
+        rect screen = rect{ .width = 100000.0, .height = 100000.0 };
+        // Whether the last command's texture is in use (by text or an image) yet; shapes don't
+        // sample it, so they join any command.
+        bool texture_in_use = false;
+
+        void clear() mut;
+        // Starts a list for a screen of `size` pixels.
+        void begin(vec2 size) mut;
+
+        // Clips what follows to `r` (and the clip before it) until pop_clip().
+        void push_clip(rect r) mut;
+        void pop_clip() mut;
+        rect current_clip();
+
+        // A filled box with corners of `radius` (0: square; half the shorter side: a pill).
+        void fill(rect r, color c, f32 radius) mut;
+        // A box with a vertical gradient from `top` to `bottom`.
+        void fill_gradient(rect r, color top, color bottom, f32 radius) mut;
+        // The outline of a box, `width` pixels wide, inside `r`.
+        void stroke(rect r, color c, f32 radius, f32 width) mut;
+        // The drop shadow of a box: offset, blurred and coloured by `s` in colour `c`.
+        void shadow(rect r, f32 radius, shadow_style s, color c) mut;
+        void circle(vec2 center, f32 radius, color c) mut;
+        void circle_stroke(vec2 center, f32 radius, color c, f32 width) mut;
+        // A line with round caps.
+        void line(vec2 from, vec2 to, f32 width, color c) mut;
+        // `image` stretched over `r`; `uv` picks the part of the image (0..1), `tint` multiplies.
+        void image(texture picture, rect r, rect uv, color tint, f32 radius) mut;
+
+        // A polygon around its centroid, anti-aliased: any convex polygon, and star-shaped ones
+        // (every point visible from the centroid), like stars.
+        void fill_polygon(std::span<vec2> points, color c) mut;
+        // The outline of a polygon or polyline, `width` pixels wide, with round joints.
+        void stroke_polygon(std::span<vec2> points, bool closed, f32 width, color c) mut;
+        // A star of `points` points between radii `inner` and `outer`, the first point at
+        // `rotation` degrees from straight up.
+        void star(vec2 center, f32 outer, f32 inner, u32 points, f32 rotation, color c) mut;
+        // A regular polygon (3: triangle, 4: diamond at rotation 0, 6: hexagon).
+        void regular_polygon(vec2 center, f32 radius, u32 sides, f32 rotation, color c) mut;
+        // A tick mark filling `r`.
+        void tick(rect r, f32 width, color c) mut;
+
+        // Appends `other`'s triangles and commands after this list's.
+        void append(draw_list& other) mut;
+
+        // One line of text with its top-left corner at `at`; returns the width.
+        f32 text(mut fonts& f, vec2 at, std::str content, text_style style) mut;
+        // Text wrapped to `width`; returns the height used.
+        f32 paragraph(mut fonts& f, vec2 at, f32 width, std::str content, text_style style) mut;
+    }
+
+    // The character starting at byte `at` of `text` and its length in bytes; invalid UTF-8 is
+    // U+FFFD for one byte.
+    (char, usize) char_at(std::str text, usize at);
+
+    // ---- painters and skins -------------------------------------------------------------------------
+
+    // Where painters draw: a draw list, the fonts and the theme.
+    view class painter {
+    public:
+        mut draw_list& list;
+        mut fonts& faces;
+        // The theme: colours, sizes, radii and the shapes of controls.
+        theme& tokens;
+
+        // One line of text; returns its width.
+        f32 text(vec2 at, std::str content, text_style style) mut;
+        // One line of text centred in `r`.
+        void centered_text(rect r, std::str content, text_style style) mut;
+        vec2 measure(std::str content, text_style style) mut;
+    }
+
+    // A widget's state as a painter needs it. `hover` and `press` move smoothly between 0 and 1
+    // with the theme's motion timings.
+    @std::derive::formattable
+    struct interaction {
+        bool hovered = false;
+        bool pressed = false;
+        bool focused = false;
+        bool disabled = false;
+        f32  hover = 0.0;
+        f32  press = 0.0;
+    }
+
+    // What a painter of each kind of widget is given.
+    view struct button_part {
+        rect        bounds;
+        std::str    label;
+        variant     kind;
+        interaction state;
+    }
+
+    struct check_part {
+        // The box, not the label.
+        rect        bounds = default;
+        bool        checked = false;
+        // 0 unchecked, 1 checked, animated.
+        f32         amount = 0.0;
+        interaction state = default;
+    }
+
+    struct toggle_part {
+        // The track.
+        rect        bounds = default;
+        bool        on = false;
+        f32         amount = 0.0;
+        interaction state = default;
+    }
+
+    struct slider_part {
+        // The line the knob's centre moves along: from left (0) to right (1), as high as the knob.
+        rect        bounds = default;
+        f32         fraction = 0.0;
+        interaction state = default;
+
+        vec2 knob_center();
+    }
+
+    struct progress_part {
+        rect bounds = default;
+        f32  fraction = 0.0;
+    }
+
+    view struct header_part {
+        rect        bounds;
+        std::str    label;
+        bool        open;
+        // 0 closed, 1 open, animated.
+        f32         amount;
+        interaction state;
+    }
+
+    struct card_part {
+        rect bounds = default;
+    }
+
+    // A text field's, a number field's or a combo box's frame (the widget draws the text in it).
+    struct field_part {
+        rect        bounds = default;
+        // Being typed into (a caret shows), or a combo's list is open.
+        bool        editing = false;
+        interaction state = default;
+    }
+
+    // The box behind a popup: a combo's list, a menu.
+    struct popup_part {
+        rect bounds = default;
+    }
+
+    // One entry of a popup's list.
+    view struct item_part {
+        rect        bounds;
+        std::str    label;
+        bool        selected;
+        interaction state;
+    }
+
+    view struct tooltip_part {
+        rect     bounds;
+        std::str text;
+    }
+
+    view struct window_part {
+        // The whole window, title bar included.
+        rect        bounds;
+        rect        title_bar;
+        std::str    title;
+        // The resize grip in the bottom-right corner.
+        interaction grip;
+    }
+
+    // The scroll bar of a scroll area or a window: the track along its side and the thumb in it.
+    // A segmented control: the track, and the thumb behind the chosen segment (it slides).
+    struct segments_part {
+        rect        track = default;
+        rect        thumb = default;
+        interaction state = default;
+    }
+
+    // A row of tabs: the bar under them and the indicator under the chosen one (it slides).
+    struct tabs_part {
+        rect bar = default;
+        rect indicator = default;
+    }
+
+    // A table's header and its rows (the widget draws the cells' text).
+    view struct table_header_part {
+        rect     bounds;
+        // The column sorted by (0: none, else index + 1), and whether downwards.
+        usize    sorted;
+        bool     descending;
+    }
+
+    struct table_row_part {
+        rect        bounds = default;
+        usize       index = 0;
+        bool        selected = false;
+        interaction state = default;
+    }
+
+    struct scrollbar_part {
+        rect        track = default;
+        rect        thumb = default;
+        interaction state = default;
+    }
+
+    // One painter function per kind of widget: replace any of them to change how that widget
+    // looks, everywhere it is used. Painters only draw; the widget keeps its behaviour.
+    //
+    //     mut ui::skin& s = ctx.skin();
+    //     s.slider_knob = [](mut ui::painter& p, ui::slider_part& k) {
+    //         p.list.star(k.knob_center(), 12.0, 5.0, 5, 0.0, p.tokens.colors.warning);
+    //     };
+    //
+    // The library's painters are the functions of std::ui::paint; a painter of a program's own
+    // can call them and draw something more.
+    class skin {
+    public:
+        // The library's painters.
+        static skin standard();
+
+        std::function<void(mut painter&, button_part&)>   button;
+        std::function<void(mut painter&, check_part&)>    checkbox;
+        std::function<void(mut painter&, toggle_part&)>   toggle;
+        std::function<void(mut painter&, slider_part&)>   slider_track;
+        std::function<void(mut painter&, slider_part&)>   slider_knob;
+        std::function<void(mut painter&, progress_part&)> progress;
+        std::function<void(mut painter&, header_part&)>   section_header;
+        std::function<void(mut painter&, window_part&)>   window;
+        std::function<void(mut painter&, card_part&)>     card;
+        std::function<void(mut painter&, header_part&)>   tree_node;
+        std::function<void(mut painter&, field_part&)>    field;
+        std::function<void(mut painter&, popup_part&)>    popup;
+        std::function<void(mut painter&, item_part&)>     list_item;
+        std::function<void(mut painter&, tooltip_part&)>  tooltip;
+        std::function<void(mut painter&, scrollbar_part&)> scrollbar;
+        std::function<void(mut painter&, segments_part&)> segments;
+        std::function<void(mut painter&, item_part&)>     tab;
+        std::function<void(mut painter&, tabs_part&)>     tab_bar;
+        std::function<void(mut painter&, check_part&)>    radio;
+        std::function<void(mut painter&, table_header_part&)> table_header;
+        std::function<void(mut painter&, table_row_part&)> table_row;
+    }
+
+    // The library's painters, by widget: what skin::standard() uses. They read the theme's tokens
+    // (colours, radii, the controls' shapes).
+    namespace paint {
+        void button(mut painter& p, button_part& b);
+        void checkbox(mut painter& p, check_part& c);
+        void toggle(mut painter& p, toggle_part& t);
+        void slider_track(mut painter& p, slider_part& s);
+        void slider_knob(mut painter& p, slider_part& s);
+        void progress(mut painter& p, progress_part& g);
+        void section_header(mut painter& p, header_part& h);
+        void window(mut painter& p, window_part& w);
+        void card(mut painter& p, card_part& c);
+        void tree_node(mut painter& p, header_part& h);
+        void field(mut painter& p, field_part& f);
+        void popup(mut painter& p, popup_part& u);
+        void list_item(mut painter& p, item_part& i);
+        void tooltip(mut painter& p, tooltip_part& t);
+        void scrollbar(mut painter& p, scrollbar_part& s);
+        void segments(mut painter& p, segments_part& s);
+        void tab(mut painter& p, item_part& t);
+        void tab_bar(mut painter& p, tabs_part& t);
+        void radio(mut painter& p, check_part& r);
+        void table_header(mut painter& p, table_header_part& h);
+        void table_row(mut painter& p, table_row_part& r);
+        // A knob of `shape` at `center` with diameter `size`.
+        void knob(mut painter& p, knob_shape shape, vec2 center, f32 size, color fill, color edge);
+    }
+
+    // ---- sizes ------------------------------------------------------------------------------------------
+
+    // How a size along a layout's direction is given (draft 35 §4).
+    enum length_kind : u8 {
+        // Pixels.
+        px,
+        // What the content needs (the widget's own width).
+        fit,
+        // A share of what the other widgets of the row leave, by weight.
+        fill,
+        // A percentage of the parent's width.
+        percent,
+    }
+
+    @std::derive::formattable
+    struct length {
+        length_kind kind = length_kind::fit;
+        f32         value = 0.0;
+    }
+
+    length px(f32 pixels);
+    length fill(f32 weight);
+    length percent(f32 p);
+    compile_time length fit = length{ .kind = length_kind::fit };
+
+    // ---- input ------------------------------------------------------------------------------------------
+
+    // The keys the UI reacts to (std::ui::input_of maps a window's keys to them).
+    enum key : u8 {
+        tab,
+        enter,
+        escape,
+        space,
+        backspace,
+        delete,
+        left,
+        right,
+        up,
+        down,
+        home,
+        end,
+        page_up,
+        page_down,
+        // With control: select all, copy, paste, cut, redo, undo.
+        a,
+        c,
+        v,
+        x,
+        y,
+        z,
+    }
+
+    // A key that went down (or repeated) this frame.
+    @std::derive::formattable
+    struct key_press {
+        key  key = key::tab;
+        bool shift = false;
+        bool control = false;
+    }
+
+    // One frame of input in UI terms. Filled from a window (std::ui::input_of) or by a test.
+    struct input {
+        vec2 cursor = default;
+        // The left button: held, went down this frame, went up this frame.
+        bool mouse_down = false;
+        bool mouse_pressed = false;
+        bool mouse_released = false;
+        // Wheel steps this frame, positive away from the user.
+        f32  scroll = 0.0;
+        // Seconds since the last frame; 0: the context measures it.
+        f32  dt = 0.0;
+        // Keys that went down or repeated, in order.
+        std::darray<key_press> keys = default;
+        // The text typed this frame (after the keyboard layout).
+        std::string typed = default;
+
+        // Whether `k` went down this frame, with or without modifiers.
+        bool pressed(key k);
+        // Whether `k` went down this frame with control held (shortcuts).
+        bool pressed_with_control(key k);
+    }
+
+    // ---- text editing -----------------------------------------------------------------------------------
+
+    // What a text field remembers while it is edited: the caret, the selection and the undo history.
+    // Offsets are bytes into the text, always on character boundaries.
+    struct text_edit {
+        usize cursor = 0;
+        // The other end of the selection; equal to `cursor` when nothing is selected.
+        usize anchor = 0;
+        // The text before each change, the newest last (at most 100).
+        std::darray<std::string> undo_steps = default;
+        std::darray<std::string> redo_steps = default;
+        // How far the field's text is scrolled left, in pixels.
+        f32 scroll = 0.0;
+
+        bool has_selection();
+        // The selected bytes, (start, end).
+        (usize, usize) selection();
+        void select_all(std::str text) mut;
+        // Moves the caret to `at` (clamped to the text); `extend` keeps the anchor (shift+click).
+        void place(std::str text, usize at, bool extend) mut;
+        // Applies one frame's keys and typed text to `text`: typing, backspace and delete, arrows
+        // (control: by word; shift: selecting), home and end, select all, copy, cut and paste
+        // through `clipboard`, undo and redo. Enter, escape and tab are left to the widget.
+        // Returns whether `text` changed.
+        bool apply(mut std::string& text, input& in, mut std::string& clipboard) mut;
+    }
+
+    // ---- UIs from types: annotations (draft 35 §7.3) ------------------------------------------------------
+
+    // Another widget for a field than its type's usual one (§7.2).
+    enum widget_kind : u8 {
+        // What the field's type gets: bools as the theme's bool widget, numbers as a drag field
+        // (a slider with @ui::range), strings as text fields, enums as segments (up to 4) or a combo.
+        automatic,
+        slider,
+        drag,
+        checkbox,
+        toggle,
+        segmented,
+        combo,
+    }
+
+    // The shown name of a field or an alternative. Default: the name with `_` as spaces and a capital
+    // first letter (`top_speed` is "Top speed").
+    annotation(std::meta::target::field, std::meta::target::alternative, std::meta::target::function)
+    struct label {
+        std::static_str text;
+    }
+
+    // Shown when the field's widget is hovered for a moment.
+    annotation(std::meta::target::field, std::meta::target::function)
+    struct tooltip {
+        std::static_str text;
+    }
+
+    // Bounds of a number field: a slider between them.
+    annotation(std::meta::target::field)
+    struct range {
+        f64 min = 0.0;
+        f64 max = 1.0;
+    }
+
+    // How much a number field changes per pixel dragged (and per arrow key, times 10).
+    annotation(std::meta::target::field)
+    struct step {
+        f64 value = 0.1;
+    }
+
+    // Shown after a number field's value: "m/s", "ms", "%".
+    annotation(std::meta::target::field)
+    struct unit {
+        std::static_str text;
+    }
+
+    // Another widget for the field (one that fits its type: a checkbox for a bool, a slider for a
+    // number with @ui::range, segments or a combo for an enum).
+    annotation(std::meta::target::field)
+    struct widget {
+        widget_kind kind = widget_kind::automatic;
+    }
+
+    // Fields with the same group are shown together under a header, where the group's first
+    // field is.
+    annotation(std::meta::target::field)
+    struct group {
+        std::static_str name;
+    }
+
+    // Shown, not edited.
+    annotation(std::meta::target::field)
+    struct read_only { }
+
+    // Not shown.
+    annotation(std::meta::target::field)
+    struct hidden { }
+
+    // A struct field's fields shown in place, without a collapsible header of its own.
+    annotation(std::meta::target::field)
+    struct flatten { }
+
+    // A function that edits fields of a type the program doesn't own (draft 35 §7.7): inspect and
+    // field call it for every field of type `for_type`. It is a free function
+    // `ui::edit name(mut std::ui::immediate::scope& s, std::str label, mut for_type& value)`.
+    annotation(std::meta::target::function)
+    struct field_widget {
+        type for_type = void;
+    }
+
+    // A method shown as a button that calls it (methods without parameters).
+    annotation(std::meta::target::function)
+    struct action {
+        std::static_str label = "";
+    }
+
+    // ---- UIs from types: widget sets (§7.8.5) -----------------------------------------------------------
+
+    // How a number field is edited when its annotations and form don't say.
+    enum number_widget : u8 {
+        drag,
+        slider,
+        // − and + buttons beside the value: big targets for touch and gamepads.
+        stepper,
+    }
+
+    // Which widget each kind of field becomes when nothing else says (`scope.with_widgets(set)`).
+    @std::derive::formattable
+    struct widget_set {
+        bool_widget   boolean = bool_widget::toggle;
+        // Numbers with a range, and without.
+        number_widget ranged = number_widget::slider;
+        number_widget unranged = number_widget::drag;
+        // Enums with up to this many alternatives as segments (or radio buttons), more as a combo.
+        u32           segment_limit = 4;
+        bool          radio_buttons = false;
+        // Multiplies the theme's density in the set's scope.
+        f32           density = 1.0;
+    }
+
+    // The library's sets: `tool` (compact: drags, sliders, segments; the default), `touch` (big
+    // targets: toggles, steppers, segments, 1.25 density) and `gamepad` (steppers and radio buttons,
+    // which the d-pad drives).
+    namespace widget_sets {
+        widget_set tool();
+        widget_set touch();
+        widget_set gamepad();
+    }
+
+    // ---- UIs from types: field paths, checked at compile time ------------------------------------------
+
+    // What a field path names (`"speed"`, `"movement.speed"`).
+    enum path_class : u8 {
+        missing,
+        number,
+        text,
+        boolean,
+        choice,
+        // A struct or class: its fields are shown as a group.
+        group,
+        // A std::darray: `name[]` goes on into its elements.
+        list,
+        other,
+    }
+
+    // The class of a type as a field.
+    template<type T>
+    compile_time path_class class_of_type();
+
+    // Whether `T` is a std::darray, a std::option.
+    template<type T>
+    compile_time bool is_list();
+    template<type T>
+    compile_time bool is_optional();
+
+    // What `path` names in `T`; `missing` when a part of it isn't a field. `name[]` names the
+    // elements of a list (`"weapons[].damage"`).
+    template<type T>
+    compile_time path_class class_of_path(std::str path);
+
+    // The field name in `T` nearest to the misspelled last part of `path` (by edit distance, at
+    // most 2), or "" when none is near.
+    template<type T>
+    compile_time std::static_str nearest_field(std::str path);
+
+    // True when `path` is a field of `T` of the class `wanted` (`other`: any); otherwise stops the
+    // compilation with an error at the call of the library function that asked (a misspelled
+    // field, with the nearest name; `what` needs another class of field).
+    @std::diagnostic_frame{ .hide = true }
+    template<type T>
+    compile_time bool require_path(std::str path, path_class wanted, std::str what);
+
+    // `name` as a label: `_` as spaces, the first letter capital.
+    std::string label_of(std::str name);
+
+    // ---- UIs from types: rules, results, forms (§7.4, §7.8) ----------------------------------------------
+
+    // What a rule says about a value.
+    enum verdict : u8 {
+        ok,
+        // Shown under the field in the theme's `danger` colour; the edit is not valid.
+        error(std::string),
+    }
+
+    // A rule over a text field, and one over a number field.
+    compile_time type text_rule = std::function<verdict(std::str)>;
+    compile_time type number_rule = std::function<verdict(f64)>;
+
+    // The common rules.
+    namespace rules {
+        text_rule not_empty();
+        text_rule min_length(usize n);
+        text_rule max_length(usize n);
+        // Something@something.something, without spaces.
+        text_rule email();
+        number_rule at_least(f64 min);
+        number_rule at_most(f64 max);
+    }
+
+    // What an editor made from a type did this frame.
+    struct edit {
+        // A field changed this frame.
+        bool changed = false;
+        // The change is finished: the drag was released, Enter pressed, a toggle clicked. Stays
+        // false while a rule fails.
+        bool committed = false;
+        // No rule fails.
+        bool valid = true;
+        // The path of the field that changed last (`"movement.speed"`).
+        std::string path = default;
+
+        // Adds what `other` (a nested editor) did.
+        void merge(edit other) mut;
+    }
+
+    // What a form changes about one field (or every field below a path).
+    struct field_override {
+        std::string                path = default;
+        std::option<std::string>   label = std::none;
+        std::option<std::string>   tooltip = std::none;
+        std::option<std::string>   unit = std::none;
+        std::option<std::string>   group = std::none;
+        std::option<f64>           min = std::none;
+        std::option<f64>           max = std::none;
+        std::option<f64>           step = std::none;
+        std::option<bool>          hidden = std::none;
+        std::option<bool>          read_only = std::none;
+        std::option<widget_kind>   widget = std::none;
+        std::darray<text_rule>     text_rules = default;
+        std::darray<number_rule>   number_rules = default;
+    }
+
+    // How a field is shown, after its annotations and the form (built for each field as it is shown).
+    struct field_spec {
+        std::string label = default;
+        // "": not in a group.
+        std::string group = default;
+        std::string tooltip = default;
+        std::string unit = default;
+        bool        has_range = false;
+        f64         min = 0.0;
+        f64         max = 0.0;
+        // 0: chosen from the range or the type.
+        f64         step = 0.0;
+        bool        hidden = false;
+        bool        read_only = false;
+        widget_kind widget = widget_kind::automatic;
+        // A struct's fields shown in place (@ui::flatten).
+        bool        flatten = false;
+        // A number field (range_all and step_all reach it).
+        bool        is_number = false;
+
+        field_spec clone();
+    }
+
+    // Applies `overrides` (a form's, or a stored one's) for `path` to `spec`: the override of the
+    // path, the ones for every number field (`range_all`, `step_all`), and `hide_unlisted`.
+    void apply_overrides(std::span<field_override> overrides, bool hide_unlisted, std::str path, mut field_spec& spec);
+
+    // The rules for showing a `T` in one place (draft 35 §7.8): the annotations are the defaults, a
+    // form changes them for one call, one scope or one screen. Field paths are checked at compile
+    // time: a misspelled one, or a range on a text field, is an error at the call.
+    //
+    //     w.inspect("car", mut car, ui::form<vehicle>::annotated()
+    //         .range("top_speed", 0.0, 400.0)
+    //         .hide("debug_id")
+    //         .rule("name", ui::rules::min_length(3)));
+    template<type T>
+    class form {
+    public:
+        // The annotations of `T`, unchanged.
+        static form<T> annotated();
+
+        @std::diagnostic_frame{ .hide = true }
+        form<T> label(compile_time std::static_str path, std::str text) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> tooltip(compile_time std::static_str path, std::str text) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> unit(compile_time std::static_str path, std::str text) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> group(compile_time std::static_str path, std::str name) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> range(compile_time std::static_str path, f64 low, f64 high) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> min(compile_time std::static_str path, f64 value) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> max(compile_time std::static_str path, f64 value) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> step(compile_time std::static_str path, f64 value) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> show(compile_time std::static_str path) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> hide(compile_time std::static_str path) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> read_only(compile_time std::static_str path) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> editable(compile_time std::static_str path) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> widget(compile_time std::static_str path, widget_kind kind) move;
+        // Every field hidden unless a later show() names it (`.hide_all().show("a").show("b")`).
+        form<T> hide_all() move;
+        // The range and the step of every number field of `T` (and of the types inside it).
+        form<T> range_all(f64 low, f64 high) move;
+        form<T> step_all(f64 value) move;
+        // A rule on a text field, on a number field, and over the whole value (shown under `path`).
+        @std::diagnostic_frame{ .hide = true }
+        form<T> rule(compile_time std::static_str path, text_rule test) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> rule_number(compile_time std::static_str path, number_rule test) move;
+        @std::diagnostic_frame{ .hide = true }
+        form<T> rule_across(compile_time std::static_str path, std::function<verdict(T&)> test) move;
+        // Shows `path` only while `condition` is true (decides open question 5).
+        @std::diagnostic_frame{ .hide = true }
+        form<T> visible_if(compile_time std::static_str path, std::function<bool(T&)> condition) move;
+
+        // The override of `path`, if the form has one.
+        std::option<field_override&> find(std::str path);
+        // `spec` with this form's changes for `path`.
+        void apply(std::str path, mut field_spec& spec);
+        // Whether the form changes anything.
+        bool is_plain();
+
+        std::darray<field_override> overrides = default;
+        bool hide_unlisted = false;
+        // Rules over the whole value and the paths they are shown at; conditions of visible_if and
+        // their paths.
+        std::darray<std::string> across_paths = default;
+        std::darray<std::function<verdict(T&)>> across = default;
+        std::darray<std::string> condition_paths = default;
+        std::darray<std::function<bool(T&)>> conditions = default;
+
+        // The override of `path`, made if there is none.
+        mut field_override& entry(std::str path) mut;
+    }
+
+    // ---- UIs from types: copies and undo (§7.4) ----------------------------------------------------------
+
+    // A deep copy of `value` made from its fields: numbers, bools and enums are copied, strings,
+    // lists and options copied element by element, structs field by field (they need a default).
+    template<type T>
+    T snapshot(T& value);
+
+    // The edits of one value, as snapshots: record() after every frame of an editor, undo() and
+    // redo() step through the committed states.
+    //
+    //     ui::edit e = w.inspect("player", mut player);
+    //     history.record(e, player);
+    //     w.undo_shortcuts(mut history, mut player);         // Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z
+    template<type T>
+    class undo_history {
+    public:
+        // At most `limit` steps back.
+        static undo_history<T> make(usize limit);
+
+        // The first call keeps `value` as the starting state; a committed edit makes `value` the
+        // new state and the one before it a step back.
+        void record(edit& e, T& value) mut;
+        // Puts `value` back to the state before / after the current one; false when there is none.
+        bool undo(mut T& value) mut;
+        bool redo(mut T& value) mut;
+        bool can_undo();
+        bool can_redo();
+        // Steps back available.
+        usize len();
+
+        usize limit = 100;
+        std::option<T> current = std::none;
+        std::darray<T> back = default;
+        std::darray<T> forward = default;
+    }
+}

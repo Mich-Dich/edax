@@ -77,6 +77,10 @@ New to Edax? Read in this order; each step only uses what came before.
 | `logging/` | [Logging](stdlib/logging/logging.md), [Logging output](stdlib/logging/output.md) |
 | `windowing/` | [Windowing](stdlib/windowing/windowing.md): windows, input, OpenGL contexts and Vulkan surfaces |
 | `graphics/` | [Graphics APIs](stdlib/graphics/graphics.md): an API is a name and a version; OpenGL and Vulkan from the Khronos registries |
+| `math/` | [Math](stdlib/math/math.md): vectors, rectangles, colours, OKLCH |
+| `image/` | [Images](stdlib/image/image.md): RGBA images, PNG and QOI |
+| `text/` | [Fonts](stdlib/text/fonts.md): TrueType fonts and distance fields |
+| `ui/` | [User interface core](stdlib/ui/core.md): themes, skins and painters, text, the draw list, the OpenGL renderer; [immediate-mode widgets](stdlib/ui/immediate.md); [UIs from types](stdlib/ui/forms.md) |
 
 ### Building: `build/`
 [Build system](build/build-system.md) (`build.ed`, targets, C/C++), [Packages](build/packages.md) (outside code, CMake projects, the lock file), [Build modes](build/build-modes.md) (`debug`, `release`, user-defined modes), [Build output and diagnostics](build/build-output.md) (the checklist, `build.log`, the error limit)
@@ -84,4 +88,4 @@ New to Edax? Read in this order; each step only uses what came before.
 ### Not part of the design
 - [OPEN_QUESTIONS.md](OPEN_QUESTIONS.md): what is not designed yet.
 - [`../compiler/spec-34-status.md`](../compiler/spec-34-status.md): which parts of the performance and engine extensions (spec 34) edaxc implements so far.
-- `drafts/`: proposals under review (events, windowing). They become pages once decided.
+- `drafts/`: proposals under review (events, user interfaces). They become pages once decided.

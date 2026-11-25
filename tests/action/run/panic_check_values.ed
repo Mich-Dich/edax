@@ -1,0 +1,14 @@
+// RUN: edaxc run %s
+// A failed check inside a function: the message's integer holes are filled in, and a note
+// quotes the condition that failed (crash handling, phase A).
+import std;
+
+u32 split(u32 total, u32 parts) {
+    run_time check (total % parts == 0) else f"{total} doesn't split into {parts} parts";
+    return total / parts;
+}
+
+void main() {
+    std::println(f"{split(12, 4)}");
+    std::println(f"{split(10, 4)}");
+}

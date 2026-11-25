@@ -1,22 +1,42 @@
-// feature 06: members are always accessed through 'this.', and only methods have a 'this'.
+// feature 06: in a method a bare member name is the member (`value` is `this.value`); 'this.'
+// still works. Only non-static methods have an object, and no local may take a member's name.
 class counter {
 public:
     u32 get() {
-        return value;                  //~ error[E3026]: write 'this.value'
+        return value;                  // the field, as 'this.value'
     }
     void inc() mut {
+        value += 1;
         this.value += 1;
+        helper();
         this.helper();
+        vaule += 1;                    //~ error[E3020]: cannot find 'vaule'
         this.vaule += 1;               //~ error[E3025]: 'counter' has no member 'vaule'
     }
-    static counter make() {
-        u32 v = this.value;            //~ error[E3027]: static methods have no 'this'
+    void set(u32 value) mut {          //~ error[E3028]: 'value' is the name of a field of 'counter'
+    }
+    u32 twice() {
+        u32 helper = 2;                //~ error[E3028]: 'helper' is the name of a method of 'counter'
+        return helper;
+    }
+    static counter make(u32 value) {   // static methods have no object: a parameter may take a field's name
+        return counter{ .value = value };
+    }
+    static counter broken() {
+        u32 v = value;                 //~ error[E3027]: a static method has no 'this'
+        u32 w = this.value;            //~ error[E3027]: static methods have no 'this'
         return counter{};
+    }
+    u32 read() {
+        return next();                 //~ error[E3026]: 'next' is both a member of 'counter' and 'next'
     }
 private:
     u32 value = 0;
     void helper() { }
+    u32 next() { return value + 1; }
 }
+
+u32 next() { return 0; }
 
 u32 free_function() {
     return this.value;                 //~ error[E3027]: only available inside methods

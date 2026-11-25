@@ -1,0 +1,159 @@
+// RUN: edaxc run %s
+// std::ui::immediate's keyboard and the M2 widgets that need it, without a window: Tab focus,
+// Enter on a button, text fields (typing, selection, clipboard, undo), numbers (drag, click to
+// type, arrows), combos and enum choices, tree nodes, tooltips and styled scopes.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+enum quality : u8 { low, medium, high, ultra }
+
+struct model {
+    std::string name = default;
+    f32   gravity = 9.81;
+    i32   count = 5;
+    usize mode = 0;
+    quality q = quality::medium;
+    u32   presses = 0;
+    bool  compact_seen = false;
+}
+
+struct places {
+    ui::rect name = default;
+    ui::rect gravity = default;
+    ui::rect mode = default;
+    ui::rect save = default;
+}
+
+places frame_of(mut im::context& ctx, mut model& m, ui::input in) {
+    mut places at = default;
+    {
+        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 800.0, .y = 600.0 });
+        {
+            mut im::scope w = f.window("Edit", ui::rect{ .x = 10.0, .y = 10.0, .width = 400.0 });
+            at.name = w.allocate(ui::vec2{});
+            _ = w.input_text("Name", mut m.name);
+            at.gravity = w.allocate(ui::vec2{});
+            _ = w.number("Gravity", mut m.gravity, 0.0, 20.0);
+            _ = w.drag("Count", mut m.count, 0.5);
+            at.mode = w.allocate(ui::vec2{});
+            std::array<std::str, 3> modes = ["Walk", "Run", "Fly"];
+            _ = w.combo("Mode", mut m.mode, modes.as_span());
+            _ = w.choice("Quality", mut m.q);
+            at.save = w.allocate(ui::vec2{});
+            if (w.button("Save")) {
+                m.presses += 1;
+            }
+            w.tooltip("Writes the file");
+            {
+                mut im::scope node = w.tree("Details", false);
+                node.text(f"inside");
+            }
+            {
+                mut ui::theme small = w.theme();
+                small.density = 0.8;
+                mut im::scope compact = w.styled(small);
+                m.compact_seen = compact.theme().density == 0.8;
+            }
+            m.compact_seen = m.compact_seen && w.theme().density == 1.0;
+        }
+        f.finish();
+    }
+    return at;
+}
+
+ui::input at(ui::vec2 p) {
+    return ui::input{ .cursor = p, .dt = 0.016 };
+}
+
+ui::input key(ui::key k, bool shift, bool control) {
+    mut ui::input in = at(ui::vec2{ .x = 700.0, .y = 500.0 });
+    in.keys.push(ui::key_press{ .key = k, .shift = shift, .control = control });
+    return in;
+}
+
+ui::input typing(std::str text) {
+    mut ui::input in = at(ui::vec2{ .x = 700.0, .y = 500.0 });
+    in.typed = std::string::from(text);
+    return in;
+}
+
+// A press and a release at `p`.
+void click(mut im::context& ctx, mut model& m, ui::vec2 p) {
+    _ = frame_of(mut ctx, mut m, ui::input{ .cursor = p, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut m, ui::input{ .cursor = p, .mouse_released = true, .dt = 0.016 });
+}
+
+ui::vec2 middle_of(ui::rect r, f32 x) {
+    return ui::vec2{ .x = r.x + x, .y = r.y + 14.0 };
+}
+
+void main() {
+    mut im::context ctx = im::context::create(ui::theme::dark());
+    mut model m = default;
+    places p = frame_of(mut ctx, mut m, at(ui::vec2{}));
+    _ = frame_of(mut ctx, mut m, at(ui::vec2{}));
+    std::println(f"styled scope restores the theme: {m.compact_seen}");
+
+    // Click into the name field, type, select a word back, cut, paste twice, undo.
+    click(mut ctx, mut m, middle_of(p.name, 200.0));
+    _ = frame_of(mut ctx, mut m, typing("hello world"));
+    std::println(f"typed: '{m.name}', wants keyboard {ctx.wants_keyboard()}");
+    _ = frame_of(mut ctx, mut m, key(ui::key::left, true, true));
+    _ = frame_of(mut ctx, mut m, key(ui::key::x, false, true));
+    _ = frame_of(mut ctx, mut m, key(ui::key::v, false, true));
+    _ = frame_of(mut ctx, mut m, key(ui::key::v, false, true));
+    std::println(f"cut and pasted twice: '{m.name}', clipboard '{ctx.clipboard_text()}'");
+    _ = frame_of(mut ctx, mut m, key(ui::key::z, false, true));
+    std::println(f"undo: '{m.name}'");
+    _ = frame_of(mut ctx, mut m, key(ui::key::enter, false, false));
+    std::println(f"after Enter, typing: {ctx.editing != 0}");
+
+    // Tab from the name field to the number; arrows change it; Enter types a new value.
+    _ = frame_of(mut ctx, mut m, key(ui::key::tab, false, false));
+    _ = frame_of(mut ctx, mut m, key(ui::key::right, false, false));
+    std::println(f"gravity after one arrow step: {m.gravity}");
+    _ = frame_of(mut ctx, mut m, key(ui::key::enter, false, false));
+    _ = frame_of(mut ctx, mut m, typing("3.5"));
+    _ = frame_of(mut ctx, mut m, key(ui::key::enter, false, false));
+    std::println(f"gravity typed: {m.gravity}");
+
+    // Drag the number field to the left end.
+    ui::vec2 g = middle_of(p.gravity, 250.0);
+    _ = frame_of(mut ctx, mut m, ui::input{ .cursor = g, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut m, ui::input{ .cursor = ui::vec2{ .x = 0.0, .y = g.y }, .mouse_down = true, .dt = 0.016 });
+    _ = frame_of(mut ctx, mut m, ui::input{ .cursor = ui::vec2{ .x = 0.0, .y = g.y }, .mouse_released = true, .dt = 0.016 });
+    std::println(f"gravity dragged left: {m.gravity}");
+
+    // Open the combo with a click, pick "Fly" in the list below it.
+    click(mut ctx, mut m, middle_of(p.mode, 200.0));
+    std::println(f"wants mouse over the list: {ctx.wants_mouse()}");
+    ui::vec2 fly = ui::vec2{ .x = p.mode.x + 200.0, .y = p.mode.y + 30.0 + 4.0 + 4.0 + 2.0 * 30.0 + 12.0 };
+    click(mut ctx, mut m, fly);
+    std::println(f"mode: {m.mode}");
+
+    // Tab to the quality choice and press down twice.
+    mut u32 tabs = 0;
+    while (tabs < 10 && m.q == quality::medium) {
+        _ = frame_of(mut ctx, mut m, key(ui::key::tab, false, false));
+        _ = frame_of(mut ctx, mut m, key(ui::key::down, false, false));
+        tabs += 1;
+    }
+    std::println(f"quality: {m.q}");
+
+    // Tab on to Save and press Enter: a click without the mouse.
+    _ = frame_of(mut ctx, mut m, key(ui::key::tab, false, false));
+    _ = frame_of(mut ctx, mut m, key(ui::key::enter, false, false));
+    std::println(f"Save pressed with Enter: {m.presses}");
+
+    // The tooltip shows after hovering a moment.
+    ui::vec2 on_save = ui::vec2{ .x = p.save.x + 10.0, .y = p.save.y + 10.0 };
+    _ = frame_of(mut ctx, mut m, at(on_save));
+    usize quiet = ctx.draw_data().vertices.len();
+    for (u32 i : 0..40) {
+        _ = frame_of(mut ctx, mut m, at(on_save));
+    }
+    std::println(f"tooltip drawn: {ctx.draw_data().vertices.len() > quiet}, escape drops focus: {ctx.wants_keyboard()}");
+    _ = frame_of(mut ctx, mut m, key(ui::key::escape, false, false));
+    std::println(f"after Escape: {ctx.wants_keyboard()}, duplicates {ctx.duplicate_ids()}");
+}

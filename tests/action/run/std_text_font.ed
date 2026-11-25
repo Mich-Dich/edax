@@ -1,0 +1,23 @@
+// RUN: edaxc run %s
+// std::text::font: the built-in fonts, character maps, metrics, kerning, outlines (with
+// composite glyphs) and distance fields.
+import std;
+
+void main() {
+    std::text::font sans = std::text::font::default_sans();
+    u16 a = sans.glyph_index('A');
+    u16 v = sans.glyph_index('V');
+    std::println(f"{sans.glyph_count()} glyphs, A {a}, V {v}, missing {sans.glyph_index('\u{4e00}')}");
+    std::println(f"{sans.metrics()}");
+    std::println(f"advance A {sans.advance(a)}, kerning AV {sans.kerning(a, v)} < 0: {sans.kerning(a, v) < 0.0}");
+    std::text::outline o = sans.outline_of(sans.glyph_index('o'), 32.0);
+    std::println(f"o: {o.contour_ends.len()} contours");
+    std::text::outline accented = sans.outline_of(sans.glyph_index('é'), 32.0);
+    std::println(f"é: {accented.contour_ends.len()} contours (composite)");
+    std::text::distance_field f = sans.render_distance_field(sans.glyph_index('l'), 40.0, 5.0);
+    u8 middle = f.pixels[cast<usize>(f.height / 2) * cast<usize>(f.width) + cast<usize>(f.width / 2)];
+    std::println(f"l: {f.width}x{f.height}, inside {middle > 128}, corner outside {f.pixels[0] < 128}");
+    std::text::font mono = std::text::font::default_mono();
+    std::println(f"mono: i and W as wide: {mono.advance(mono.glyph_index('i')) == mono.advance(mono.glyph_index('W'))}");
+    std::println(f"not a font: {std::text::font::parse(std::embed("std_text_font.ed")).is_error()}");
+}

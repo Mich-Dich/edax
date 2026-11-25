@@ -2,6 +2,6 @@ exit: 0
 --- stdout
 tests/action/cli/explain_checks.ed: 3 run-time checks, 1 removed by the optimizer, 2 kept
   removed  tests/action/cli/explain_checks.ed:9:19  the checks of std::darray<u64>::[]
-  kept     tests/action/cli/explain_checks.ed:15:12  index out of bounds
-  kept     tests/action/cli/explain_checks.ed:19:12  integer overflow in '*' (u32)
+  kept     tests/action/cli/explain_checks.ed:15:12  index {i} out of bounds (length {this.count})
+  kept     tests/action/cli/explain_checks.ed:19:12  integer overflow in 'x * 3' (u32)
 --- stderr

@@ -1,0 +1,16 @@
+// RUN: edaxc run %s
+// A consuming method returns `this`: builders (`b.add(1).add(2)`) move the object through, and it is
+// destroyed once (was a double free).
+import std;
+class holder {
+public:
+    holder add(u32 f) move {
+        this.fs.push(f);
+        return this;
+    }
+    std::darray<u32> fs = default;
+}
+void main() {
+    holder h = holder{}.add(3).add(4);
+    std::println(f"b {h.fs.len()}");
+}

@@ -1,0 +1,49 @@
+// The Edax standard library: module std::image, images in memory and image files.
+//
+//     std::image::rgba8 logo = std::image::decode_png(std::embed("logo.png"))?;
+//     std::darray<u8> file = std::image::encode_png(logo);
+//
+// Decodes PNG (8- and 16-bit, grey, grey + alpha, RGB, RGBA, palettes with transparency; not
+// interlaced) and QOI; encodes both. Every image becomes 8-bit RGBA with straight alpha.
+// Loaded when a program names `std::image` (or `std::ui`).
+
+namespace std::image {
+    // An image of 8-bit RGBA pixels with straight alpha, rows top to bottom. Plain data: it can be
+    // made on a worker thread and sent to the thread that uploads it.
+    struct rgba8 {
+        u32 width = 0;
+        u32 height = 0;
+        // width * height * 4 bytes.
+        std::darray<u8> pixels = default;
+
+        // An image of `width` x `height` pixels of one colour.
+        static rgba8 filled(u32 width, u32 height, u8 r, u8 g, u8 b, u8 a);
+
+        // The pixel at (x, y) as (r, g, b, a) bytes packed with r lowest.
+        u32 pixel(u32 x, u32 y);
+        void set_pixel(u32 x, u32 y, u32 packed) mut;
+    }
+
+    // Why a file couldn't be decoded.
+    enum decode_error : u8 {
+        // Not a file of the format asked for.
+        wrong_format,
+        // The file ends early or contradicts itself.
+        damaged,
+        // A valid file with a feature this decoder doesn't have (interlaced PNG).
+        unsupported,
+        // Wider or higher than 32768 pixels.
+        too_large,
+    }
+
+    std::result<rgba8, decode_error> decode_png(std::span<u8> file);
+    std::result<rgba8, decode_error> decode_qoi(std::span<u8> file);
+
+    // A PNG of `image` (RGBA, 8 bits; the data in stored deflate blocks, so it is not compressed:
+    // for screenshots and tests, not for shipping assets).
+    std::darray<u8> encode_png(rgba8& image);
+    std::darray<u8> encode_qoi(rgba8& image);
+
+    // The zlib stream `data` (RFC 1950/1951) decompressed; none when it is damaged.
+    std::option<std::darray<u8>> inflate_zlib(std::span<u8> data);
+}

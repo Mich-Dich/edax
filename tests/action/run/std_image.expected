@@ -1,0 +1,30 @@
+exit: 0
+--- stdout
+rgba 0 0 0 0
+rgba 35 33 15 40
+rgba 252 242 24 34
+rgba 140 110 200 150
+rgb 0 0 0 255
+rgb 35 33 15 255
+rgb 252 242 24 255
+rgb 140 110 200 255
+grey 0 0 0 255
+grey 32 32 32 255
+grey 220 220 220 255
+grey 129 129 129 255
+pal 29 26 9 33
+pal 29 26 9 33
+pal 29 26 9 33
+pal 163 105 221 164
+bw 0 0 0 255
+bw 0 0 0 255
+bw 255 255 255 255
+bw 0 0 0 255
+la 0 0 0 0
+la 32 32 32 40
+la 220 220 220 34
+la 129 129 129 150
+qoi round trip true
+png round trip true
+not a png: true
+--- stderr

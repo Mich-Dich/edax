@@ -1,0 +1,12 @@
+exit: 0
+--- stdout
+text on surface >= 4.5: true true
+on_primary readable: true
+mix ends: true
+line height 20.0, 'Hello' wider than 'Hi': true
+4 lines, all within 100: true
+28 vertices, 42 indices, 3 commands
+  clip 400.0x300.0 texture 4294967295 indices 0+30
+  clip 50.0x50.0 texture 0 indices 30+6
+  clip 400.0x300.0 texture 7 indices 36+6
+--- stderr

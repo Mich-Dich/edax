@@ -526,24 +526,24 @@ namespace std::log {
         }
 
         void render(std::log::record& r, std::raw_ptr<std::log::palette> colors, mut std::string& out) {
-            std::str text = this.text;
-            usize n = text.len();
+            std::str chars = this.text;
+            usize n = chars.len();
             std::time::civil_time when = std::log::local_time(r.time);
             mut usize at = 0;
             while (at < n) {
-                // the literal text up to the next brace, in one piece
+                // the literal chars up to the next brace, in one piece
                 mut usize end = at;
-                while (end < n && std::log::byte_at(text, end) != 123u8 && std::log::byte_at(text, end) != 125u8) {
+                while (end < n && std::log::byte_at(chars, end) != 123u8 && std::log::byte_at(chars, end) != 125u8) {
                     end += 1;
                 }
                 if (end > at) {
-                    out.push_str(text.slice(at, end));
+                    out.push_str(chars.slice(at, end));
                     at = end;
                     continue;
                 }
-                u8 c = std::log::byte_at(text, at);
-                if (at + 1 < n && std::log::byte_at(text, at + 1) == c) {   // `{{` or `}}`
-                    out.push_str(text.slice(at, at + 1));
+                u8 c = std::log::byte_at(chars, at);
+                if (at + 1 < n && std::log::byte_at(chars, at + 1) == c) {   // `{{` or `}}`
+                    out.push_str(chars.slice(at, at + 1));
                     at += 2;
                     continue;
                 }
@@ -879,7 +879,7 @@ namespace std::log {
         void put(std::str text) {
             mut usize done = 0;
             while (done < text.len()) {
-                isize n = unsafe { write(1, text.as_ptr().offset(done), text.len() - done) };
+                isize n = unsafe { std::log::write(1, text.as_ptr().offset(done), text.len() - done) };
                 if (n <= 0) {
                     return;
                 }
@@ -1453,7 +1453,11 @@ namespace std::log {
 
     // A panic anywhere: log its message, then write everything queued and flush the sinks.
     private void on_panic(std::panic_info& info) {
-        std::string message = std::format(f"{info.where.file}:{info.where.line}:{info.where.column}: panic: {info.message}");
+        std::string message = if (info.function.is_empty()) {
+            std::format(f"{info.where.file}:{info.where.line}:{info.where.column}: panic: {info.message}")
+        } else {
+            std::format(f"{info.where.file}:{info.where.line}:{info.where.column}: panic in {info.function}: {info.message}")
+        };
         mut std::log::entry e = std::log::note(std::log::level::fatal, move message);
         e.from_panic = true;
         std::log::deliver(move e);
@@ -1613,8 +1617,8 @@ namespace std::log {
             }
             minimum.store(0, std::memory_order::relaxed);   // calls go to the early buffer again
             this.queue.close();
-            std::thread::handle<void> worker = std::take(mut this.worker).expect("the log thread runs until the session ends");
-            worker.join();
+            std::thread::handle<void> log_thread = std::take(mut this.worker).expect("the log thread runs until the session ends");
+            log_thread.join();
             unsafe {
                 std::raw::drop(this.state);
                 std::raw::free(this.state);

@@ -16,12 +16,12 @@ public:
         return bag{ .who = std::string::from(owner), .items = default };
     }
 
-    void add(item it) mut { this.items.push(move it); }
+    void add(item it) mut { items.push(move it); }
 
     // The heaviest item, borrowed from the bag.
     std::option<item&> heaviest() {
         mut std::option<item&> best = std::none;
-        for (item& it : this.items) {
+        for (item& it : items) {
             if (best is std::some(b) && b.weight >= it.weight) { continue; }
             best = std::some(it);
         }
@@ -29,17 +29,17 @@ public:
     }
 
     // Hands every item over to the caller; the bag is empty afterwards.
-    std::darray<item> empty_out() mut { return this.items.clone(); }
+    std::darray<item> empty_out() mut { return items.clone(); }
 
     u32 total() {
         mut u32 sum = 0;
-        for (item& it : this.items) { sum += it.weight; }
+        for (item& it : items) { sum += it.weight; }
         return sum;
     }
 
-    std::str owner() { return this.who; }
+    std::str owner() { return who; }
 
-    ~bag() { std::println(f"bag of {this.who} destroyed with {this.items.len()} items"); }
+    ~bag() { std::println(f"bag of {who} destroyed with {items.len()} items"); }
 
 private:
     std::string       who;

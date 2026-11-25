@@ -1,0 +1,43 @@
+// The Edax standard library: module std::ui::routing (see routing.edh).
+
+namespace std::ui::immediate {
+    view class router {
+    public:
+        std::windowing::routing on_event(std::windowing::event e, std::windowing::input_state& input) mut override {
+            bool keyboard = this.ctx.wants_keyboard();
+            bool mouse = this.ctx.wants_mouse();
+            match (e) {
+                std::windowing::event::key(k) => {
+                    if (!keyboard) {
+                        return std::windowing::routing::pass;
+                    }
+                    if (k.action != std::windowing::key_action::released) {
+                        match (std::ui::key_of(k.key)) {
+                            std::some(mapped) => this.ctx.routed_keys.push(std::ui::key_press{ .key = mapped, .shift = k.modifiers.shift, .control = k.modifiers.control }),
+                            std::none => {},
+                        }
+                    }
+                    return std::windowing::routing::consume;
+                },
+                std::windowing::event::text(c) => {
+                    if (!keyboard) {
+                        return std::windowing::routing::pass;
+                    }
+                    if (!input.modifiers().control) {
+                        this.ctx.routed_text.push(c);
+                    }
+                    return std::windowing::routing::consume;
+                },
+                std::windowing::event::mouse_button(_) => {
+                    return if (mouse) { std::windowing::routing::consume } else { std::windowing::routing::pass };
+                },
+                std::windowing::event::scrolled(_) => {
+                    return if (mouse) { std::windowing::routing::consume } else { std::windowing::routing::pass };
+                },
+                _ => {
+                    return std::windowing::routing::pass;
+                },
+            }
+        }
+    }
+}

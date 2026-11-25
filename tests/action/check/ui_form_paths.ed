@@ -1,0 +1,20 @@
+// RUN: edaxc check %s
+// Form methods and field() check their field paths at compile time (draft 35 §7.8.1): a misspelled
+// field (with the nearest name), a path through a non-struct, a range on a text field and a text
+// rule on a number field are errors at the call.
+import std;
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+
+struct movement { f32 speed = 1.0; }
+struct player { std::string name = default; movement move = default; i32 level = 1; }
+
+void show(mut im::scope& w, mut player& p) {
+    ui::form<player> a = ui::form<player>::annotated().range("move.sped", 0.0, 1.0);
+    ui::form<player> b = ui::form<player>::annotated().range("name", 0.0, 1.0);
+    ui::form<player> c = ui::form<player>::annotated().rule("level", ui::rules::min_length(3));
+    ui::form<player> d = ui::form<player>::annotated().hide("level.value");
+    _ = w.field(mut p, "nmae");
+}
+
+void main() {}

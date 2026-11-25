@@ -30,7 +30,7 @@ python3 course/check.py --solutions                   # all reference solutions 
 |---|---|---|
 | 1 | [The C++ habits that don't compile](01-basics/README.md): `mut`, literals, casts, checked arithmetic, `for`, blocks as values | a temperature report |
 | 2 | [Ownership: copy, move, borrow](02-ownership/README.md): copy vs owning types, `move`, `clone`, second-class references, views | fix a C++-style inventory |
-| 3 | [Structs, classes, modules](03-types-and-modules/README.md): designated construction, `this.`, `.edh`/`.ed`, `private`, namespaces | a geometry module |
+| 3 | [Structs, classes, modules](03-types-and-modules/README.md): designated construction, members and `this`, `.edh`/`.ed`, `private`, namespaces | a geometry module |
 | 4 | [Enums, `match`, errors](04-enums-and-errors/README.md): payload enums, `is`, `option`/`result`, `?`, panics | an RPN calculator |
 | 5 | [Inheritance and interfaces](05-interfaces/README.md): `open`, `virtual`/`override`, interfaces, `cast::dynamic`, static vs dynamic dispatch | a tiny game world |
 | 6 | [Templates](06-templates/README.md): constraints, value parameters, `if compile_time`, packs | a ring buffer, `largest`, `join` |

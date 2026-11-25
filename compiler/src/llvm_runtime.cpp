@@ -6,7 +6,7 @@
 //   edax_str   { ptr, i64 }              bytes and length of a string
 //   edax_buf   { ptr, i64, i64 }         data, length, capacity of an output buffer
 //   edax_spec  { i8, i1, i32, i32, i8 }  align, plus, width (-1: none), precision (-1: none), radix
-//   edax_loc   { ptr, i32, i32 }         file, line, column of a source location
+//   edax_loc   { ptr, i32, i32, ptr }    file, line, column of a source location; the function (C string or null)
 
 #include "edax/llvm_backend.hpp"
 
@@ -53,7 +53,7 @@ const char* kTypesAndDeclarations = R"IR(
 %edax_str = type { ptr, i64 }
 %edax_buf = type { ptr, i64, i64 }
 %edax_spec = type { i8, i1, i32, i32, i8 }
-%edax_loc = type { ptr, i32, i32 }
+%edax_loc = type { ptr, i32, i32, ptr }
 
 @stdout = external global ptr
 @stderr = external global ptr
@@ -69,8 +69,15 @@ declare void @flockfile(ptr)
 declare void @funlockfile(ptr)
 declare i64 @syscall(i64, ...)
 declare i32 @memcmp(ptr, ptr, i64)
+declare i32 @open(ptr, i32, ...)
+declare i64 @read(i32, ptr, i64)
+declare i32 @close(i32)
+declare ptr @strstr(ptr, ptr)
+declare i64 @strtol(ptr, ptr, i32)
+declare void @llvm.debugtrap()
 declare i64 @strlen(ptr)
 declare void @exit(i32) noreturn
+declare void @_exit(i32) noreturn
 declare i32 @snprintf(ptr, i64, ptr, ...)
 declare double @strtod(ptr, ptr)
 declare i32 @strfromf128(ptr, i64, ptr, fp128)
@@ -686,8 +693,11 @@ entry:
   ret ptr %r
 }
 
-; Panics (spec 11): flush stdout, print `file:line:col: panic: message` on stderr, abort.
-define internal void @edax_panic_buf(ptr %loc, ptr %msg) noreturn cold {
+; Panics (spec 11): flush stdout, run the hook, print `file:line:col: panic in function: message`
+; on stderr. Then the process ends - unless a debugger is attached: then this returns, and the
+; generated code stops the debugger at the line that panicked (a debug trap right after the
+; call) and calls @edax_panic_end.
+define internal void @edax_panic_buf(ptr %loc, ptr %msg) cold {
 entry:
   %b = alloca %edax_buf
   store %edax_buf zeroinitializer, ptr %b
@@ -707,7 +717,18 @@ entry:
   %col = load i32, ptr %colp
   %col128 = zext i32 %col to i128
   call void @edax_fmt_u(ptr %b, i128 %col128, i1 false, ptr @edax_plain_spec)
-  call void @edax_buf_put(ptr %b, ptr @edax_panic_prefix, i64 9)
+  call void @edax_buf_put(ptr %b, ptr @edax_panic_prefix, i64 7)
+  %fnp = getelementptr inbounds %edax_loc, ptr %loc, i32 0, i32 3
+  %fn = load ptr, ptr %fnp
+  %has_fn = icmp ne ptr %fn, null
+  br i1 %has_fn, label %named, label %message
+named:
+  %fnlen = call i64 @strlen(ptr %fn)
+  call void @edax_buf_put(ptr %b, ptr @edax_panic_in, i64 4)
+  call void @edax_buf_put(ptr %b, ptr %fn, i64 %fnlen)
+  br label %message
+message:
+  call void @edax_buf_put(ptr %b, ptr @edax_colon_space, i64 2)
   %mdatap = getelementptr inbounds %edax_buf, ptr %msg, i32 0, i32 0
   %mlenp = getelementptr inbounds %edax_buf, ptr %msg, i32 0, i32 1
   %mdata = load ptr, ptr %mdatap
@@ -735,8 +756,55 @@ print:
   %err = load ptr, ptr @stderr
   call i64 @fwrite(ptr %data, i64 1, i64 %blen, ptr %err)
   call i32 @fflush(ptr %err)
+  %stop = call i1 @edax_debugger_attached()
+  br i1 %stop, label %back, label %end
+back:
+  ret void
+end:
   call void @abort()
   unreachable
+}
+
+; The end of every panic. `%stopped`: the generated code has just stopped the debugger at the
+; line that panicked; then the process exits with abort's status (134) instead of raising
+; SIGABRT, so continuing doesn't stop the debugger a second time, inside abort.
+define void @edax_panic_end(i1 %stopped) noreturn cold {
+entry:
+  br i1 %stopped, label %quiet, label %loud
+quiet:
+  call void @_exit(i32 134)
+  unreachable
+loud:
+  call void @abort()
+  unreachable
+}
+
+; Whether a debugger traces this process: `TracerPid` in /proc/self/status is not 0. Read when a
+; panic happens, so a debugger attached later counts.
+define internal i1 @edax_debugger_attached() cold {
+entry:
+  %text = alloca [4096 x i8]
+  %fd = call i32 (ptr, i32, ...) @open(ptr @edax_proc_status, i32 0)
+  %bad = icmp slt i32 %fd, 0
+  br i1 %bad, label %no, label %read
+read:
+  %n = call i64 @read(i32 %fd, ptr %text, i64 4095)
+  call i32 @close(i32 %fd)
+  %empty = icmp slt i64 %n, 1
+  br i1 %empty, label %no, label %scan
+scan:
+  %endp = getelementptr inbounds i8, ptr %text, i64 %n
+  store i8 0, ptr %endp
+  %at = call ptr @strstr(ptr %text, ptr @edax_tracer_pid)
+  %missing = icmp eq ptr %at, null
+  br i1 %missing, label %no, label %number
+number:
+  %digits = getelementptr inbounds i8, ptr %at, i64 10
+  %pid = call i64 @strtol(ptr %digits, ptr null, i32 10)
+  %traced = icmp ne i64 %pid, 0
+  ret i1 %traced
+no:
+  ret i1 false
 }
 
 @edax_panic_hook = internal global ptr null
@@ -749,13 +817,59 @@ entry:
   ret void
 }
 
-define void @edax_panic_str(ptr %loc, ptr %s, i64 %n) noreturn cold {
+; As edax_panic_buf, with a message made from a template: its bytes, where \01 stands for the next
+; value as a signed integer and \02 for it as an unsigned one (at most two values: %a, then %b).
+; One call keeps a check's failure path small in the code that has it.
+define void @edax_panic_values(ptr %loc, ptr %t, i64 %n, i128 %a, i128 %b) cold {
+entry:
+  %buf = alloca %edax_buf
+  store %edax_buf zeroinitializer, ptr %buf
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %step ]
+  %k = phi i32 [ 0, %entry ], [ %k2, %step ]
+  %more = icmp ult i64 %i, %n
+  br i1 %more, label %body, label %done
+body:
+  %cp = getelementptr inbounds i8, ptr %t, i64 %i
+  %c = load i8, ptr %cp
+  %is_signed = icmp eq i8 %c, 1
+  %is_unsigned = icmp eq i8 %c, 2
+  %is_value = or i1 %is_signed, %is_unsigned
+  br i1 %is_value, label %value, label %text
+value:
+  %first = icmp eq i32 %k, 0
+  %v = select i1 %first, i128 %a, i128 %b
+  br i1 %is_signed, label %signed, label %unsigned
+signed:
+  call void @edax_fmt_i(ptr %buf, i128 %v, ptr @edax_plain_spec)
+  br label %counted
+unsigned:
+  call void @edax_fmt_u(ptr %buf, i128 %v, i1 false, ptr @edax_plain_spec)
+  br label %counted
+counted:
+  %k1 = add i32 %k, 1
+  br label %step
+text:
+  call void @edax_buf_put(ptr %buf, ptr %cp, i64 1)
+  br label %step
+step:
+  %k2 = phi i32 [ %k1, %counted ], [ %k, %text ]
+  %next = add i64 %i, 1
+  br label %loop
+done:
+  call void @edax_panic_buf(ptr %loc, ptr %buf)
+  ret void
+}
+
+; As edax_panic_buf, with the message as bytes: returns only when a debugger is attached.
+define void @edax_panic_str(ptr %loc, ptr %s, i64 %n) cold {
 entry:
   %b = alloca %edax_buf
   store %edax_buf zeroinitializer, ptr %b
   call void @edax_buf_put(ptr %b, ptr %s, i64 %n)
   call void @edax_panic_buf(ptr %loc, ptr %b)
-  unreachable
+  ret void
 }
 
 ; main's result must be a valid exit status (spec 04).
@@ -772,6 +886,8 @@ badb:
   call void @edax_fmt_i(ptr %b, i128 %v, ptr @edax_plain_spec)
   call void @edax_buf_put(ptr %b, ptr @edax_not_valid, i64 __NOT_VALID_LEN__)
   call void @edax_panic_buf(ptr %loc, ptr %b)
+  call void @llvm.debugtrap()
+  call void @edax_panic_end(i1 true)
   unreachable
 good:
   %r = trunc i128 %v to i32
@@ -913,7 +1029,11 @@ std::string llvm_runtime_ir() {
     out += cstring_global("edax_qfmt_f", "%%.%df");
     out += bytes_global("edax_newline", "\n");
     out += bytes_global("edax_colon", ":");
-    out += bytes_global("edax_panic_prefix", ": panic: ");
+    out += bytes_global("edax_panic_prefix", ": panic");
+    out += bytes_global("edax_panic_in", " in ");
+    out += bytes_global("edax_colon_space", ": ");
+    out += cstring_global("edax_proc_status", "/proc/self/status");
+    out += cstring_global("edax_tracer_pid", "TracerPid:");
     out += bytes_global("edax_main_returned", "main returned ");
     out += bytes_global("edax_not_valid", ", which is not a valid exit status (0 to 255)");
     std::string body = kBuffers;

@@ -1,0 +1,244 @@
+// editor: UIs from types (std::ui roadmap M3, draft 35 §7). One `vehicle` value is shown in two
+// windows with two forms: the designer's (every group, wide ranges, debug fields, a rule) and the
+// player's (three fields, a maximum that comes from the garage at run time). The third window has
+// tabs: the committed edits (`ui::edit`) with undo and redo (`ui::undo_history`, Ctrl+Z / Ctrl+Y), and
+// a fleet of 10 000 cars in a sortable table.
+//
+//   edaxc run --root=example editor                                   the window (Esc quits)
+//   edaxc run --root=example editor -- --screenshot out.png           one frame into a PNG
+//   edaxc run --root=example editor -- --screenshot out.png --fleet   the same with the fleet's tab
+
+import std;
+
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace wnd = std::windowing;
+namespace gl = std::graphics::opengl;
+
+compile_time std::graphics::api gl_33 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+
+namespace garage {
+    enum side_page : u8 { edits, fleet }
+
+    enum paint : u8 { midnight, racing_red, glacier, lime }
+
+    enum drive : u8 { front, rear, all_wheels }
+
+    struct tuning {
+        @ui::range{ .min = 1.0, .max = 6.0 } @ui::tooltip{ .text = "Final drive: higher accelerates faster" }
+        f32 gear_ratio = 3.4;
+        @ui::range{ .min = 0.5, .max = 1.5 } @ui::group{ .name = "Grip" }
+        f32 front_grip = 1.0;
+        @ui::range{ .min = 0.5, .max = 1.5 } @ui::group{ .name = "Grip" }
+        f32 rear_grip = 0.95;
+        @ui::widget{ .kind = ui::widget_kind::checkbox }
+        bool traction_control = true;
+    }
+
+    struct vehicle {
+        @ui::group{ .name = "Look" }
+        std::string name = default;
+        @ui::group{ .name = "Look" }
+        paint paint = paint::racing_red;
+        @ui::group{ .name = "Look" } @ui::range{ .min = 15.0, .max = 21.0 } @ui::unit{ .text = "in" }
+        i32 rims = 18;
+
+        @ui::range{ .min = 0.0, .max = 300.0 } @ui::unit{ .text = "km/h" }
+        f32 top_speed = 240.0;
+        @ui::unit{ .text = "kg" } @ui::step{ .value = 5.0 }
+        f32 mass = 1350.0;
+        drive drive = drive::rear;
+        tuning tuning = default;
+
+        @ui::hidden
+        u64 debug_id = 4711;
+
+        @ui::action{ .label = "Reset tuning" } @ui::tooltip{ .text = "Back to the factory settings" }
+        void reset_tuning() mut {
+            this.tuning = tuning{};
+        }
+    }
+
+    // A row of the fleet table.
+    struct listing {
+        u32 number = 0;
+        std::string model = default;
+        f32 top_speed = 0.0;
+        drive drive = drive::rear;
+        bool for_sale = false;
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+
+    mut wnd::system sys = match (wnd::system::start()) {
+        std::ok(s) => move s,
+        std::error(e) => {
+            std::eprintln(f"no window system: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
+        .title = "Edax editor - UIs from types",
+        .size  = wnd::size{ .width = 1400, .height = 820 },
+    }, wnd::opengl::config{ .api = gl_33, .samples = 0 }, wnd::opengl::sharing::automatic)) {
+        std::ok(w) => move w,
+        std::error(e) => {
+            std::eprintln(f"no window: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut ui::opengl::renderer<gl_33> renderer = {
+        mut wnd::opengl::frame frame = win.begin_frame();
+        match (ui::opengl::renderer<gl_33>::make(frame)) {
+            std::ok(r) => move r,
+            std::error(e) => {
+                std::eprintln(f"no renderer: {e}");
+                return std::exit_code::failure;
+            },
+        }
+    };
+
+    mut im::context ctx = im::context::create(ui::theme::from_accent(ui::color::hex(0x8b5cf6), ui::brightness::dark));
+    mut garage::vehicle car = garage::vehicle{ .name = std::string::from("Ka") };
+    mut f32 garage_max_ratio = 4.2;
+    mut std::darray<std::string> history = default;
+    mut ui::undo_history<garage::vehicle> undo = ui::undo_history<garage::vehicle>::make(50);
+    mut garage::side_page side = if (args.len() >= 4 && args[3] == "--fleet") { garage::side_page::fleet } else { garage::side_page::edits };
+    mut std::darray<garage::listing> fleet = default;
+    std::array<std::str, 5> models = ["Ka", "Vento", "Sirocco", "Brisa", "Marea"];
+    for (u32 i : 0..10000) {
+        fleet.push(garage::listing{
+            .number = 1000 + i,
+            .model = std::string::from(models[cast<usize>(i % 5)]),
+            .top_speed = 160.0 + cast<f32>(cast::truncate<u16>((i * 7919) % 120)),
+            .drive = if (i % 3 == 0) { garage::drive::front } else if (i % 3 == 1) { garage::drive::rear } else { garage::drive::all_wheels },
+            .for_sale = i % 4 == 0,
+        });
+    }
+    mut std::darray<wnd::event> events = default;
+    mut u32 frame_number = 0;
+    mut bool finished = false;
+    while (!win.should_close()) {
+        sys.poll();
+        win.drain_events(mut events);
+        for (wnd::event e : events) {
+            match (e) {
+                wnd::event::key(k) if k.key == wnd::key::escape && !ctx.wants_keyboard() => win.request_close(),
+                _ => {},
+            }
+        }
+        ui::input in = match (screenshot) {
+            std::some(_) => ui::input{ .cursor = ui::vec2{ .x = -1.0, .y = -1.0 }, .dt = 1.0 },
+            std::none    => ui::input_of(win.input(), events.as_span(), 0.0),
+        };
+        {
+            mut im::frame f = ctx.begin_frame(move in, ui::window_size(win.size()));
+            {
+                mut im::scope w = f.window("Designer", ui::rect{ .x = 24.0, .y = 24.0, .width = 460.0, .height = 760.0 });
+                w.muted(f"Every field, wide ranges, the debug id, a rule on the name.");
+                ui::form<garage::vehicle> designer = ui::form<garage::vehicle>::annotated()
+                    .range("top_speed", 0.0, 400.0)
+                    .range("tuning.gear_ratio", 1.0, 6.0)
+                    .show("debug_id")
+                    .read_only("debug_id")
+                    .rule("name", ui::rules::min_length(3));
+                ui::edit e = w.inspect("vehicle", mut car, designer);
+                if (e.committed) {
+                    history.push(std::format(f"designer: {e.path}"));
+                }
+                undo.record(e, car);
+            }
+            {
+                mut im::scope w = f.window("Player", ui::rect{ .x = 508.0, .y = 24.0, .width = 420.0 });
+                w.muted(f"Three fields, the touch widget set; the gear ratio's maximum comes from the garage.");
+                ui::form<garage::vehicle> player = ui::form<garage::vehicle>::annotated()
+                    .hide_all()
+                    .show("paint")
+                    .show("rims")
+                    .show("tuning.gear_ratio")
+                    .label("tuning.gear_ratio", "Gearing")
+                    .range("tuning.gear_ratio", 2.5, cast<f64>(garage_max_ratio));
+                // The player's screen uses the touch widget set: steppers, bigger targets.
+                mut im::scope touch = w.with_widgets(ui::widget_sets::touch());
+                ui::edit e = touch.inspect("your car", mut car, player);
+                if (e.committed) {
+                    history.push(std::format(f"player: {e.path}"));
+                }
+                undo.record(e, car);
+                touch.separator();
+                _ = touch.slider("Garage level allows", mut garage_max_ratio, 3.0, 6.0);
+            }
+            {
+                mut im::scope w = f.window("Workshop", ui::rect{ .x = 952.0, .y = 24.0, .width = 424.0, .height = 520.0 });
+                _ = w.tabs(mut side);
+                match (side) {
+                    garage::side_page::edits => {
+                        if (history.is_empty()) {
+                            w.muted(f"Change a value: drags count when released, text when Enter is pressed.");
+                        }
+                        usize first = if (history.len() > 8) { history.len() - 8 } else { 0 };
+                        for (usize i : first..history.len()) {
+                            mut im::scope line = w.id(i);
+                            line.text(f"{history[i]}");
+                        }
+                        {
+                            mut im::scope buttons = w.row();
+                            if (buttons.button("Undo") && undo.undo(mut car)) {
+                                history.push(std::string::from("undo"));
+                            }
+                            if (buttons.button("Redo") && undo.redo(mut car)) {
+                                history.push(std::string::from("redo"));
+                            }
+                            buttons.muted(f"{undo.len()} steps back");
+                        }
+                        if (w.undo_shortcuts(mut undo, mut car)) {
+                            history.push(std::string::from("undo / redo (keys)"));
+                        }
+                        w.separator();
+                        _ = w.field(mut car, "top_speed");
+                        _ = w.field(mut car, "tuning.traction_control");
+                    },
+                    garage::side_page::fleet => {
+                        w.muted(f"{fleet.len()} cars; a header sorts, only the rows in view are drawn.");
+                        _ = w.table("fleet", fleet.as_span(), 380.0);
+                    },
+                }
+            }
+            f.finish();
+        }
+        {
+            mut wnd::opengl::frame frame = win.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            ui::color bg = ctx.theme().colors.background;
+            gl::functions<gl_33>& fns = renderer.functions();
+            unsafe {
+                fns.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                fns.glClearColor(bg.r, bg.g, bg.b, 1.0);
+                fns.glClear(gl::GL_COLOR_BUFFER_BIT);
+            }
+            renderer.draw(frame, ctx.draw_data(), ctx.fonts());
+            match (screenshot) {
+                std::some(path) => {
+                    if (frame_number == 3) {
+                        std::image::rgba8 shot = renderer.read_pixels(frame);
+                        std::darray<u8> png = std::image::encode_png(shot);
+                        mut std::file out = std::file::create(path).expect("the screenshot file");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
+                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        finished = true;
+                    }
+                },
+                std::none => {},
+            }
+            frame.present();
+        }
+        if (finished) {
+            win.request_close();
+        }
+        frame_number += 1;
+    }
+    return std::exit_code::success;
+}

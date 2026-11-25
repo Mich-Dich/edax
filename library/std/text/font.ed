@@ -1,0 +1,588 @@
+// The Edax standard library: module std::text::font (see font.edh).
+
+namespace std::text {
+    // ---- big-endian reads ------------------------------------------------------------------------
+
+    private u16 be16(std::darray<u8>& d, usize at) {
+        return (cast<u16>(d[at]) << 8) | cast<u16>(d[at + 1]);
+    }
+
+    private i16 be_i16(std::darray<u8>& d, usize at) {
+        return cast::truncate<i16>(be16(d, at));
+    }
+
+    private u32 be32(std::darray<u8>& d, usize at) {
+        return (cast<u32>(be16(d, at)) << 16) | cast<u32>(be16(d, at + 2));
+    }
+
+    // A whole number of font units (or pixels) as an f32.
+    private f32 units(i32 v) {
+        return cast::round<f32>(cast<f64>(v));
+    }
+
+    private f32 count_f32(u32 v) {
+        return cast::round<f32>(cast<f64>(v));
+    }
+
+    // Table tags as numbers.
+    private compile_time u32 tag_head = 0x68656164;
+    private compile_time u32 tag_hhea = 0x68686561;
+    private compile_time u32 tag_hmtx = 0x686d7478;
+    private compile_time u32 tag_maxp = 0x6d617870;
+    private compile_time u32 tag_loca = 0x6c6f6361;
+    private compile_time u32 tag_glyf = 0x676c7966;
+    private compile_time u32 tag_cmap = 0x636d6170;
+    private compile_time u32 tag_kern = 0x6b65726e;
+
+    // A point of a glyph's contour in font units, before the curves are flattened.
+    private struct raw_point {
+        f32  x = 0.0;
+        f32  y = 0.0;
+        bool on_curve = true;
+    }
+
+    // Contours in font units: points, and the end (exclusive) of each contour.
+    private struct raw_glyph {
+        std::darray<raw_point> points = default;
+        std::darray<u32> ends = default;
+    }
+
+    // A 2 x 2 transform and an offset, applied to a component of a composite glyph.
+    private struct component_transform {
+        f32 xx = 1.0;
+        f32 xy = 0.0;
+        f32 yx = 0.0;
+        f32 yy = 1.0;
+        f32 dx = 0.0;
+        f32 dy = 0.0;
+    }
+
+    // F2Dot14, the fixed-point format of component scales.
+    private f32 f2dot14(std::darray<u8>& d, usize at) {
+        return units(cast<i32>(be_i16(d, at))) / 16384.0;
+    }
+
+    // Distance from `p` to the segment a-b.
+    private f32 segment_distance(f32 px, f32 py, f32 ax, f32 ay, f32 bx, f32 by) {
+        f32 ex = bx - ax;
+        f32 ey = by - ay;
+        f32 length_squared = ex * ex + ey * ey;
+        mut f32 t = 0.0;
+        if (length_squared > 0.0) {
+            t = (((px - ax) * ex + (py - ay) * ey) / length_squared).clamp(0.0, 1.0);
+        }
+        f32 cx = ax + ex * t - px;
+        f32 cy = ay + ey * t - py;
+        return (cx * cx + cy * cy).sqrt();
+    }
+
+    class font {
+    public:
+        static std::result<font, font_error> parse(std::span<u8> data) {
+            mut std::darray<u8> bytes = std::darray<u8>::with_capacity(data.len());
+            for (u8 b : data) {
+                bytes.push(b);
+            }
+            if (bytes.len() < 12) {
+                return std::error(font_error::not_truetype);
+            }
+            u32 version = be32(bytes, 0);
+            if (version != 0x00010000 && version != 0x74727565) {
+                return std::error(font_error::not_truetype);
+            }
+            usize tables = cast<usize>(be16(bytes, 4));
+            if (12 + tables * 16 > bytes.len()) {
+                return std::error(font_error::damaged);
+            }
+            mut font f = font{};
+            for (usize i : 0..tables) {
+                usize record = 12 + i * 16;
+                u32 tag = be32(bytes, record);
+                usize offset = cast<usize>(be32(bytes, record + 8));
+                usize length = cast<usize>(be32(bytes, record + 12));
+                if (offset + length > bytes.len()) {
+                    return std::error(font_error::damaged);
+                }
+                if (tag == tag_head) { f.head = offset; }
+                if (tag == tag_hhea) { f.hhea = offset; }
+                if (tag == tag_hmtx) { f.hmtx = offset; }
+                if (tag == tag_maxp) { f.maxp = offset; }
+                if (tag == tag_loca) { f.loca = offset; }
+                if (tag == tag_glyf) { f.glyf = offset; }
+                if (tag == tag_cmap) { f.cmap = offset; }
+                if (tag == tag_kern) { f.kern = offset; }
+            }
+            if (f.head == 0 || f.hhea == 0 || f.hmtx == 0 || f.maxp == 0 || f.loca == 0 || f.glyf == 0 || f.cmap == 0) {
+                return std::error(font_error::missing_table);
+            }
+            f.units_per_em = units(cast<i32>(be16(bytes, f.head + 18)));
+            f.long_offsets = be_i16(bytes, f.head + 50) != 0;
+            f.ascent = units(cast<i32>(be_i16(bytes, f.hhea + 4)));
+            f.descent = units(cast<i32>(be_i16(bytes, f.hhea + 6)));
+            f.line_gap = units(cast<i32>(be_i16(bytes, f.hhea + 8)));
+            f.horizontal_metrics = be16(bytes, f.hhea + 34);
+            f.glyphs = be16(bytes, f.maxp + 4);
+
+            // The Unicode map: format 12 (all of Unicode) before format 4 (the BMP).
+            usize maps = cast<usize>(be16(bytes, f.cmap + 2));
+            for (usize i : 0..maps) {
+                usize record = f.cmap + 4 + i * 8;
+                u16 platform = be16(bytes, record);
+                u16 encoding = be16(bytes, record + 2);
+                usize at = f.cmap + cast<usize>(be32(bytes, record + 4));
+                bool unicode = platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10));
+                if (!unicode || at + 4 > bytes.len()) {
+                    continue;
+                }
+                u16 format = be16(bytes, at);
+                if (format == 12) {
+                    f.map = at;
+                    f.map_format = 12;
+                } else if (format == 4 && f.map_format != 12) {
+                    f.map = at;
+                    f.map_format = 4;
+                }
+            }
+            if (f.map_format == 0) {
+                return std::error(font_error::no_unicode_map);
+            }
+            f.data = move bytes;
+            return std::ok(move f);
+        }
+
+        static font default_sans() {
+            return font::parse(std::embed("fonts/DMSans-Regular.ttf")).expect("the built-in DM Sans");
+        }
+
+        static font default_sans_semibold() {
+            return font::parse(std::embed("fonts/DMSans-SemiBold.ttf")).expect("the built-in DM Sans SemiBold");
+        }
+
+        static font default_mono() {
+            return font::parse(std::embed("fonts/DejaVuSansMono.ttf")).expect("the built-in DejaVu Sans Mono");
+        }
+
+        u16 glyph_index(char c) {
+            u32 code = cast<u32>(c);
+            std::darray<u8>& d = this.data;
+            if (this.map_format == 12) {
+                u32 groups = be32(d, this.map + 12);
+                mut u32 low = 0;
+                mut u32 high = groups;
+                while (low < high) {
+                    u32 middle = (low + high) / 2;
+                    usize at = this.map + 16 + cast<usize>(middle) * 12;
+                    u32 first = be32(d, at);
+                    u32 last = be32(d, at + 4);
+                    if (code < first) {
+                        high = middle;
+                    } else if (code > last) {
+                        low = middle + 1;
+                    } else {
+                        return cast::truncate<u16>(be32(d, at + 8) + (code - first));
+                    }
+                }
+                return 0;
+            }
+            if (code > 0xffff) {
+                return 0;
+            }
+            u16 c16 = cast::truncate<u16>(code);
+            usize segments_x2 = cast<usize>(be16(d, this.map + 6));
+            usize ends = this.map + 14;
+            usize starts = ends + segments_x2 + 2;
+            usize deltas = starts + segments_x2;
+            usize ranges = deltas + segments_x2;
+            mut usize low = 0;
+            mut usize high = segments_x2 / 2;
+            while (low < high) {                       // the first segment whose end is >= c
+                usize middle = (low + high) / 2;
+                if (be16(d, ends + middle * 2) < c16) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            if (low >= segments_x2 / 2) {
+                return 0;
+            }
+            usize s = low;
+            u16 start = be16(d, starts + s * 2);
+            if (c16 < start) {
+                return 0;
+            }
+            u16 delta = be16(d, deltas + s * 2);
+            u16 range = be16(d, ranges + s * 2);
+            if (range == 0) {
+                return c16 +% delta;
+            }
+            usize at = ranges + s * 2 + cast<usize>(range) + cast<usize>(c16 - start) * 2;
+            u16 g = be16(d, at);
+            if (g == 0) {
+                return 0;
+            }
+            return g +% delta;
+        }
+
+        u16 glyph_count() {
+            return this.glyphs;
+        }
+
+        line_metrics metrics() {
+            return line_metrics{
+                .ascent = this.ascent / this.units_per_em,
+                .descent = this.descent / this.units_per_em,
+                .line_gap = this.line_gap / this.units_per_em,
+            };
+        }
+
+        f32 advance(u16 glyph) {
+            u16 last = this.horizontal_metrics - 1;
+            u16 g = if (glyph > last) { last } else { glyph };
+            return units(cast<i32>(be16(this.data, this.hmtx + cast<usize>(g) * 4))) / this.units_per_em;
+        }
+
+        f32 kerning(u16 left, u16 right) {
+            if (this.kern == 0) {
+                return 0.0;
+            }
+            std::darray<u8>& d = this.data;
+            if (be16(d, this.kern) != 0 || be16(d, this.kern + 2) == 0) {
+                return 0.0;
+            }
+            usize table = this.kern + 4;
+            u16 coverage = be16(d, table + 4);
+            if ((coverage >> 8) != 0 || (coverage & 1) == 0) {      // format 0, horizontal
+                return 0.0;
+            }
+            u32 key = (cast<u32>(left) << 16) | cast<u32>(right);
+            mut usize low = 0;
+            mut usize high = cast<usize>(be16(d, table + 6));
+            while (low < high) {
+                usize middle = (low + high) / 2;
+                usize at = table + 14 + middle * 6;
+                u32 pair = be32(d, at);
+                if (pair < key) {
+                    low = middle + 1;
+                } else if (pair > key) {
+                    high = middle;
+                } else {
+                    return units(cast<i32>(be_i16(d, at + 4))) / this.units_per_em;
+                }
+            }
+            return 0.0;
+        }
+
+        outline outline_of(u16 glyph, f32 pixel_size) {
+            mut raw_glyph raw = default;
+            this.read_glyph(glyph, component_transform{}, 0, mut raw);
+            mut outline result = default;
+            f32 scale = pixel_size / this.units_per_em;
+            mut usize start = 0;
+            for (u32 end_index : raw.ends) {
+                usize end = cast<usize>(end_index);
+                if (end > start + 1) {
+                    flatten_contour(raw, start, end, scale, this.units_per_em, mut result);
+                }
+                start = end;
+            }
+            if (!result.points.is_empty()) {
+                mut glyph_box b = glyph_box{ .x0 = result.points[0].x, .y0 = result.points[0].y, .x1 = result.points[0].x, .y1 = result.points[0].y };
+                for (outline_point p : result.points) {
+                    b.x0 = b.x0.min(p.x);
+                    b.y0 = b.y0.min(p.y);
+                    b.x1 = b.x1.max(p.x);
+                    b.y1 = b.y1.max(p.y);
+                }
+                result.box = b;
+            }
+            return result;
+        }
+
+        distance_field render_distance_field(u16 glyph, f32 pixel_size, f32 spread) {
+            outline o = this.outline_of(glyph, pixel_size);
+            mut distance_field field = distance_field{ .size = pixel_size, .spread = spread };
+            if (o.points.is_empty()) {
+                return field;
+            }
+            // The outline in pixels, y up.
+            mut std::darray<outline_point> p = std::darray<outline_point>::with_capacity(o.points.len());
+            for (outline_point q : o.points) {
+                p.push(outline_point{ .x = q.x * pixel_size, .y = q.y * pixel_size });
+            }
+            f32 x0 = (o.box.x0 * pixel_size - spread).floor();
+            f32 x1 = (o.box.x1 * pixel_size + spread).ceil();
+            f32 y0 = (o.box.y0 * pixel_size - spread).floor();
+            f32 y1 = (o.box.y1 * pixel_size + spread).ceil();
+            u32 width = cast::saturate<u32>(x1 - x0);
+            u32 height = cast::saturate<u32>(y1 - y0);
+            field.width = width;
+            field.height = height;
+            field.left = x0;
+            field.top = -y1;
+            field.pixels.resize(cast<usize>(width) * cast<usize>(height), 0);
+
+            for (u32 row : 0..height) {
+                f32 sy = y1 - count_f32(row) - 0.5;
+                for (u32 column : 0..width) {
+                    f32 sx = x0 + count_f32(column) + 0.5;
+                    mut f32 nearest = 1000000.0;
+                    mut i32 winding = 0;
+                    mut usize start = 0;
+                    for (u32 end_index : o.contour_ends) {
+                        usize end = cast<usize>(end_index);
+                        for (usize i : start..end) {
+                            outline_point a = p[i];
+                            outline_point b = p[if (i + 1 == end) { start } else { i + 1 }];
+                            nearest = nearest.min(segment_distance(sx, sy, a.x, a.y, b.x, b.y));
+                            f32 side = (b.x - a.x) * (sy - a.y) - (sx - a.x) * (b.y - a.y);
+                            if (a.y <= sy) {
+                                if (b.y > sy && side > 0.0) {
+                                    winding += 1;
+                                }
+                            } else if (b.y <= sy && side < 0.0) {
+                                winding -= 1;
+                            }
+                        }
+                        start = end;
+                    }
+                    f32 signed = if (winding != 0) { nearest } else { -nearest };
+                    f32 v = (0.5 + signed / (2.0 * spread)).clamp(0.0, 1.0);
+                    field.pixels[cast<usize>(row) * cast<usize>(width) + cast<usize>(column)] = cast::saturate<u8>(v * 255.0 + 0.5);
+                }
+            }
+            return field;
+        }
+
+    private:
+        // Where the glyph's data is in `glyf`, and its length (0: no outline).
+        (usize, usize) glyph_range(u16 glyph) {
+            if (glyph >= this.glyphs) {
+                return (0, 0);
+            }
+            usize g = cast<usize>(glyph);
+            std::darray<u8>& d = this.data;
+            if (this.long_offsets) {
+                usize from = cast<usize>(be32(d, this.loca + g * 4));
+                usize to = cast<usize>(be32(d, this.loca + g * 4 + 4));
+                return (this.glyf + from, if (to > from) { to - from } else { 0 });
+            }
+            usize from = cast<usize>(be16(d, this.loca + g * 2)) * 2;
+            usize to = cast<usize>(be16(d, this.loca + g * 2 + 2)) * 2;
+            return (this.glyf + from, if (to > from) { to - from } else { 0 });
+        }
+
+        // Appends the contours of `glyph`, transformed, to `out`; composite glyphs recurse.
+        void read_glyph(u16 glyph, component_transform t, u32 depth, mut raw_glyph& out) {
+            (usize at, usize length) = this.glyph_range(glyph);
+            if (length < 10 || depth > 8 || at + length > this.data.len()) {
+                return;
+            }
+            std::darray<u8>& d = this.data;
+            i16 contours = be_i16(d, at);
+            if (contours >= 0) {
+                this.read_simple(at, cast::truncate<usize>(cast::saturate<u16>(contours)), t, mut out);
+                return;
+            }
+            mut usize p = at + 10;
+            mut bool more = true;
+            while (more) {
+                u16 flags = be16(d, p);
+                u16 component = be16(d, p + 2);
+                p += 4;
+                mut f32 dx = 0.0;
+                mut f32 dy = 0.0;
+                if ((flags & 1) != 0) {
+                    dx = units(cast<i32>(be_i16(d, p)));
+                    dy = units(cast<i32>(be_i16(d, p + 2)));
+                    p += 4;
+                } else {
+                    dx = units(cast<i32>(cast::truncate<i8>(d[p])));
+                    dy = units(cast<i32>(cast::truncate<i8>(d[p + 1])));
+                    p += 2;
+                }
+                if ((flags & 2) == 0) {        // anchor points instead of offsets: not supported
+                    dx = 0.0;
+                    dy = 0.0;
+                }
+                mut component_transform c = component_transform{ .dx = dx, .dy = dy };
+                if ((flags & 0x8) != 0) {
+                    f32 s = f2dot14(d, p);
+                    c.xx = s;
+                    c.yy = s;
+                    p += 2;
+                } else if ((flags & 0x40) != 0) {
+                    c.xx = f2dot14(d, p);
+                    c.yy = f2dot14(d, p + 2);
+                    p += 4;
+                } else if ((flags & 0x80) != 0) {
+                    c.xx = f2dot14(d, p);
+                    c.xy = f2dot14(d, p + 2);
+                    c.yx = f2dot14(d, p + 4);
+                    c.yy = f2dot14(d, p + 6);
+                    p += 8;
+                }
+                // The component's transform, then this glyph's.
+                component_transform combined = component_transform{
+                    .xx = t.xx * c.xx + t.yx * c.xy,
+                    .xy = t.xy * c.xx + t.yy * c.xy,
+                    .yx = t.xx * c.yx + t.yx * c.yy,
+                    .yy = t.xy * c.yx + t.yy * c.yy,
+                    .dx = t.xx * c.dx + t.yx * c.dy + t.dx,
+                    .dy = t.xy * c.dx + t.yy * c.dy + t.dy,
+                };
+                this.read_glyph(component, combined, depth + 1, mut out);
+                more = (flags & 0x20) != 0;
+            }
+        }
+
+        // A simple glyph's points: flags with repeats, then x and y as deltas.
+        void read_simple(usize at, usize contours, component_transform t, mut raw_glyph& out) {
+            std::darray<u8>& d = this.data;
+            if (contours == 0) {
+                return;
+            }
+            usize ends = at + 10;
+            usize count = cast<usize>(be16(d, ends + (contours - 1) * 2)) + 1;
+            usize instructions = cast<usize>(be16(d, ends + contours * 2));
+            mut usize p = ends + contours * 2 + 2 + instructions;
+            mut std::darray<u8> flags = std::darray<u8>::with_capacity(count);
+            while (flags.len() < count) {
+                u8 f = d[p];
+                p += 1;
+                flags.push(f);
+                if ((f & 8) != 0) {
+                    usize repeats = cast<usize>(d[p]);
+                    p += 1;
+                    for (usize r : 0..repeats) {
+                        if (flags.len() < count) {
+                            flags.push(f);
+                        }
+                    }
+                }
+            }
+            mut std::darray<i32> xs = std::darray<i32>::with_capacity(count);
+            mut i32 x = 0;
+            for (u8 f : flags) {
+                if ((f & 2) != 0) {
+                    i32 step = cast<i32>(d[p]);
+                    p += 1;
+                    x += if ((f & 16) != 0) { step } else { -step };
+                } else if ((f & 16) == 0) {
+                    x += cast<i32>(be_i16(d, p));
+                    p += 2;
+                }
+                xs.push(x);
+            }
+            mut i32 y = 0;
+            usize first = out.points.len();
+            for (usize i : 0..count) {
+                u8 f = flags[i];
+                if ((f & 4) != 0) {
+                    i32 step = cast<i32>(d[p]);
+                    p += 1;
+                    y += if ((f & 32) != 0) { step } else { -step };
+                } else if ((f & 32) == 0) {
+                    y += cast<i32>(be_i16(d, p));
+                    p += 2;
+                }
+                f32 fx = units(xs[i]);
+                f32 fy = units(y);
+                out.points.push(raw_point{
+                    .x = t.xx * fx + t.yx * fy + t.dx,
+                    .y = t.xy * fx + t.yy * fy + t.dy,
+                    .on_curve = (f & 1) != 0,
+                });
+            }
+            for (usize c : 0..contours) {
+                out.ends.push(cast::truncate<u32>(first + cast<usize>(be16(d, ends + c * 2)) + 1));
+            }
+        }
+
+        std::darray<u8> data = default;
+        usize head = 0;
+        usize hhea = 0;
+        usize hmtx = 0;
+        usize maxp = 0;
+        usize loca = 0;
+        usize glyf = 0;
+        usize cmap = 0;
+        usize kern = 0;
+        usize map = 0;
+        u16   map_format = 0;
+        u16   glyphs = 0;
+        u16   horizontal_metrics = 0;
+        bool  long_offsets = false;
+        f32   units_per_em = 1000.0;
+        f32   ascent = 0.0;
+        f32   descent = 0.0;
+        f32   line_gap = 0.0;
+    }
+
+    // Appends one contour of `raw` (points start..end), with its quadratic curves split into lines,
+    // to `out` in ems.
+    private void flatten_contour(raw_glyph& raw, usize start, usize end, f32 scale, f32 units_per_em, mut outline& out) {
+        usize n = end - start;
+        // Implied on-curve points between two off-curve ones: every curve then ends on a point
+        // that is on the curve.
+        mut std::darray<raw_point> seq = std::darray<raw_point>::with_capacity(n * 2);
+        for (usize i : 0..n) {
+            raw_point p = raw.points[start + i];
+            raw_point q = raw.points[start + (i + 1) % n];
+            seq.push(p);
+            if (!p.on_curve && !q.on_curve) {
+                seq.push(raw_point{ .x = (p.x + q.x) * 0.5, .y = (p.y + q.y) * 0.5, .on_curve = true });
+            }
+        }
+        usize m = seq.len();
+        mut usize s = 0;
+        while (s < m && !seq[s].on_curve) {
+            s += 1;
+        }
+        if (s == m) {
+            return;
+        }
+        f32 inv = 1.0 / units_per_em;
+        usize first_point = out.points.len();
+        mut raw_point current = seq[s];
+        out.points.push(outline_point{ .x = current.x * inv, .y = current.y * inv });
+        mut usize j = 1;
+        while (j <= m) {
+            raw_point p = seq[(s + j) % m];
+            if (p.on_curve) {
+                out.points.push(outline_point{ .x = p.x * inv, .y = p.y * inv });
+                current = p;
+                j += 1;
+            } else {
+                raw_point e = seq[(s + j + 1) % m];
+                curve_to(current.x, current.y, p.x, p.y, e.x, e.y, scale, inv, mut out);
+                current = e;
+                j += 2;
+            }
+        }
+        // The walk ends on the first point again: the contour is closed implicitly.
+        if (out.points.len() > first_point + 1) {
+            _ = out.points.pop();
+        }
+        if (out.points.len() >= first_point + 3) {
+            out.contour_ends.push(cast::truncate<u32>(out.points.len()));
+        } else {
+            out.points.truncate(first_point);
+        }
+    }
+
+    // A quadratic curve from (ax, ay) over (qx, qy) to (bx, by), in font units, as lines in ems.
+    private void curve_to(f32 ax, f32 ay, f32 qx, f32 qy, f32 bx, f32 by, f32 scale, f32 inv, mut outline& out) {
+        f32 length = (((qx - ax) * (qx - ax) + (qy - ay) * (qy - ay)).sqrt() + ((bx - qx) * (bx - qx) + (by - qy) * (by - qy)).sqrt()) * scale;
+        u32 steps = cast::saturate<u32>((length / 3.0).clamp(2.0, 16.0));
+        f32 n = count_f32(steps);
+        for (u32 s : 1..steps + 1) {
+            f32 t = count_f32(s) / n;
+            f32 u = 1.0 - t;
+            out.points.push(outline_point{
+                .x = (u * u * ax + 2.0 * u * t * qx + t * t * bx) * inv,
+                .y = (u * u * ay + 2.0 * u * t * qy + t * t * by) * inv,
+            });
+        }
+    }
+}

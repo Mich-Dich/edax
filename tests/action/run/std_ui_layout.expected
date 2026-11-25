@@ -1,0 +1,8 @@
+exit: 0
+--- stdout
+px 100.0, fill 1 of 4: 71.0 at 124.0, percent 50: 200.0, fit 33.0
+grid: 16.0 152.0 288.0 / 16.0 30.0, cell 128.0
+one wheel step: first line moved up 48.0
+at the end: moved 492.0
+resized window scrolls: true, duplicates 0
+--- stderr

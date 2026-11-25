@@ -17,15 +17,15 @@ public:
 
     virtual f32 speed() abstract;
 
-    void update(f32 dt) mut override { this.x += this.speed() * dt; }
-    std::string describe() override { return std::format(f"{this.name} at {this.x:.1}"); }
-    bool alive() override { return this.health > 0; }
+    void update(f32 dt) mut override { x += speed() * dt; }
+    std::string describe() override { return std::format(f"{name} at {x:.1}"); }
+    bool alive() override { return health > 0; }
 }
 
 class player : actor {
 public:
     bool sprinting = false;
-    f32 speed() override { return if (this.sprinting) { 6.0 } else { 3.0 }; }
+    f32 speed() override { return if (sprinting) { 6.0 } else { 3.0 }; }
 }
 
 class enemy : actor {
@@ -38,8 +38,8 @@ public:
 struct coin : entity {
     u32 value = 1;
     f32 spin = 0.0;
-    void update(f32 dt) mut override { this.spin += 90.0 * dt; }
-    std::string describe() override { return std::format(f"coin worth {this.value}, spun {this.spin:.0} degrees"); }
+    void update(f32 dt) mut override { spin += 90.0 * dt; }
+    std::string describe() override { return std::format(f"coin worth {value}, spun {spin:.0} degrees"); }
 }
 
 // Static dispatch: one copy of this function per type, no table.

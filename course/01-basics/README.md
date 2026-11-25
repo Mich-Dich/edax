@@ -32,7 +32,7 @@ std::darray<u32> v = default;   // the type's default value (empty), instead of 
 | `(double)big_int` | `cast::round<f64>(x)` | `i64`/`usize` to `f64` can round |
 | | `cast::checked<u8>(x)` | `std::option<u8>` |
 
-- **Arithmetic is checked in every build mode**, release included. `u8 b = a + 100;` with `a == 200` stops the program with `panic: integer overflow in '+' (u8)`. If you want wrapping, say so with `+% -% *%`. There are also `std::checked_add` (an `std::option`) and `std::saturating_add`.
+- **Arithmetic is checked in every build mode**, release included. `u8 b = a + 100;` with `a == 200` stops the program with `panic in main: integer overflow in 'a + 100' (u8): 200 + 100`. If you want wrapping, say so with `+% -% *%`. There are also `std::checked_add` (an `std::option`) and `std::saturating_add`.
 - Bit operators bind tighter than comparisons, so `flags & mask == 0` means what it looks like. `bit(4)` replaces `1 << 4`, and its type comes from context.
 - Numbers have methods: `x.min(y)`, `x.clamp(lo, hi)`, `f.sqrt()`. Limits are `i16::max`, `u8::bits`, and so on.
 

@@ -4,4 +4,4 @@ exit: 134
 3 4500 true true
 1s 2 true
 --- stderr
-tests/action/run/time.ed:11:21: panic: instant::since: 'earlier' is later
+tests/action/run/time.ed:11:21: panic in main: instant::since: 'earlier' is later

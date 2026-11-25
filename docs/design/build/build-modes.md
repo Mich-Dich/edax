@@ -33,6 +33,7 @@ interface settings {
     compile_time std::build::bounds          bounds();
     compile_time std::build::run_time_checks run_time_checks();
     compile_time std::build::panic_behavior  panic();
+    compile_time bool                        stop_debugger_on_panic();
     compile_time bool                        link_time_optimization();
     compile_time bool                        allow_undefined_behavior();
     compile_time std::build::float_determinism float_determinism();
@@ -66,6 +67,7 @@ public:
 | `bounds()` | `panic`, **`unchecked`** | `panic` | `panic` |
 | `run_time_checks()` | `all`, `gated_only`, **`none`** | `all` | `all` |
 | `panic()` | `abort`, `trap` (CPU trap instruction, no message) | `abort` | `abort` |
+| `stop_debugger_on_panic()` | `true`, `false` | `true` | `true` |
 | `link_time_optimization()` | `bool` | `false` | `false` |
 | `allow_undefined_behavior()` | `bool` | `false` | `false` |
 | `float_determinism()` | `relaxed`, `strict` | `relaxed` | `relaxed` |
@@ -126,7 +128,8 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
   - The standard library's files point at `library/std` of the tree edaxc was built from (when it still exists, otherwise at `/<std>/...`).
   - The prologue has no line, as in C/C++ at `-O0`: stepping into a function stops at its first statement with the parameters in place.
   - Building a value runs its type's field defaults in place (`default`, or fields left out of `T{...}`). Debug info describes that code as an inlined call of `<type>::default` located at the field declarations, the way C++ inlines a constructor, so Step Into walks `std::darray<T>`'s fields in `std.ed`.
-- `overflow()`, `shifts()`, `panic()`: how `+ - *`, `<< >> bit(n)` and panics are compiled.
+- `overflow()`, `shifts()`, `panic()`: how `+ - *`, `<< >> bit(n)` and panics are compiled. With `trap`, the trap instruction is at the line that panicked.
+- `stop_debugger_on_panic()`: with a debugger attached, a panic stops it at the line that panicked, after printing the message (see [Error Handling](../language/errors/error-handling.md)). `false` leaves the panic to end the process with `SIGABRT`, for a debugging setup that catches that instead. Without a debugger the setting changes nothing; it costs one trap instruction per check, on the failure path.
 - `bounds()`: the standard library's index checks are written as `if compile_time (std::build::current_mode().bounds() == std::build::bounds::panic) { run_time check ... }`.
 - `run_time_checks()`: applies to the program's own `run_time` checks; the library's index checks follow `bounds()`.
 - `link_time_optimization()`: a program's Edax code is optimized as a whole (one LLVM module, or ThinLTO for `development`, see "The object cache"); with `true`, the C/C++ targets it links are compiled with `-flto` (fat objects) and the program is linked with `-flto`, so C code is optimized together at link time.

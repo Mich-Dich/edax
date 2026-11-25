@@ -1,0 +1,420 @@
+// ui_widgets: std::ui::immediate's widgets (roadmap M2), and how their look is changed: the
+// "Style" window changes the theme's tokens (corners, knob shape, checkbox or toggle for bools,
+// tick shape, light or dark, accent) and swaps the skin's painters for the program's own.
+//
+//   edaxc run --root=example ui_widgets                                         the window (Esc quits)
+//   edaxc run --root=example ui_widgets -- --screenshot out.png                 one frame into a PNG
+//   edaxc run --root=example ui_widgets -- --screenshot out.png --custom        the same, restyled
+//
+// "Rating" is a widget of the program's own (§11): written with make_id, allocate, interact,
+// animate and painter, and called like the library's widgets. The "Scene" window has a tree, a
+// text field, numbers, combos and tooltips, and a compact styled card. Tab moves the focus.
+
+import std;
+
+namespace ui = std::ui;
+namespace im = std::ui::immediate;
+namespace wnd = std::windowing;
+namespace gl = std::graphics::opengl;
+
+compile_time std::graphics::api gl_33 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+
+// The program's own widgets, called like the library's: `w.rating("Fun", mut stars)`.
+interface showcase_widgets {
+    // Five stars; a click sets `stars`. True in the frame it changed.
+    bool rating(std::str label, mut u32& stars, implicit compile_time std::call_site where) mut;
+}
+
+implement showcase_widgets for im::scope {
+    bool rating(std::str label, mut u32& stars, implicit compile_time std::call_site where) mut override {
+        if (!this.open()) {
+            return false;
+        }
+        ui::theme t = this.theme();
+        f32 height = t.controls.row_height * t.density;
+        f32 star_size = 22.0 * t.density;
+        ui::rect r = this.allocate(ui::vec2{ .x = this.available_width(), .y = height });
+        ui::text_style style = t.style(ui::text_role::body, t.colors.text);
+        f32 first = r.right() - 5.0 * star_size;
+        mut bool changed = false;
+        mut u32 hovered = 0;
+        for (u32 i : 0..5) {
+            u64 star_id = std::hash_combine(this.make_id(label, where), cast<u64>(i));
+            ui::rect cell = ui::rect{ .x = first + cast<f32>(cast::truncate<u16>(i)) * star_size, .y = r.y, .width = star_size, .height = height };
+            im::response resp = this.interact(star_id, cell);
+            if (resp.state.hovered) {
+                hovered = i + 1;
+            }
+            if (resp.clicked) {
+                stars = i + 1;
+                changed = true;
+            }
+        }
+        mut ui::painter p = this.painter();
+        _ = p.text(ui::vec2{ .x = r.x, .y = r.y + ((height - p.faces.line_height(style)) * 0.5).round() }, label, style);
+        for (u32 i : 0..5) {
+            bool lit = i < stars;
+            bool preview = i < hovered;
+            ui::vec2 center = ui::vec2{ .x = first + (cast<f32>(cast::truncate<u16>(i)) + 0.5) * star_size, .y = r.y + height * 0.5 };
+            ui::color c = if (lit) { t.colors.warning } else if (preview) { t.colors.warning.with_alpha(0.45) } else { t.colors.border };
+            p.list.star(center, star_size * 0.45, star_size * 0.2, 5, 0.0, c);
+        }
+        return changed;
+    }
+}
+
+namespace showcase {
+    // What the widgets edit.
+    struct state {
+        bool  vsync = true;
+        bool  shadows = false;
+        bool  music = true;
+        f32   volume = 0.7;
+        f32   speed = 6.5;
+        i32   lives = 3;
+        u32   stars = 4;
+        u32   saves = 0;
+        f32   loading = 0.0;
+        std::string name = std::string::from("Knight");
+        f32   gravity = 9.81;
+        i32   spawn = 12;
+        usize camera = 1;
+        ui::knob_shape marker = ui::knob_shape::diamond;
+        bool  cast_shadows = true;
+        bool  static_mesh = false;
+    }
+
+    // Where the scripted screenshot clicks.
+    struct places {
+        ui::rect camera = default;
+    }
+
+    // The choices of the "Style" window.
+    struct style_choice {
+        bool dark = true;
+        // 0 rounded, 1 subtle, 2 sharp.
+        u32  corners = 0;
+        ui::knob_shape knob = ui::knob_shape::circle;
+        ui::bool_widget boolean = ui::bool_widget::toggle;
+        ui::tick_shape mark = ui::tick_shape::tick;
+        // 0 blue, 1 violet, 2 green, 3 orange.
+        u32  accent = 0;
+        bool own_painters = false;
+    }
+
+    ui::theme theme_of(style_choice& s) {
+        std::array<u32, 4> accents = [0x4f7cff, 0x8b5cf6, 0x10b981, 0xf97316];
+        mut ui::theme t = ui::theme::from_accent(ui::color::hex(accents[cast<usize>(s.accent)]), if (s.dark) { ui::brightness::dark } else { ui::brightness::light });
+        t.radius = if (s.corners == 1) { ui::radius_scale::subtle() } else if (s.corners == 2) { ui::radius_scale::sharp() } else { ui::radius_scale::rounded() };
+        t.controls.slider.knob = s.knob;
+        t.controls.boolean = s.boolean;
+        t.controls.checkbox.mark = s.mark;
+        t.controls.window.separate_title = s.corners == 2;
+        return t;
+    }
+
+    // A painter of the program's own for buttons: a hard offset shadow and a thick outline.
+    void blocky_button(mut ui::painter& p, ui::button_part& b) {
+        ui::palette c = p.tokens.colors;
+        f32 shift = 3.0 * (1.0 - b.state.press);
+        ui::rect r = b.bounds.translated(ui::vec2{ .x = 3.0 - shift, .y = 3.0 - shift });
+        ui::color ink = if (p.tokens.mode == ui::brightness::dark) { ui::color::black() } else { c.text };
+        ui::color fill = if (b.kind == ui::variant::primary) { c.warning } else if (b.kind == ui::variant::danger) { c.danger } else { c.surface_raised };
+        p.list.fill(r.translated(ui::vec2{ .x = shift, .y = shift }), ink, 0.0);
+        p.list.fill(r, fill.mix(ui::color::white(), 0.15 * b.state.hover), 0.0);
+        p.list.stroke(r, ink, 0.0, 2.0);
+        ui::color label = if (b.kind == ui::variant::primary) { ui::color::black() } else { c.text };
+        p.centered_text(r, b.label, p.tokens.style(ui::text_role::label, label));
+    }
+
+    // A painter of the program's own for slider knobs: a star with a soft glow.
+    void star_knob(mut ui::painter& p, ui::slider_part& k) {
+        ui::vec2 at = k.knob_center();
+        f32 glow = 4.0 * k.state.hover;
+        ui::color gold = p.tokens.colors.warning;
+        p.list.circle(at, 10.0 + glow, gold.with_alpha(0.18));
+        ui::paint::knob(mut p, ui::knob_shape::star, at, 20.0, gold, gold.lighter(-0.2));
+    }
+
+    // A row of choice buttons; the chosen one is primary. Returns the index clicked, or `current`.
+    u32 choices(mut im::scope& w, std::span<std::str> names, u32 current) {
+        mut u32 picked = current;
+        // Called from one place for several rows: the first name keeps their ids apart.
+        mut im::scope keyed = w.id(names[0]);
+        mut im::scope bar = keyed.row();
+        for (usize i : 0..names.len()) {
+            u32 n = cast::truncate<u32>(i);
+            mut im::scope item = bar.id(n);
+            if (item.button(names[i], if (n == current) { ui::variant::primary } else { ui::variant::ghost })) {
+                picked = n;
+            }
+        }
+        return picked;
+    }
+
+    // The windows of one frame (the caller finishes it). Returns true when the style changed.
+    bool build(mut im::frame& f, mut state& s, mut style_choice& style, mut places& at) {
+        mut bool restyled = false;
+        {
+            mut im::scope w = f.window("Widgets", ui::rect{ .x = 32.0, .y = 32.0, .width = 420.0 });
+            w.muted(f"Every widget below is drawn by the skin's painters with the theme's tokens.");
+            {
+                mut im::scope video = w.section("Video", true);
+                _ = video.boolean("Vertical sync", mut s.vsync);
+                _ = video.boolean("Soft shadows", mut s.shadows);
+                _ = video.slider("Speed", mut s.speed, 0.0, 10.0);
+                _ = video.slider("Lives", mut s.lives, 0, 9);
+            }
+            {
+                mut im::scope audio = w.section("Audio", true);
+                _ = audio.checkbox("Music", mut s.music);
+                _ = audio.slider("Volume", mut s.volume, 0.0, 1.0);
+            }
+            {
+                mut im::scope card = w.card();
+                card.text(f"Saved {s.saves} times");
+                card.progress(s.loading);
+                _ = card.rating("Fun", mut s.stars);
+            }
+            w.separator();
+            {
+                mut im::scope actions = w.grid(3);
+                std::array<std::str, 6> names = ["Spawn", "Reset", "Bake", "Profile", "Export", "Share"];
+                for (usize i : 0..6) {
+                    mut im::scope cell = actions.id(i);
+                    _ = cell.width(ui::fill(1.0)).button(names[i], ui::variant::outline);
+                }
+            }
+            {
+                mut im::scope buttons = w.row();
+                if (buttons.width(ui::fill(1.0)).button("Save", ui::variant::primary)) {
+                    s.saves += 1;
+                    s.loading = 0.0;
+                }
+                buttons.tooltip("Saves the settings");
+                _ = buttons.button("Cancel");
+                _ = buttons.button("Delete", ui::variant::danger);
+                buttons.tooltip("Can't be undone");
+            }
+        }
+        {
+            mut im::scope w = f.window("Scene", ui::rect{ .x = 968.0, .y = 32.0, .width = 400.0 });
+            {
+                mut im::scope list = w.scroll(176.0);
+                mut im::scope world = list.tree("World", true);
+                {
+                    mut im::scope player = world.tree("Player", true);
+                    player.muted(f"mesh: knight.glb");
+                    player.muted(f"script: player_controller");
+                }
+                {
+                    mut im::scope lights = world.tree("Lights", false);
+                    lights.muted(f"sun, fill, rim");
+                }
+                {
+                    mut im::scope props = world.tree("Props", true);
+                    for (u32 i : 0..12) {
+                        mut im::scope prop = props.id(i);
+                        prop.muted(f"crate_{i}");
+                    }
+                }
+            }
+            w.separator();
+            w.heading("Selected");
+            _ = w.input_text("Name", mut s.name);
+            w.tooltip("Click or Tab to type; Ctrl+Z undoes");
+            _ = w.number("Gravity", mut s.gravity, 0.0, 20.0);
+            w.tooltip("Drag sideways, or click to type a value");
+            _ = w.drag("Spawn count", mut s.spawn, 0.25);
+            at.camera = w.allocate(ui::vec2{});
+            std::array<std::str, 4> cameras = ["Orbit", "Follow", "First person", "Cinematic"];
+            _ = w.combo("Camera", mut s.camera, cameras.as_span());
+            _ = w.choice("Marker", mut s.marker);
+            {
+                mut ui::theme compact = w.theme();
+                compact.density = 0.85;
+                compact.controls.boolean = ui::bool_widget::checkbox;
+                mut im::scope small = w.styled(compact);
+                mut im::scope flags = small.card();
+                flags.muted(f"A styled scope: denser, bools as checkboxes");
+                _ = flags.boolean("Cast shadows", mut s.cast_shadows);
+                _ = flags.boolean("Static", mut s.static_mesh);
+            }
+        }
+        {
+            mut im::scope w = f.window("Style", ui::rect{ .x = 500.0, .y = 32.0, .width = 436.0 });
+            w.heading("Tokens");
+            w.muted(f"Corners");
+            std::array<std::str, 3> corners = ["Rounded", "Subtle", "Sharp"];
+            u32 corner = choices(mut w, corners.as_span(), style.corners);
+            w.muted(f"Slider knob");
+            std::array<std::str, 5> knobs = ["Circle", "Square", "Diamond", "Star", "Bar"];
+            u32 knob = choices(mut w, knobs.as_span(), cast<u32>(cast<u8>(style.knob)));
+            w.muted(f"Bools as");
+            std::array<std::str, 2> bools = ["Toggle", "Checkbox"];
+            u32 boolean = choices(mut w, bools.as_span(), cast<u32>(cast<u8>(style.boolean)));
+            w.muted(f"Checkbox mark");
+            std::array<std::str, 4> marks = ["Tick", "Cross", "Square", "Dot"];
+            u32 mark = choices(mut w, marks.as_span(), cast<u32>(cast<u8>(style.mark)));
+            w.muted(f"Accent");
+            std::array<std::str, 4> accents = ["Blue", "Violet", "Green", "Orange"];
+            u32 accent = choices(mut w, accents.as_span(), style.accent);
+            mut bool dark = style.dark;
+            _ = w.toggle("Dark", mut dark);
+            w.separator();
+            w.heading("Skin");
+            mut bool own = style.own_painters;
+            _ = w.toggle("Own painters (blocky buttons, star knobs)", mut own);
+            if (corner != style.corners || knob != cast<u32>(cast<u8>(style.knob)) || boolean != cast<u32>(cast<u8>(style.boolean)) ||
+                mark != cast<u32>(cast<u8>(style.mark)) || accent != style.accent || dark != style.dark || own != style.own_painters) {
+                style.corners = corner;
+                style.knob = knob_of(knob);
+                style.boolean = if (boolean == 1) { ui::bool_widget::checkbox } else { ui::bool_widget::toggle };
+                style.mark = mark_of(mark);
+                style.accent = accent;
+                style.dark = dark;
+                style.own_painters = own;
+                restyled = true;
+            }
+        }
+        return restyled;
+    }
+
+    ui::knob_shape knob_of(u32 n) {
+        return if (n == 1) { ui::knob_shape::square } else if (n == 2) { ui::knob_shape::diamond } else if (n == 3) { ui::knob_shape::star }
+               else if (n == 4) { ui::knob_shape::bar } else { ui::knob_shape::circle };
+    }
+
+    ui::tick_shape mark_of(u32 n) {
+        return if (n == 1) { ui::tick_shape::cross } else if (n == 2) { ui::tick_shape::square } else if (n == 3) { ui::tick_shape::dot } else { ui::tick_shape::tick };
+    }
+
+    // Applies `style` to the context: the theme (faded unless `at_once`) and the skin.
+    void apply(mut im::context& ctx, style_choice& style, bool at_once) {
+        ui::theme t = theme_of(style);
+        if (at_once) {
+            ctx.set_theme_now(t);
+        } else {
+            ctx.set_theme(t);
+        }
+        mut ui::skin& skin = ctx.skin();
+        skin = ui::skin::standard();
+        if (style.own_painters) {
+            skin.button = [](mut ui::painter& p, ui::button_part& b) { blocky_button(mut p, b); };
+            skin.slider_knob = [](mut ui::painter& p, ui::slider_part& k) { star_knob(mut p, k); };
+        }
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    bool custom = args.len() >= 4 && args[3] == "--custom";
+
+    mut wnd::system sys = match (wnd::system::start()) {
+        std::ok(s) => move s,
+        std::error(e) => {
+            std::eprintln(f"no window system: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
+        .title = "Edax UI widgets",
+        .size  = wnd::size{ .width = 1400, .height = 760 },
+    }, wnd::opengl::config{ .api = gl_33, .samples = 0 }, wnd::opengl::sharing::automatic)) {
+        std::ok(w) => move w,
+        std::error(e) => {
+            std::eprintln(f"no window: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut ui::opengl::renderer<gl_33> renderer = {
+        mut wnd::opengl::frame frame = win.begin_frame();
+        match (ui::opengl::renderer<gl_33>::make(frame)) {
+            std::ok(r) => move r,
+            std::error(e) => {
+                std::eprintln(f"no renderer: {e}");
+                return std::exit_code::failure;
+            },
+        }
+    };
+
+    mut showcase::state s = default;
+    mut showcase::style_choice style = default;
+    if (custom) {
+        style = showcase::style_choice{ .dark = false, .corners = 2, .knob = ui::knob_shape::star, .boolean = ui::bool_widget::checkbox,
+                                        .mark = ui::tick_shape::cross, .accent = 1, .own_painters = true };
+    }
+    mut im::context ctx = im::context::create(showcase::theme_of(style));
+    showcase::apply(mut ctx, style, true);
+
+    mut std::darray<wnd::event> events = default;
+    mut showcase::places at = default;
+    mut u32 frame_number = 0;
+    mut bool finished = false;
+    while (!win.should_close()) {
+        sys.poll();
+        win.drain_events(mut events);
+        for (wnd::event e : events) {
+            match (e) {
+                wnd::event::key(k) if k.key == wnd::key::escape && !ctx.wants_keyboard() => win.request_close(),
+                _ => {},
+            }
+        }
+        // The screenshot clicks the camera combo open in frames 3 and 4.
+        ui::vec2 on_camera = ui::vec2{ .x = at.camera.x + 300.0, .y = at.camera.y + 15.0 };
+        ui::input in = match (screenshot) {
+            std::some(_) => ui::input{
+                .cursor = if (frame_number >= 3) { on_camera } else { ui::vec2{ .x = -1.0, .y = -1.0 } },
+                .mouse_down = frame_number == 3, .mouse_pressed = frame_number == 3, .mouse_released = frame_number == 4,
+                .dt = 1.0,
+            },
+            std::none    => ui::input_of(win.input(), events.as_span(), 0.0),
+        };
+        s.loading = (s.loading + 0.004).min(1.0);
+        if (screenshot.is_some()) {
+            s.loading = 0.62;
+        }
+        bool restyled = {
+            mut im::frame f = ctx.begin_frame(move in, ui::window_size(win.framebuffer_size()));
+            bool changed = showcase::build(mut f, mut s, mut style, mut at);
+            f.finish();
+            changed
+        };
+        if (restyled) {
+            showcase::apply(mut ctx, style, false);
+        }
+        {
+            mut wnd::opengl::frame frame = win.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            ui::color bg = ctx.theme().colors.background;
+            gl::functions<gl_33>& f = renderer.functions();
+            unsafe {
+                f.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                f.glClearColor(bg.r, bg.g, bg.b, 1.0);
+                f.glClear(gl::GL_COLOR_BUFFER_BIT);
+            }
+            renderer.draw(frame, ctx.draw_data(), ctx.fonts());
+            match (screenshot) {
+                std::some(path) => {
+                    // Windows know their heights from the first frame; the combo opens in frame 4.
+                    if (frame_number == 6) {
+                        std::image::rgba8 shot = renderer.read_pixels(frame);
+                        std::darray<u8> png = std::image::encode_png(shot);
+                        mut std::file out = std::file::create(path).expect("the screenshot file");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
+                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        finished = true;
+                    }
+                },
+                std::none => {},
+            }
+            frame.present();
+        }
+        if (finished) {
+            win.request_close();
+        }
+        frame_number += 1;
+    }
+    return std::exit_code::success;
+}

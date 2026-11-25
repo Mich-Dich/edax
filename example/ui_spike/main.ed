@@ -1,0 +1,236 @@
+// ui_spike: the M0 spike of std::ui, in a window.
+//
+//   edaxc run --root=example ui_spike                          the window
+//   edaxc run --root=example ui_spike -- --screenshot out.ppm  scripted input, then a screenshot
+//
+// A "game" (a box that moves on its own) with two UI windows over it. The windows are dragged by
+// their title bars; the UI takes the mouse only where its windows are.
+
+import std;
+import ui_spike::ui;
+import ui_spike::renderer;
+
+namespace wnd = std::windowing;
+namespace gl = std::graphics::opengl;
+
+namespace demo {
+    enum weapon : u8 {
+        sword,
+        bow,
+        staff,
+    }
+
+    struct movement {
+        @ui::range{ .min = 0.0, .max = 20.0 }
+        f32 speed = 5.0;
+        @ui::range{ .min = 0.0, .max = 360.0 }
+        f32 heading = 90.0;
+        bool can_jump = true;
+    }
+
+    struct player {
+        @ui::read_only
+        u32      health = 72;
+        movement move = default;
+        weapon   equipped = weapon::sword;
+        @ui::hidden
+        u64      cache_key = 0;
+    }
+
+    struct enemy {
+        u32 id = 0;
+        u32 health = 100;
+    }
+
+    struct game {
+        f32  box_x = 500.0;
+        f32  box_speed = 2.0;
+        bool paused = false;
+        player hero = default;
+        std::darray<enemy> enemies = default;
+        u32  resets = 0;
+    }
+
+    // The scripted input of the screenshot mode: frame number → input.
+    ui::input scripted(u32 frame) {
+        ui::vec2 enemies_node = ui::vec2{ .x = 60.0, .y = 180.0 };
+        ui::vec2 player_node = ui::vec2{ .x = 440.0, .y = 96.0 };
+        if (frame == 5)  { return ui::input{ .cursor = enemies_node, .mouse_down = true, .mouse_pressed = true }; }
+        if (frame == 6)  { return ui::input{ .cursor = enemies_node, .mouse_released = true }; }
+        if (frame == 8)  { return ui::input{ .cursor = player_node, .mouse_down = true, .mouse_pressed = true }; }
+        if (frame == 9)  { return ui::input{ .cursor = player_node, .mouse_released = true }; }
+        if (frame >= 20 && frame <= 40) {          // drag the speed slider from 5 to about 11
+            f32 x = 540.0 + cast<f32>(cast::truncate<u16>(frame - 20)) * 3.0;
+            return ui::input{ .cursor = ui::vec2{ .x = x, .y = 68.0 }, .mouse_down = true, .mouse_pressed = frame == 20 };
+        }
+        if (frame == 41) { return ui::input{ .cursor = ui::vec2{ .x = 600.0, .y = 68.0 }, .mouse_released = true }; }
+        return ui::input{ .cursor = ui::vec2{ .x = 900.0, .y = 620.0 } };
+    }
+
+    // The UI of one frame.
+    void build_ui(mut ui::frame& f, mut game& g, u32 fps) {
+        {
+            mut ui::scope w = f.window("Stats", ui::vec2{ .x = 24.0, .y = 24.0 });
+            w.text(f"{fps} fps, {g.enemies.len()} enemies");
+            _ = w.slider("box speed", mut g.box_speed, 0.0, 10.0);
+            _ = w.checkbox("paused", mut g.paused);
+            if (w.button("Reset game")) {
+                g.box_x = 500.0;
+                g.resets += 1;
+            }
+            {
+                mut ui::scope list = w.tree("enemies");
+                for (mut enemy& e : g.enemies) {
+                    mut ui::scope item = list.id(e.id);
+                    item.text(f"enemy {e.id}: {e.health} hp");
+                    if (item.button("kill")) {
+                        e.health = 0;
+                    }
+                }
+            }
+            w.text(f"resets: {g.resets}");
+        }
+        {
+            mut ui::scope w = f.window("Player", ui::vec2{ .x = 400.0, .y = 24.0 });
+            _ = w.field(mut g.hero.move, "speed");
+            _ = w.inspect("player", mut g.hero);
+        }
+    }
+
+    // Writes RGBA `pixels` as a binary PPM.
+    void write_ppm(std::str path, std::darray<u8>& pixels, u32 width, u32 height) {
+        mut std::file out = match (std::file::create(path)) {
+            std::ok(file) => move file,
+            std::error(e) => {
+                std::eprintln(f"can't write {path}: {e}");
+                return;
+            },
+        };
+        _ = out.write(std::format(f"P6\n{width} {height}\n255\n").as_str());
+        mut std::darray<u8> rgb = std::darray<u8>::with_capacity(pixels.len() / 4 * 3);
+        for (usize i : 0..pixels.len() / 4) {
+            rgb.push(pixels[i * 4]);
+            rgb.push(pixels[i * 4 + 1]);
+            rgb.push(pixels[i * 4 + 2]);
+        }
+        _ = out.write(unsafe { std::raw::str_from(&rgb[0], rgb.len()) });
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+
+    mut wnd::system sys = match (wnd::system::start()) {
+        std::ok(s) => move s,
+        std::error(e) => {
+            std::eprintln(f"no window system: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
+        .title = "Edax UI spike",
+        .size  = wnd::size{ .width = 1000, .height = 640 },
+    }, wnd::opengl::config{ .api = ui::gl_33 }, wnd::opengl::sharing::automatic)) {
+        std::ok(w) => move w,
+        std::error(e) => {
+            std::eprintln(f"no window: {e}");
+            return std::exit_code::failure;
+        },
+    };
+
+    mut ui::renderer renderer = {
+        mut wnd::opengl::frame frame = win.begin_frame();
+        match (ui::renderer::make(frame)) {
+            std::ok(r) => move r,
+            std::error(e) => {
+                std::eprintln(f"no renderer: {e}");
+                return std::exit_code::failure;
+            },
+        }
+    };
+
+    mut ui::context ctx = ui::context::make();
+    mut demo::game g = default;
+    for (u32 i : 0..5) {
+        g.enemies.push(demo::enemy{ .id = 100 + i, .health = 100 - i * 10 });
+    }
+    mut std::darray<wnd::event> events = default;
+    mut u32 frame_number = 0;
+    mut bool finished = false;
+    mut u32 fps = 0;
+    mut u32 frames = 0;
+    mut std::time::instant second = std::time::instant::now();
+
+    while (!win.should_close()) {
+        sys.poll();
+        win.drain_events(mut events);
+        wnd::route(mut events, mut ctx, win.input());
+        for (wnd::event e : events) {
+            match (e) {
+                wnd::event::key(k) if k.key == wnd::key::escape => win.request_close(),
+                _ => {},
+            }
+        }
+
+        ui::input in = match (screenshot) {
+            std::some(_) => demo::scripted(frame_number),
+            std::none    => ui::input::from_window(win.input()),
+        };
+        wnd::size fb = win.framebuffer_size();
+        {
+            mut ui::frame f = ctx.begin_frame(in, ui::vec2{ .x = cast::round<f32>(cast<f64>(fb.width)), .y = cast::round<f32>(cast<f64>(fb.height)) });
+            demo::build_ui(mut f, mut g, fps);
+            f.finish();
+        }
+        if (ctx.duplicate_ids() > 0) {
+            std::eprintln(f"warning: {ctx.duplicate_ids()} duplicate widget ids");
+        }
+
+        if (!g.paused) {
+            g.box_x += g.box_speed;
+            if (g.box_x > 900.0) {
+                g.box_x = 100.0;
+            }
+        }
+
+        {
+            mut wnd::opengl::frame frame = win.begin_frame();
+            gl::functions<ui::gl_33>& f = renderer.functions();
+            unsafe {
+                f.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                f.glClearColor(0.11, 0.15, 0.24, 1.0);
+                f.glClear(gl::GL_COLOR_BUFFER_BIT);
+                f.glEnable(gl::GL_SCISSOR_TEST);
+                f.glScissor(cast::saturate<i32>(g.box_x), 120, 80, 80);
+                f.glClearColor(0.95, 0.65, 0.2, 1.0);
+                f.glClear(gl::GL_COLOR_BUFFER_BIT);
+                f.glDisable(gl::GL_SCISSOR_TEST);
+            }
+            renderer.draw(frame, ctx.draw_data());
+            match (screenshot) {
+                std::some(path) => {
+                    if (frame_number == 60) {
+                        std::darray<u8> pixels = renderer.read_pixels(frame);
+                        demo::write_ppm(path, pixels, fb.width, fb.height);
+                        std::println(f"speed {g.hero.move.speed}, enemies open, box speed {g.box_speed}");
+                        finished = true;
+                    }
+                },
+                std::none => {},
+            }
+            frame.present();
+        }
+        if (finished) {
+            win.request_close();
+        }
+
+        frame_number += 1;
+        frames += 1;
+        if (second.elapsed() >= std::time::duration::seconds(1)) {
+            fps = frames;
+            frames = 0;
+            second = std::time::instant::now();
+        }
+    }
+    return std::exit_code::success;
+}

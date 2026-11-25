@@ -28,11 +28,11 @@ struct employee {
     f64         salary = 0.0;
 
     bool is_senior() {
-        return this.age >= 30;
+        return age >= 30;
     }
 
     void give_raise(f64 percent) mut {
-        this.salary *= 1.0 + percent / 100.0;
+        salary *= 1.0 + percent / 100.0;
     }
 }
 

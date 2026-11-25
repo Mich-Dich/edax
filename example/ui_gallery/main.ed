@@ -1,0 +1,291 @@
+// ui_gallery: what std::ui's core draws (roadmap M1): themes made from one accent colour, text in
+// the theme's roles, rounded boxes, borders, shadows, gradients, circles, lines and images, all
+// through one draw list and one shader.
+//
+//   edaxc run --root=example ui_gallery                            the window (Esc quits)
+//   edaxc run --root=example ui_gallery -- --screenshot out.png    one frame into a PNG
+//
+// The same card is drawn with the dark and the light theme of one accent; the right half fades
+// between them over time (ui::theme::mix). There is no interaction yet: widgets come with the
+// immediate-mode layer (M2).
+
+import std;
+
+namespace ui = std::ui;
+namespace wnd = std::windowing;
+namespace gl = std::graphics::opengl;
+
+compile_time std::graphics::api gl_33 = std::graphics::api{
+    .name = std::graphics::api_name::opengl_core, .version = std::version{ .major = 3, .minor = 3 } };
+
+namespace gallery {
+    // The pictures the card shows, as textures.
+    struct pictures {
+        ui::texture landscape = default;
+        ui::texture checker = default;
+    }
+
+    // A filled pill with a label centred in it.
+    void pill(mut ui::draw_list& list, mut ui::fonts& fonts, ui::rect r, ui::color fill, ui::text_style label, std::str text) {
+        list.fill(r, fill, r.height * 0.5);
+        ui::vec2 size = fonts.measure(text, label);
+        _ = list.text(mut fonts, ui::vec2{ .x = (r.x + (r.width - size.x) * 0.5).round(), .y = (r.y + (r.height - size.y) * 0.5).round() }, text, label);
+    }
+
+    // A button: `kind` 0 primary, 1 secondary, 2 ghost, 3 danger.
+    f32 button(mut ui::draw_list& list, mut ui::fonts& fonts, ui::theme& t, ui::vec2 at, std::str text, u32 kind) {
+        ui::text_style label = t.style(ui::text_role::label, t.colors.text);
+        ui::vec2 size = fonts.measure(text, label);
+        ui::rect r = ui::rect{ .x = at.x, .y = at.y, .width = (size.x + 2.0 * t.space.l).round(), .height = 34.0 };
+        ui::color text_color = if (kind == 0) { t.colors.on_primary } else if (kind == 3) { t.colors.danger } else { t.colors.text };
+        if (kind == 0) {
+            list.shadow(r, t.radius.medium, t.elevation(1), t.colors.primary);
+            list.fill_gradient(r, t.colors.primary_hover, t.colors.primary, t.radius.medium);
+        } else if (kind == 1) {
+            list.fill(r, t.colors.surface_raised, t.radius.medium);
+            list.stroke(r, t.colors.border, t.radius.medium, 1.0);
+        } else if (kind == 3) {
+            list.fill(r, t.colors.danger.with_alpha(0.12), t.radius.medium);
+            list.stroke(r, t.colors.danger.with_alpha(0.4), t.radius.medium, 1.0);
+        }
+        ui::text_style styled = ui::text_style{ .face = label.face, .size = label.size, .line_height = label.line_height, .color = text_color };
+        _ = list.text(mut fonts, ui::vec2{ .x = r.x + t.space.l, .y = (r.y + (r.height - size.y) * 0.5).round() }, text, styled);
+        return r.width;
+    }
+
+    // A toggle switch.
+    void toggle(mut ui::draw_list& list, ui::theme& t, ui::vec2 at, bool on) {
+        ui::rect track = ui::rect{ .x = at.x, .y = at.y, .width = 40.0, .height = 22.0 };
+        list.fill(track, if (on) { t.colors.primary } else { t.colors.surface_sunken }, 11.0);
+        if (!on) {
+            list.stroke(track, t.colors.border, 11.0, 1.0);
+        }
+        f32 knob_x = if (on) { at.x + 29.0 } else { at.x + 11.0 };
+        list.shadow(ui::rect{ .x = knob_x - 8.0, .y = at.y + 3.0, .width = 16.0, .height = 16.0 }, 8.0, t.elevation(1), t.colors.shadow);
+        list.circle(ui::vec2{ .x = knob_x, .y = at.y + 11.0 }, 8.0, if (on) { t.colors.on_primary } else { t.colors.text_muted });
+    }
+
+    // A slider at `fraction` with a value text.
+    void slider(mut ui::draw_list& list, mut ui::fonts& fonts, ui::theme& t, ui::rect r, f32 fraction, std::str value) {
+        ui::rect track = ui::rect{ .x = r.x, .y = r.y + r.height * 0.5 - 3.0, .width = r.width, .height = 6.0 };
+        list.fill(track, t.colors.surface_sunken, 3.0);
+        list.fill(ui::rect{ .x = track.x, .y = track.y, .width = track.width * fraction, .height = track.height }, t.colors.primary, 3.0);
+        ui::vec2 knob = ui::vec2{ .x = track.x + track.width * fraction, .y = track.y + 3.0 };
+        list.shadow(ui::rect{ .x = knob.x - 9.0, .y = knob.y - 9.0, .width = 18.0, .height = 18.0 }, 9.0, t.elevation(2), t.colors.shadow);
+        list.circle(knob, 9.0, color_white());
+        list.circle_stroke(knob, 9.0, t.colors.primary, 2.0);
+        ui::text_style s = t.style(ui::text_role::code, t.colors.text_muted);
+        _ = list.text(mut fonts, ui::vec2{ .x = r.right() + t.space.m, .y = r.y + (r.height - fonts.line_height(s)) * 0.5 }, value, s);
+    }
+
+    ui::color color_white() {
+        return ui::color::white();
+    }
+
+    // The card of the gallery, at `at`, in theme `t`.
+    void card(mut ui::draw_list& list, mut ui::fonts& fonts, ui::theme& t, ui::vec2 at, pictures& pics, f32 progress) {
+        f32 width = 500.0;
+        ui::rect box = ui::rect{ .x = at.x, .y = at.y, .width = width, .height = 618.0 };
+        list.shadow(box, t.radius.large, t.elevation(2), t.colors.shadow);
+        list.fill(box, t.colors.surface, t.radius.large);
+        list.stroke(box, t.colors.border.with_alpha(0.6), t.radius.large, 1.0);
+        f32 pad = t.space.xl;
+        f32 x = at.x + pad;
+        mut f32 y = at.y + pad;
+
+        // Header: an avatar, a title, a caption and a badge.
+        list.image(pics.landscape, ui::rect{ .x = x, .y = y, .width = 44.0, .height = 44.0 }, ui::rect{ .x = 0.55, .y = 0.15, .width = 0.35, .height = 0.5 }, color_white(), 22.0);
+        list.circle_stroke(ui::vec2{ .x = x + 22.0, .y = y + 22.0 }, 22.0, t.colors.primary, 2.0);
+        _ = list.text(mut fonts, ui::vec2{ .x = x + 58.0, .y = y + 1.0 }, "Player", t.style(ui::text_role::title, t.colors.text));
+        _ = list.text(mut fonts, ui::vec2{ .x = x + 58.0, .y = y + 24.0 }, "entity #128 · last saved 2 min ago", t.style(ui::text_role::caption, t.colors.text_muted));
+        ui::text_style badge = t.style(ui::text_role::caption, t.colors.success);
+        pill(mut list, mut fonts, ui::rect{ .x = box.right() - pad - 72.0, .y = y + 10.0, .width = 72.0, .height = 24.0 }, t.colors.success.with_alpha(0.15),
+             ui::text_style{ .face = ui::font_face::semibold, .size = badge.size, .line_height = 1.0, .color = badge.color }, "dynamic");
+        y += 44.0 + t.space.l;
+
+        // A picture with rounded corners and a caption over a gradient.
+        ui::rect picture = ui::rect{ .x = x, .y = y, .width = width - 2.0 * pad, .height = 170.0 };
+        list.image(pics.landscape, picture, ui::rect{ .width = 1.0, .height = 1.0 }, color_white(), t.radius.medium);
+        ui::rect shade = ui::rect{ .x = picture.x, .y = picture.bottom() - 56.0, .width = picture.width, .height = 56.0 };
+        list.fill_gradient(shade, ui::color::black().with_alpha(0.0), ui::color::black().with_alpha(0.55), t.radius.medium);
+        _ = list.text(mut fonts, ui::vec2{ .x = picture.x + t.space.m, .y = picture.bottom() - 34.0 }, "Level 03 · Dusk valley", t.style(ui::text_role::label, color_white()));
+        y += picture.height + t.space.l;
+
+        // Body text, wrapped.
+        f32 used = list.paragraph(mut fonts, ui::vec2{ .x = x, .y = y }, width - 2.0 * pad,
+            "Every shape here is a signed-distance box evaluated per pixel: rounded corners, borders and soft shadows cost four vertices each, and the text comes from one distance-field atlas, sharp at any size.",
+            t.style(ui::text_role::body, t.colors.text_muted));
+        y += used + t.space.l;
+
+        // Settings rows: label, control.
+        ui::text_style label = t.style(ui::text_role::body, t.colors.text);
+        _ = list.text(mut fonts, ui::vec2{ .x = x, .y = y }, "Can jump", label);
+        toggle(mut list, t, ui::vec2{ .x = box.right() - pad - 40.0, .y = y }, true);
+        y += 34.0;
+        _ = list.text(mut fonts, ui::vec2{ .x = x, .y = y }, "God mode", label);
+        toggle(mut list, t, ui::vec2{ .x = box.right() - pad - 40.0, .y = y }, false);
+        y += 34.0;
+        _ = list.text(mut fonts, ui::vec2{ .x = x, .y = y }, "Speed", label);
+        slider(mut list, mut fonts, t, ui::rect{ .x = x + 120.0, .y = y - 2.0, .width = 250.0, .height = 24.0 }, 0.35, "7.0 m/s");
+        y += 34.0;
+        _ = list.text(mut fonts, ui::vec2{ .x = x, .y = y }, "Health", label);
+        ui::rect bar = ui::rect{ .x = x + 120.0, .y = y + 6.0, .width = 250.0, .height = 10.0 };
+        list.fill(bar, t.colors.surface_sunken, 5.0);
+        list.fill_gradient(ui::rect{ .x = bar.x, .y = bar.y, .width = bar.width * progress, .height = bar.height }, t.colors.success.lighter(0.08), t.colors.success, 5.0);
+        _ = list.text(mut fonts, ui::vec2{ .x = bar.right() + t.space.m, .y = y }, "72 / 100", t.style(ui::text_role::code, t.colors.text_muted));
+        y += 34.0;
+
+        // A small line chart.
+        ui::rect chart = ui::rect{ .x = x, .y = y, .width = width - 2.0 * pad, .height = 62.0 };
+        list.fill(chart, t.colors.surface_sunken, t.radius.small);
+        mut ui::vec2 previous = ui::vec2{};
+        for (u32 i : 0..40) {
+            f32 fi = cast<f32>(cast::truncate<u16>(i));
+            f32 v = 0.5 + 0.28 * (fi * 0.45).sin() + 0.12 * (fi * 1.7).cos();
+            ui::vec2 p = ui::vec2{ .x = chart.x + 8.0 + fi * (chart.width - 16.0) / 39.0, .y = chart.bottom() - 8.0 - v * (chart.height - 16.0) };
+            if (i > 0) {
+                list.line(previous, p, 2.0, t.colors.primary);
+            }
+            previous = p;
+        }
+        list.circle(previous, 4.0, t.colors.primary);
+        y += chart.height + t.space.l;
+
+        // Buttons.
+        mut f32 bx = x;
+        bx += button(mut list, mut fonts, t, ui::vec2{ .x = bx, .y = y }, "Save", 0) + t.space.s;
+        bx += button(mut list, mut fonts, t, ui::vec2{ .x = bx, .y = y }, "Cancel", 1) + t.space.s;
+        bx += button(mut list, mut fonts, t, ui::vec2{ .x = bx, .y = y }, "Reset", 2) + t.space.s;
+        _ = button(mut list, mut fonts, t, ui::vec2{ .x = box.right() - pad - 82.0, .y = y }, "Delete", 3);
+    }
+
+    // The colour roles of a theme as swatches.
+    void swatches(mut ui::draw_list& list, mut ui::fonts& fonts, ui::theme& t, ui::vec2 at) {
+        std::array<ui::color, 8> colors = [t.colors.background, t.colors.surface, t.colors.surface_sunken, t.colors.border,
+                                           t.colors.primary, t.colors.success, t.colors.warning, t.colors.danger];
+        for (usize i : 0..8) {
+            f32 fx = cast<f32>(cast::truncate<u16>(i));
+            ui::rect r = ui::rect{ .x = at.x + fx * 30.0, .y = at.y, .width = 24.0, .height = 24.0 };
+            list.fill(r, colors[i], 6.0);
+            list.stroke(r, t.colors.text.with_alpha(0.15), 6.0, 1.0);
+        }
+        _ = list.text(mut fonts, ui::vec2{ .x = at.x + 250.0, .y = at.y + 3.0 }, if (t.mode == ui::brightness::dark) { "dark" } else { "light" },
+                      t.style(ui::text_role::caption, t.colors.text_muted));
+    }
+
+    // A checkerboard picture, made in memory.
+    std::image::rgba8 checker() {
+        mut std::image::rgba8 img = std::image::rgba8::filled(32, 32, 0, 0, 0, 255);
+        for (u32 y : 0..32) {
+            for (u32 x : 0..32) {
+                u8 v = if ((x / 8 + y / 8) % 2 == 0) { 70 } else { 200 };
+                img.set_pixel(x, y, cast<u32>(v) | (cast<u32>(v) << 8) | (cast<u32>(v) << 16) | 0xff000000);
+            }
+        }
+        return img;
+    }
+
+    // Everything of one frame.
+    void draw(mut ui::draw_list& list, mut ui::fonts& fonts, ui::vec2 size, pictures& pics, f32 seconds) {
+        ui::color accent = ui::color::hex(0x4f7cff);
+        ui::theme dark = ui::theme::from_accent(accent, ui::brightness::dark);
+        ui::theme light = ui::theme::from_accent(accent, ui::brightness::light);
+        f32 fade = 0.5 - 0.5 * (seconds * 0.8).cos();
+        ui::theme right = ui::theme::mix(light, dark, if (seconds > 0.0) { fade } else { 0.0 });
+
+        list.begin(size);
+        list.fill(ui::rect{ .width = size.x * 0.5, .height = size.y }, dark.colors.background, 0.0);
+        list.fill(ui::rect{ .x = size.x * 0.5, .width = size.x * 0.5, .height = size.y }, right.colors.background, 0.0);
+        card(mut list, mut fonts, dark, ui::vec2{ .x = 40.0, .y = 40.0 }, pics, 0.72);
+        card(mut list, mut fonts, right, ui::vec2{ .x = size.x * 0.5 + 40.0, .y = 40.0 }, pics, 0.72);
+        swatches(mut list, mut fonts, dark, ui::vec2{ .x = 40.0, .y = size.y - 44.0 });
+        swatches(mut list, mut fonts, right, ui::vec2{ .x = size.x * 0.5 + 40.0, .y = size.y - 44.0 });
+
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+
+    mut wnd::system sys = match (wnd::system::start()) {
+        std::ok(s) => move s,
+        std::error(e) => {
+            std::eprintln(f"no window system: {e}");
+            return std::exit_code::failure;
+        },
+    };
+    mut wnd::gl_window win = match (sys.create_gl_window(wnd::window::config{
+        .title = "Edax UI gallery",
+        .size  = wnd::size{ .width = 1160, .height = 780 },
+    }, wnd::opengl::config{ .api = gl_33, .samples = 0 }, wnd::opengl::sharing::automatic)) {
+        std::ok(w) => move w,
+        std::error(e) => {
+            std::eprintln(f"no window: {e}");
+            return std::exit_code::failure;
+        },
+    };
+
+    mut ui::opengl::renderer<gl_33> renderer = {
+        mut wnd::opengl::frame frame = win.begin_frame();
+        match (ui::opengl::renderer<gl_33>::make(frame)) {
+            std::ok(r) => move r,
+            std::error(e) => {
+                std::eprintln(f"no renderer: {e}");
+                return std::exit_code::failure;
+            },
+        }
+    };
+    gallery::pictures pics = gallery::pictures{
+        .landscape = renderer.upload(std::image::decode_png(std::embed("landscape.png")).expect("the gallery's picture")),
+        .checker = renderer.upload(gallery::checker()),
+    };
+
+    mut ui::fonts fonts = ui::fonts::make();
+    mut ui::draw_list list = default;
+    mut std::darray<wnd::event> events = default;
+    std::time::instant started = std::time::instant::now();
+    mut bool finished = false;
+    while (!win.should_close()) {
+        sys.poll();
+        win.drain_events(mut events);
+        for (wnd::event e : events) {
+            match (e) {
+                wnd::event::key(k) if k.key == wnd::key::escape => win.request_close(),
+                _ => {},
+            }
+        }
+        wnd::size size = win.size();
+        f32 seconds = match (screenshot) {
+            std::some(_) => 0.0,
+            std::none    => cast::round<f32>(started.elapsed().as_seconds_f64()),
+        };
+        gallery::draw(mut list, mut fonts, ui::vec2{ .x = cast::round<f32>(cast<f64>(size.width)), .y = cast::round<f32>(cast<f64>(size.height)) }, pics, seconds);
+        {
+            mut wnd::opengl::frame frame = win.begin_frame();
+            wnd::size fb = frame.framebuffer_size();
+            gl::functions<gl_33>& f = renderer.functions();
+            unsafe {
+                f.glViewport(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height));
+                f.glClearColor(0.0, 0.0, 0.0, 1.0);
+                f.glClear(gl::GL_COLOR_BUFFER_BIT);
+            }
+            renderer.draw(frame, list, fonts);
+            match (screenshot) {
+                std::some(path) => {
+                    std::image::rgba8 shot = renderer.read_pixels(frame);
+                    std::darray<u8> png = std::image::encode_png(shot);
+                    mut std::file out = std::file::create(path).expect("the screenshot file");
+                    _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
+                    std::println(f"{list.vertices.len()} vertices, {list.indices.len() / 3} triangles, {list.commands.len()} draw calls, atlas {fonts.atlas_width()}x{fonts.atlas_height()}");
+                    finished = true;
+                },
+                std::none => {},
+            }
+            frame.present();
+        }
+        if (finished) {
+            win.request_close();
+        }
+    }
+    return std::exit_code::success;
+}

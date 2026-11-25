@@ -249,7 +249,7 @@ public:
             resolve_type(*e.tag_type);
             for (EnumAlternative& alt : e.alternatives) {
                 if (alt.payload) resolve_type(*alt.payload);
-                if (alt.value) resolve_expr(*alt.value);
+                if (alt.value) resolve_expr(alt.value);
             }
             annotate_type(m, d, sym, false);
             return sym;
@@ -265,7 +265,7 @@ public:
         for (ThreadPromise& p : d.as<TypeDecl>().promises) {
             if (p.condition) {
                 scopes_.emplace_back();
-                resolve_expr(*p.condition);
+                resolve_expr(p.condition);
                 scopes_.pop_back();
             }
         }
@@ -1372,7 +1372,7 @@ private:
         type->symbol   = a;
         vd->type       = std::move(type);
         vd->init       = std::move(u.value);
-        resolve_expr(*vd->init);
+        resolve_expr(vd->init);
         Symbol* v      = module_->make(SymbolKind::global, "annotation", u.span);
         v->decl        = vd.get();
         v->definition  = vd.get();
@@ -1995,6 +1995,7 @@ private:
             // where the annotation is written; `this` is the annotated type (spec 29).
             FileScope fs(*this, g->second.module, g->second.header);
             ns_                                  = g->second.ns;
+            TemplateScope ts(*this, d);   // `compile_time` and `implicit compile_time` parameters are template parameters
             std::optional<AnnotationContext> saved = actx_;
             actx_                                = AnnotationContext{g->second.value, self, nullptr};
             resolve_function(d.as<FunctionDecl>(), self);
@@ -2027,7 +2028,7 @@ private:
             auto&   v     = d.as<VariableDecl>();
             Symbol* saved = std::exchange(member_scope_, self);   // a field's type may name an associated type
             resolve_type(*v.type);
-            if (v.init) resolve_expr(*v.init);
+            if (v.init) resolve_expr(v.init);
             member_scope_ = saved;
             return;
         }
@@ -2039,7 +2040,7 @@ private:
             for (ThreadPromise& p : d.as<TypeDecl>().promises) {   // `unsafe std::sendable(cond)` (spec 27)
                 if (p.condition) {
                     scopes_.emplace_back();
-                    resolve_expr(*p.condition);
+                    resolve_expr(p.condition);
                     scopes_.pop_back();
                 }
             }
@@ -2055,7 +2056,7 @@ private:
             resolve_type(*e.tag_type);
             for (EnumAlternative& alt : e.alternatives) {
                 if (alt.payload) resolve_type(*alt.payload);
-                if (alt.value) resolve_expr(*alt.value);
+                if (alt.value) resolve_expr(alt.value);
             }
             return;
         }
@@ -2297,6 +2298,17 @@ private:
                            "declared again"),
                      "template parameter here", tp->span);
             }
+            // In a method a bare member name means the member, so no local may take one.
+            if (fn_.has_this && fn_.self_type) {
+                if (Symbol* mem = instance_member(fn_.self_type, name)) {
+                    Diagnostic& e = error(DiagCode::E3028, span,
+                                          std::format("'{}' is the name of a {} of '{}'", name, sema::to_string(mem->kind),
+                                                      fn_.self_type->name),
+                                          "a member's name");
+                    note(e, "the member", mem->span);
+                    note(e, std::format("in a method '{}' means the member; choose another name for this one", name));
+                }
+            }
         }
         Symbol* s       = module_->make(SymbolKind::local, name, span);
         s->local_kind   = kind;
@@ -2394,13 +2406,38 @@ private:
     bool names_value(const TypeExpr& t) {
         if (t.kind != TypeKind::named) return false;
         const Path& p = t.as<NamedType>().path;
-        if (p.segments.size() != 1 || !p.segments[0].template_args.empty()) return false;
+        for (const PathSegment& seg : p.segments) {
+            if (!seg.template_args.empty()) return false;
+        }
+        if (p.segments.size() > 1) return names_qualified_value(p);
         const std::string& name = p.segments[0].name;
         for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
             if (auto found = it->names.find(name); found != it->names.end()) return !found->second->is_type_value;
         }
         if (Symbol* tp = find_template_param(name)) return tp->kind == SymbolKind::value_param;
         if (Symbol* item = lookup_unqualified(name, p.span, p.global, false).symbol) {
+            return item->kind == SymbolKind::global && !item->is_type_value;
+        }
+        return false;
+    }
+
+    // `ui::gl_33` as a template argument: a qualified compile_time constant (a namespace alias
+    // first is replaced by its target, as in lookup_path).
+    bool names_qualified_value(const Path& p) {
+        std::string tail;
+        for (std::size_t i = 1; i < p.segments.size(); ++i) tail = join_ns(tail, p.segments[i].name);
+        std::vector<std::string> heads;
+        if (const ast::NamespaceAlias* a = p.global ? nullptr : find_alias(p.segments[0].name)) {
+            std::string target;
+            for (const PathSegment& seg : a->target.segments) target = join_ns(target, seg.name);
+            heads.push_back(target);
+        }
+        std::vector<std::string> levels = p.global ? std::vector<std::string>{""} : enclosing_levels(ns_);
+        for (const std::string& level : levels) heads.push_back(join_ns(level, p.segments[0].name));
+        for (const std::string& head : heads) {
+            Found f = find_items(join_ns(head, tail));
+            if (f.symbols.empty()) continue;
+            const Symbol* item = f.symbols.front();
             return item->kind == SymbolKind::global && !item->is_type_value;
         }
         return false;
@@ -2416,7 +2453,7 @@ private:
                     arg.type.reset();
                 }
                 if (arg.type) resolve_type(*arg.type);
-                if (arg.value) resolve_expr(*arg.value);
+                if (arg.value) resolve_expr(arg.value);
             }
         }
     }
@@ -2517,11 +2554,11 @@ private:
             bool opaque = false;
             if (Symbol* mem = find_member(fn_.self_type, name, opaque);
                 mem && (mem->kind == SymbolKind::field || mem->kind == SymbolKind::method)) {
-                Diagnostic& e = error(DiagCode::E3026, span,
-                                      std::format("'{}' is a member of '{}'; write 'this.{}'", name,
-                                                  fn_.self_type->name, name),
-                                      std::format("use 'this.{}'", name));
-                note(e, "members are always accessed through 'this.'");
+                Diagnostic& e = error(DiagCode::E3020, span,
+                                      std::format("'{}' is a static member of '{}'; write '{}::{}'", name,
+                                                  fn_.self_type->name, fn_.self_type->name, name),
+                                      "static member");
+                note(e, "static members are named through their type");
                 return nullptr;
             }
         }
@@ -2660,6 +2697,26 @@ private:
                 bool local = false;
                 for (const Scope& sc : scopes_) local = local || sc.names.contains(segs[0].name);
                 if (local) break;
+                // `ui::vec2` with `namespace ui = std::ui;`: look in the alias's target.
+                bool shadowed = false;   // an alias colliding with a real name (reported elsewhere) isn't used
+                for (const std::string& level : enclosing_levels(ns_)) {
+                    shadowed = shadowed || namespace_visible(join_ns(level, segs[0].name)) ||
+                               !find_items(join_ns(level, segs[0].name)).symbols.empty();
+                }
+                if (!where && segs.size() >= 2 && !shadowed) {
+                    if (const ast::NamespaceAlias* a = find_alias(segs[0].name)) {
+                        std::vector<PathSegment> full;
+                        for (const PathSegment& t : a->target.segments) {
+                            PathSegment c;
+                            c.name = t.name;
+                            c.span = segs[0].span;
+                            full.push_back(std::move(c));
+                        }
+                        for (std::size_t i = 1; i < segs.size(); ++i) full.push_back(std::move(segs[i]));
+                        segs        = std::move(full);
+                        path.global = true;
+                    }
+                }
             }
             const std::string        from   = where ? *where : ns_;
             std::vector<std::string> levels = path.global ? std::vector<std::string>{""} : enclosing_levels(from);
@@ -2928,7 +2985,7 @@ private:
     void resolve_block(BlockExpr& b) {
         scopes_.emplace_back();
         for (StmtPtr& s : b.statements) resolve_stmt(*s);
-        if (b.tail) resolve_expr(*b.tail);
+        if (b.tail) resolve_expr(b.tail);
         scopes_.pop_back();
     }
 
@@ -2937,18 +2994,18 @@ private:
             resolve_block(*c.block);
             return;
         }
-        resolve_expr(*c.condition);
-        resolve_expr(*c.message);
+        resolve_expr(c.condition);
+        resolve_expr(c.message);
     }
 
     void resolve_stmt(Stmt& s) {
-        for (ExprPtr& id : s.allowed) resolve_expr(*id);   // `@std::allow{ .id = ... }` on the statement
+        for (ExprPtr& id : s.allowed) resolve_expr(id);   // `@std::allow{ .id = ... }` on the statement
         switch (s.kind) {
         case StmtKind::check: resolve_check(s.as<CheckStmt>().check); return;
         case StmtKind::variable: {
             auto& v = s.as<VariableStmt>();
             resolve_type(*v.type);
-            if (v.init) resolve_expr(*v.init);
+            if (v.init) resolve_expr(v.init);
             v.symbol = declare_local(v.name, v.name_span, LocalKind::variable, v.is_mut,
                                      v.type->kind == TypeKind::reference);
             v.symbol->is_type_value = v.storage == Storage::compile_time && is_type_type(*v.type);
@@ -2956,15 +3013,15 @@ private:
         }
         case StmtKind::assign: {
             auto& a = s.as<AssignStmt>();
-            resolve_expr(*a.target);
-            resolve_expr(*a.value);
+            resolve_expr(a.target);
+            resolve_expr(a.value);
             return;
         }
-        case StmtKind::discard: resolve_expr(*s.as<DiscardStmt>().value); return;
-        case StmtKind::expression: resolve_expr(*s.as<ExprStmt>().expr); return;
+        case StmtKind::discard: resolve_expr(s.as<DiscardStmt>().value); return;
+        case StmtKind::expression: resolve_expr(s.as<ExprStmt>().expr); return;
         case StmtKind::destructure: {
             auto& d = s.as<DestructureStmt>();
-            resolve_expr(*d.init);
+            resolve_expr(d.init);
             for (DestructureBinding& b : d.bindings) {
                 if (b.wildcard) continue;
                 if (b.type) resolve_type(*b.type);
@@ -2974,6 +3031,64 @@ private:
             return;
         }
         }
+    }
+
+    // A bare member name in a method is `this.name` (classes): `points.push(p)` is
+    // `this.points.push(p)`. The path is replaced by the member expression before it is
+    // resolved, so everything after the resolver sees `this.` as if it were written.
+    void resolve_expr(ExprPtr& p, ExprFlags flags = {}) {
+        if (p && p->kind == ExprKind::path) {
+            if (ExprPtr member = implicit_member(p->as<PathExpr>())) p = std::move(member);
+        }
+        resolve_expr(*p, flags);
+    }
+
+    // The member a bare name in a method names, as `this.name`; null when the name isn't one
+    // (locals and template parameters come first; a local can't have a member's name).
+    ExprPtr implicit_member(PathExpr& pe) {
+        if (pe.path.global || pe.path.segments.size() != 1 || !fn_.self_type) return nullptr;
+        const std::string& name = pe.path.segments[0].name;
+        if (actx_ && (name == "annotation" || name == "annotated")) return nullptr;
+        for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+            if (it->names.contains(name)) return nullptr;
+        }
+        if (find_template_param(name)) return nullptr;
+        Symbol* mem = instance_member(fn_.self_type, name);
+        if (!mem) return nullptr;
+        if (!fn_.has_this) {   // a static method: no object to take the member from
+            Diagnostic& e = error(DiagCode::E3027, pe.span,
+                                  std::format("'{}' is a member of '{}', and a static method has no 'this'", name, fn_.self_type->name),
+                                  "no object here");
+            note(e, "static methods reach members through an object: 'value.member'");
+            return std::make_unique<SimpleExpr>(ExprKind::error, pe.span);   // reported
+        }
+        Unqualified outer = lookup_unqualified(name, pe.span, false, false);
+        if (outer.symbol) {   // a member and an outer item with one name: never silently the member
+            Diagnostic& e = error(DiagCode::E3026, pe.span,
+                                  std::format("'{}' is both a member of '{}' and '{}'; write the one you mean", name,
+                                              fn_.self_type->name, outer.symbol->key()),
+                                  "ambiguous");
+            note(e, "the member", mem->span);
+            note(e, std::format("'{}' is declared here", outer.symbol->key()), outer.symbol->span);
+            note(e, std::format("write 'this.{}' for the member, or qualify the other one", name));
+            return std::make_unique<SimpleExpr>(ExprKind::error, pe.span);   // reported
+        }
+        Span span = pe.span;
+        auto self = std::make_unique<SimpleExpr>(ExprKind::this_, Span{span.file, span.begin, span.begin});
+        return std::make_unique<MemberExpr>(span, std::move(self), std::move(pe.path), false);
+    }
+
+    // A field or non-static method of `t` (or of a base it can see) named `name`.
+    Symbol* instance_member(Symbol* t, const std::string& name) {
+        bool    opaque = false;
+        Symbol* mem    = find_member(t, name, opaque);
+        if (!mem || !member_visible(mem)) return nullptr;
+        if (mem->kind == SymbolKind::field) return mem;
+        if (mem->kind == SymbolKind::method) {
+            const FunctionDecl* f = mem->function();
+            return f && !f->is_static ? mem : nullptr;
+        }
+        return nullptr;
     }
 
     void resolve_expr(Expr& e, ExprFlags flags = {}) {
@@ -2987,7 +3102,7 @@ private:
         case ExprKind::error: return;
         case ExprKind::string_literal:
             for (FormatPart& part : e.as<LiteralExpr>().format_parts) {
-                if (part.expr) resolve_expr(*part.expr);
+                if (part.expr) resolve_expr(part.expr);
             }
             return;
         case ExprKind::this_:
@@ -3014,72 +3129,72 @@ private:
                      "'mut x' marks a call argument passed as a mutable reference, or a match subject; "
                      "'mut &x' takes a mutable pointer");
             }
-            resolve_expr(*u.operand);
+            resolve_expr(u.operand);
             if (u.op == UnaryOp::move) check_move(*u.operand);
             return;
         }
         case ExprKind::binary: {
             auto& b = e.as<BinaryExpr>();
-            resolve_expr(*b.lhs);
-            resolve_expr(*b.rhs);
+            resolve_expr(b.lhs);
+            resolve_expr(b.rhs);
             return;
         }
         case ExprKind::range: {
             auto& r = e.as<RangeExpr>();
-            resolve_expr(*r.lo);
-            resolve_expr(*r.hi);
+            resolve_expr(r.lo);
+            resolve_expr(r.hi);
             return;
         }
         case ExprKind::call: {
             auto& c = e.as<CallExpr>();
             if (c.dispatch_hint) resolve_type(*c.dispatch_hint);
-            resolve_expr(*c.callee, ExprFlags{false, true});
-            for (ExprPtr& arg : c.args) resolve_expr(*arg, ExprFlags{true, false});
+            resolve_expr(c.callee, ExprFlags{false, true});
+            for (ExprPtr& arg : c.args) resolve_expr(arg, ExprFlags{true, false});
             return;
         }
         case ExprKind::index: {
             auto& i = e.as<IndexExpr>();
-            resolve_expr(*i.object);
-            resolve_expr(*i.index);
+            resolve_expr(i.object);
+            resolve_expr(i.index);
             return;
         }
         case ExprKind::member: resolve_member(e.as<MemberExpr>()); return;
-        case ExprKind::try_: resolve_expr(*e.as<TryExpr>().operand); return;
+        case ExprKind::try_: resolve_expr(e.as<TryExpr>().operand); return;
         case ExprKind::cast: {
             auto& c = e.as<CastExpr>();
             resolve_type(*c.target);
-            resolve_expr(*c.operand);
+            resolve_expr(c.operand);
             return;
         }
         case ExprKind::bit: {
             auto& b = e.as<BitExpr>();
             if (b.type) resolve_type(*b.type);
-            resolve_expr(*b.operand);
+            resolve_expr(b.operand);
             return;
         }
         case ExprKind::struct_literal: resolve_struct_literal(e.as<StructLiteralExpr>()); return;
         case ExprKind::tuple:
-            for (ExprPtr& x : e.as<TupleExpr>().elements) resolve_expr(*x);
+            for (ExprPtr& x : e.as<TupleExpr>().elements) resolve_expr(x);
             return;
         case ExprKind::list:
-            for (ExprPtr& x : e.as<ListExpr>().elements) resolve_expr(*x);
+            for (ExprPtr& x : e.as<ListExpr>().elements) resolve_expr(x);
             return;
         case ExprKind::lambda: resolve_lambda(e.as<LambdaExpr>()); return;
         case ExprKind::if_: {
             auto& i = e.as<IfExpr>();
-            resolve_expr(*i.condition);
+            resolve_expr(i.condition);
             resolve_block(*i.then_block);
-            if (i.else_branch) resolve_expr(*i.else_branch);
+            if (i.else_branch) resolve_expr(i.else_branch);
             return;
         }
         case ExprKind::match: {
             auto& m = e.as<MatchExpr>();
-            resolve_expr(*m.scrutinee, ExprFlags{true, false});
+            resolve_expr(m.scrutinee, ExprFlags{true, false});
             for (MatchArm& arm : m.arms) {
                 scopes_.emplace_back();
                 resolve_pattern(*arm.pattern);
-                if (arm.guard) resolve_expr(*arm.guard);
-                resolve_expr(*arm.body);
+                if (arm.guard) resolve_expr(arm.guard);
+                resolve_expr(arm.body);
                 scopes_.pop_back();
             }
             return;
@@ -3087,7 +3202,7 @@ private:
         case ExprKind::block: resolve_block(e.as<BlockExpr>()); return;
         case ExprKind::while_: {
             auto& w = e.as<WhileExpr>();
-            resolve_expr(*w.condition);
+            resolve_expr(w.condition);
             ++fn_.loop_depth;
             resolve_block(*w.body);
             --fn_.loop_depth;
@@ -3095,7 +3210,7 @@ private:
         }
         case ExprKind::for_: {
             auto& f = e.as<ForExpr>();
-            resolve_expr(*f.iterable);
+            resolve_expr(f.iterable);
             scopes_.emplace_back();
             resolve_type(*f.type);
             f.symbol = declare_local(f.name, f.name_span, LocalKind::loop_variable, f.is_mut,
@@ -3110,10 +3225,10 @@ private:
         case ExprKind::return_: {
             auto& r = e.as<ReturnExpr>();
             if (r.value && r.value->kind == ExprKind::tuple) {   // `return (mut this.a, this.b);` (spec 34)
-                for (ExprPtr& x : r.value->as<TupleExpr>().elements) resolve_expr(*x, ExprFlags{true, false});
+                for (ExprPtr& x : r.value->as<TupleExpr>().elements) resolve_expr(x, ExprFlags{true, false});
                 return;
             }
-            if (r.value) resolve_expr(*r.value);
+            if (r.value) resolve_expr(r.value);
             return;
         }
         }
@@ -3160,7 +3275,7 @@ private:
     }
 
     void resolve_member(MemberExpr& me) {
-        resolve_expr(*me.object);
+        resolve_expr(me.object);
         resolve_template_args(me.name);
         if (me.object->kind != ExprKind::this_ || !fn_.self_type || !fn_.has_this || me.arrow) {
             return;   // members of other values are resolved by the type checker
@@ -3224,7 +3339,7 @@ private:
         } else {
             resolve_type(*sl.type);
         }
-        for (FieldInit& f : sl.fields) resolve_expr(*f.value);
+        for (FieldInit& f : sl.fields) resolve_expr(f.value);
         const Symbol* t = sl.type->kind == TypeKind::named ? sl.type->as<NamedType>().symbol : nullptr;
         if (!t || t->kind == SymbolKind::type_param) return;
         std::string display = to_string(*sl.type);
@@ -3303,7 +3418,7 @@ private:
 
     void resolve_lambda(LambdaExpr& l) {
         for (Capture& c : l.captures) {
-            if (c.init) resolve_expr(*c.init);
+            if (c.init) resolve_expr(c.init);
         }
         std::vector<Symbol*> outer(l.captures.size(), nullptr);
         for (std::size_t i = 0; i < l.captures.size(); ++i) {

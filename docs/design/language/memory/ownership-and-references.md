@@ -81,7 +81,7 @@ A method may return a **tuple of references into distinct fields of `this`** (th
 class physics_world {
 public:
     (mut body_store&, contact_list&) bodies_and_contacts() mut {
-        return (mut this.bodies, this.contacts);
+        return (mut bodies, contacts);
     }
 }
 (mut body_store& bodies, contact_list& contacts) = world.bodies_and_contacts();

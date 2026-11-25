@@ -1,0 +1,546 @@
+// ui_spike/ui (see ui.edh).
+
+import std;
+
+namespace ui {
+    namespace wnd = std::windowing;
+
+    // Theme of the spike: flat colours, one size.
+    private compile_time f32 row_height = 24.0;
+    private compile_time f32 spacing = 4.0;
+    private compile_time f32 padding = 8.0;
+    private compile_time f32 indent = 16.0;
+    private compile_time f32 window_width = 340.0;
+
+    private color background()   { return color::rgba(24, 27, 34, 240); }
+    private color title_color()  { return color::rgb(43, 49, 62); }
+    private color frame_color()  { return color::rgb(15, 17, 22); }
+    private color hover_color()  { return color::rgb(54, 61, 77); }
+    private color accent()       { return color::rgb(79, 124, 255); }
+    private color accent_hover() { return color::rgb(110, 148, 255); }
+    private color text_color()   { return color::rgb(230, 232, 238); }
+    private color muted()        { return color::rgb(139, 147, 165); }
+    private color warning()      { return color::rgb(229, 83, 75); }
+
+    // ---- geometry --------------------------------------------------------------------------------------
+
+    struct rect {
+        bool contains(vec2 p) {
+            return p.x >= this.x && p.y >= this.y && p.x < this.x + this.w && p.y < this.y + this.h;
+        }
+    }
+
+    struct color {
+        static color rgb(u8 r, u8 g, u8 b) {
+            return color::rgba(r, g, b, 255);
+        }
+
+        static color rgba(u8 r, u8 g, u8 b, u8 a) {
+            return color{ .packed = cast<u32>(r) | (cast<u32>(g) << 8) | (cast<u32>(b) << 16) | (cast<u32>(a) << 24) };
+        }
+    }
+
+    struct input {
+        static input from_window(wnd::input_state& state) {
+            wnd::position p = state.cursor();
+            return input{
+                .cursor         = vec2{ .x = cast::round<f32>(p.x), .y = cast::round<f32>(p.y) },
+                .mouse_down     = state.mouse_down(wnd::mouse_button::left),
+                .mouse_pressed  = state.mouse_pressed(wnd::mouse_button::left),
+                .mouse_released = state.mouse_released(wnd::mouse_button::left),
+                .scroll         = cast::round<f32>(state.scroll().y),
+            };
+        }
+    }
+
+    // ---- drawing -----------------------------------------------------------------------------------
+
+    // The font atlas: 16 x 6 cells of 9 x 18 pixels, printable ASCII from cell 0; cell 95 is solid.
+    private compile_time f32 atlas_width = 144.0;
+    private compile_time f32 atlas_height = 108.0;
+
+    // The atlas position of cell `k` (top-left corner, in texture coordinates).
+    private vec2 cell_uv(u32 k) {
+        f32 column = cast<f32>(cast::truncate<u16>(k % 16));
+        f32 row = cast<f32>(cast::truncate<u16>(k / 16));
+        return vec2{ .x = column * glyph_width / atlas_width, .y = row * glyph_height / atlas_height };
+    }
+
+    // Four vertices and two triangles; `uv` and `uv_size` pick the atlas area.
+    private usize quad(mut draw_list& list, rect r, vec2 uv, vec2 uv_size, color c) {
+        usize first = list.vertices.len();
+        u32 base = cast::truncate<u32>(first);
+        list.vertices.push(vertex{ .x = r.x,       .y = r.y,       .u = uv.x,             .v = uv.y,             .color = c.packed });
+        list.vertices.push(vertex{ .x = r.x + r.w, .y = r.y,       .u = uv.x + uv_size.x, .v = uv.y,             .color = c.packed });
+        list.vertices.push(vertex{ .x = r.x + r.w, .y = r.y + r.h, .u = uv.x + uv_size.x, .v = uv.y + uv_size.y, .color = c.packed });
+        list.vertices.push(vertex{ .x = r.x,       .y = r.y + r.h, .u = uv.x,             .v = uv.y + uv_size.y, .color = c.packed });
+        list.indices.push(base);
+        list.indices.push(base + 1);
+        list.indices.push(base + 2);
+        list.indices.push(base);
+        list.indices.push(base + 2);
+        list.indices.push(base + 3);
+        return first;
+    }
+
+    // The middle of the solid cell: a single texel, so the whole rectangle samples full coverage.
+    private vec2 solid_uv() {
+        vec2 corner = cell_uv(95);
+        return vec2{ .x = corner.x + 4.0 / atlas_width, .y = corner.y + 8.0 / atlas_height };
+    }
+
+    struct draw_list {
+        void clear() mut {
+            this.vertices.clear();
+            this.indices.clear();
+        }
+
+        usize fill(rect r, color c) mut {
+            return quad(mut this, r, solid_uv(), vec2{}, c);
+        }
+
+        void move_rect(usize first, rect r, color c) mut {
+            vec2 uv = solid_uv();
+            this.vertices[first]     = vertex{ .x = r.x,       .y = r.y,       .u = uv.x, .v = uv.y, .color = c.packed };
+            this.vertices[first + 1] = vertex{ .x = r.x + r.w, .y = r.y,       .u = uv.x, .v = uv.y, .color = c.packed };
+            this.vertices[first + 2] = vertex{ .x = r.x + r.w, .y = r.y + r.h, .u = uv.x, .v = uv.y, .color = c.packed };
+            this.vertices[first + 3] = vertex{ .x = r.x,       .y = r.y + r.h, .u = uv.x, .v = uv.y, .color = c.packed };
+        }
+
+        void text(vec2 at, std::str s, color c) mut {
+            vec2 cell = vec2{ .x = glyph_width / atlas_width, .y = glyph_height / atlas_height };
+            mut f32 x = at.x;
+            for (usize i : 0..s.len()) {
+                u8 byte = unsafe { std::raw::read(s.as_ptr().offset(i)) };
+                if (byte > 32 && byte < 127) {
+                    rect r = rect{ .x = x, .y = at.y, .w = glyph_width, .h = glyph_height };
+                    _ = quad(mut this, r, cell_uv(cast<u32>(byte) - 32), cell, c);
+                }
+                x += glyph_width;
+            }
+        }
+    }
+
+    f32 text_width(std::str s) {
+        return cast::round<f32>(cast::round<f64>(s.len())) * glyph_width;
+    }
+
+    // ---- ids -----------------------------------------------------------------------------------------
+
+    // The id of a widget: its scope's id, where it was called and its label.
+    private u64 make_id(u64 base, std::call_site where, std::str label) {
+        mut u64 h = std::hash_combine(base, std::hash(where.file));
+        h = std::hash_combine(h, cast<u64>(where.line));
+        h = std::hash_combine(h, cast<u64>(where.column));
+        return std::hash_combine(h, std::hash(label));
+    }
+
+    // ---- context ---------------------------------------------------------------------------------------
+
+    class context {
+    public:
+        static context make() {
+            return context{};
+        }
+
+        frame begin_frame(input frame_input, vec2 frame_size) mut {
+            this.frame_number += 1;
+            this.in = frame_input;
+            this.size = frame_size;
+            this.list.clear();
+            this.last_window_rects = std::take(mut this.window_rects);
+            this.window_rects.clear();
+            this.last_duplicates = this.duplicates;
+            this.duplicates = 0;
+            this.hot = 0;
+            if (!this.in.mouse_down && !this.in.mouse_released) {
+                this.active = 0;
+            }
+            return frame{ .ctx = this };
+        }
+
+        draw_list& draw_data() {
+            return this.list;
+        }
+
+        bool wants_mouse() {
+            if (this.active != 0) {
+                return true;
+            }
+            for (rect r : this.last_window_rects) {
+                if (r.contains(this.in.cursor)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        wnd::routing on_event(wnd::event e, wnd::input_state& state) mut override {
+            bool over = this.wants_mouse();
+            return match (e) {
+                wnd::event::mouse_button(_) if over => wnd::routing::consume,
+                wnd::event::scrolled(_) if over     => wnd::routing::consume,
+                _                                   => wnd::routing::pass,
+            };
+        }
+
+        u32 duplicate_ids() {
+            return this.last_duplicates;
+        }
+
+        mut widget_state& state_of(u64 id) mut {
+            return this.states.get_or_insert(id, widget_state{});
+        }
+
+        bool hovered(rect r) {
+            return r.contains(this.in.cursor);
+        }
+
+        mut layout& top() mut {
+            usize n = this.layouts.len();
+            return this.layouts[n - 1];
+        }
+
+        rect place(f32 width, f32 height) mut {
+            mut layout& l = this.top();
+            rect r = rect{ .x = l.x, .y = l.y, .w = width, .h = height };
+            l.y += height + spacing;
+            if (r.y + r.h > l.bottom) {
+                l.bottom = r.y + r.h;
+            }
+            return r;
+        }
+    }
+
+    // Marks `id` as used this frame; a second use in the same frame is a duplicate.
+    private void touch(mut context& ctx, u64 id) {
+        u64 now = ctx.frame_number;
+        mut widget_state& s = ctx.state_of(id);
+        if (s.seen_in_frame == now) {
+            ctx.duplicates += 1;
+        }
+        s.seen_in_frame = now;
+    }
+
+    // Hover and press for the widget `id` at `r`. Returns true when it was clicked this frame.
+    private bool interact(mut context& ctx, u64 id, rect r) {
+        bool over = ctx.hovered(r);
+        if (over) {
+            ctx.hot = id;
+            if (ctx.in.mouse_pressed) {
+                ctx.active = id;
+            }
+        }
+        return over && ctx.in.mouse_released && ctx.active == id;
+    }
+
+    // ---- frame ---------------------------------------------------------------------------------------
+
+    view class frame {
+    public:
+        scope window(std::str title, vec2 start, implicit compile_time std::call_site where) mut {
+            u64 id = make_id(0, where, title);
+            touch(mut this.ctx, id);
+            vec2 position = {
+                mut widget_state& s = this.ctx.state_of(id);
+                if (!s.open) {                      // first time: place it, and start open
+                    s.open = true;
+                    s.position = start;
+                }
+                s.position
+            };
+            rect bar = rect{ .x = position.x, .y = position.y, .w = window_width, .h = row_height };
+
+            // Dragging the title bar moves the window.
+            bool over_bar = this.ctx.hovered(bar);
+            if (over_bar && this.ctx.in.mouse_pressed) {
+                this.ctx.active = id;
+                this.ctx.drag_offset = vec2{ .x = this.ctx.in.cursor.x - position.x, .y = this.ctx.in.cursor.y - position.y };
+            }
+            if (this.ctx.active == id && this.ctx.in.mouse_down) {
+                vec2 moved = vec2{ .x = this.ctx.in.cursor.x - this.ctx.drag_offset.x, .y = this.ctx.in.cursor.y - this.ctx.drag_offset.y };
+                this.ctx.state_of(id).position = moved;
+            }
+            vec2 at = this.ctx.state_of(id).position;
+            rect moved_bar = rect{ .x = at.x, .y = at.y, .w = window_width, .h = row_height };
+
+            usize background_quad = this.ctx.list.fill(moved_bar, background());   // resized when the scope ends
+            _ = this.ctx.list.fill(moved_bar, title_color());
+            this.ctx.list.text(vec2{ .x = at.x + padding, .y = at.y + 3.0 }, title, text_color());
+
+            f32 top = at.y + row_height + padding;
+            this.ctx.layouts.push(layout{ .x = at.x + padding, .y = top, .width = window_width - 2.0 * padding, .bottom = top });
+            return scope{ .ctx = this.ctx, .id_base = id, .visible = true, .kind = 2, .background = background_quad, .title_bar = moved_bar };
+        }
+
+        void finish() move {
+        }
+    }
+
+    // ---- scope -------------------------------------------------------------------------------------------
+
+    view class scope {
+    public:
+        bool open() {
+            return this.visible;
+        }
+
+        void text(std::format_args message) mut {
+            if (!this.visible) {
+                return;
+            }
+            std::string s = std::format(move message);
+            rect r = this.ctx.place(text_width(s.as_str()), row_height);
+            this.ctx.list.text(vec2{ .x = r.x, .y = r.y + 3.0 }, s.as_str(), text_color());
+        }
+
+        bool button(std::str label, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = make_id(this.id_base, where, label);
+            touch(mut this.ctx, wid);
+            rect r = this.ctx.place(text_width(label) + 2.0 * padding, row_height);
+            bool clicked = interact(mut this.ctx, wid, r);
+            color c = if (this.ctx.active == wid && this.ctx.in.mouse_down) { accent() }
+                      else if (this.ctx.hot == wid) { hover_color() }
+                      else { title_color() };
+            _ = this.ctx.list.fill(r, c);
+            this.ctx.list.text(vec2{ .x = r.x + padding, .y = r.y + 3.0 }, label, text_color());
+            return clicked;
+        }
+
+        bool checkbox(std::str label, mut bool& value, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = make_id(this.id_base, where, label);
+            touch(mut this.ctx, wid);
+            rect r = this.ctx.place(row_height + padding + text_width(label), row_height);
+            bool clicked = interact(mut this.ctx, wid, r);
+            if (clicked) {
+                value = !value;
+            }
+            rect box = rect{ .x = r.x + 4.0, .y = r.y + 4.0, .w = row_height - 8.0, .h = row_height - 8.0 };
+            _ = this.ctx.list.fill(box, if (this.ctx.hot == wid) { hover_color() } else { frame_color() });
+            if (value) {
+                _ = this.ctx.list.fill(rect{ .x = box.x + 3.0, .y = box.y + 3.0, .w = box.w - 6.0, .h = box.h - 6.0 }, accent());
+            }
+            this.ctx.list.text(vec2{ .x = r.x + row_height + padding, .y = r.y + 3.0 }, label, text_color());
+            return clicked;
+        }
+
+        template<type T>
+        bool slider(std::str label, mut T& value, T min, T max, implicit compile_time std::call_site where) mut {
+            if (!this.visible) {
+                return false;
+            }
+            u64 wid = make_id(this.id_base, where, label);
+            touch(mut this.ctx, wid);
+            mut f64 v = to_f64(value);
+            std::string shown = std::format(f"{value}");
+            bool changed = slide(mut this.ctx, wid, label, mut v, to_f64(min), to_f64(max), shown.as_str());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        }
+
+        scope tree(std::str label, implicit compile_time std::call_site where) mut {
+            u64 wid = make_id(this.id_base, where, label);
+            if (!this.visible) {
+                this.ctx.layouts.push(this.ctx.top());
+                return scope{ .ctx = this.ctx, .id_base = wid, .visible = false, .kind = 1 };
+            }
+            touch(mut this.ctx, wid);
+            rect r = this.ctx.place(this.ctx.top().width, row_height);
+            if (interact(mut this.ctx, wid, r)) {
+                mut widget_state& s = this.ctx.state_of(wid);
+                s.open = !s.open;
+            }
+            bool is_open = this.ctx.state_of(wid).open;
+            if (this.ctx.hot == wid) {
+                _ = this.ctx.list.fill(r, hover_color());
+            }
+            this.ctx.list.text(vec2{ .x = r.x + 2.0, .y = r.y + 3.0 }, if (is_open) { "v" } else { ">" }, muted());
+            this.ctx.list.text(vec2{ .x = r.x + 2.0 + 2.0 * glyph_width, .y = r.y + 3.0 }, label, text_color());
+            layout parent = this.ctx.top();
+            this.ctx.layouts.push(layout{ .x = parent.x + indent, .y = parent.y, .width = parent.width - indent, .bottom = parent.y });
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = is_open, .kind = 1 };
+        }
+
+        template<type K>
+        scope id(K key, implicit compile_time std::call_site where) mut {
+            u64 wid = std::hash_combine(make_id(this.id_base, where, ""), std::hash(key));
+            return scope{ .ctx = this.ctx, .id_base = wid, .visible = this.visible, .kind = 0 };
+        }
+
+        ~scope() {
+            if (this.kind == 0) {
+                return;
+            }
+            layout inner = match (this.ctx.layouts.pop()) {
+                std::some(l) => l,
+                std::none    => return,
+            };
+            if (this.kind == 1) {
+                mut layout& parent = this.ctx.top();       // the parent continues below the node's content
+                if (inner.bottom > parent.y) {
+                    parent.y = inner.bottom + spacing;
+                }
+                if (inner.bottom > parent.bottom) {
+                    parent.bottom = inner.bottom;
+                }
+                return;
+            }
+            rect whole = rect{ .x = this.title_bar.x, .y = this.title_bar.y, .w = this.title_bar.w,
+                               .h = inner.bottom - this.title_bar.y + padding };
+            this.ctx.list.move_rect(this.background, whole, ui::background());
+            this.ctx.window_rects.push(whole);
+        }
+
+        template<type T>
+        bool field(mut T& value, compile_time std::static_str name, implicit compile_time std::call_site where) mut {
+            if compile_time (!has_field<T>(name)) {
+                std::compile_error(f"'{std::type_name<T>()}' has no field '{name}'");
+            }
+            if (!this.visible) {
+                return false;
+            }
+            mut bool changed = false;
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (f.name == name) {
+                    u64 wid = make_id(this.id_base, where, name);
+                    changed = edit_value(mut this, wid, name, mut f.get(mut value), f.annotation<range>(), f.has<read_only>());
+                }
+            }
+            return changed;
+        }
+
+        template<type T>
+        bool inspect(std::str label, mut T& value, implicit compile_time std::call_site where) mut {
+            mut scope node = this.tree(label, where);
+            return node.inspect_fields(mut value);
+        }
+
+        template<type T>
+        bool inspect_fields(mut T& value) mut {
+            if (!this.visible) {
+                return false;
+            }
+            mut bool changed = false;
+            for compile_time (std::meta::field f : std::meta::fields<T>()) {
+                if compile_time (!f.has<hidden>()) {
+                    u64 wid = std::hash_combine(this.id_base, std::hash(f.name));
+                    if (edit_value(mut this, wid, f.name, mut f.get(mut value), f.annotation<range>(), f.has<read_only>())) {
+                        changed = true;
+                    }
+                }
+            }
+            return changed;
+        }
+    }
+
+    // Numbers as f64 and back, for the generic slider.
+    private template<type T>
+    f64 to_f64(T v) {
+        if compile_time (std::is_same<T, f32>() || std::is_same<T, f64>() || std::is_same<T, i32>() || std::is_same<T, u32>()) {
+            return cast<f64>(v);
+        } else {
+            return cast::round<f64>(v);
+        }
+    }
+
+    private template<type T>
+    T from_f64(f64 v) {
+        if compile_time (std::is_same<T, f64>()) {
+            return v;
+        } else if compile_time (std::is_float<T>()) {
+            return cast::round<T>(v);
+        } else {
+            return cast::saturate<T>(v);
+        }
+    }
+
+    // The slider of `id` at the next row; works in f64.
+    private bool slide(mut context& ctx, u64 id, std::str label, mut f64& value, f64 min, f64 max, std::str shown) {
+        f32 label_width = 110.0;
+        rect row = ctx.place(ctx.top().width, row_height);
+        rect track = rect{ .x = row.x + label_width, .y = row.y, .w = row.w - label_width, .h = row.h };
+        _ = interact(mut ctx, id, track);
+        mut bool changed = false;
+        if (ctx.active == id && ctx.in.mouse_down && max > min) {
+            f32 part = (ctx.in.cursor.x - track.x) / track.w;
+            f64 t = cast<f64>(if (part < 0.0) { 0.0 } else if (part > 1.0) { 1.0 } else { part });
+            f64 v = min + t * (max - min);
+            if (v != value) {
+                value = v;
+                changed = true;
+            }
+        }
+        f64 fraction = if (max > min) { (value - min) / (max - min) } else { 0.0 };
+        _ = ctx.list.fill(track, if (ctx.hot == id || ctx.active == id) { hover_color() } else { frame_color() });
+        _ = ctx.list.fill(rect{ .x = track.x, .y = track.y, .w = track.w * cast::round<f32>(fraction), .h = track.h },
+                          if (ctx.active == id) { accent_hover() } else { accent() });
+        ctx.list.text(vec2{ .x = row.x, .y = row.y + 3.0 }, label, muted());
+        ctx.list.text(vec2{ .x = track.x + 6.0, .y = track.y + 3.0 }, shown, text_color());
+        return changed;
+    }
+
+    // ---- reflection ----------------------------------------------------------------------------------
+
+    template<type T>
+    compile_time bool has_field(std::static_str name) {
+        for (std::meta::field f : std::meta::fields<T>()) {
+            if (f.name == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The editor of one value: `id` is the widget's id, `r` the field's range annotation.
+    private template<type T>
+    bool edit_value(mut scope& s, u64 id, std::str label, mut T& value, std::option<range> r, bool locked) {
+        if compile_time (std::is_same<T, bool>()) {
+            if (locked) {
+                s.text(f"{label}: {value}");
+                return false;
+            }
+            touch(mut s.ctx, id);
+            rect row = s.ctx.place(row_height + padding + text_width(label), row_height);
+            bool clicked = interact(mut s.ctx, id, row);
+            if (clicked) {
+                value = !value;
+            }
+            rect box = rect{ .x = row.x + 4.0, .y = row.y + 4.0, .w = row_height - 8.0, .h = row_height - 8.0 };
+            _ = s.ctx.list.fill(box, frame_color());
+            if (value) {
+                _ = s.ctx.list.fill(rect{ .x = box.x + 3.0, .y = box.y + 3.0, .w = box.w - 6.0, .h = box.h - 6.0 }, accent());
+            }
+            s.ctx.list.text(vec2{ .x = row.x + row_height + padding, .y = row.y + 3.0 }, label, text_color());
+            return clicked;
+        } else if compile_time (std::is_float<T>() || std::is_integer<T>()) {
+            std::string shown = std::format(f"{value}");
+            if (locked) {
+                s.text(f"{label}: {shown}");
+                return false;
+            }
+            touch(mut s.ctx, id);
+            mut f64 v = to_f64(value);
+            range limits = r.value_or(range{ .min = 0.0, .max = 100.0 });
+            bool changed = slide(mut s.ctx, id, label, mut v, limits.min, limits.max, shown.as_str());
+            if (changed) {
+                value = from_f64<T>(v);
+            }
+            return changed;
+        } else if compile_time (std::meta::is_struct<T>()) {
+            mut scope node = s.tree(label);
+            return node.inspect_fields(mut value);
+        } else {
+            s.text(f"{label}: {value}");
+            return false;
+        }
+    }
+
+}

@@ -1749,6 +1749,8 @@ private:
             if (!level.empty()) fn->addFnAttr("edax-optimize", level);
         }
         lambda_fns_[&l] = fn;
+        if (std::string outer = function_name(cur_fn_); !outer.empty()) fn_names_[fn] = "lambda in " + outer;
+        else fn_names_[fn] = "lambda";
         lambda_queue_.push_back(&l);
         return fn;
     }
@@ -1938,6 +1940,7 @@ private:
         }
         try {
             cur_fn_ = fn;
+            fn_names_[fn] = display_name(s);
             debug_function(fn, s->span, options_.debug_variables ? display_name(s) : s->name);
             locals_.clear();
             loops_.clear();
@@ -1951,6 +1954,7 @@ private:
             b_.SetInsertPoint(entry);
             open_scope();
             unsigned offset = 0;
+            this_owned_.reset();
             if (has_self(s)) {
                 self_   = fn->getArg(0);
                 offset  = 1;
@@ -1964,6 +1968,7 @@ private:
                     llvm::AllocaInst* flag = entry_alloca(llvm::Type::getInt1Ty(ctx_), "df_this");
                     b_.CreateStore(llvm::ConstantInt::getTrue(ctx_), flag);
                     scopes_.back().locals.push_back(OwnedLocal{self_, flag, drop_function(st)});
+                    this_owned_ = OwnedLocal{self_, flag, drop_function(st), nullptr, st};   // `return this;` moves it out
                 }
             }
             for (std::size_t i = 0; i < f->params.size(); ++i) {
@@ -2036,11 +2041,49 @@ private:
     // After a `return`, `break` or `continue`: following code goes into a block nothing jumps to.
     void open_dead_block() { b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "dead", cur_fn_)); }
 
+    // A piece of the run-time part of a panic message: text, or an integer formatted when the
+    // check fails (the operands of an overflow, an index).
+    struct PanicPart {
+        std::string  text;
+        llvm::Value* value     = nullptr;
+        bool         is_signed = false;
+    };
+
+    static PanicPart part(std::string text) { return PanicPart{std::move(text), nullptr, false}; }
+    static PanicPart part(llvm::Value* v, bool is_signed) { return PanicPart{{}, v, is_signed}; }
+
+    // The source text of `span` for a panic message: one line (runs of white space become one
+    // space), at most 48 characters.
+    std::string snippet(Span span) const {
+        std::string_view text = sources_.file(span.file).text();
+        if (span.begin >= span.end || span.end > text.size()) return {};
+        std::string out;
+        bool        space = false;
+        for (char ch : text.substr(span.begin, span.end - span.begin)) {
+            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+                space = !out.empty();
+                continue;
+            }
+            if (static_cast<unsigned char>(ch) < 0x20) continue;   // no control characters in a message
+            if (space) out += ' ';
+            space = false;
+            out += ch;
+        }
+        while (!out.empty() && (out.back() == ';' || out.back() == ' ')) out.pop_back();   // an assignment's span ends with `;`
+        if (out.size() > 48) out = out.substr(0, 45) + "...";
+        return out;
+    }
+
     // Panics with `message` at `span` unless `ok` holds (spec 16). `ok` is an i1.
-    void check(llvm::Value* ok, Span span, const std::string& message) {
+    void check(llvm::Value* ok, Span span, const std::string& message) { check(ok, span, message, {}); }
+
+    // The same, with `values` appended to the message when the check fails: `summary` is what
+    // the check says before it runs (insights, `edaxc explain-checks`), the values are added to
+    // it at run time.
+    void check(llvm::Value* ok, Span span, const std::string& summary, const std::vector<PanicPart>& values) {
         if (auto* c = llvm::dyn_cast<llvm::ConstantInt>(ok); c && c->isOne()) return;   // cannot fail
         if (inspect_) {
-            insight(span, "checks", "check", "range", "can panic: " + message,
+            insight(span, "checks", "check", "range", "can panic: " + summary,
                     "A run-time check (spec 16, 23): when it fails, the program panics with this message. Checks that cannot fail "
                     "(a constant divisor, an exhaustive match) are not generated.");
         }
@@ -2048,9 +2091,61 @@ private:
         llvm::BasicBlock* good = llvm::BasicBlock::Create(ctx_, "ok", cur_fn_);
         b_.CreateCondBr(ok, good, bad);
         b_.SetInsertPoint(bad);
-        b_.CreateCall(edax_panic_str_, {loc_global(span), message_bytes(message), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), message.size())});
-        b_.CreateUnreachable();
+        llvm::DebugLoc saved_loc = b_.getCurrentDebugLocation();
+        debug_at(span);   // a debugger stops here: at the expression that failed
+        if (options_.panic_trap) {
+            b_.CreateCall(intrinsic_declaration(mod_.get(), llvm::Intrinsic::trap, {}));
+            b_.CreateUnreachable();
+        } else if (values.empty()) {
+            b_.CreateCall(edax_panic_str_, {loc_global(span), message_bytes(summary), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), summary.size())});
+            end_panic();
+        } else {
+            std::string               text = summary;
+            std::vector<llvm::Value*> numbers;
+            for (const PanicPart& v : values) {
+                if (!v.value) {
+                    text += v.text;
+                    continue;
+                }
+                text += v.is_signed ? '\x01' : '\x02';
+                numbers.push_back(widen_for_panic(v.value, v.is_signed));
+            }
+            panic_values(loc_global(span), text, numbers, summary);
+            end_panic();
+        }
+        b_.SetCurrentDebugLocation(saved_loc);
         b_.SetInsertPoint(good);
+    }
+
+    // An integer as the runtime's i128 for edax_panic_values.
+    llvm::Value* widen_for_panic(llvm::Value* v, bool is_signed) {
+        auto* i128 = llvm::Type::getInt128Ty(ctx_);
+        return is_signed ? b_.CreateSExtOrTrunc(v, i128) : b_.CreateZExtOrTrunc(v, i128);
+    }
+
+    // Calls edax_panic_values: `text` with \x01 (signed) and \x02 (unsigned) where the values go,
+    // at most two. One call, so a check's failure path doesn't make its function look big to
+    // the inliner. `summary` is the message before it runs (edaxc explain-checks).
+    void panic_values(llvm::Value* loc, const std::string& text, const std::vector<llvm::Value*>& numbers, const std::string& summary) {
+        auto* p    = ptr_type();
+        auto* i64  = llvm::Type::getInt64Ty(ctx_);
+        auto* i128 = llvm::Type::getInt128Ty(ctx_);
+        llvm::Value* zero = llvm::ConstantInt::get(i128, 0);
+        llvm::CallInst* call = b_.CreateCall(runtime("edax_panic_values", llvm::Type::getVoidTy(ctx_), {p, p, i64, i128, i128}),
+                                             {loc, message_bytes(text), llvm::ConstantInt::get(i64, text.size()),
+                                              numbers.size() > 0 ? numbers[0] : zero, numbers.size() > 1 ? numbers[1] : zero});
+        call->setMetadata("edax.message", llvm::MDNode::get(ctx_, llvm::MDString::get(ctx_, summary)));
+    }
+
+    // The end of a panic block, after the runtime printed the panic: the runtime returns only
+    // when a debugger is attached, and then the program stops right here, at the line that
+    // panicked (`stop_debugger_on_panic()`, spec 24). Continuing ends the process.
+    void end_panic() {
+        bool stop = mode_setting("stop_debugger_on_panic") != "false";
+        if (stop) b_.CreateCall(intrinsic_declaration(mod_.get(), llvm::Intrinsic::debugtrap, {}));
+        b_.CreateCall(runtime("edax_panic_end", llvm::Type::getVoidTy(ctx_), {llvm::Type::getInt1Ty(ctx_)}),
+                      {llvm::ConstantInt::getBool(ctx_, stop)});
+        b_.CreateUnreachable();
     }
 
     // Where the current call of a function with run_time entry checks was made (null: unknown,
@@ -2085,16 +2180,27 @@ private:
         return false;
     }
 
-    // The source location `edax_loc` global for `span`: `{ file, line, column }`.
+    // How panics name the function being generated: `geo::polygon::area`, `lambda in main`
+    // ("" for the compiler's own helpers).
+    std::string function_name(const llvm::Function* fn) const {
+        auto it = fn ? fn_names_.find(fn) : fn_names_.end();
+        return it == fn_names_.end() ? std::string() : it->second;
+    }
+
+    // The source location `edax_loc` global for `span`: `{ file, line, column, function }`. The
+    // function is the one being generated (a C string, or null), which panics name.
     llvm::Constant* loc_global(Span span) {
-        auto key = std::make_pair(span.file, span.begin);
+        std::string function = function_name(cur_fn_);
+        auto key = std::make_tuple(span.file, span.begin, function);
         if (auto it = locs_.find(key); it != locs_.end()) return it->second;
         const SourceFile& file = sources_.file(span.file);
         LineCol           lc   = file.line_col(span.begin);
         llvm::Constant*   path = string_global(file.path());
+        llvm::Constant*   name = function.empty() ? static_cast<llvm::Constant*>(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)))
+                                                  : string_global(function);
         llvm::Constant*   init = llvm::ConstantStruct::get(
             loc_type_, {path, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), lc.line),
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), lc.column)});
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), lc.column), name});
         auto* g = new llvm::GlobalVariable(*mod_, loc_type_, true, llvm::GlobalValue::PrivateLinkage, init,
                                            std::format("edax_loc_{}", locs_.size()));
         locs_[key] = g;
@@ -2378,7 +2484,8 @@ private:
                 llvm::Value* v = gen_expr(*e.as<IndexExpr>().object);
                 auto*        i64 = llvm::Type::getInt64Ty(ctx_);
                 llvm::Value* i = b_.CreateZExtOrTrunc(gen_expr(*e.as<IndexExpr>().index), i64);
-                check(b_.CreateICmpULT(i, llvm::ConstantInt::get(i64, static_cast<std::uint64_t>(vt->bits))), e.span, "lane index out of bounds");
+                check(b_.CreateICmpULT(i, llvm::ConstantInt::get(i64, static_cast<std::uint64_t>(vt->bits))), e.span, "lane index out of bounds",
+                      {part(": "), part(i, false), part(std::format(" (lanes: {})", vt->bits))});
                 return b_.CreateExtractElement(v, i);
             }
             unsupported(e.span, "indexing");
@@ -2510,7 +2617,7 @@ private:
             if (t && t->is_float()) return b_.CreateFNeg(a);
             if (!t || !t->is_integer()) unsupported(u.span, "'-' on this type");
             llvm::Value* minimum = llvm::ConstantInt::get(ctx_, llvm::APInt::getSignedMinValue(static_cast<unsigned>(t->bits)));
-            check(b_.CreateICmpNE(a, minimum), u.span, std::format("integer overflow in '-' ({})", t->name));
+            check(b_.CreateICmpNE(a, minimum), u.span, overflow_message(u.span, "-", t->name), {part(": -("), part(a, true), part(")")});
             return b_.CreateSub(llvm::ConstantInt::get(a->getType(), 0), a);
         }
         if (u.op == UnaryOp::logical_not) return b_.CreateNot(truth(*u.operand));
@@ -2813,22 +2920,22 @@ private:
         }
         switch (op) {
         case TokenKind::plus: return checked(llvm::Intrinsic::sadd_with_overflow, llvm::Intrinsic::uadd_with_overflow, s, a, b, span,
-                                             std::format("integer overflow in '+' ({})", name));
+                                             overflow_message(span, "+", name), "+");
         case TokenKind::minus: return checked(llvm::Intrinsic::ssub_with_overflow, llvm::Intrinsic::usub_with_overflow, s, a, b,
-                                              span, std::format("integer overflow in '-' ({})", name));
+                                              span, overflow_message(span, "-", name), "-");
         case TokenKind::star: return checked(llvm::Intrinsic::smul_with_overflow, llvm::Intrinsic::umul_with_overflow, s, a, b,
-                                             span, std::format("integer overflow in '*' ({})", name));
+                                             span, overflow_message(span, "*", name), "*");
         case TokenKind::slash: {
-            check(b_.CreateICmpNE(b, llvm::ConstantInt::get(b->getType(), 0)), span, "division by zero");
+            check(b_.CreateICmpNE(b, llvm::ConstantInt::get(b->getType(), 0)), span, division_by_zero_message(span, "/"));
             if (!s) return b_.CreateUDiv(a, b);
             llvm::Value* minimum = llvm::ConstantInt::get(ctx_, llvm::APInt::getSignedMinValue(static_cast<unsigned>(t->bits)));
             llvm::Value* minus_one = llvm::ConstantInt::getAllOnesValue(b->getType());
             check(b_.CreateNot(b_.CreateAnd(b_.CreateICmpEQ(a, minimum), b_.CreateICmpEQ(b, minus_one))), span,
-                  std::format("integer overflow in '/' ({})", name));
+                  overflow_message(span, "/", name), {part(": "), part(a, true), part(" / "), part(b, true)});
             return b_.CreateSDiv(a, b);
         }
         case TokenKind::percent: {
-            check(b_.CreateICmpNE(b, llvm::ConstantInt::get(b->getType(), 0)), span, "division by zero in '%'");
+            check(b_.CreateICmpNE(b, llvm::ConstantInt::get(b->getType(), 0)), span, division_by_zero_message(span, "%"));
             if (!s) return b_.CreateURem(a, b);
             // MIN % -1 is 0; LLVM's srem would be undefined there, so the divisor is replaced by 1.
             llvm::Value* minus_one = llvm::ConstantInt::getAllOnesValue(b->getType());
@@ -2853,8 +2960,11 @@ private:
             }
             llvm::Value* count = rt && rt->is_signed ? b_.CreateSExtOrTrunc(b, llvm::Type::getInt128Ty(ctx_))
                                                      : b_.CreateZExtOrTrunc(b, llvm::Type::getInt128Ty(ctx_));
+            std::string text = snippet(span);
             check(b_.CreateICmpULT(count, llvm::ConstantInt::get(count->getType(), static_cast<std::uint64_t>(t->bits))),
-                  span, std::format("shift count out of range for {}", name));
+                  span, text.empty() ? std::format("shift count out of range for {}", name)
+                                     : std::format("shift count out of range for {} in '{}'", name, text),
+                  {part(": "), part(count, rt && rt->is_signed), part(std::format(" (must be below {})", t->bits))});
             llvm::Value* amount = b_.CreateZExtOrTrunc(count, a->getType());
             if (op == TokenKind::shl) return b_.CreateShl(a, amount);
             return s ? b_.CreateAShr(a, amount) : b_.CreateLShr(a, amount);
@@ -2864,16 +2974,29 @@ private:
         unsupported(span, std::format("'{}' on {}", token_kind_spelling(op), types::to_string(t)));
     }
 
-    // `a op b` with an overflow intrinsic: panics with `message` on overflow.
+    // `a op b` with an overflow intrinsic: panics with `message` and the operands on overflow.
     llvm::Value* checked(llvm::Intrinsic::ID signed_id, llvm::Intrinsic::ID unsigned_id, bool s, llvm::Value* a,
-                         llvm::Value* b, Span span, const std::string& message) {
+                         llvm::Value* b, Span span, const std::string& message, const char* symbol) {
         llvm::Function* f = intrinsic_declaration(mod_.get(), s ? signed_id : unsigned_id, {a->getType()});
         llvm::Value*    r = b_.CreateCall(f, {a, b});
-        check(b_.CreateNot(b_.CreateExtractValue(r, 1)), span, message);
+        check(b_.CreateNot(b_.CreateExtractValue(r, 1)), span, message,
+              {part(": "), part(a, s), part(std::format(" {} ", symbol)), part(b, s)});
         return b_.CreateExtractValue(r, 0);
     }
 
-    llvm::Value* if_value(IfExpr& i, const types::Type* t) {
+    // "integer overflow in 'high - low' (i16)": the expression as written, or the operator.
+    std::string overflow_message(Span span, const char* symbol, const std::string& type) const {
+        std::string text = snippet(span);
+        return std::format("integer overflow in '{}' ({})", text.empty() ? std::string(symbol) : text, type);
+    }
+
+    std::string division_by_zero_message(Span span, const char* symbol) const {
+        std::string text = snippet(span);
+        return std::format("division by zero in '{}'", text.empty() ? std::string(symbol) : text);
+    }
+
+    // `as_address`: every branch is a place (places_only), and the result is its address.
+    llvm::Value* if_value(IfExpr& i, const types::Type* t, bool as_address = false) {
         if (i.is_compile_time) {   // only the branch the checker chose exists (spec 15)
             if (i.taken == 0) return gen_block(*i.then_block);
             if (i.taken == 1) return gen_expr(*i.else_branch);
@@ -2882,27 +3005,27 @@ private:
         }
         llvm::Value*      cond     = truth(*i.condition);
         bool              has_value = !is_void(t);
-        llvm::AllocaInst* slot      = has_value ? entry_alloca(lower_type(types::strip_ref(t)), "if.value") : nullptr;
+        llvm::AllocaInst* slot      = has_value ? entry_alloca(as_address ? ptr_type() : lower_type(types::strip_ref(t)), "if.value") : nullptr;
         llvm::BasicBlock* then_bb   = llvm::BasicBlock::Create(ctx_, "then", cur_fn_);
         llvm::BasicBlock* else_bb   = i.else_branch ? llvm::BasicBlock::Create(ctx_, "else", cur_fn_) : nullptr;
         llvm::BasicBlock* end_bb    = llvm::BasicBlock::Create(ctx_, "endif", cur_fn_);
         b_.CreateCondBr(cond, then_bb, else_bb ? else_bb : end_bb);
         b_.SetInsertPoint(then_bb);
-        llvm::Value* tv = gen_block(*i.then_block);
+        llvm::Value* tv = gen_block(*i.then_block, as_address);
         if (!terminated()) {
             if (slot && tv) b_.CreateStore(tv, slot);
             b_.CreateBr(end_bb);
         }
         if (else_bb) {
             b_.SetInsertPoint(else_bb);
-            llvm::Value* ev = gen_expr(*i.else_branch);
+            llvm::Value* ev = as_address ? object_address(*i.else_branch) : gen_expr(*i.else_branch);
             if (!terminated()) {
                 if (slot && ev) b_.CreateStore(ev, slot);
                 b_.CreateBr(end_bb);
             }
         }
         b_.SetInsertPoint(end_bb);
-        return slot ? b_.CreateLoad(lower_type(types::strip_ref(t)), slot) : nullptr;
+        return slot ? b_.CreateLoad(as_address ? ptr_type() : lower_type(types::strip_ref(t)), slot) : nullptr;
     }
 
     llvm::Value* while_loop(WhileExpr& w) {
@@ -3350,7 +3473,7 @@ private:
         auto with_overflow = [&](llvm::Intrinsic::ID sid, llvm::Intrinsic::ID uid, const char* sym) -> llvm::Value* {
             llvm::Function* f = intrinsic_declaration(mod_.get(), sgn ? sid : uid, {a->getType()});
             llvm::Value*    r = b_.CreateCall(f, {a, b});
-            check_lanes(b_.CreateExtractValue(r, 1), bx.span, std::format("integer overflow in '{}' ({})", sym, name));
+            check_lanes(b_.CreateExtractValue(r, 1), bx.span, overflow_message(bx.span, sym, name));
             return b_.CreateExtractValue(r, 0);
         };
         switch (op) {
@@ -3359,11 +3482,11 @@ private:
         case TokenKind::star: return wrap ? b_.CreateMul(a, b) : with_overflow(llvm::Intrinsic::smul_with_overflow, llvm::Intrinsic::umul_with_overflow, "*");
         case TokenKind::slash:
         case TokenKind::percent: {
-            check_lanes(b_.CreateICmpEQ(b, llvm::Constant::getNullValue(b->getType())), bx.span, "division by zero");
+            check_lanes(b_.CreateICmpEQ(b, llvm::Constant::getNullValue(b->getType())), bx.span, division_by_zero_message(bx.span, "/"));
             if (!sgn) return op == TokenKind::slash ? b_.CreateUDiv(a, b) : b_.CreateURem(a, b);
             llvm::Value* minimum = vec_splat(t, llvm::ConstantInt::get(ctx_, llvm::APInt::getSignedMinValue(static_cast<unsigned>(lane->bits))));
             llvm::Value* m1      = llvm::Constant::getAllOnesValue(b->getType());
-            check_lanes(b_.CreateAnd(b_.CreateICmpEQ(a, minimum), b_.CreateICmpEQ(b, m1)), bx.span, std::format("integer overflow in '/' ({})", name));
+            check_lanes(b_.CreateAnd(b_.CreateICmpEQ(a, minimum), b_.CreateICmpEQ(b, m1)), bx.span, overflow_message(bx.span, "/", name));
             return op == TokenKind::slash ? b_.CreateSDiv(a, b) : b_.CreateSRem(a, b);
         }
         default: unsupported(bx.span, "this operator on vectors");
@@ -3485,7 +3608,7 @@ private:
             if (name == "abs") {
                 if (!sgn) return v;
                 llvm::Value* minimum = llvm::ConstantInt::get(ty, llvm::APInt::getSignedMinValue(static_cast<unsigned>(t->bits)));
-                check(b_.CreateICmpNE(v, minimum), c.span, std::format("integer overflow in 'abs' ({})", t->name));
+                check(b_.CreateICmpNE(v, minimum), c.span, overflow_message(c.span, "abs", t->name), {part(": abs("), part(v, true), part(")")});
                 return b_.CreateBinaryIntrinsic(llvm::Intrinsic::abs, v, llvm::ConstantInt::getFalse(ctx_));
             }
             if (name == "min") return b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smin : llvm::Intrinsic::umin, v, arg(0));
@@ -3493,7 +3616,8 @@ private:
             if (name == "clamp") {
                 llvm::Value* lo = arg(0);
                 llvm::Value* hi = arg(1);
-                check(sgn ? b_.CreateICmpSLE(lo, hi) : b_.CreateICmpULE(lo, hi), c.span, "clamp with lo > hi");
+                check(sgn ? b_.CreateICmpSLE(lo, hi) : b_.CreateICmpULE(lo, hi), c.span, "clamp with lo > hi",
+                      {part(": lo "), part(lo, sgn), part(", hi "), part(hi, sgn)});
                 llvm::Value* up = b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smax : llvm::Intrinsic::umax, v, lo);
                 return b_.CreateBinaryIntrinsic(sgn ? llvm::Intrinsic::smin : llvm::Intrinsic::umin, up, hi);
             }
@@ -3648,7 +3772,8 @@ private:
         if (name == "reduce_xor") return b_.CreateXorReduce(v);
         if (name == "with") {
             llvm::Value* i = b_.CreateZExtOrTrunc(arg(0), i64);
-            check(b_.CreateICmpULT(i, llvm::ConstantInt::get(i64, n)), c.span, "lane index out of bounds");
+            check(b_.CreateICmpULT(i, llvm::ConstantInt::get(i64, n)), c.span, "lane index out of bounds",
+                  {part(": "), part(i, false), part(std::format(" (lanes: {})", n))});
             return b_.CreateInsertElement(v, arg(1), i);
         }
         if (name == "to_bits") return b_.CreateBitCast(v, lower_type(types::strip_ref(c.type)));
@@ -4058,10 +4183,9 @@ private:
         auto* i128 = llvm::Type::getInt128Ty(ctx_);
         auto* ptr = llvm::PointerType::get(ctx_, 0);
         auto* vd  = llvm::Type::getVoidTy(ctx_);
-        loc_type_ = llvm::StructType::get(ctx_, {ptr, i32, i32});
+        loc_type_ = llvm::StructType::get(ctx_, {ptr, i32, i32, ptr});
         edax_panic_str_ = llvm::Function::Create(llvm::FunctionType::get(vd, {ptr, ptr, i64}, false),
                                                  llvm::Function::ExternalLinkage, "edax_panic_str", mod_.get());
-        edax_panic_str_->setDoesNotReturn();
         edax_panic_str_->addFnAttr(llvm::Attribute::Cold);   // the failure path of every check: kept out of the hot code
         edax_exit_status_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i128, ptr}, false),
                                                    llvm::Function::ExternalLinkage, "edax_exit_status", mod_.get());
@@ -4928,6 +5052,20 @@ private:
         bool reflected = e.constant && e.kind == ExprKind::member && !e.as<MemberExpr>().symbol;   // `p.passing` (spec 26)
         if (!reflected && e.type && e.type->is(Kind::reference)) return place(e);
         if (!reflected && is_place(e)) return place(e);
+        // `return match (w) { a => this.first, b => this.second };` from a function returning a
+        // reference: the address of the place the taken branch names, not a copy of its value.
+        if (e.kind == ExprKind::match && places_only(e)) {
+            ++cond_depth_;
+            llvm::Value* v = match_value(e.as<MatchExpr>(), e.type, true);
+            --cond_depth_;
+            return v;
+        }
+        if (e.kind == ExprKind::if_ && !e.as<IfExpr>().is_compile_time && places_only(e)) {
+            ++cond_depth_;
+            llvm::Value* v = if_value(e.as<IfExpr>(), e.type, true);
+            --cond_depth_;
+            return v;
+        }
         llvm::Value*      v    = gen_expr(e);
         llvm::AllocaInst* slot = entry_alloca(v->getType(), "temporary");
         b_.CreateStore(v, slot);
@@ -4940,6 +5078,29 @@ private:
             temporaries_[slot] = flag;
         }
         return slot;
+    }
+
+    // Whether every value `e` can produce is a place (or doesn't produce one: `return`, a panic):
+    // a match or an if whose branches name variables, fields or elements.
+    bool places_only(Expr& e) {
+        if (e.type && e.type->is(Kind::never)) return true;
+        if (is_place(e)) return true;
+        if (e.kind == ExprKind::block) {
+            BlockExpr& b = e.as<BlockExpr>();
+            return b.statements.empty() && b.tail && places_only(*b.tail);
+        }
+        if (e.kind == ExprKind::match) {
+            for (MatchArm& arm : e.as<MatchExpr>().arms) {
+                if (!arm.body || !places_only(*arm.body)) return false;
+            }
+            return true;
+        }
+        if (e.kind == ExprKind::if_) {
+            IfExpr& i = e.as<IfExpr>();
+            if (i.is_compile_time || !i.else_branch || !i.then_block || !i.then_block->tail) return false;
+            return places_only(*i.then_block->tail) && places_only(*i.else_branch);
+        }
+        return false;
     }
 
     // The drop flags of owned temporaries, by their slot: whoever takes a temporary over (a
@@ -4987,8 +5148,8 @@ private:
     llvm::Function* runtime(const char* name, llvm::Type* result, std::vector<llvm::Type*> params) {
         if (llvm::Function* f = mod_->getFunction(name)) return f;
         llvm::Function* f = llvm::Function::Create(llvm::FunctionType::get(result, params, false), llvm::Function::ExternalLinkage, name, mod_.get());
-        if (std::string_view(name).starts_with("edax_panic")) {   // panics never return and are rare
-            f->setDoesNotReturn();
+        if (std::string_view(name).starts_with("edax_panic")) {   // panics are rare; they return only to stop a debugger
+            if (std::string_view(name) == "edax_panic_end") f->setDoesNotReturn();
             f->addFnAttr(llvm::Attribute::Cold);
         }
         return f;
@@ -5034,6 +5195,15 @@ private:
         bool        err     = name.starts_with("e") || panic;
         if (c.args.size() != 1) unsupported(c.span, std::format("'std::{}' with {} arguments", name, c.args.size()));
         Expr& arg = *c.args[0];
+        if (panic) {
+            debug_at(c.span);   // a debugger stops at the call of std::panic
+            if (options_.panic_trap) {   // panic() == trap: no message (spec 24)
+                b_.CreateCall(intrinsic_declaration(mod_.get(), llvm::Intrinsic::trap, {}));
+                b_.CreateUnreachable();
+                open_dead_block();
+                return;
+            }
+        }
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         auto* i1  = llvm::Type::getInt1Ty(ctx_);
         auto* loc = llvm::PointerType::get(ctx_, 0);
@@ -5044,7 +5214,7 @@ private:
             llvm::AllocaInst* buf = text_into_buffer(arg);
             if (panic) {
                 b_.CreateCall(runtime("edax_panic_buf", llvm::Type::getVoidTy(ctx_), {loc, loc}), {loc_global(c.span), buf});
-                b_.CreateUnreachable();
+                end_panic();
                 open_dead_block();
             } else {
                 b_.CreateCall(runtime("edax_flush", llvm::Type::getVoidTy(ctx_), {loc, loc, i1}),
@@ -5061,7 +5231,7 @@ private:
         llvm::Value* len  = b_.CreateExtractValue(v, 1);
         if (panic) {
             b_.CreateCall(runtime("edax_panic_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64}), {loc_global(c.span), data, len});
-            b_.CreateUnreachable();
+            end_panic();
             open_dead_block();
         } else {
             b_.CreateCall(runtime("edax_write_str", llvm::Type::getVoidTy(ctx_), {loc, loc, i64, i1}),
@@ -5123,6 +5293,7 @@ private:
         auto                             saved_loops  = loops_;
         auto                             saved_owned  = owned_;
         const types::Type*               saved_result = result_;
+        fn_names_[fn] = function_name(saved_fn);   // an f-string's helper: panics name the function it is in
         cur_fn_ = fn;
         b_.SetInsertPoint(llvm::BasicBlock::Create(ctx_, "entry", fn));
         b_.SetCurrentDebugLocation(llvm::DebugLoc());
@@ -5561,7 +5732,8 @@ private:
 
     // `match`: the arms are tried in order; the first whose pattern (and guard) matches gives the
     // value. If none matches, the program panics (spec 07).
-    llvm::Value* match_value(MatchExpr& m, const types::Type* t) {
+    // `as_address`: every arm is a place (places_only), and the result is its address.
+    llvm::Value* match_value(MatchExpr& m, const types::Type* t, bool as_address = false) {
         Expr* scrutinee = m.scrutinee.get();
         bool  borrow_mut = false;   // `match (mut x)`: the bindings are the parts of x (spec 10)
         if (scrutinee->kind == ExprKind::unary && scrutinee->as<UnaryExpr>().op == UnaryOp::mut_marker) {
@@ -5584,7 +5756,7 @@ private:
             scopes_.back().locals.push_back(OwnedLocal{llvm::cast<llvm::AllocaInst>(addr), owned_flag, drop_function(st)});
         }
         bool               has_value = !is_void(t) && !(t && t->is_unknown());
-        llvm::AllocaInst*  slot      = has_value ? entry_alloca(lower_type(types::strip_ref(t)), "match.value") : nullptr;
+        llvm::AllocaInst*  slot      = has_value ? entry_alloca(as_address ? ptr_type() : lower_type(types::strip_ref(t)), "match.value") : nullptr;
         llvm::BasicBlock*  end_bb    = llvm::BasicBlock::Create(ctx_, "match.end", cur_fn_);
         for (MatchArm& arm : m.arms) {
             llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx_, "arm.next", cur_fn_);
@@ -5625,10 +5797,10 @@ private:
                 b_.CreateBr(body);
             }
             b_.SetInsertPoint(body);
-            llvm::Value* v = gen_expr(*arm.body);
+            llvm::Value* v = as_address ? object_address(*arm.body) : gen_expr(*arm.body);
             if (!terminated() && slot && v) {
                 b_.CreateStore(v, slot);
-                moved_out(*arm.body);   // `std::ok(list) => move list`: the value leaves the arm
+                if (!as_address) moved_out(*arm.body);   // `std::ok(list) => move list`: the value leaves the arm
             }
             close_scope();
             if (!terminated()) b_.CreateBr(end_bb);
@@ -5637,7 +5809,7 @@ private:
         check(llvm::ConstantInt::getFalse(ctx_), m.span, "no match arm matched");
         b_.CreateBr(end_bb);
         b_.SetInsertPoint(end_bb);
-        llvm::Value* result = slot ? b_.CreateLoad(lower_type(types::strip_ref(t)), slot) : nullptr;
+        llvm::Value* result = slot ? b_.CreateLoad(as_address ? ptr_type() : lower_type(types::strip_ref(t)), slot) : nullptr;
         close_scope();
         return result;
     }
@@ -5709,7 +5881,8 @@ private:
             return b_.CreateShl(llvm::ConstantInt::get(lt, 1),
                                 b_.CreateAnd(b_.CreateTrunc(n, lt), llvm::ConstantInt::get(lt, static_cast<std::uint64_t>(t->bits - 1))));
         }
-        check(in, b.span, std::format("bit index out of range for {}", t->name));
+        check(in, b.span, std::format("bit index out of range for {}", t->name),
+              {part(": "), part(n, true), part(std::format(" (must be 0 to {})", t->bits - 1))});
         return b_.CreateShl(llvm::ConstantInt::get(lt, 1), b_.CreateTrunc(n, lt));
     }
 
@@ -6015,9 +6188,13 @@ private:
             LineCol lc = file.line_col(c.condition->span.begin);
             bool in_std = file.path().starts_with("<std>");   // the library's checks: the caller's line is enough
             panic_with(*c.message, c.condition->span, at,
-                       in_std ? std::string() : std::format("\nnote: the check is at {}:{}:{}", file.path(), lc.line, lc.column));
+                       in_std ? std::string()
+                              : std::format("\nnote: the check `{}` is at {}:{}:{}", snippet(c.condition->span), file.path(), lc.line, lc.column));
         } else {
-            panic_with(*c.message, c.condition->span);
+            bool        in_std = sources_.file(c.condition->span.file).path().starts_with("<std>");
+            std::string text   = snippet(c.condition->span);
+            panic_with(*c.message, c.condition->span, nullptr,
+                       in_std || text == "false" ? std::string() : std::format("\nnote: the check `{}` failed", text));
         }
         b_.SetInsertPoint(pass);
         (void)span;
@@ -6290,7 +6467,47 @@ private:
         auto* p   = ptr_type();
         auto* i64 = llvm::Type::getInt64Ty(ctx_);
         auto* vd  = llvm::Type::getVoidTy(ctx_);
+        debug_at(where);   // a debugger stops at the line that panicked
+        if (options_.panic_trap) {   // panic() == trap: no message (spec 24)
+            b_.CreateCall(intrinsic_declaration(mod_.get(), llvm::Intrinsic::trap, {}));
+            b_.CreateUnreachable();
+            return;
+        }
         llvm::Value* loc = at ? at : loc_global(where);
+        if (message.kind == ExprKind::string_literal && message.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
+            // Holes that are all plain integers (at most two, as the library's bounds checks
+            // have): one call of edax_panic_values, which keeps the failure path small.
+            auto& parts = message.as<LiteralExpr>().format_parts;
+            std::size_t holes = 0;
+            bool        plain = true;
+            for (FormatPart& part : parts) {
+                if (!part.expr) {
+                    plain = plain && part.text.find_first_of("\x01\x02") == std::string::npos;
+                    continue;
+                }
+                const types::Type* t = types::strip_ref(part.expr->type);
+                ++holes;
+                plain = plain && t && t->is_integer() && t->bits <= 128 && !part.spec.present;
+            }
+            if (plain && holes <= 2) {
+                std::string               text, summary;
+                std::vector<llvm::Value*> numbers;
+                for (FormatPart& part : parts) {
+                    if (!part.expr) {
+                        text += part.text;
+                        summary += part.text;
+                        continue;
+                    }
+                    bool is_signed = types::strip_ref(part.expr->type)->is_signed;
+                    text += is_signed ? '\x01' : '\x02';
+                    summary += "{" + snippet(part.expr->span) + "}";
+                    numbers.push_back(widen_for_panic(gen_expr(*part.expr), is_signed));
+                }
+                panic_values(loc, text + suffix, numbers, summary);
+                end_panic();
+                return;
+            }
+        }
         if (!suffix.empty()) {   // the message, then a note: through a buffer
             llvm::AllocaInst* buf = entry_alloca(buffer_type(), "buffer");
             b_.CreateStore(llvm::ConstantAggregateZero::get(buffer_type()), buf);
@@ -6307,7 +6524,7 @@ private:
             b_.CreateCall(runtime("edax_buf_put", vd, {p, p, i64}),
                           {buf, message_bytes(suffix), llvm::ConstantInt::get(i64, suffix.size())});
             b_.CreateCall(runtime("edax_panic_buf", vd, {p, p}), {loc, buf});
-            b_.CreateUnreachable();
+            end_panic();
             return;
         }
         if (message.kind == ExprKind::string_literal && message.as<LiteralExpr>().token_kind == TokenKind::format_string_literal) {
@@ -6327,7 +6544,7 @@ private:
             b_.CreateCall(runtime("edax_panic_str", vd, {p, p, i64}),
                           {loc, b_.CreateExtractValue(v, 0), b_.CreateExtractValue(v, 1)});
         }
-        b_.CreateUnreachable();
+        end_panic();
     }
 
     // `cast::checked<T>(x)`: `std::some` of the converted value when it is exactly the same
@@ -6570,6 +6787,8 @@ private:
         const Symbol*      sym  = nullptr;
         const types::Type* type = nullptr;
     };
+    // `this` of the consuming method being generated, owned by it (spec 06).
+    std::optional<OwnedLocal> this_owned_;
     struct DropScope {
         std::vector<OwnedLocal> locals;
         bool                    loop = false;   // the body of a loop: break and continue stop here
@@ -6969,6 +7188,7 @@ private:
     // live payload of an enum.
     void gen_drop(const Symbol* s) {
         llvm::Function*                  fn       = drop_fns_[s];
+        fn_names_[fn] = "~" + types::qualified_name(tc_.user(s));
         inspect_                                  = false;
         llvm::IRBuilderBase::InsertPoint saved_ip = b_.saveIP();
         llvm::Function*                  saved_fn = cur_fn_;
@@ -7082,6 +7302,7 @@ private:
     const OwnedLocal* owned_path(const Expr& e) {
         const Expr* x = &e;
         if (x->kind == ExprKind::unary && x->as<UnaryExpr>().op == UnaryOp::move) x = x->as<UnaryExpr>().operand.get();
+        if (x->kind == ExprKind::this_ && this_owned_) return &*this_owned_;   // `this` of a consuming method
         if (x->kind != ExprKind::path) return nullptr;
         auto it = owned_.find(x->as<PathExpr>().symbol);
         return it == owned_.end() ? nullptr : &it->second;
@@ -7661,7 +7882,8 @@ private:
     std::deque<const LambdaExpr*>                     lambda_queue_;
     std::map<const types::Type*, llvm::StructType*>   closure_types_;
     std::map<const Symbol*, llvm::Value*>             locals_;   // the storage of each local (lambda captures: their place in the closure)
-    std::map<std::pair<FileId, std::uint32_t>, llvm::Constant*> locs_;
+    std::map<std::tuple<FileId, std::uint32_t, std::string>, llvm::Constant*> locs_;
+    std::map<const llvm::Function*, std::string>                         fn_names_;   // see function_name
     std::vector<Loop>                                 loops_;
     std::set<std::tuple<FileId, std::uint32_t, std::string>>    reported_;
 };
@@ -7945,7 +8167,10 @@ bool check_no_checks_left(llvm::Module& original, const sema::Program& program, 
             for (llvm::Instruction& in : bb) {
                 auto* call = llvm::dyn_cast<llvm::CallInst>(&in);
                 llvm::Function* callee = call ? call->getCalledFunction() : nullptr;
-                if (!callee || !callee->getName().starts_with("edax_panic") || call->arg_size() == 0) continue;
+                if (!callee || !callee->getName().starts_with("edax_panic") || callee->getName() == "edax_panic_end" ||
+                    call->arg_size() == 0) {
+                    continue;
+                }
                 if (call->arg_size() > 1) {   // std::assume and std::unreachable are checks the program asked for
                     auto* mg = llvm::dyn_cast<llvm::GlobalVariable>(call->getArgOperand(1)->stripPointerCasts());
                     auto* md = mg && mg->hasInitializer() ? llvm::dyn_cast<llvm::ConstantDataSequential>(mg->getInitializer()) : nullptr;
@@ -8192,11 +8417,11 @@ std::string runtime_text_for(const LlvmOptions& options) {
     }
     runtime_text += cpu_detection_ir();
     if (options.panic_trap) {   // every panic ends in edax_panic_buf: make it a trap
-        const std::string head = "define internal void @edax_panic_buf(ptr %loc, ptr %msg) noreturn cold {";
+        const std::string head = "define internal void @edax_panic_buf(ptr %loc, ptr %msg) cold {";
         std::size_t at = runtime_text.find(head);
         if (at != std::string::npos) {
             runtime_text.replace(at, head.size(), head + "\n  call void @llvm.trap()\n  unreachable\n}\n"
-                                                  "define internal void @edax_panic_buf.message(ptr %loc, ptr %msg) noreturn cold {");
+                                                  "define internal void @edax_panic_buf.message(ptr %loc, ptr %msg) cold {");
             runtime_text += "\ndeclare void @llvm.trap() cold noreturn nounwind\n";
         }
     }
@@ -8320,6 +8545,9 @@ std::string location_text(llvm::Value* v) {
 }
 
 std::string message_text(llvm::CallInst* call) {
+    if (auto* md = call->getMetadata("edax.message")) {   // a message with values added at run time: what it says before
+        if (auto* text = llvm::dyn_cast<llvm::MDString>(md->getOperand(0))) return text->getString().str();
+    }
     if (call->arg_size() < 2) return "";
     auto* mg = llvm::dyn_cast<llvm::GlobalVariable>(call->getArgOperand(1)->stripPointerCasts());
     auto* md = mg && mg->hasInitializer() ? llvm::dyn_cast<llvm::ConstantDataSequential>(mg->getInitializer()) : nullptr;
@@ -8342,7 +8570,7 @@ std::map<std::string, std::set<std::string>> check_sites(llvm::Module& mod) {
                 auto* call = llvm::dyn_cast<llvm::CallInst>(&in);
                 llvm::Function* callee = call ? call->getCalledFunction() : nullptr;
                 if (!callee || call->arg_size() == 0) continue;
-                if (callee->getName().starts_with("edax_panic")) {
+                if (callee->getName().starts_with("edax_panic") && callee->getName() != "edax_panic_end") {
                     std::string where = location_text(call->getArgOperand(0));
                     if (!where.empty()) out[where].insert(message_text(call));
                 } else if (callee->getName().ends_with(".at") && callee->hasFnAttribute("edax-name")) {

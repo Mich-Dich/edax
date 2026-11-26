@@ -75,6 +75,7 @@ swap(mut xs[i], mut xs[j]);                 // ERROR: one place; use xs.swap(i, 
 ```
 - **Value arguments are read first (two-phase).** An argument that binds to a value parameter (not a reference, and not a `view` type) is copied before the call starts, so it may read the place that the call's receiver or a `mut` argument borrows: `v.push(v[0])`, `ctx.state_of(ctx.open_menu)`, `bump(mut c, c.hits)`. A reference argument still may not overlap a mutable one.
 - Inside one function, the borrow of a place is tracked by its fields: a reference parameter's fields (`mut w.a, w.b` with `mut world& w`), local references to fields, and loops (`for (f32& v : w.b) { w.a.push(v); }` borrows only `w.b`). Across a call, a `mut` method borrows all of `this`; to hand out several fields at once, return them together (below).
+- **A view of a field borrows that field.** A view made by a method of a field (`t.position.as_mut_span()`) borrows `t.position`, not all of `t`, whether it is passed directly or held in a local: an ECS hands a system the columns it needs side by side, `each(t.position.as_mut_span(), t.velocity.as_span(), system)`. Using the same field again, or a `mut` method of `t` itself, while the view lives is still an error.
 - Containers hand out several elements with methods that check at run time: `split_at`, `chunks`, `get_many_mut([a, b])` (none when two handles are equal).
 
 ### Returning several references

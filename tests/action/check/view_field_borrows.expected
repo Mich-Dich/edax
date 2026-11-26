@@ -1,0 +1,43 @@
+exit: 1
+--- stdout
+--- stderr
+error[E5020]: 't.a' is passed as a mutable reference and also as another argument
+  --> tests/action/check/view_field_borrows.ed:18:26
+   |
+18 |     k(t.a.as_mut_span(), t.a.as_span());
+   |       -----------------  ^^^^^^^^^^^^^ second reference
+   = note: the mutable reference is here; while it exists it must be the only way to reach the value
+
+error[E5023]: 't.a' is already borrowed mutably by 'held'
+  --> tests/action/check/view_field_borrows.ed:22:5
+   |
+22 |     t.a.push(2.0);
+   |     ^ borrowed mutably
+   |
+19 |     std::span<mut f32> held = t.a.as_mut_span();
+   |     --------------------------------------------
+   = note: the borrow lasts until the last use of 'held'
+   = note: a 'mut &' borrow is the only way to reach the value while it lasts: read what you need from 't' before 'held' is made, or put 'held' in a block of its own
+
+error[E5022]: cannot call mut method 'push' on 't.b' while 'ro' borrows it
+  --> tests/action/check/view_field_borrows.ed:24:5
+   |
+24 |     t.b.push(3.0);
+   |     ^^^ still borrowed
+   |
+23 |     std::span<f32> ro = t.b.as_span();
+   |     ----------------------------------
+   = note: the borrow lasts until the last use of 'ro'
+
+error[E5023]: 't.a' is already borrowed mutably by 'held'
+  --> tests/action/check/view_field_borrows.ed:26:5
+   |
+26 |     t.clear_all();
+   |     ^ borrowed mutably
+   |
+19 |     std::span<mut f32> held = t.a.as_mut_span();
+   |     --------------------------------------------
+   = note: the borrow lasts until the last use of 'held'
+   = note: a 'mut &' borrow is the only way to reach the value while it lasts: read what you need from 't' before 'held' is made, or put 'held' in a block of its own
+
+4 errors, 0 warnings

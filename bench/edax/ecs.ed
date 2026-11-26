@@ -1,0 +1,67 @@
+// An ECS-shaped workload: 1M entities with a position and a velocity, stored as one column per
+// component (a table made by a field-generating template, spec 26), and three systems written as
+// lambdas that a generic `each` calls per entity (spec 34: span parameters are alias-scoped, so
+// the loops vectorize without overlap checks), 200 frames, then a checksum.
+import std;
+
+struct vec3 {
+    f32 x = 0.0;
+    f32 y = 0.0;
+    f32 z = 0.0;
+}
+
+struct moving {
+    vec3 position = default;
+    vec3 velocity = default;
+}
+
+template<type C>
+struct table {
+    for compile_time (std::meta::field f : std::meta::fields<C>()) {
+        std::darray<f.type> f.name = default;
+    }
+}
+
+template<type A, type B, type F>
+void each(std::span<mut A> a, std::span<B> b, F system) {
+    usize n = a.len();
+    std::assume(b.len() == n);
+    for (usize i : 0..n) {
+        system(mut a[i], b[i]);
+    }
+}
+
+template<type A, type F>
+void each_one(std::span<mut A> a, F system) {
+    for (usize i : 0..a.len()) {
+        system(mut a[i]);
+    }
+}
+
+i32 main() {
+    usize n = 1000000;
+    mut table<moving> t = default;
+    mut u32 seed = 12345;
+    for (usize i : 0..n) {
+        seed = seed *% 1664525 +% 1013904223;
+        f32 r = cast::round<f32>(seed >> 8) / 16777216.0;
+        t.position.push(vec3{ .x = r * 100.0, .y = r * 50.0 + 1.0, .z = r });
+        t.velocity.push(vec3{ .x = r - 0.5, .y = 0.0, .z = 0.5 - r });
+    }
+    f32 dt = 0.01;
+    for (u32 frame : 0..200) {
+        each_one(t.velocity.as_mut_span(), [dt](mut vec3& v) { v.y -= 9.81 * dt; });
+        each_one(t.velocity.as_mut_span(), [](mut vec3& v) { v.x *= 0.999; v.y *= 0.999; v.z *= 0.999; });
+        each(t.position.as_mut_span(), t.velocity.as_span(), [dt](mut vec3& p, vec3& v) {
+            p.x += v.x * dt;
+            p.y += v.y * dt;
+            p.z += v.z * dt;
+        });
+    }
+    mut f64 sum = 0.0;
+    for (usize i : 0..n) {
+        sum += cast<f64>(t.position[i].x) + cast<f64>(t.position[i].y) + cast<f64>(t.position[i].z);
+    }
+    std::println(f"{cast::saturate<i64>(sum.round())}");
+    return 0;
+}

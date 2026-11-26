@@ -111,7 +111,7 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
 ### Performance tools
 | Tool | Purpose |
 |---|---|
-| `std::cache_line_size` | A `compile_time usize` for the target (64 on x86-64, 128 on Apple ARM) |
+| `std::cache_line_size` | A `compile_time usize` for the target (64 on x86-64, 128 on Apple ARM; a target description may say otherwise with `.cache_line`). `@std::layout{ .align = std::cache_line_size }` aligns a type to it |
 | `std::cache_aligned<T>` | `T` aligned and padded to a cache line, so values written by different threads never share one ("false sharing"). Access with `*x` / `x->` |
 | `std::thread::spin_hint()` | Tells the CPU the thread is busy-waiting (`pause` on x86, `yield` on ARM). Use it inside spin loops |
 | `std::thread::yield_now()` | Gives the rest of the time slice to another thread |

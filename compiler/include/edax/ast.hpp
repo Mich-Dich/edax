@@ -665,6 +665,18 @@ struct GenerateBlock {
     std::vector<DeclPtr> members;
 };
 
+// `for compile_time (std::meta::field f : std::meta::fields<T>()) { std::darray<f.type> f.name = default; }`
+// in a struct or class template (spec 26): fields made from the fields of a template argument when
+// the template is instantiated, one per field of `T` for each field written in the block. In
+// `fields`, the type `f.type` is the NamedType `$field.type`, and the name `f.name` is "".
+struct FieldGenerator {
+    Span                 span;
+    std::string          var;            // `f`
+    TypePtr              source;         // `T` of `std::meta::fields<T>()`
+    std::size_t          position = 0;   // the number of members written before it
+    std::vector<DeclPtr> fields;         // VariableDecl (DeclKind::field)
+};
+
 struct TypeDecl : Decl {
     bool                 is_open = false;
     bool                 is_view = false;
@@ -683,6 +695,7 @@ struct TypeDecl : Decl {
     std::vector<TypePtr> bases;
     std::vector<ThreadPromise> promises;     // `unsafe std::sendable(...)` bases
     std::vector<DeclPtr> members;
+    std::vector<FieldGenerator> field_generators;   // spec 26; expanded in each instance
     TypeDecl(DeclKind k, Span s) : Decl(k, s) {}
 };
 

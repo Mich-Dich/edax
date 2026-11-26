@@ -23,6 +23,7 @@
   ```edax
   (std::span<mut i64> left, std::span<mut i64> right) = items.split_at(middle);
   ```
+- **Prefetching:** `xs.prefetch(i)` on a `std::darray<T>`, `std::span<T>` or `std::span<mut T>` starts loading element `i` into the cache so that a later access doesn't wait for memory; `prefetch_for_write(i)` (darray and `std::span<mut T>`) fetches it ready to change. An index past the end does nothing, so `xs.prefetch(order[k + 8])` needs no bounds test. Loops over consecutive elements don't need it (the CPU sees the pattern); loops that jump (through an index list, handles, a graph) do (see [Performance](../../language/performance/performance.md)).
 - **From a list:** `std::darray<T>::from([a, b, c])` copies a list literal into a new darray (it allocates); `std::array<T, N> a = [a, b, c];` needs no allocation.
 - **Allocators:** `std::darray<T, A>` takes its memory from the allocator `A`, by default the global one (see [Allocators](../memory/allocators.md)).
 - An empty container is created with `default` or `T{}`: `std::darray<employee> list = default;`.

@@ -1744,6 +1744,7 @@ std::optional<ExitCode> load_target_description(const Options& opts, DriverStrea
         if (m->name == "triple") p.triple = f.string;
         if (m->name == "os" && f.symbol) p.os = f.symbol->name;
         if (m->name == "cpu" && f.symbol && f.symbol->name != "baseline") p.cpu = f.symbol->name;
+        if (m->name == "cache_line") p.cache_line = static_cast<unsigned>(f.integer);
         if (m->name == "capabilities") {
             for (const ct::Value& c : f.elements) {
                 if (c.symbol) p.capabilities.push_back(c.symbol->name);

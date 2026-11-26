@@ -1,0 +1,9 @@
+exit: 0
+--- stdout
+0: p writes position
+1: v reads velocity
+2 parameters
+0: n takes u32
+1 parameters
+0 parameters
+--- stderr

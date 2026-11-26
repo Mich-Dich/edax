@@ -28,6 +28,8 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 | `vec_push_sum` | `darray`: push 20M integers, sum by index and by `for` |
 | `particles` | 200k particles in SoA columns, 1000 steps of gravity, drag and a bounce (spec 34) |
 | `plot_decimate` | `std::ui::plot::decimate_indexed`: 1M `f32` reduced to 1000 pixel columns, 200 times (C++: the same algorithm, a plain loop) |
+| `ecs` | 1M entities with `vec3` position and velocity columns, three systems as lambdas that a generic `each` calls per entity, 200 frames (C++: `std::vector` columns, the shape of EnTT's `view.each`) |
+| `ecs_soa` | The same with one column per component field, made by field-generating templates (C++: the columns written by hand) |
 
 ## Results (spec 34, x86-64 baseline, GCC 13 `-O2` for C++)
 
@@ -37,6 +39,8 @@ installed there, so the comparison is against libstdc++ only; the earlier table 
 | Benchmark | Edax (s) | C++ std (s) | Edax / C++ | What changed |
 |---|---|---|---|---|
 | hash_int | 0.260 | 0.795 | 0.33x | |
+| ecs | 0.565 | 0.386 | 1.46x | `vec3` columns: strided 12-byte elements, which LLVM vectorizes worse than GCC at the SSE2 baseline (clang++ -O2 takes 0.55 s; with `-march=x86-64-v3` 0.41 s). No overlap checks (span alias scopes) |
+| ecs_soa | 0.302 | 0.451 | 0.67x | one column per component field (field-generating templates): every loop unit-stride, no overlap checks |
 | hash_words | 0.077 | 0.154 | 0.50x | |
 | particles | 0.135 | 0.247 | 0.55x | alias scopes for owned memory, conditional stores as selects: vectorized (was 1.37x) |
 | plot_decimate | 0.278 | 0.879 | 0.32x | a column of an index-x series is a slice (1.4 ms per million points) |
@@ -49,6 +53,7 @@ installed there, so the comparison is against libstdc++ only; the earlier table 
 
 With `--cpu=x86_64_v3` (AVX2), `particles` takes 0.11 s; g++ `-march=x86-64-v3` takes 0.32 s (it
 doesn't vectorize the loop).
+With `--cpu=x86_64_v3`, `ecs` takes 0.39 s; g++ `-march=x86-64-v3` takes 0.45 s.
 
 ## Results (v0.1 + std optimization, x86-64, GCC 14 for C++)
 

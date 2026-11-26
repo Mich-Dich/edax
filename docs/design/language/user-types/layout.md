@@ -24,7 +24,7 @@ struct gpu_light {
 ```
 | Field | Meaning |
 |---|---|
-| `.align = N` | The type's alignment is at least `N`, a power of two up to 64, written as a number. The size is rounded up to it. Stack values, container elements and heap blocks all honour it |
+| `.align = N` | The type's alignment is at least `N`, a power of two up to 128, written as a number or as `std::cache_line_size` (the target's cache line). The size is rounded up to it. Stack values, container elements and heap blocks all honour it |
 | `.no_implicit_padding = true` | Every gap the compiler would insert between fields or at the end is an error that names the gap and suggests the `std::padding<N>` to write |
 | `.packed = true` | No padding at all: every field at the next byte |
 

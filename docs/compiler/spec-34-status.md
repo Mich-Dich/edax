@@ -67,6 +67,12 @@ what `edaxc` does today. Legend: **done** (implemented and tested), **partial**,
 | `development` (`basic`) builds through the cache with LLVM's ThinLTO: per-unit bitcode with summaries, imports up to 300 instructions, objects cached per unit and imports; Edax's passes run in the post-link pipeline. Windowing `development`: 4.4 s → 2.1-2.4 s after an edit; `bench/` up to 1.5x slower than one module, so `release` stays one module (`EDAX_THINLTO=on` to opt in) | build-modes "The object cache" | `compile_thin`, `thin_lto.cpp` | `action/run/development_units`, whole suite with `EDAX_THINLTO=on` |
 | Shared Edax libraries: `g.add_shared_library(edax_target)` → `lib<name>.so`; non-generic functions, globals, vtables and type ids exported once, programs declare them; generic instances in the program; globals initialized at load | dynamic-libraries "Shared Edax libraries" | `Gen::from_shared_library`, `exported_by_library`, driver `shared_library_dirs` | `action/build/shared_library` |
 | Generated graphics modules (OpenGL/Vulkan from the XML registries) cached on disk (`~/.cache/edax/modules`), keyed by the registry and the generator | - (compiler internal) | `cached_generated_module` | whole suite |
+| Span parameters as borrows: `"edax-span"` on `std::span<mut T>` and `std::span<T>` (frozen `T`) parameters; alias scopes on their accesses before inlining and, in a pass after inlining (`SpanAliasScopes`), on what callees add: per-element lambda systems vectorize without overlap checks | performance §1 | `mark_span`, `add_alias_scopes`, `SpanAliasScopes` | unit `codegen: span parameters ...`; `bench/ecs`, `ecs_soa` |
+| Lambdas get `noalias` / `noalias readonly` reference parameters and alias scopes like functions | performance §1 | `lambda_function`, `gen_lambda` | unit `codegen: a lambda's reference parameters ...` |
+| Field-generating templates: `for compile_time (std::meta::field f : std::meta::fields<P>()) { <type using f.type> f.name [= init]; }` in struct/class templates, expanded per instance through hidden type parameters | metaprogramming "Types whose fields come from another type" | `parser.cpp` `parse_field_generator`, `check.cpp` `expand_field_generators` | `action/run/field_generators`, `action/check/field_generators`, `field_generator_syntax`; `bench/ecs_soa` |
+| `std::meta::parameters_of<F>()` for lambdas and callable types | metaprogramming | `compile_time.cpp`, `check.cpp` | `action/run/meta_parameters_of` |
+| A view made from a field borrows that field (passed or held in a local) | ownership "Places" | `ownership.cpp` `check_aliasing`, `hold`, `reaches_view` | `action/check/view_field_borrows` |
+| `std::cache_line_size` from the target (`TargetPlatform::cache_line`, `std::build::platform.cache_line`); `@std::layout{ .align = std::cache_line_size }` (up to 128); `std::raw::prefetch_read` / `prefetch_write`; `prefetch` / `prefetch_for_write` on darray and spans | performance §1b, layout, sequences | `check.cpp`, `types.cpp` `requested_alignment`, `llvm_backend.cpp` | `action/run/cache_awareness` |
 
 Already present before spec 34 (the roadmap listed them as missing): the whole program is one LLVM
 module (cross-module inlining needs no interface bodies), `bench/` compares against C++/Abseil/Boost,
@@ -89,7 +95,7 @@ module (cross-module inlining needs no interface bodies), `bench/` compares agai
 
 ## Order of the remaining work
 1. EIR, then check removal beyond LLVM.
-2. `type_id`-based run-time info, static data, field-generating templates.
+2. `type_id`-based run-time info, static data (field-generating templates are done; prefixes/suffixes and `@f.annotations` are left).
 3. Generators and resumables; fibers.
 4. Template features for large libraries; lambda/`function` features.
 5. Windows + PDB, C++ interop extensions, language server.

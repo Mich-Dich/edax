@@ -1,0 +1,83 @@
+// The workload of ecs.ed with every component field in a column of its own: a table of `soa<T>`
+// columns, both made by field-generating templates (spec 26). Each system loop then reads and
+// writes unit-stride f32 columns, and touches only the fields it uses.
+import std;
+
+struct vec3 {
+    f32 x = 0.0;
+    f32 y = 0.0;
+    f32 z = 0.0;
+}
+
+struct moving {
+    vec3 position = default;
+    vec3 velocity = default;
+}
+
+template<type T>
+struct soa {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        std::darray<f.type> f.name = default;
+    }
+
+    void push(T value) mut {
+        for compile_time (std::meta::field src : std::meta::fields<T>()) {
+            for compile_time (std::meta::field col : std::meta::fields<soa<T>>()) {
+                if compile_time (col.name == src.name) {
+                    col.get(mut this).push(src.get(value));
+                }
+            }
+        }
+    }
+}
+
+template<type C>
+struct table {
+    for compile_time (std::meta::field f : std::meta::fields<C>()) {
+        soa<f.type> f.name = default;
+    }
+}
+
+template<type F>
+void each(std::span<mut f32> a, std::span<f32> b, F system) {
+    usize n = a.len();
+    std::assume(b.len() == n);
+    for (usize i : 0..n) {
+        system(mut a[i], b[i]);
+    }
+}
+
+template<type F>
+void each_one(std::span<mut f32> a, F system) {
+    for (usize i : 0..a.len()) {
+        system(mut a[i]);
+    }
+}
+
+i32 main() {
+    usize n = 1000000;
+    mut table<moving> t = default;
+    mut u32 seed = 12345;
+    for (usize i : 0..n) {
+        seed = seed *% 1664525 +% 1013904223;
+        f32 r = cast::round<f32>(seed >> 8) / 16777216.0;
+        t.position.push(vec3{ .x = r * 100.0, .y = r * 50.0 + 1.0, .z = r });
+        t.velocity.push(vec3{ .x = r - 0.5, .y = 0.0, .z = 0.5 - r });
+    }
+    f32 dt = 0.01;
+    for (u32 frame : 0..200) {
+        each_one(t.velocity.y.as_mut_span(), [dt](mut f32& vy) { vy -= 9.81 * dt; });
+        each_one(t.velocity.x.as_mut_span(), [](mut f32& v) { v *= 0.999; });
+        each_one(t.velocity.y.as_mut_span(), [](mut f32& v) { v *= 0.999; });
+        each_one(t.velocity.z.as_mut_span(), [](mut f32& v) { v *= 0.999; });
+        each(t.position.x.as_mut_span(), t.velocity.x.as_span(), [dt](mut f32& p, f32& v) { p += v * dt; });
+        each(t.position.y.as_mut_span(), t.velocity.y.as_span(), [dt](mut f32& p, f32& v) { p += v * dt; });
+        each(t.position.z.as_mut_span(), t.velocity.z.as_span(), [dt](mut f32& p, f32& v) { p += v * dt; });
+    }
+    mut f64 sum = 0.0;
+    for (usize i : 0..n) {
+        sum += cast<f64>(t.position.x[i]) + cast<f64>(t.position.y[i]) + cast<f64>(t.position.z[i]);
+    }
+    std::println(f"{cast::saturate<i64>(sum.round())}");
+    return 0;
+}

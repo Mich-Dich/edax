@@ -1,0 +1,28 @@
+// RUN: edaxc run %s
+// The target's cache line (spec 27, 34): std::cache_line_size, @std::layout{ .align =
+// std::cache_line_size }, std::cache_aligned; prefetching elements of darrays and spans, where an
+// index past the end does nothing.
+import std;
+
+@std::layout{ .align = std::cache_line_size }
+struct counter {
+    u64 hits = 0;
+}
+
+i32 main() {
+    std::println(f"line {std::cache_line_size}");
+    std::println(f"counter: align {std::align_of<counter>()}, size {std::size_of<counter>()}");
+    std::println(f"cache_aligned<u32>: align {std::align_of<std::cache_aligned<u32>>()}");
+    mut std::darray<u32> xs = default;
+    for (u32 i : 0..100) { xs.push(i); }
+    xs.prefetch(50);
+    xs.prefetch(1000);
+    xs.prefetch_for_write(3);
+    std::span<u32> s = xs.as_span();
+    s.prefetch(7);
+    s.prefetch(100);
+    mut std::span<mut u32> m = xs.as_mut_span();
+    m.prefetch_for_write(99);
+    std::println(f"{xs[50]} {xs[99]}");
+    return 0;
+}

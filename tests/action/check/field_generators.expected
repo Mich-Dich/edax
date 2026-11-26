@@ -1,0 +1,48 @@
+exit: 1
+--- stdout
+--- stderr
+error[E3075]: 'f.name' names a second field after each field of p; a generator makes one field per field
+  --> tests/action/check/field_generators.ed:9:9
+   |
+ 9 |         f.type f.name = default;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ second generated field
+   |
+38 |     twice<p> t = default;
+   |     --------
+   = note: in the instance 'twice<p>', asked for here
+
+error[E4201]: std::meta::fields needs a struct or class, not u32
+  --> tests/action/check/field_generators.ed:15:62
+   |
+15 |     for compile_time (std::meta::field f : std::meta::fields<T>()) {
+   |                                                              ^ not a struct or class
+   |
+39 |     of_number<u32> n = default;
+   |     --------------
+   = note: in the instance 'of_number<u32>', asked for here
+
+error[E4201]: a field generator walks the fields of one of the template's type parameters
+  --> tests/action/check/field_generators.ed:22:62
+   |
+22 |     for compile_time (std::meta::field f : std::meta::fields<std::string>()) {
+   |                                                              ^^^^^^^^^^^ not a type parameter
+   |
+40 |     not_a_parameter<p> q = default;
+   |     ------------------
+   = note: in the instance 'not_a_parameter<p>', asked for here
+
+error[E3075]: the field generated for 'a' of p has the name of a written field
+  --> tests/action/check/field_generators.ed:31:16
+   |
+31 |         f.type f.name = default;
+   |                ^^^^^^ generated here
+   |
+29 |     u32 a = 0;
+   |         -
+   = note: written here
+   |
+41 |     clash<p> c = default;
+   |     --------
+   = note: in the instance 'clash<p>', asked for here
+
+4 errors, 0 warnings

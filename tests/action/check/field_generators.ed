@@ -1,0 +1,43 @@
+// RUN: edaxc check %s
+// Field-generating templates (spec 26): the errors of an instance, with the instance that asked.
+import std;
+
+template<type T>
+struct twice {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        std::darray<f.type> f.name = default;
+        f.type f.name = default;
+    }
+}
+
+template<type T>
+struct of_number {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        f.type f.name = default;
+    }
+}
+
+template<type T>
+struct not_a_parameter {
+    for compile_time (std::meta::field f : std::meta::fields<std::string>()) {
+        f.type f.name = default;
+    }
+}
+
+template<type T>
+struct clash {
+    u32 a = 0;
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        f.type f.name = default;
+    }
+}
+
+struct p { u32 a = 0; }
+
+i32 main() {
+    twice<p> t = default;
+    of_number<u32> n = default;
+    not_a_parameter<p> q = default;
+    clash<p> c = default;
+    return 0;
+}

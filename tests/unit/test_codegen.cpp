@@ -315,3 +315,36 @@ TEST_CASE("codegen: the optimized standard library has line 0, which debuggers s
     std::string plain = debug_ir(program, "none");
     CHECK(std::regex_search(plain, push_with_line));
 }
+
+// --- aliasing facts of spans and lambdas (spec 34 §1) --------------------------------------------
+
+TEST_CASE("codegen: span parameters are marked and their accesses get alias scopes") {
+    Generated g = generate("import std;\n"
+                           "void k(std::span<mut f32> a, std::span<f32> b) { a[0] = b[0]; }\n"
+                           "i32 main() { mut std::darray<f32> x = default; x.push(1.0); mut std::darray<f32> y = default; y.push(2.0);\n"
+                           "    k(x.as_mut_span(), y.as_span()); return 0; }\n");
+    CHECK_EQ(g.codes, std::string());
+    CHECK(std::regex_search(g.ir, std::regex(R"(define internal void @\S*1k\(%span_mut\S* "edax-span"="mut" %0, %span\S* "edax-span"="read" %1\))")));
+    // The function's own accesses through the span slots carry the scopes.
+    std::smatch m;
+    REQUIRE(std::regex_search(g.ir, m, std::regex(R"(define internal void @\S*1k\([^\n]*\{\n((?:[^\n]*\n)*?)\})")));
+    CHECK(contains(m[1].str(), "!alias.scope"));
+    CHECK(contains(m[1].str(), "!noalias"));
+}
+
+TEST_CASE("codegen: a span of a type that isn't frozen is not marked read-only") {
+    Generated g = generate("import std;\n"
+                           "void k(std::span<std::atomic<u32>> a, std::span<mut u32> b) { b[0] = a[0].load(std::memory_order::relaxed); }\n"
+                           "i32 main() { return 0; }\n");
+    CHECK_EQ(g.codes, std::string());
+    CHECK(!std::regex_search(g.ir, std::regex(R"(%span\S* "edax-span"="read" %0)")));
+}
+
+TEST_CASE("codegen: a lambda's reference parameters are noalias like a function's") {
+    Generated g = generate("import std;\n"
+                           "i32 main() { mut u32 x = 1; u32 y = 2;\n"
+                           "    auto set = [](mut u32& p, u32& v) { p = v; };\n"
+                           "    set(mut x, y); std::println(f\"{x}\"); return 0; }\n");
+    CHECK_EQ(g.codes, std::string());
+    CHECK(std::regex_search(g.ir, std::regex(R"(define internal void @rl_\S*\(ptr %0, ptr noalias %1, ptr noalias readonly %2\))")));
+}

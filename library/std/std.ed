@@ -465,6 +465,18 @@ namespace std {
             unsafe { return *this.data.offset(i); }
         }
 
+        void prefetch(usize i) {
+            if (i < this.count) {
+                unsafe { std::raw::prefetch_read(this.data.offset(i)); }
+            }
+        }
+
+        void prefetch_for_write(usize i) mut {
+            if (i < this.count) {
+                unsafe { std::raw::prefetch_write(this.data.offset(i)); }
+            }
+        }
+
         span<T> as_span() {
             unsafe { return span<T>::from_raw(this.data, this.count); }
         }
@@ -792,6 +804,12 @@ namespace std {
             unsafe { return *this.data.offset(i); }
         }
 
+        void prefetch(usize i) {
+            if (i < this.count) {
+                unsafe { std::raw::prefetch_read(this.data.offset(i)); }
+            }
+        }
+
         span<T> slice(usize from, usize to) {
             run_time check (from <= to && to <= this.count) else f"span slice {from}..{to} out of bounds (length {this.count})";
             unsafe { return span<T>{ .data = this.data.offset(from), .count = to - from }; }
@@ -827,6 +845,18 @@ namespace std {
         mut T& operator[](usize i) {
             if compile_time (checks_bounds()) { run_time check (i < this.count) else f"index {i} out of bounds (length {this.count})"; }
             unsafe { return *this.data.offset(i); }
+        }
+
+        void prefetch(usize i) {
+            if (i < this.count) {
+                unsafe { std::raw::prefetch_read(this.data.offset(i)); }
+            }
+        }
+
+        void prefetch_for_write(usize i) {
+            if (i < this.count) {
+                unsafe { std::raw::prefetch_write(this.data.offset(i)); }
+            }
         }
 
         span<T> as_span() {

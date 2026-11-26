@@ -514,6 +514,9 @@ namespace std::build {
         std::build::os os = std::build::os::none;
         std::build::cpu cpu = std::build::cpu::baseline;
         std::span<std::build::capability> capabilities;
+        // Bytes per cache line (std::cache_line_size); 0 in a target description: the architecture's
+        // usual size (64, or 128 on Apple ARM).
+        u32 cache_line = 0;
 
         // Whether the platform has `c`.
         compile_time bool has(std::build::capability c);

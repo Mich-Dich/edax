@@ -258,6 +258,13 @@ namespace std {
         T& operator[](usize i);
         mut T& operator[](usize i) mut;
 
+        // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
+        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
+        void prefetch(usize i);
+        // Like `prefetch`, for an element that will be written: its cache line arrives ready to change.
+        void prefetch_for_write(usize i) mut;
+
         // A view of the elements.
         span<T> as_span();
 
@@ -292,6 +299,11 @@ namespace std {
         // The address of the first element, for C and graphics APIs (glBufferData).
         std::raw_ptr<T> as_ptr();
 
+        // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
+        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
+        void prefetch(usize i);
+
         // The elements `from..to`; panics when out of bounds.
         span<T> slice(usize from, usize to);
 
@@ -318,6 +330,13 @@ namespace std {
 
         // A read-only view of the same elements.
         span<T> as_span();
+
+        // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
+        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
+        void prefetch(usize i);
+        // Like `prefetch`, for an element that will be written: its cache line arrives ready to change.
+        void prefetch_for_write(usize i);
 
         // The elements `from..to` (consumes the span); panics when out of bounds.
         span_mut<T> slice(usize from, usize to) move;
@@ -934,15 +953,14 @@ namespace std {
     // A memory fence on its own (spec 27).
     void atomic_fence(std::memory_order order);
 
-    // The size of a cache line of the target in bytes.
+    // The size of a cache line of the target in bytes: 64 on x86-64, 128 on Apple ARM, or what the
+    // target description says. The compiler gives the target's value; 64 is the usual one.
     compile_time usize cache_line_size = 64;
 
     // `T` aligned and padded to a cache line, so that values written by different threads never
     // share one ("false sharing", spec 27). Access with `*x` / `x->`.
-    // (The alignment is written as a literal: a constant such as cache_line_size in @std::layout is
-    // not evaluated yet.)
     template<type T>
-    @std::layout{ .align = 64 }
+    @std::layout{ .align = std::cache_line_size }
     struct cache_aligned {
         T value;
 
@@ -1272,15 +1290,15 @@ namespace std {
     struct cold { }
 
     // The memory layout of a struct or class (spec 34). `.align` raises its alignment (a power of
-    // two up to 64, written as a number): `@std::layout{ .align = 16 }` for SIMD and GPU data,
-    // 64 for a cache line. `.no_implicit_padding` makes every gap the compiler would insert
+    // two up to 128, written as a number or `std::cache_line_size`): `@std::layout{ .align = 16 }`
+    // for SIMD and GPU data, `.align = std::cache_line_size` for data threads write separately. `.no_implicit_padding` makes every gap the compiler would insert
     // between fields an error, so GPU and file structs spell their padding out with
     // `std::padding<N>`.
     annotation(std::meta::target::type)
     struct layout {
-        u64  align               = 0;
-        bool no_implicit_padding = false;
-        bool packed              = false;   // no padding at all; fields can't be borrowed (they may be misaligned)
+        usize align               = 0;
+        bool  no_implicit_padding = false;
+        bool  packed              = false;   // no padding at all; fields can't be borrowed (they may be misaligned)
     }
 
     // `N` bytes of explicit padding in a struct (spec 34): zero when the struct is built, and

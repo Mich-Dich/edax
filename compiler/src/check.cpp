@@ -245,7 +245,7 @@ public:
         if (program_.is_plugin) find_plugin_entry();
     }
 
-    // `@std::layout` (spec 34): the alignment is a power of two up to 64, written as a number;
+    // `@std::layout` (spec 34): the alignment is a power of two up to 128, written as a number or std::cache_line_size;
     // with `.no_implicit_padding` every gap between fields is an error.
     void check_layout(Symbol* t) {
         if (!t->decl || (t->decl->is_template && !t->template_of)) return;
@@ -270,9 +270,10 @@ public:
         std::uint64_t align = static_cast<std::uint64_t>(v->elements[0].integer);
         if (align != 0) {
             if (types::requested_alignment(t) != align) {
-                error(DiagCode::E4210, u->span, "write the alignment of @std::layout as a number: '.align = 16'", "not a number");
-            } else if ((align & (align - 1)) != 0 || align > 64) {
-                error(DiagCode::E4210, u->span, std::format("the alignment {} is not a power of two up to 64", align), "bad alignment");
+                error(DiagCode::E4210, u->span, "write the alignment of @std::layout as a number or 'std::cache_line_size': '.align = 16'",
+                      "not a number");
+            } else if ((align & (align - 1)) != 0 || align > 128) {
+                error(DiagCode::E4210, u->span, std::format("the alignment {} is not a power of two up to 128", align), "bad alignment");
             }
         }
         if (!v->elements[1].boolean) return;
@@ -1720,6 +1721,10 @@ private:
                 }
                 if (g && diags_.error_count() == errors) {
                     g->ct_value = evaluate(*v.init, std::format("the value of compile_time constant '{}' is computed at compile time", v.name));
+                    // std::cache_line_size is the target's (spec 27): 64 on x86-64, 128 on Apple ARM, a board's own.
+                    if (g->ct_value && g->module && g->module->project == "std" && g->key() == "std::cache_line_size") {
+                        g->ct_value = std::make_shared<const ct::Value>(ct::Value::of_integer(target_platform().cache_line, g->ct_value->type));
+                    }
                 }
             } else if (d.kind == DeclKind::variable && v.storage == Storage::thread_local_ && diags_.error_count() == errors) {
                 // Each thread's copy starts with this value: it is computed at compile time, so a
@@ -3594,6 +3599,7 @@ private:
                       : name == "type_name"                       ? tc_.static_str()
                       : name == "meta::result_of"                 ? tc_.type_value()
                       : name == "meta::fields"                    ? list_of(tc_.meta_field())
+                      : name == "meta::parameters_of"             ? list_of(tc_.meta_parameter())
                       : name == "meta::alternatives"              ? list_of(tc_.meta_alternative())
                       : name == "meta::methods" || name == "meta::functions_with" ? list_of(tc_.meta_function())
                       : name == "meta::types_with"                ? list_of(tc_.type_value())
@@ -3758,6 +3764,17 @@ private:
             return set(c, name == "assume" ? tc_.void_() : tc_.never());
         }
         if (name.starts_with("atomic_") || name.starts_with("futex_") || name == "spin_hint") return infer_thread_raw(c, name, args);
+        if (name == "prefetch_read" || name == "prefetch_write") {   // spec 34: start loading a cache line; never faults
+            if (args.size() != 1) {
+                error(DiagCode::E4030, c.span, std::format("'std::raw::{}' takes a 'std::raw_ptr'", name), "wrong arguments");
+                return set(c, tc_.error());
+            }
+            const Type* p = types::strip_ref(args[0]->type);
+            if (!p->is(Kind::pointer) && !p->is_unknown()) {
+                error(DiagCode::E4010, args[0]->span, std::format("expected a 'std::raw_ptr', found {}", quoted(p)), "not a raw pointer");
+            }
+            return set(c, tc_.void_());
+        }
         auto& seg = c.callee->as<PathExpr>().path.segments.back();
         std::size_t want = name == "allocate" || name == "free" || name == "read" || name == "drop" ? 1
                          : name == "copy"                                                         ? 3
@@ -7366,13 +7383,20 @@ public:
             std::size_t fixed = copy->template_params.size() - 1;
             expand_type_pack(copy->as<TypeDecl>(), args.size() > fixed ? args.size() - fixed : 0);
         }
+        // Generated fields (spec 26) take their types through hidden type parameters after the written ones.
+        std::vector<const Type*> all = args;
+        std::size_t generated_mark = diags_.size();
+        if ((copy->kind == DeclKind::struct_ || copy->kind == DeclKind::class_) && !copy->as<TypeDecl>().field_generators.empty()) {
+            expand_field_generators(copy->as<TypeDecl>(), args, all);
+        }
         std::vector<Symbol*> params;
         Symbol*              inst = resolve_instance(program_, diags_, templ, *copy, params);
-        if (params.size() != args.size()) return program_.types->error();
+        if (params.size() != all.size()) return program_.types->error();
         inst->template_of    = templ;
         inst->instance_index = ++count_[templ];
-        for (std::size_t i = 0; i < params.size(); ++i) inst->template_subst[params[i]] = args[i];
+        for (std::size_t i = 0; i < params.size(); ++i) inst->template_subst[params[i]] = all[i];
         inst->template_args = args;
+        add_frame(generated_mark, templ, inst, program_.types->instantiation_site());
         // The interfaces the template implements that don't depend on its parameters: `box<T> : named`.
         for (Symbol* b : templ->bases) {
             if (b && b->kind == SymbolKind::interface && !(b->decl && b->decl->is_template) &&
@@ -7551,6 +7575,109 @@ public:
 
     // A type template's value pack `usize... N` as `N$0, ..., N$n-1` (spec 34); its members walk
     // `N` with `for compile_time`, pass it on as `f<N...>` and count it with `N.len()`.
+    // The field generators of an instance's copy (spec 26) become fields: for each public field of the
+    // source type argument, in order, one field per field written in the block, named after it. A
+    // `f.type` in a written type becomes a hidden type parameter `$fieldN` (appended to `params` and
+    // bound in `all`), so the field types go through the usual substitution.
+    void expand_field_generators(TypeDecl& td, const std::vector<const Type*>& args, std::vector<const Type*>& all) {
+        auto        none     = [](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); };
+        std::size_t inserted = 0;
+        std::size_t counter  = 0;
+        for (FieldGenerator& g : td.field_generators) {
+            const Type* source = nullptr;
+            if (g.source && g.source->kind == TypeKind::named) {
+                const Path& p = g.source->as<NamedType>().path;
+                for (std::size_t i = 0; p.segments.size() == 1 && i < td.template_params.size() && i < args.size(); ++i) {
+                    if (td.template_params[i].name == p.segments[0].name) source = args[i];
+                }
+            }
+            if (!source) {
+                diags_.report(DiagCode::E4201, g.source ? g.source->span : g.span,
+                              "a field generator walks the fields of one of the template's type parameters", "not a type parameter");
+                continue;
+            }
+            if (!source->is(Kind::user) || (source->symbol->kind != SymbolKind::struct_ && source->symbol->kind != SymbolKind::class_)) {
+                diags_.report(DiagCode::E4201, g.source->span,
+                              std::format("std::meta::fields needs a struct or class, not {}", types::to_string(source)), "not a struct or class");
+                continue;
+            }
+            if (g.fields.size() > 1) {   // each would be named after the same field
+                diags_.report(DiagCode::E3075, g.fields[1]->span,
+                              std::format("'{}.name' names a second field after each field of {}; a generator makes one field per field",
+                                          g.var, types::to_string(source)),
+                              "second generated field");
+                g.fields.resize(1);
+            }
+            std::vector<DeclPtr> made;
+            for (const Symbol* f : source->symbol->member_order) {
+                if (f->kind != SymbolKind::field || f->is_static || !f->decl) continue;
+                // Only what the type shows: a class's fields before any label are private.
+                bool shown = source->symbol->kind == SymbolKind::class_ ? f->decl->access == Access::public_
+                                                                        : f->decl->access != Access::private_ && f->decl->access != Access::protected_;
+                if (!shown) continue;
+                const Type* ft = program_.types->lower(*f->decl->as<VariableDecl>().type, sema::substitution_of(f));
+                for (const DeclPtr& written : g.fields) {
+                    const auto& w      = written->as<VariableDecl>();
+                    std::string hidden = "$field" + std::to_string(counter++);
+                    TemplateParam tp;
+                    tp.is_type = true;
+                    tp.name    = hidden;
+                    tp.span    = g.span;
+                    td.template_params.push_back(std::move(tp));
+                    all.push_back(ft);
+                    ast::Cloner c(none);
+                    auto field       = std::make_unique<VariableDecl>(DeclKind::field, w.span);
+                    field->access    = w.access;
+                    field->type      = c.type(*w.type);
+                    rename_generated_type(*field->type, hidden);
+                    field->name      = f->name;
+                    field->name_span = w.name_span;
+                    for (const DeclPtr& m : td.members) {
+                        if (m->kind == DeclKind::field && m->name == f->name) {
+                            Diagnostic& d = diags_.report(DiagCode::E3075, w.name_span,
+                                                          std::format("the field generated for '{}' of {} has the name of a written field",
+                                                                      f->name, types::to_string(source)),
+                                                          "generated here");
+                            d.notes.push_back(Note{"written here", m->name_span});
+                        }
+                    }
+                    if (w.init) field->init = c.expr(*w.init);
+                    made.push_back(std::move(field));
+                }
+            }
+            std::size_t at = std::min(g.position + inserted, td.members.size());
+            inserted += made.size();
+            td.members.insert(td.members.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(made.begin()),
+                              std::make_move_iterator(made.end()));
+        }
+        td.field_generators.clear();
+    }
+
+    // `f.type` (the NamedType `$field.type`) in a generated field's type becomes `name`.
+    static void rename_generated_type(TypeExpr& t, const std::string& name) {
+        switch (t.kind) {
+        case TypeKind::named:
+            for (PathSegment& seg : t.as<NamedType>().path.segments) {
+                if (seg.name == "$field.type") seg.name = name;
+                for (TemplateArg& a : seg.template_args) {
+                    if (a.type) rename_generated_type(*a.type, name);
+                }
+            }
+            return;
+        case TypeKind::reference: rename_generated_type(*t.as<ReferenceType>().inner, name); return;
+        case TypeKind::function: {
+            auto& f = t.as<FunctionType>();
+            if (f.result) rename_generated_type(*f.result, name);
+            for (TypePtr& p : f.params) rename_generated_type(*p, name);
+            return;
+        }
+        case TypeKind::tuple:
+            for (TypePtr& e : t.as<TupleType>().elements) rename_generated_type(*e, name);
+            return;
+        default: return;
+        }
+    }
+
     static void expand_type_pack(TypeDecl& t, std::size_t n) {
         auto          none = [](const sema::Symbol&) { return static_cast<sema::Symbol*>(nullptr); };
         TemplateParam pack = std::move(t.template_params.back());

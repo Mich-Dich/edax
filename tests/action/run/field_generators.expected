@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+7 4 4 3.0 2.0 1
+0: tag u32
+1: pos std::darray<vec2>
+2: vel std::darray<vec2>
+3: alive std::darray<u32>
+4: count usize
+body: 3 fields, mass 1.0
+table: 1.0 2.0 3.0 1
+--- stderr

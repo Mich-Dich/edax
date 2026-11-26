@@ -82,6 +82,7 @@ struct ViewBorrow {
     Span          at;         // where the borrow starts
     bool          to_scope_end;   // the holder has a destructor: it borrows until its scope ends
     int           depth;      // the block depth of the holder's scope
+    std::vector<std::string> path;   // the fields from `root` to what is borrowed (`t.position`: position), spec 34
 };
 
 class Ownership {
@@ -627,7 +628,7 @@ private:
             }
         }
         for (const ViewBorrow& v : frame_.views) {
-            if (v.root == s && v.exclusive && view_active(v, span)) view_conflict(v, span, "use");
+            if (v.root == s && v.exclusive && view_active(v, span) && reaches_view(v, place_)) view_conflict(v, span, "use");
         }
         for (const LoopContext& l : frame_.loops) {
             if (l.borrowed == s && l.borrow_mut && reaches_loop(l, place_)) {
@@ -642,7 +643,7 @@ private:
     void mutation(const Symbol* root, Span span, std::string_view action, const Expr* place = nullptr) {
         if (!root) return;
         for (const ViewBorrow& v : frame_.views) {
-            if (v.root == root && !v.exclusive && view_active(v, span)) view_conflict(v, span, action);
+            if (v.root == root && !v.exclusive && view_active(v, span) && reaches_view(v, place ? place : place_)) view_conflict(v, span, action);
         }
         for (const LoopContext& l : frame_.loops) {
             if (l.borrowed == root && reaches_loop(l, place)) {
@@ -836,13 +837,39 @@ private:
         if (!holder) return;
         int depth = holder_depth_.contains(holder) ? holder_depth_[holder] : frame_.depth;
         bool to_end = drops(types::strip_ref(holder->type));
+        // A view of a field borrows that field only: `t.position.as_mut_span()` leaves `t.velocity` free.
+        const Symbol*            receiver_root = nullptr;
+        std::vector<std::string> receiver_path;
+        const Expr*              made = &value;
+        while (made->kind == ExprKind::unary && (made->as<UnaryExpr>().op == UnaryOp::move || made->as<UnaryExpr>().op == UnaryOp::mut_marker)) {
+            made = made->as<UnaryExpr>().operand.get();
+        }
+        if (made->kind == ExprKind::call && made->as<CallExpr>().callee->kind == ExprKind::member) {
+            const Expr& object = *made->as<CallExpr>().callee->as<MemberExpr>().object;
+            receiver_root      = root_of(object);
+            bool ended         = false;
+            field_path(object, receiver_path, ended);
+        }
         for (auto [root, exclusive] : borrows_of(value)) {
             if (root == holder) continue;
             bool known = std::any_of(frame_.views.begin(), frame_.views.end(), [&](const ViewBorrow& v) {
                 return v.holder == holder && v.root == root && v.at.begin == at.begin;
             });
-            if (!known) frame_.views.push_back(ViewBorrow{holder, root, exclusive, at, to_end, depth});
+            if (!known) {
+                frame_.views.push_back(ViewBorrow{holder, root, exclusive, at, to_end, depth, root == receiver_root ? receiver_path
+                                                                                                                    : std::vector<std::string>{}});
+            }
         }
+    }
+
+    // Whether using `place` (a member or index expression, or the whole variable when null) touches
+    // what `v` borrows.
+    bool reaches_view(const ViewBorrow& v, const Expr* place) {
+        if (!place || v.path.empty()) return true;
+        std::vector<std::string> path;
+        bool                     ended = false;
+        field_path(*place, path, ended);
+        return overlaps(path, v.path);
     }
 
     bool view_active(const ViewBorrow& v, Span span) {
@@ -855,11 +882,16 @@ private:
 
     void view_conflict(const ViewBorrow& v, Span span, std::string_view action) {
         if (silent_ != 0 || !reported_.insert({v.root, span.begin}).second) return;
+        std::string what = v.root->name;
+        for (const std::string& part : v.path) {
+            if (part == "[]") break;
+            what += "." + part;
+        }
         Diagnostic& d = v.exclusive
             ? error(DiagCode::E5023, span,
-                    std::format("'{}' is already borrowed mutably by '{}'", v.root->name, v.holder->name), "borrowed mutably")
+                    std::format("'{}' is already borrowed mutably by '{}'", what, v.holder->name), "borrowed mutably")
             : error(DiagCode::E5022, span,
-                    std::format("cannot {} '{}' while '{}' borrows it", action, v.root->name, v.holder->name), "still borrowed");
+                    std::format("cannot {} '{}' while '{}' borrows it", action, what, v.holder->name), "still borrowed");
         std::string holder_type = v.holder->type ? types::to_string(types::strip_ref(v.holder->type)) : std::string();
         bool        joins       = holder_type.find("thread") != std::string::npos || holder_type.find("task") != std::string::npos;
         note(d, !v.to_scope_end ? std::format("the borrow lasts until the last use of '{}'", v.holder->name)
@@ -1347,9 +1379,19 @@ private:
             if (!root && a->kind == ExprKind::call) {
                 // A view made for the call borrows its source for the call's duration:
                 // `copy_into(xs.as_mut_span(), xs.as_span())` holds `xs` mutably and shared at once.
+                // A view of a field borrows that field: `each(t.position.as_mut_span(), t.velocity.as_span())`.
+                const Symbol*            receiver_root = nullptr;
+                std::vector<std::string> receiver_path;
+                if (const auto& vc = a->as<CallExpr>(); vc.callee->kind == ExprKind::member) {
+                    const Expr& object = *vc.callee->as<MemberExpr>().object;
+                    receiver_root      = root_of(object);
+                    bool ended         = false;
+                    field_path(object, receiver_path, ended);
+                }
                 for (auto [borrowed, exclusive] : borrows_of(*a)) {
                     Arg v{borrowed, exclusive, a->span, {}};
                     v.view_call = true;
+                    if (borrowed == receiver_root) v.path = receiver_path;
                     args.push_back(std::move(v));
                 }
                 continue;

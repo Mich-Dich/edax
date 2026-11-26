@@ -170,7 +170,9 @@ std::string to_string(const Value& v) {
     case Value::Kind::field: return std::format("field '{}' of {}", v.symbol->name, types::to_string(v.type_value));
     case Value::Kind::alternative: return std::format("alternative '{}' of {}", v.symbol->name, types::to_string(v.type_value));
     case Value::Kind::function: return std::format("method '{}' of {}", v.symbol->name, types::to_string(v.type_value));
-    case Value::Kind::parameter: return std::format("parameter {} of '{}'", v.index, v.symbol->name);
+    case Value::Kind::parameter:
+        return v.symbol ? std::format("parameter {} of '{}'", v.index, v.symbol->name)
+                        : std::format("parameter {} of {}", v.index, types::to_string(v.type_value));
     case Value::Kind::file: return std::format("file '{}'", v.string);
     }
     return "?";
@@ -191,7 +193,7 @@ bool equal(const Value& a, const Value& b) {
     case Value::Kind::field:
     case Value::Kind::alternative:
     case Value::Kind::function: return a.symbol == b.symbol && a.type_value == b.type_value;
-    case Value::Kind::parameter: return a.symbol == b.symbol && a.index == b.index;
+    case Value::Kind::parameter: return a.symbol == b.symbol && a.type_value == b.type_value && a.index == b.index;
     case Value::Kind::file: return a.string == b.string;
     case Value::Kind::enumeration:
         if (!a.symbol || !b.symbol || a.symbol->name != b.symbol->name) return false;
@@ -240,7 +242,7 @@ std::string builtin_name(const CallExpr& c) {
         if (n == "fields" || n == "alternatives" || n == "is_struct" || n == "is_class" || n == "is_enum" || n == "result_of" ||
             n == "is_view" || n == "methods" || n == "interfaces" || n == "template_args" || n == "annotation" || n == "has_annotation" ||
             n == "function_annotation" || n == "type_annotation" || n == "file_annotation" || n == "functions_with" ||
-            n == "types_with" || n == "interface_hash" || n == "compiler_version" || n == "type_id") {
+            n == "types_with" || n == "interface_hash" || n == "compiler_version" || n == "type_id" || n == "parameters_of") {
             return "meta::" + n;
         }
     }
@@ -256,7 +258,7 @@ std::string raw_intrinsic(const CallExpr& c) {
     if (segs.size() == 2 && segs[0].name == "std" && segs[1].name == "bit_cast") return "bit_cast";   // spec 34, safe
     if (segs.size() == 3 && segs[0].name == "std" && segs[1].name == "raw") {
         const std::string& n = segs[2].name;
-        if (n == "assume" || n == "unreachable") return n;   // spec 34
+        if (n == "assume" || n == "unreachable" || n == "prefetch_read" || n == "prefetch_write") return n;   // spec 34
         if (n == "allocate" || n == "reallocate" || n == "free" || n == "read" || n == "write" || n == "drop" || n == "copy" ||
             n == "str_from" || n == "static_str_from" || n.starts_with("atomic_") || n == "futex_wait" || n == "futex_wait_for" || n == "futex_wake" || n == "spin_hint") {
             return n;
@@ -1203,10 +1205,13 @@ struct Evaluator::Impl {
             }
         }
         if (o.kind == Value::Kind::parameter) {
-            const ast::Param& p = function_decl(o.symbol)->params.at(o.index);
-            if (name == "name") return string_value(p.name);
+            // A parameter of a callable type (std::meta::parameters_of): no function symbol, the type.
+            const ast::LambdaExpr* lambda = o.symbol ? nullptr : tc.lambda_of(o.type_value);
+            const ast::Param*      p      = o.symbol ? &function_decl(o.symbol)->params.at(o.index)
+                                          : lambda && o.index < lambda->params.size() ? &lambda->params[o.index] : nullptr;
+            if (name == "name") return string_value(p ? p->name : std::string());
             if (name == "index") return integer(o.index, usize());
-            const Type* pt = tc.lower(*p.type, sema::substitution_of(o.symbol));
+            const Type* pt = o.symbol ? tc.lower(*p->type, sema::substitution_of(o.symbol)) : o.type_value->args.at(o.index);
             if (name == "type") return Value::of_type(types::strip_ref(pt), tc.type_value());
             if (name == "passing") {
                 const Type* passing = type_of(me);
@@ -1453,7 +1458,12 @@ struct Evaluator::Impl {
             case Value::Kind::field:
             case Value::Kind::function: uses = o.symbol->decl ? &o.symbol->decl->annotations : nullptr; break;
             case Value::Kind::alternative: uses = o.symbol->alternative ? &o.symbol->alternative->annotations : nullptr; break;
-            case Value::Kind::parameter: uses = &function_decl(o.symbol)->params.at(o.index).annotations; break;
+            case Value::Kind::parameter: {
+                const ast::LambdaExpr* lambda = o.symbol ? nullptr : tc.lambda_of(o.type_value);
+                if (o.symbol) uses = &function_decl(o.symbol)->params.at(o.index).annotations;
+                else if (lambda && o.index < lambda->params.size()) uses = &lambda->params[o.index].annotations;
+                break;
+            }
             default: break;
             }
             return annotation_of(uses, a, name == "has", c);
@@ -1709,6 +1719,26 @@ struct Evaluator::Impl {
             types::Layout l = tc.layout(t);
             if (l.size == 0 && !l.empty && !t->is(Kind::void_)) not_constant(c.span, std::format("the size of {} is not known", types::to_string(t)));
             return integer(name == "size_of" ? l.size : l.align, usize());
+        }
+        if (name == "meta::parameters_of") {   // the parameters of a callable type (spec 26): a lambda's, a function type's
+            if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) {
+                if (t->args.empty()) unknown();
+                Value list;
+                list.kind = Value::Kind::list;
+                list.type = c.type;
+                for (std::size_t i = 0; i + 1 < t->args.size(); ++i) {
+                    if (!t->args[i] || t->args[i]->is_unknown()) unknown();
+                    Value p;
+                    p.kind       = Value::Kind::parameter;
+                    p.type       = tc.meta_parameter();
+                    p.type_value = t;
+                    p.index      = i;
+                    list.elements.push_back(p);
+                }
+                return list;
+            }
+            if (t->is_unknown() || t->is(Kind::type_param)) unknown();
+            failed(c.span, std::format("std::meta::parameters_of needs a lambda or callable type, not {}", types::to_string(t)), "not callable");
         }
         if (name == "meta::result_of") {   // what calling a callable gives (spec 26): the result type of a lambda
             if (t->is(Kind::closure) || t->is(Kind::function) || t->is(Kind::fn_ptr)) {
@@ -2004,6 +2034,7 @@ struct Evaluator::Impl {
         }
         for (const std::string& c : p.capabilities) caps.elements.push_back(build_enum("capability", c));
         v.elements.push_back(std::move(caps));
+        v.elements.push_back(integer(p.cache_line, tc.builtin("u32")));
         return v;
     }
 

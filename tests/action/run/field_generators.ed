@@ -1,0 +1,75 @@
+// RUN: edaxc run %s
+// Field-generating templates (spec 26): a struct template declares one field per field of a type
+// argument, named after it; written fields keep their places around the generated ones; methods
+// reach the generated fields through reflection; classes give only their public fields;
+// generators nest.
+import std;
+
+struct vec2 {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+struct particle {
+    vec2 pos = default;
+    vec2 vel = default;
+    u32 alive = 1;
+}
+
+struct moving {
+    vec2 pos = default;
+    vec2 vel = default;
+}
+
+class body {
+    u32 secret = 0;
+public:
+    f32 mass = 1.0;
+}
+
+template<type T, type A = std::global_allocator>
+struct soa {
+    u32 tag = 7;
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        std::darray<f.type, A> f.name = default;
+    }
+    usize count = 0;
+
+    void push(T value) mut {
+        for compile_time (std::meta::field src : std::meta::fields<T>()) {
+            for compile_time (std::meta::field col : std::meta::fields<soa<T, A>>()) {
+                if compile_time (col.name == src.name) {
+                    col.get(mut this).push(src.get(value));
+                }
+            }
+        }
+        this.count += 1;
+    }
+}
+
+template<type C>
+struct table {
+    for compile_time (std::meta::field f : std::meta::fields<C>()) {
+        soa<f.type> f.name = default;
+    }
+}
+
+i32 main() {
+    mut soa<particle> ps = default;
+    for (u32 i : 0..4) {
+        ps.push(particle{ .pos = vec2{ .x = cast::round<f32>(i) }, .vel = vec2{ .y = 2.0 }, .alive = i % 2 });
+    }
+    std::println(f"{ps.tag} {ps.count} {ps.pos.len()} {ps.pos[3].x} {ps.vel[1].y} {ps.alive[1]}");
+    for compile_time (std::meta::field f : std::meta::fields<soa<particle>>()) {
+        compile_time type t = f.type;
+        std::println(f"{f.index}: {f.name} {std::type_name<t>()}");
+    }
+    mut soa<body> bs = default;
+    bs.push(body{});
+    std::println(f"body: {std::meta::fields<soa<body>>().len()} fields, mass {bs.mass[0]}");
+    mut table<moving> t = default;
+    t.pos.push(vec2{ .x = 1.0, .y = 2.0 });
+    t.vel.push(vec2{ .x = 3.0 });
+    std::println(f"table: {t.pos.x[0]} {t.pos.y[0]} {t.vel.x[0]} {t.vel.count}");
+    return 0;
+}

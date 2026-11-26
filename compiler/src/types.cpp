@@ -2,6 +2,7 @@
 #include "edax/ast_clone.hpp"
 
 #include "edax/ast_printer.hpp"
+#include "edax/llvm_backend.hpp"
 
 namespace edax::types {
 
@@ -625,7 +626,7 @@ bool is_packed(const sema::Symbol* s) {
     return v && v->kind == ast::ExprKind::bool_literal && v->as<ast::LiteralExpr>().bool_value;
 }
 
-// `@std::layout{ .align = N }` on the type (spec 34), read from the literal; 0 without one.
+// `@std::layout{ .align = N }` on the type (spec 34), read from the literal or `std::cache_line_size`; 0 without one.
 std::uint64_t requested_alignment(const sema::Symbol* s) {
     const sema::Symbol* d = s;
     while (d && !d->decl && d->template_of) d = d->template_of;
@@ -640,8 +641,12 @@ std::uint64_t requested_alignment(const sema::Symbol* s) {
     }
     if (!value || value->kind != ast::ExprKind::struct_literal) return 0;
     for (const ast::FieldInit& f : value->as<ast::StructLiteralExpr>().fields) {
-        if (f.name == "align" && f.value && f.value->kind == ast::ExprKind::int_literal) {
-            return static_cast<std::uint64_t>(f.value->as<ast::LiteralExpr>().int_value);
+        if (f.name != "align" || !f.value) continue;
+        if (f.value->kind == ast::ExprKind::int_literal) return static_cast<std::uint64_t>(f.value->as<ast::LiteralExpr>().int_value);
+        // `.align = std::cache_line_size`: the target's cache line (spec 27, 34).
+        if (f.value->kind == ast::ExprKind::path) {
+            const ast::Path& p = f.value->as<ast::PathExpr>().path;
+            if (p.segments.size() == 2 && p.segments[0].name == "std" && p.segments[1].name == "cache_line_size") return target_platform().cache_line;
         }
     }
     return 0;

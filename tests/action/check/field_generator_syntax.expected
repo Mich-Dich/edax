@@ -1,0 +1,22 @@
+exit: 1
+--- stdout
+--- stderr
+error[E2001]: fields are generated in a struct or class template, from one of its type parameters
+ --> tests/action/check/field_generator_syntax.ed:6:5
+  |
+6 |     for compile_time (std::meta::field f : std::meta::fields<u32>()) {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not in a template
+
+error[E2001]: a field generator walks a type's fields: 'for compile_time (std::meta::field f : std::meta::fields<T>())'
+  --> tests/action/check/field_generator_syntax.ed:13:5
+   |
+13 |     for compile_time (u32 f : std::meta::fields<T>()) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a field generator
+
+error[E2001]: a generated field is named 'f.name'
+  --> tests/action/check/field_generator_syntax.ed:21:16
+   |
+21 |         f.type other = default;
+   |                ^^^^^ not the field's name
+
+3 errors, 0 warnings

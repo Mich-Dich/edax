@@ -1,0 +1,7 @@
+exit: 0
+--- stdout
+line 64
+counter: align 64, size 64
+cache_aligned<u32>: align 64
+50 99
+--- stderr

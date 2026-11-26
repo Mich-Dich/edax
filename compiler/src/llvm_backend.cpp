@@ -1201,8 +1201,26 @@ private:
         for (const Param& p : f.params) {
             const types::Type* t = tc_.lower(*p.type, subst);
             if (t && t->is(Kind::reference) && t->inner && !is_interface(t->inner)) mark(index, t->inner, t->is_mut);
+            if (t && !t->is(Kind::reference)) mark_span(fn, index, t);
             ++index;
         }
+    }
+
+    // A span parameter borrows its elements like a reference (Ownership: a view keeps its borrow):
+    // a `std::span<mut T>` is the only way to reach them while the call runs, and a `std::span<T>` of
+    // a frozen `T` sees elements that don't change. The span itself is a value, so LLVM's `noalias`
+    // can't say it; add_alias_scopes gives the accesses through it a scope of their own instead.
+    std::map<const llvm::Function*, std::map<unsigned, bool>> span_params_;   // argument index -> mutable
+    void mark_span(llvm::Function* fn, unsigned i, const types::Type* t) {
+        if (i >= fn->arg_size() || !t->is(Kind::user) || t->symbol->template_args.empty()) return;
+        if (types::is_std_instance(t, "span_mut")) {
+            span_params_[fn][i] = true;
+        } else if (types::is_std_instance(t, "span") && is_frozen(t->symbol->template_args[0])) {
+            span_params_[fn][i] = false;
+        } else {
+            return;
+        }
+        fn->addParamAttr(i, llvm::Attribute::get(ctx_, "edax-span", span_params_[fn][i] ? "mut" : "read"));
     }
 
     // A method whose result is a reference into `this`: it takes no other reference (spec 34 §1:
@@ -1232,8 +1250,20 @@ private:
     void add_alias_scopes(llvm::Function* fn) {
         if (!alias_attributes_) return;
         std::vector<llvm::Argument*> args;
+        const std::map<unsigned, bool>* spans = nullptr;
+        if (auto it = span_params_.find(fn); it != span_params_.end()) spans = &it->second;
+        auto span_of = [&](const llvm::Argument* a) -> const bool* {
+            if (!spans) return nullptr;
+            auto it = spans->find(a->getArgNo());
+            return it == spans->end() ? nullptr : &it->second;
+        };
+        // Whether only reads go through the argument: `T&` of a frozen type, `std::span<T>`.
+        auto reads_only = [&](const llvm::Argument* a) {
+            if (const bool* m = span_of(a)) return !*m;
+            return a->onlyReadsMemory();
+        };
         for (llvm::Argument& a : fn->args()) {
-            if (a.hasNoAliasAttr() && a.getType()->isPointerTy()) args.push_back(&a);
+            if ((a.hasNoAliasAttr() && a.getType()->isPointerTy()) || span_of(&a)) args.push_back(&a);
         }
         if (args.size() < 2) return;
         std::map<llvm::Value*, llvm::Argument*> roots;
@@ -1243,6 +1273,18 @@ private:
             llvm::Argument* out = nullptr;
             if (auto* a = llvm::dyn_cast<llvm::Argument>(v)) {
                 out = a->hasNoAliasAttr() ? a : nullptr;
+            } else if (auto* slot = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+                // A span parameter's slot (stored once from the argument): its elements and fields.
+                llvm::Argument* from = nullptr;
+                bool            ok   = true;
+                for (llvm::User* u : slot->users()) {
+                    if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                        auto* arg = llvm::dyn_cast<llvm::Argument>(st->getValueOperand());
+                        if (st->getPointerOperand() != slot || from || !arg) ok = false;
+                        else from = arg;
+                    }
+                }
+                if (ok && from && span_of(from)) out = from;
             } else if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(v)) {
                 out = root(g->getPointerOperand(), depth + 1);
             } else if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
@@ -1282,7 +1324,7 @@ private:
                 std::vector<llvm::Metadata*> others;
                 for (llvm::Argument* b : args) {
                     // Two read-only parameters may be the same object; they only read, so nothing is lost.
-                    if (b != a && !(a->onlyReadsMemory() && b->onlyReadsMemory())) others.push_back(scope[b]);
+                    if (b != a && !(reads_only(a) && reads_only(b))) others.push_back(scope[b]);
                 }
                 if (others.empty()) continue;
                 in.setMetadata(llvm::LLVMContext::MD_alias_scope, llvm::MDNode::get(ctx_, {scope[a]}));
@@ -1777,6 +1819,23 @@ private:
             if (level.empty() && sources_.file(l.span.file).path().starts_with("<std>")) level = mode_setting("std_optimization");
             if (!level.empty()) fn->addFnAttr("edax-optimize", level);
         }
+        // The aliasing rule holds at a lambda's calls as at a function's (spec 34 §1).
+        if (alias_attributes_) {
+            for (std::size_t i = 0; i + 1 < t->args.size(); ++i) {
+                const types::Type* p = t->args[i];
+                unsigned           at = static_cast<unsigned>(i) + 1;
+                if (p->is(Kind::reference) && p->inner && !is_interface(p->inner)) {
+                    if (p->is_mut) {
+                        fn->addParamAttr(at, llvm::Attribute::NoAlias);
+                    } else if (is_frozen(p->inner)) {
+                        fn->addParamAttr(at, llvm::Attribute::NoAlias);
+                        fn->addParamAttr(at, llvm::Attribute::ReadOnly);
+                    }
+                } else if (!p->is(Kind::reference)) {
+                    mark_span(fn, at, p);
+                }
+            }
+        }
         lambda_fns_[&l] = fn;
         if (std::string outer = function_name(cur_fn_); !outer.empty()) fn_names_[fn] = "lambda in " + outer;
         else fn_names_[fn] = "lambda";
@@ -1820,6 +1879,7 @@ private:
                 else b_.CreateUnreachable();
             }
             scopes_.clear();
+            add_alias_scopes(fn);
         } catch (const Unsupported&) {
         }
     }
@@ -3296,6 +3356,13 @@ private:
         if (name.starts_with("atomic_") || name.starts_with("futex_") || name == "spin_hint") return thread_raw(c, name);
         if (name == "assume") {   // spec 34: the optimizer may rely on the condition
             b_.CreateAssumption(gen_expr(*c.args[0]));
+            return nullptr;
+        }
+        if (name == "prefetch_read" || name == "prefetch_write") {   // spec 34: llvm.prefetch(address, rw, locality 3, data)
+            auto* i32 = llvm::Type::getInt32Ty(ctx_);
+            b_.CreateCall(intrinsic_declaration(mod_.get(), llvm::Intrinsic::prefetch, {ptr_type()}),
+                          {gen_expr(*c.args[0]), llvm::ConstantInt::get(i32, name == "prefetch_write" ? 1 : 0), llvm::ConstantInt::get(i32, 3),
+                           llvm::ConstantInt::get(i32, 1)});
             return nullptr;
         }
         if (name == "unreachable") {
@@ -7931,6 +7998,68 @@ private:
 // this thread, so storing again can't fault or race; the loop then has no branch and vectorizes
 // without masked stores (LLVM itself speculates at most one such store). Runs where the
 // vectorizer starts.
+// Spec 34 §1 after inlining: the elements of a span parameter (`"edax-span"`, see mark_span) are
+// reached only through it while the function runs. add_alias_scopes tags the accesses a function
+// makes itself; this pass runs once callees are inlined into it (a system's lambda into the loop
+// that calls it per element) and tags the accesses whose address comes from a span parameter's
+// data pointer, so the loop vectorizes without a run-time overlap check. It runs before the
+// function is inlined into its callers, and the scopes stay with the accesses after that.
+struct SpanAliasScopes : llvm::PassInfoMixin<SpanAliasScopes> {
+    static llvm::Attribute span_mark(const llvm::Argument* a) {
+        return a->getParent()->getAttributes().getParamAttr(a->getArgNo(), "edax-span");
+    }
+
+    static llvm::Argument* root(llvm::Value* v) {
+        for (int depth = 0; v && depth < 16; ++depth) {
+            if (auto* a = llvm::dyn_cast<llvm::Argument>(v)) return span_mark(a).isValid() ? a : nullptr;
+            if (auto* g = llvm::dyn_cast<llvm::GetElementPtrInst>(v)) {
+                v = g->getPointerOperand();
+            } else if (auto* e = llvm::dyn_cast<llvm::ExtractValueInst>(v)) {
+                if (e->getNumIndices() != 1 || e->getIndices()[0] != 0) return nullptr;   // the data pointer is field 0
+                v = e->getAggregateOperand();
+            } else {
+                return nullptr;
+            }
+        }
+        return nullptr;
+    }
+
+    llvm::PreservedAnalyses run(llvm::Function& fn, llvm::FunctionAnalysisManager&) {
+        std::vector<llvm::Argument*> spans;
+        for (llvm::Argument& a : fn.args()) {
+            if (span_mark(&a).isValid()) spans.push_back(&a);
+        }
+        if (spans.size() < 2) return llvm::PreservedAnalyses::all();
+        auto writes = [](llvm::Argument* a) { return span_mark(a).getValueAsString() == "mut"; };
+        llvm::LLVMContext&                       ctx = fn.getContext();
+        llvm::MDBuilder                          md(ctx);
+        llvm::MDNode*                            domain = md.createAnonymousAliasScopeDomain(fn.getName().str() + ".spans");
+        std::map<llvm::Argument*, llvm::MDNode*> scope;
+        for (llvm::Argument* a : spans) scope[a] = md.createAnonymousAliasScope(domain, std::format("{}.span{}", fn.getName().str(), a->getArgNo()));
+        bool changed = false;
+        for (llvm::BasicBlock& bb : fn) {
+            for (llvm::Instruction& in : bb) {
+                llvm::Value* addr = nullptr;
+                if (auto* ld = llvm::dyn_cast<llvm::LoadInst>(&in)) addr = ld->getPointerOperand();
+                else if (auto* st = llvm::dyn_cast<llvm::StoreInst>(&in)) addr = st->getPointerOperand();
+                llvm::Argument* a = addr ? root(addr) : nullptr;
+                if (!a) continue;
+                std::vector<llvm::Metadata*> others;
+                for (llvm::Argument* b : spans) {
+                    if (b != a && (writes(a) || writes(b))) others.push_back(scope[b]);   // two read-only spans may overlap
+                }
+                if (others.empty()) continue;
+                in.setMetadata(llvm::LLVMContext::MD_alias_scope,
+                               llvm::MDNode::concatenate(in.getMetadata(llvm::LLVMContext::MD_alias_scope), llvm::MDNode::get(ctx, {scope[a]})));
+                in.setMetadata(llvm::LLVMContext::MD_noalias,
+                               llvm::MDNode::concatenate(in.getMetadata(llvm::LLVMContext::MD_noalias), llvm::MDNode::get(ctx, others)));
+                changed = true;
+            }
+        }
+        return changed ? llvm::PreservedAnalyses::none() : llvm::PreservedAnalyses::all();
+    }
+};
+
 struct ConditionalStoreSelect : llvm::PassInfoMixin<ConditionalStoreSelect> {
     static bool same_address(llvm::Value* a, llvm::Value* b) {
         if (a == b) return true;
@@ -8032,6 +8161,9 @@ void register_edax_passes(llvm::PassBuilder& pb) {
     // internal, so every caller changes with it). LLVM runs this only at -O3.
     pb.registerCGSCCOptimizerLateEPCallback([](llvm::CGSCCPassManager& cgpm, llvm::OptimizationLevel) {
         cgpm.addPass(llvm::ArgumentPromotionPass(4));   // up to 4 scalars: a 16-byte vec4
+    });
+    pb.registerScalarOptimizerLateEPCallback([](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) {
+        fpm.addPass(SpanAliasScopes());
     });
     pb.registerVectorizerStartEPCallback([](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) {
         fpm.addPass(ConditionalStoreSelect());
@@ -9510,6 +9642,8 @@ TargetPlatform platform_for(const std::string& triple_name, const CpuLevel* leve
     }
     if (p.os != "none") p.capabilities = {"os", "threads", "heap", "files", "dynamic_libraries"};
     if (level && (!level->features.empty() || t.getArch() == llvm::Triple::x86_64)) p.capabilities.push_back("simd");
+    // Apple's ARM cores move 128-byte lines; x86-64 and the other ARM and RISC-V cores 64.
+    p.cache_line = t.isAArch64() && t.isOSDarwin() ? 128 : 64;
     return p;
 }
 } // namespace
@@ -9520,6 +9654,7 @@ const TargetPlatform& target_platform() {
     if (g_description) {
         current.os           = g_description->os;
         current.capabilities = g_description->capabilities;
+        if (g_description->cache_line != 0) current.cache_line = g_description->cache_line;
     }
     return current;
 }

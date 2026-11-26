@@ -1176,6 +1176,10 @@ private:
                     parse_generate(*decl);
                     continue;
                 }
+                if (ctx != MemberContext::interface && at(TokenKind::kw_for) && peek(1).kind == TokenKind::kw_compile_time) {
+                    parse_field_generator(*decl, access);
+                    continue;
+                }
                 if (decl->is_annotation && at(TokenKind::identifier) && cur().text == "wrap" && peek(1).kind == TokenKind::l_brace) {
                     Span word = advance().span;   // wrap
                     if (decl->wrap) report(DiagCode::E2035, word, "an annotation has at most one wrap block", "second block");
@@ -1245,6 +1249,72 @@ private:
         }
         access = k == TokenKind::kw_public ? Access::public_ : k == TokenKind::kw_protected ? Access::protected_ : Access::private_;
         return true;
+    }
+
+    // `for compile_time (std::meta::field f : std::meta::fields<T>()) { <type> f.name [= init]; ... }`
+    // in a struct or class template (spec 26). Each field's type may use `f.type`; its name is `f.name`.
+    void parse_field_generator(TypeDecl& decl, Access access) {
+        FieldGenerator g;
+        Span start = advance().span;   // for
+        advance();                     // compile_time
+        g.position = decl.members.size();
+        Span open  = expect(TokenKind::l_paren, "'(' after 'for compile_time'").span;
+        TypePtr var_type = parse_type({});
+        bool    is_field = var_type->kind == TypeKind::named && ast::to_string(var_type->as<NamedType>().path) == "std::meta::field";
+        g.var = expect_identifier("the loop variable");
+        expect(TokenKind::colon, "after the loop variable");
+        ExprPtr source = parse_expr();
+        expect_close(TokenKind::r_paren, open);
+        // The source: `std::meta::fields<T>()`.
+        if (source->kind == ExprKind::call && source->as<CallExpr>().args.empty() && source->as<CallExpr>().callee->kind == ExprKind::path) {
+            Path& p = source->as<CallExpr>().callee->as<PathExpr>().path;
+            if (p.segments.size() == 3 && p.segments[0].name == "std" && p.segments[1].name == "meta" && p.segments[2].name == "fields" &&
+                p.segments[2].template_args.size() == 1 && p.segments[2].template_args[0].type) {
+                g.source = std::move(p.segments[2].template_args[0].type);
+            }
+        }
+        if (!is_field || !g.source) {
+            report(DiagCode::E2001, from(start), "a field generator walks a type's fields: 'for compile_time (std::meta::field f : std::meta::fields<T>())'",
+                   "not a field generator");
+        }
+        if (!decl.is_template) {
+            report(DiagCode::E2001, from(start), "fields are generated in a struct or class template, from one of its type parameters",
+                   "not in a template");
+        }
+        Span body = expect(TokenKind::l_brace, "'{' to start the generated fields").span;
+        generator_var_ = g.var;
+        struct Reset {
+            std::string& v;
+            ~Reset() { v.clear(); }
+        } reset{generator_var_};
+        while (!at(TokenKind::r_brace) && !at(TokenKind::eof)) {
+            std::size_t before = pos_;
+            try {
+                Span fs    = cur().span;
+                auto field = std::make_unique<VariableDecl>(DeclKind::field, fs);
+                field->access = access;
+                field->type   = parse_type({});
+                field->name_span = cur().span;
+                if (!(at(TokenKind::identifier) && cur().text == g.var && peek(1).kind == TokenKind::dot && peek(2).kind == TokenKind::identifier &&
+                      peek(2).text == "name")) {
+                    fail(DiagCode::E2001, cur().span, std::format("a generated field is named '{}.name'", g.var), "not the field's name");
+                }
+                advance();
+                advance();
+                advance();
+                field->name_span = from(field->name_span);
+                if (accept(TokenKind::eq)) field->init = parse_expr();
+                expect(TokenKind::semicolon, "after a generated field");
+                field->span = from(fs);
+                g.fields.push_back(std::move(field));
+            } catch (const ParseError&) {
+                synchronize(false);
+            }
+            if (pos_ == before) advance();
+        }
+        expect_close(TokenKind::r_brace, body);
+        g.span = from(start);
+        decl.field_generators.push_back(std::move(g));
     }
 
     DeclPtr parse_member(MemberContext ctx, Access access) {
@@ -1716,6 +1786,19 @@ private:
                 type = std::make_unique<ReferenceType>(from(start), std::move(type));
             }
             return type;
+        }
+        if (!generator_var_.empty() && at(TokenKind::identifier) && cur().text == generator_var_ &&
+            peek(1).kind == TokenKind::dot && peek(2).kind == TokenKind::kw_type) {   // `f.type` in a field generator (spec 26)
+            advance();
+            advance();
+            advance();
+            Path p;
+            p.span = from(start);
+            PathSegment seg;
+            seg.name = "$field.type";
+            seg.span = p.span;
+            p.segments.push_back(std::move(seg));
+            return std::make_unique<NamedType>(p.span, std::move(p));
         }
         if (!starts_type(cur().kind)) {
             fail(DiagCode::E2003, cur().span, std::format("expected a type, found {}", describe(cur())),
@@ -3203,6 +3286,8 @@ private:
     Token                    split_token_;
     Span                     prev_span_;
     int                      speculating_ = 0;
+    // The loop variable of the field generator being parsed (`f`): `f.type` is a type there.
+    std::string              generator_var_;
     bool                     stray_code_reported_ = false;
     std::vector<std::string>    ns_stack_;    // the open `namespace` blocks (spec 30)
     std::vector<std::string>    type_stack_;  // the struct/class bodies being parsed (nested types)

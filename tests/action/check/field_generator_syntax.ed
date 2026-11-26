@@ -1,0 +1,23 @@
+// RUN: edaxc check %s
+// Field-generating templates (spec 26): what the parser accepts.
+import std;
+
+struct plain {
+    for compile_time (std::meta::field f : std::meta::fields<u32>()) {
+        u32 f.name = 0;
+    }
+}
+
+template<type T>
+struct wrong_loop {
+    for compile_time (u32 f : std::meta::fields<T>()) {
+        T f.name = default;
+    }
+}
+
+template<type T>
+struct other_name {
+    for compile_time (std::meta::field f : std::meta::fields<T>()) {
+        f.type other = default;
+    }
+}

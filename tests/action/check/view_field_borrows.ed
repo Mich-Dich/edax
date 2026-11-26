@@ -1,0 +1,29 @@
+// RUN: edaxc check %s
+// A view made from a field borrows that field (Ownership: places): views of two columns of one
+// table can be passed together and held together; the same field, or the whole value, can't.
+import std;
+
+struct table {
+    std::darray<f32> a = default;
+    std::darray<f32> b = default;
+
+    void clear_all() mut { }
+}
+
+void k(std::span<mut f32> x, std::span<f32> y) { }
+
+i32 main() {
+    mut table t = default;
+    k(t.a.as_mut_span(), t.b.as_span());
+    k(t.a.as_mut_span(), t.a.as_span());
+    std::span<mut f32> held = t.a.as_mut_span();
+    t.b.push(1.0);
+    k(held, t.b.as_span());
+    t.a.push(2.0);
+    std::span<f32> ro = t.b.as_span();
+    t.b.push(3.0);
+    k(held, ro);
+    t.clear_all();
+    k(held, ro);
+    return 0;
+}

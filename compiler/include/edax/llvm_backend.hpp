@@ -114,6 +114,7 @@ struct TargetPlatform {
     std::vector<std::string> features;       // the level's CPU features: "avx2", "fma", "neon", ...
     std::vector<std::string> capabilities;   // "os", "threads", "heap", "files", "dynamic_libraries", "simd"
     unsigned                 vector_bytes = 16;   // the widest vector register of the level
+    unsigned                 cache_line   = 64;   // bytes per cache line (a description's 0: the architecture's)
     bool has(const std::string& capability) const;
     bool has_feature(const std::string& feature) const;
 };

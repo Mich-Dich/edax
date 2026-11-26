@@ -40,6 +40,7 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::alternatives<T>()` | `std::span<std::meta::alternative>`: the alternatives of an enum, in declaration order |
 | `std::meta::is_struct<T>()`, `is_class<T>()`, `is_enum<T>()` | `bool` |
 | `std::meta::result_of<F>()` | `type`: what calling the lambda or callable type `F` returns (`std::thread::spawn` uses it to name `handle<R>`) |
+| `std::meta::parameters_of<F>()` | `std::span<std::meta::parameter>`: the parameters of the lambda or callable type `F`, with `name`, `type` (without the reference), `passing` and `index`. An ECS reads a system's components and whether it writes them from `[](mut position& p, velocity& v) { ... }` |
 | `std::returns<F, R>()` | `bool`: whether calling `F` gives an `R`. For entry checks of functions taking callables (`darray::sort_by` uses it), where `std::meta::result_of<F>()` can't be written as a template argument |
 | `std::meta::is_view<T>()` | `bool`: whether `T` borrows (a reference, a view, a lambda with reference captures, see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)) |
 | `std::meta::methods<T>()` | `std::span<std::meta::function>`: the methods of a type (visible ones, see privacy below), including generated ones (see [Annotations](annotations.md)) |
@@ -135,23 +136,26 @@ for compile_time (std::meta::field f : std::meta::fields<T>()) {
 Compile-time values that hold texts, function pointers and lists become static data the same way, so lookup tables and baked curves are written as compile-time code.
 
 ### Types whose fields come from another type
-> **Planned:** field-generating templates are not implemented yet.
-
-A struct template may declare fields with `for compile_time` over the fields of another type. Every field it makes takes its name from a written declaration (the other type's field), optionally with a written prefix or suffix:
+A struct or class template may declare fields with `for compile_time` over the fields of one of its type parameters. Each field written in the block becomes one field per field of that type, named after it:
 ```edax
 template<type T, type A = std::global_allocator>
 struct soa_columns {
     for compile_time (std::meta::field f : std::meta::fields<T>()) {
-        std::darray<f.type, A> f.name;            // one column per field of T, with T's field name
+        std::darray<f.type, A> f.name = default;   // one column per field of T, with T's field name
     }
 }
 
 mut soa_columns<particle> ps = default;
 ps.position.push(p0);                             // `position` is declared in `particle`
 ```
-- Inside, only field declarations whose type and name come from the loop value are allowed (`f.name`, `f.name ~ "_dirty"`). `@f.annotations` copies the field's annotations.
-- Tools treat a generated field's declaration as the source field's, so "go to definition" lands on `particle::position`.
-- This is how SoA containers, GPU mirrors of CPU structs (`gpu_mirror<T>` inserting std140 padding) and replication deltas are written as library code.
+- The source is `std::meta::fields<P>()` where `P` is a type parameter of the template, and an instance's argument for it must be a struct or class. Its fields are taken in declaration order; of a class only the `public` ones (a library's template never sees private fields).
+- Inside the block, each field's type may use `f.type` anywhere a type goes (`std::darray<f.type, A>`, `soa<f.type>`), its name is `f.name`, and it may have an initial value that doesn't depend on `f`.
+- The generated fields take the generator's place among the written fields: fields written before it come first, fields written after it last.
+- A generated name that equals a written field's, or a second field in one block (both would be named `f.name`), is an error of the instance that asks for it.
+- Methods of the template reach the generated fields through reflection on the instance itself: `for compile_time (std::meta::field col : std::meta::fields<soa_columns<T, A>>())`, `col.get(mut this)`.
+- Generators nest: `soa<f.type>` in one template, `std::darray<f.type>` in `soa`, gives a column per field of each component (the `ecs_soa` benchmark).
+- **Planned:** written prefixes and suffixes (`f.name ~ "_dirty"`, open question 9), `@f.annotations` to copy the field's annotations, "go to definition" landing on the source field, and generated fields in `edaxc expand`.
+- This is how SoA containers, ECS tables, GPU mirrors of CPU structs (`gpu_mirror<T>` inserting std140 padding) and replication deltas are written as library code.
 
 ### Embedding files
 `std::embed("shaders/blit.spv")` is the file's bytes as a `std::span<u8>` in static memory; `std::embed_text("help.txt")` is a `std::static_str`. The path is relative to the source file and is a recorded input of the build, so changing the file rebuilds what embeds it.

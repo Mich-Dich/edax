@@ -1,0 +1,13 @@
+import std;
+import core::core;
+import api::greeter;
+
+i32 main() {
+    std::println(f"core says {core::answer()}");
+    std::filesystem::path here = std::filesystem::executable_dir();
+    mut std::plugin<api::greeter> hello = std::plugin<api::greeter>::load(here / "mods" / "hello.so").expect("hello");
+    mut std::plugin<api::greeter> extra = std::plugin<api::greeter>::load(here / ".." / ".." / "layout_project-plugins" / "extra.so").expect("extra");
+    std::println(hello->greet("launcher"));
+    std::println(extra->greet("launcher"));
+    return 0;
+}

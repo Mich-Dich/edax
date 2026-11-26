@@ -1,0 +1,141 @@
+// The Edax standard library: module std::args, command-line arguments read into a struct.
+//
+//     @std::args::program{ .about = "Gluttony game editor" }
+//     struct options {
+//         @std::args::positional{ .help = "Path to the project file" }
+//         std::filesystem::path project = default;
+//
+//         @std::args::flag{ .short_name = "v", .help = "More log output" }
+//         bool verbose = false;
+//
+//         @std::args::option{ .help = "Worker threads (0: one per core)" }
+//         u32 threads = 0;
+//     }
+//
+//     std::exit_code main(std::span<std::str> args) {
+//         options opts = match (std::args::parse<options>(args)) {
+//             std::ok(o) => move o,
+//             std::error(e) => return e.report(),
+//         };
+//         ...
+//     }
+//
+// Each field is one argument. Its name on the command line is the field's name with `-` for `_`
+// (`log_file` is `--log-file`), its type says what it accepts, and its initial value is the
+// default (every field needs one: `std::filesystem::path project = default;`). A field without an annotation is an option (`--name value`), or a flag when it is a
+// `bool`.
+//
+// Field types: integers, floats, `bool`, `std::string`, `std::filesystem::path`, enums without
+// payloads (by alternative name, `-` for `_`), `std::option<T>` (not given: `std::none`) and
+// `std::darray<T>` (an option given several times, or the remaining positional arguments) of
+// those, and structs with `@std::args::flatten`. A payload enum with `@std::args::subcommand`
+// holds the subcommand: each alternative is one, its payload (a struct) its arguments.
+//
+// On the command line: `--name value`, `--name=value`, `-n value`, `-nvalue`, flags grouped as
+// `-vq`, `--` before arguments that start with `-`, and `--help` / `-h` (and `--version` with
+// `@std::args::program{ .version = ... }`) anywhere.
+//
+// Loaded for programs that name std::args.
+
+namespace std::args {
+    // About the whole program, on its struct: shown at the top of the help. `name` replaces the
+    // executable's file name in the help; `version` adds `--version`.
+    annotation(std::meta::target::type)
+    struct program {
+        std::static_str name = "";
+        std::static_str about = "";
+        std::static_str version = "";
+    }
+
+    // An argument given by its position (in field order). It is required unless `required` is
+    // false or the field is a `std::option<T>`; a `std::darray<T>` field takes all remaining ones
+    // and must be the last positional field. `value_name` replaces the field's name in the help.
+    annotation(std::meta::target::field)
+    struct positional {
+        std::static_str help = "";
+        std::static_str value_name = "";
+        bool required = true;
+    }
+
+    // An argument given by name: `--name value`. `name` replaces the field's name, `short_name`
+    // adds a one-letter form (`-t 8`), `value_name` names the value in the help. `required`
+    // makes leaving it out an error.
+    annotation(std::meta::target::field)
+    struct option {
+        std::static_str name = "";
+        std::static_str short_name = "";
+        std::static_str help = "";
+        std::static_str value_name = "";
+        bool required = false;
+    }
+
+    // An argument without a value: `--verbose`. On a `bool` it sets true; on an integer each use
+    // counts one up (`-vvv` is 3).
+    annotation(std::meta::target::field)
+    struct flag {
+        std::static_str name = "";
+        std::static_str short_name = "";
+        std::static_str help = "";
+    }
+
+    // The numbers a number argument accepts, both ends included.
+    annotation(std::meta::target::field)
+    struct range {
+        f64 min = 0.0;
+        f64 max = 1.0;
+    }
+
+    // A payload enum field holding the subcommand (`tool build --release`): each alternative is
+    // one, named after the alternative, and its payload (a struct) holds the subcommand's own
+    // arguments. The arguments after the subcommand's name are its arguments. It is required
+    // unless the field is a `std::option<E>`. Only one per struct, after its positional fields.
+    annotation(std::meta::target::field)
+    struct subcommand { }
+
+    // About one subcommand, on its alternative: `help` is shown in the list of subcommands,
+    // `name` replaces the alternative's name.
+    annotation(std::meta::target::alternative)
+    struct command {
+        std::static_str name = "";
+        std::static_str help = "";
+    }
+
+    // A struct field whose arguments are given as if they were the outer struct's (shared groups
+    // of options, `logging_options`).
+    annotation(std::meta::target::field)
+    struct flatten { }
+
+    // A field that is not an argument: it keeps its initial value.
+    annotation(std::meta::target::field)
+    struct skip { }
+
+    // Why parsing stopped.
+    enum stop : u8 {
+        // `--help` or `-h`: `text` is the help.
+        help,
+        // `--version`: `text` is the version line.
+        version,
+        // A wrong command line: `message` says what is wrong, `text` is the usage.
+        invalid,
+    }
+
+    // What `parse` gives instead of the arguments.
+    struct error {
+        stop kind = stop::invalid;
+        std::string message = default;
+        std::string text = default;
+
+        // Prints it (help and version to the output, an error with the usage to the error
+        // output) and gives the exit code for main: success for help and version.
+        std::exit_code report();
+    }
+
+    // The arguments of the command line `args` (as main gets them: the executable first) in a
+    // `T`, a struct whose fields describe them (see above).
+    template<type T>
+    std::result<T, std::args::error> parse(std::span<std::str> args);
+
+    // The help of `T`'s arguments, as `--help` prints it; `program` is the name shown.
+    template<type T>
+    std::string help(std::str program);
+}

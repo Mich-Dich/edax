@@ -1,0 +1,30 @@
+// RUN: edaxc check %s
+// std::args: the annotations' checks and parse's check of the fields.
+import std;
+
+struct inner { u32 a = 0; }
+
+struct bad {
+    @std::args::flag std::string name = default;
+    @std::args::range{ .min = 5.0, .max = 1.0 } u32 n = 0;
+    @std::args::option{ .short_name = "ab" } u32 m = 0;
+    @std::args::subcommand u32 sub = 0;
+    @std::args::positional std::darray<std::darray<u32>> nested = default;
+}
+
+struct unmarked {
+    inner settings = default;
+    u32 b = 0;
+}
+
+std::exit_code main(std::span<std::str> args) {
+    match (std::args::parse<bad>(args)) {
+        std::ok(_) => {},
+        std::error(e) => { return e.report(); },
+    }
+    match (std::args::parse<unmarked>(args)) {
+        std::ok(_) => {},
+        std::error(e) => { return e.report(); },
+    }
+    return std::exit_code::success;
+}

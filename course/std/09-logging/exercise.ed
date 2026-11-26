@@ -40,7 +40,9 @@ i32 main() {
         // TODO: a status line "importing [i/n] <name>" per asset, finished with
         // "imported <k> of <n> assets".
         for (usize i : 0..assets.len()) {
-            if (import_asset(assets[i])) { imported += 1; }
+            if (import_asset(assets[i])) {
+                imported += 1;
+            }
         }
         logs.flush();
     }

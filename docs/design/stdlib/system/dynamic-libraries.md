@@ -29,11 +29,12 @@ namespace vulkan_backend {
 }
 ```
 - Exactly one class is marked `@std::plugin_entry`. It implements the plugin's interface and has a `static` method `make()` that the loader calls.
+- The build writes the plugin as `<name>.so` into its output folder, `build/<mode>/` unless `build.ed` chooses another (`g.output_dir`, see [Edax as a Build System](../../build/build-system.md)). **Where a program looks for plugins is up to the program:** next to it, in a folder from a config file or the command line, in several places. The build only puts the files where `build.ed` says.
 
 **In the program:**
 ```edax
 std::result<std::plugin<renderer_api::renderer>, std::plugin_error> loaded =
-    std::plugin<renderer_api::renderer>::load(std::filesystem::executable_dir() / "plugins" / "vulkan.so");
+    std::plugin<renderer_api::renderer>::load(std::filesystem::executable_dir() / "plugins" / "vulkan.so");   // wherever the program keeps them
 
 mut std::plugin<renderer_api::renderer> vulkan = loaded?;
 vulkan->draw(frame);                        // the plugin's object, through the interface (dynamic dispatch)

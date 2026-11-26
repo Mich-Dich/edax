@@ -2,11 +2,11 @@ exit: 1
 --- stdout
 edaxc build: debug, 4 targets
  ✓ build.ed       4 targets <t>
- ✓ good           2 units, 36 B <t>  %t/c/libgood.a
+ ✓ good           2 units, 36 B <t>  %t/debug/.edax/c/libgood.a
  ✓ app            5 units, 67 B <t>  %t/debug/app
  ✗ broken         1 error <t>
  - needs_broken   not built: needs broken
-build failed: 1 error, 0 warnings   details: %t/debug/build.log
+build failed: 1 error, 0 warnings   details: %t/debug/.edax/logs/build.log
 --- stderr
 tests/action/build/output_project/vendor/broken.c:1:2: error: #error broken on purpose
     1 | #error broken on purpose

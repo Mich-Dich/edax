@@ -1,0 +1,29 @@
+// RUN: edaxc run %s -- -v --threads 3 --renderer=opengl game.proj extra.txt
+// std::args::parse in main: the program's own command line.
+import std;
+
+enum render_api : u8 { vulkan, opengl }
+
+struct options {
+    @std::args::positional{ .help = "The project file" }
+    std::filesystem::path project = default;
+
+    @std::args::positional{ .help = "More files", .required = false }
+    std::darray<std::filesystem::path> files = default;
+
+    @std::args::flag{ .short_name = "v" }
+    bool verbose = false;
+
+    u32 threads = 0;
+
+    render_api renderer = render_api::vulkan;
+}
+
+std::exit_code main(std::span<std::str> args) {
+    options opts = match (std::args::parse<options>(args)) {
+        std::ok(o) => move o,
+        std::error(e) => return e.report(),
+    };
+    std::println(f"{opts.project.as_str()} files={opts.files.len()} verbose={opts.verbose} threads={opts.threads} renderer={std::meta::name_of(opts.renderer)}");
+    return std::exit_code::success;
+}

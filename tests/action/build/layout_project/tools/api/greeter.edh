@@ -1,0 +1,8 @@
+// The interface the launcher and its plugins share.
+import std;
+
+namespace api {
+    interface greeter {
+        std::string greet(std::str who);
+    }
+}

@@ -9,4 +9,4 @@ optimization: true
 edaxc run: development, 1 target
  ✓ build.ed       2 targets <t>
  ✓ app            7 units, 866 B <t>  %t/development/app
-built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/development/build.log
+built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/development/.edax/logs/build.log

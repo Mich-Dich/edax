@@ -1,12 +1,15 @@
 // build.ed for hot reload (dynamic libraries): three builds of one plugin; v2 adds and removes
-// fields, v3 changes a field's type.
+// fields, v3 changes a field's type. The program loads them from `plugins` next to it.
 import std;
 
 namespace build {
     compile_time void build(mut std::build::graph& g) {
-        _ = g.add_plugin(std::build::edax_target{ .name = "v1", .root = "v1/game.ed" });
-        _ = g.add_plugin(std::build::edax_target{ .name = "v2", .root = "v2/game.ed" });
-        _ = g.add_plugin(std::build::edax_target{ .name = "v3", .root = "v3/game.ed" });
+        std::build::target v1 = g.add_plugin(std::build::edax_target{ .name = "v1", .root = "v1/game.ed" });
+        std::build::target v2 = g.add_plugin(std::build::edax_target{ .name = "v2", .root = "v2/game.ed" });
+        std::build::target v3 = g.add_plugin(std::build::edax_target{ .name = "v3", .root = "v3/game.ed" });
+        g.output_dir(v1, "{build}/{mode}/plugins");
+        g.output_dir(v2, "{build}/{mode}/plugins");
+        g.output_dir(v3, "{build}/{mode}/plugins");
         _ = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
     }
 }

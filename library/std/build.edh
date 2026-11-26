@@ -293,12 +293,15 @@ namespace std::build {
     // --no-log-file) overrides them. The lines are patterns: the std::log syntax with the
     // build's placeholders ({mark}, {target}, {bar:40}, {done}, {total}, {running}, {elapsed},
     // {summary}, {output}, {lines}, {size}, {file:<*}, {time}, {targets}, {errors}, {warnings},
-    // {log}); "" keeps the default.
+    // {log}); "" keeps the default. `log_dir` is the folder whose hidden `.edax` holds build.log
+    // and the timings: a pattern like `g.output_dir`'s, "" for the folder of the program the build
+    // is for (the last program built; without one, the first output).
     view struct output {
         std::build::progress          progress = std::build::progress::automatic;
         std::span<std::build::detail> details  = [];
         bool                          log_file  = true;
         u32                           keep_logs = 5;
+        std::static_str               log_dir   = "";
         std::static_str               target_line = "";
         std::static_str               done_line   = "";
         std::static_str               source_row  = "";
@@ -345,12 +348,14 @@ namespace std::build {
         // A shared C or C++ library (`lib<name>.so`), loaded by the operating system when a
         // program that links it starts. Its sources are added like a static one's.
         compile_time std::build::target add_shared_library(std::build::c_target spec) mut;
-        // A shared Edax library: its modules' code is compiled once, into lib<name>.so next to the
-        // programs; the programs that link it import its modules and call into it.
+        // A shared Edax library: its modules' code is compiled once, into lib<name>.so in its output
+        // folder (`g.output_dir`); the programs that link it import its modules and call into it,
+        // and find it wherever it is (a relative rpath).
         compile_time std::build::target add_shared_library(std::build::edax_target spec) mut;
-        // A Edax plugin (dynamic libraries): its `@std::plugin_entry` class, built as
-        // `<name>.so` in the `plugins` directory next to the programs, which load it with
-        // `std::plugin<I>::load`. Built with the programs of the build.
+        // A Edax plugin (dynamic libraries): its `@std::plugin_entry` class, built as `<name>.so`
+        // in its output folder (`g.output_dir`). Where programs look for plugins is their own
+        // business: they load one from any path with `std::plugin<I>::load`. Built with the
+        // programs of the build.
         compile_time std::build::target add_plugin(std::build::edax_target spec) mut;
         // Turns C headers of the C target `t` into a Edax module: preprocessed with `t`'s include
         // directories and defines. Programs that link `t` import it. What can't be translated is
@@ -409,6 +414,22 @@ namespace std::build {
         compile_time void add_output(std::build::step s, std::build::path file) mut;
         // `t` is built after `s` ran.
         compile_time void depends_on(std::build::target t, std::build::step s) mut;
+        // `t` is built after `first` is, without linking it: a plugin or a program of this project
+        // or of a dependency (`g.target_of`) that `t` needs at run time. When `first` fails, `t`
+        // isn't built.
+        compile_time void depends_on(std::build::target t, std::build::target first) mut;
+        // The folder the build's outputs go to, relative to the project's folder (the one with
+        // build.ed; `..` and absolute paths are allowed), with placeholders: {build} the build
+        // directory (`<project>/build`, or --out-dir), {name} the target, {project} the project's
+        // folder name, {mode} the build mode, {kind} program, test, library, plugin or c_library,
+        // {platform} the target triple, {os} linux, windows, macos or none, {arch} the triple's CPU
+        // (x86_64, aarch64, ...), {cpu} the CPU level. The default is "{build}/{mode}", and
+        // "{build}/{mode}/<--target>" when cross-compiling. edaxc keeps its own files for a target
+        // (up-to-date stamps) in a hidden `.edax` folder inside the target's folder.
+        compile_time void output_dir(std::static_str pattern) mut;
+        // The output folder of one target instead of the project's pattern; also for a target of a
+        // dependency (`g.target_of`).
+        compile_time void output_dir(std::build::target t, std::static_str pattern) mut;
         // A library of the system, linked by name.
         compile_time std::build::target add_system_library(std::build::system_library lib) mut;
         // Another project: its build.ed adds its targets (`g.target_of(p, "name")`).

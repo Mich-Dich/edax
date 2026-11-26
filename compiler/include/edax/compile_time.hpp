@@ -98,6 +98,12 @@ struct BuildTarget {
     std::shared_ptr<const Value>             mode_optimization;   // that mode's optimization() (a std::build::optimization)
     Span                                     span;              // the call that added it
     std::vector<std::size_t>                 steps;             // `g.depends_on(t, s)`
+    std::vector<std::size_t>                 after;             // `g.depends_on(t, first)`: built before, not linked
+    std::string                              output_dir;        // `g.output_dir(t, pattern)` ("": the project's pattern)
+    std::string                              project;           // the name of the project that declares it (its folder)
+    // The folder its output goes to: `output_dir` (or the project's pattern) with the
+    // placeholders filled in, absolute; set by the driver.
+    std::string                              output_path;
     std::vector<std::string>                 details;           // `g.details(t, [...])`
     bool                                     has_details = false;
     std::string                              library_root;      // system libraries: `-L<root>/lib`
@@ -168,6 +174,7 @@ struct BuildOutput {
     std::vector<std::string> details;
     bool                     log_file = true;
     unsigned                 keep_logs = 5;
+    std::string              log_dir;      // a g.output_dir pattern ("": the project's output folder)
     std::string              target_line, done_line, source_row, last_line, failed_line;   // "": the default
 };
 
@@ -180,6 +187,7 @@ struct BuildGraph {
     std::map<std::string, std::string>        env_read;   // recorded inputs
     std::string                               root;       // the project root (absolute)
     std::string                               out_dir;    // the build directory (absolute)
+    std::string                               output_dir; // `g.output_dir(pattern)` ("": the default)
     std::vector<BuildStep>                    steps;
     std::vector<BuildDependency>              dependencies;
     std::map<std::string, std::vector<std::string>> globs;   // recorded inputs
@@ -188,6 +196,17 @@ struct BuildGraph {
     // its directory; empty with `error` set on failure. Set by the driver.
     std::function<std::string(const BuildDependency&, std::string& error)> fetch;
 };
+
+// The placeholders of a `g.output_dir` pattern, in the order the docs list them: build, name,
+// project, mode, kind, platform, os, arch, cpu.
+const std::vector<std::string>& output_dir_placeholders();
+
+// What is wrong with a `g.output_dir` pattern (an unknown placeholder, an unclosed `{`, nothing
+// left), or "" when it is fine.
+std::string check_output_dir(std::string_view pattern);
+
+// `pattern` with every `{placeholder}` replaced by its value from `values` (a missing one by "").
+std::string expand_output_dir(std::string_view pattern, const std::map<std::string, std::string>& values);
 
 // Source-like text of a value, for messages: `42`, `"abc"`, `u32`, `point{ .x = 1.0 }`.
 std::string to_string(const Value& v);

@@ -1,0 +1,6 @@
+import std;
+
+namespace core {
+    // The answer, from the shared library.
+    i32 answer();
+}

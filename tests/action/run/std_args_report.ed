@@ -1,0 +1,20 @@
+// RUN: edaxc run %s -- --threads=many
+// std::args::error::report: the error and the usage on the error output, exit code 1.
+import std;
+
+@std::args::program{ .name = "app" }
+struct options {
+    @std::args::positional{ .help = "The project file" }
+    std::filesystem::path project = default;
+
+    u32 threads = 0;
+}
+
+std::exit_code main(std::span<std::str> args) {
+    options opts = match (std::args::parse<options>(args)) {
+        std::ok(o) => move o,
+        std::error(e) => return e.report(),
+    };
+    std::println(opts.project.as_str());
+    return std::exit_code::success;
+}

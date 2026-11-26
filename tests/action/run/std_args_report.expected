@@ -1,0 +1,6 @@
+exit: 1
+--- stdout
+--- stderr
+error: --threads expects a whole number, 0 or more, found 'many'
+usage: app [options] <project>
+try 'app --help' for more

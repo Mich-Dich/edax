@@ -182,6 +182,8 @@ private:
         // The node editor, for programs that name it.
         if (name == "std::ui::nodes") return {"std::ui::nodes"};
         if (name == "std::math" || name == "std::image" || name == "std::text::font") return {name, "std::ui"};
+        // Command-line arguments, for programs that name them.
+        if (name == "std::args") return {"std::args"};
         return {};
     }
     static bool on_demand(std::string_view name) { return !on_demand_triggers(name).empty(); }

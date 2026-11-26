@@ -48,7 +48,7 @@ options:
                                     target otherwise (automatic), or only diagnostics and the last line
   --details=sources,units,commands,packages,toolchain,timings|all|none
                                     what the console shows under the targets (build.log has it all)
-  --no-log-file                     don't write build/<mode>/build.log
+  --no-log-file                     don't write build/<mode>/.edax/logs/build.log
   --stop-on-error                   don't start other targets after one fails
   --root=DIR                        project root for imports and build.ed (default: the file's
                                     directory; for build.ed the current directory)

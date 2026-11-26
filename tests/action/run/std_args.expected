@@ -1,0 +1,56 @@
+exit: 0
+--- stdout
+ok: project=game.proj v=0 quiet=false threads=4 renderer=vulkan scale=1.0 plugins= log=none
+ok: project=game.proj v=2 quiet=true threads=8 renderer=software_raster scale=-0.5 plugins=x;y; log=out.log
+ok: project=-dash.proj v=1 quiet=true threads=16 renderer=vulkan scale=1.0 plugins= log=none
+error: missing argument <project>
+error: unknown option '--treads' (did you mean '--threads'?)
+error: --threads must be from 1 to 64, found 100
+error: --renderer must be one of vulkan, opengl or software-raster, found 'opengel' (did you mean 'opengl'?)
+error: --scale needs a value
+error: unexpected argument 'q'
+error: --threads expects a whole number, 0 or more, found 'x'
+error: unknown option '-x'
+editor 1.2.0
+Edits a project
+
+usage: editor [options] <project>
+
+Arguments:
+  <project>   The project file
+
+Options:
+  -v, --verbosity           More output
+  -q, --quiet
+  -t, --threads <n>         Worker threads [default: 4]
+      --renderer <choice>   Graphics backend [default: vulkan] [vulkan, opengl or software-raster]
+      --log-file <path>
+      --plugin <name>       (repeatable)
+      --scale <n>           [default: 1.0]
+  -h, --help                Show this help
+      --version             Show the version
+ok: v=0 no command
+ok: v=2 build release=true targets=2
+ok: v=0 clean-all
+error: unknown command 'biuld' (did you mean 'build'?)
+error: unknown option '--fast'
+usage: tool [options] [<command> ...]
+
+Commands:
+  build       Build targets
+  clean-all   Remove build output
+
+Options:
+  -v, --verbosity
+  -h, --help        Show this help
+
+'tool <command> --help' shows a command's arguments.
+usage: tool build [options] [<targets>...]
+
+Arguments:
+  <targets>
+
+Options:
+  -r, --release
+  -h, --help      Show this help
+--- stderr

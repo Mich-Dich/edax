@@ -31,6 +31,7 @@ Everything in `std::` is ordinary Edax code, except for the few things the compi
 | Time | `std::time::duration`, `instant`, `wall_time`, `civil_time`, `zone` | [Time](time/time.md) |
 | Dynamic libraries | `std::plugin<I>`, `std::c_library` | [Dynamic libraries and plugins](system/dynamic-libraries.md) |
 | Files and environment | `std::file`, `std::io_error`, `std::filesystem::path`, `std::env` | [Files, filesystem and environment](io/io.md) |
+| Command-line arguments | `std::args::parse<T>`, `std::args::error`, `std::args::help<T>`; `@std::args::positional`, `option`, `flag`, `range`, `subcommand`, `command`, `flatten`, `skip`, `program` | [Command-line arguments](io/args.md) |
 | Windows | `std::windowing::system`, `window`, `gl_window`, `vulkan_window`, events, `input_state`, `bindings<A>`, `opengl::share_group`, `opengl::frame`, `vulkan::loader` | [Windowing](windowing/windowing.md) |
 | Graphics APIs | `std::graphics::api`, `api_name`, `function_source`; `std::graphics::opengl` and `std::graphics::vulkan` (made from the Khronos registries) | [Graphics APIs](graphics/graphics.md) |
 | Math | `std::math::vec2`, `vec3`, `vec4`, `rect`, `color`, `oklch`, `lerp`, `smoothstep` | [Math](math/math.md) |

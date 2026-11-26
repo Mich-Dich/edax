@@ -10,6 +10,6 @@ PASS ui_spike_test::own_widgets_get_the_call_site_of_their_caller
 PASS ui_spike_test::equal_labels_from_one_call_site_are_reported
  ✓ geometry_test  7 units, 1.91 KiB <t>  %t/debug/geometry_test
 PASS geometry_test
-built 2 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
+built 2 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/.edax/logs/build.log
 6 of 6 tests passed
 --- stderr

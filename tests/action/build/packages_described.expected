@@ -4,7 +4,7 @@ tiny 42, ext 101
 --- stderr
 edaxc run: debug, 3 targets
  ✓ build.ed       4 targets, 2 dependencies <t>
- ✓ tiny:tiny      2 units, 63 B <t>  %t/c/libtiny:tiny.a
- = ext:ext        up to date                                                 %t/c/libext:ext.a
+ ✓ tiny:tiny      2 units, 63 B <t>  %t/debug/.edax/c/libtiny:tiny.a
+ = ext:ext        up to date                                                 %t/debug/.edax/c/libext:ext.a
  ✓ app            5 units, 214 B <t>  %t/debug/app
-built 3 targets in <t> (1 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
+built 3 targets in <t> (1 up to date): 0 errors, 0 warnings   details: %t/debug/.edax/logs/build.log

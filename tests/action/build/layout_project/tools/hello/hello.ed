@@ -1,0 +1,11 @@
+import std;
+import api::greeter;
+
+namespace hello {
+    @std::plugin_entry
+    class friendly : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"hello, {who}, from the tools project"); }
+        static friendly make() { return friendly{}; }
+    }
+}

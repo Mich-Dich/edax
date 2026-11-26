@@ -109,7 +109,7 @@ constexpr std::string_view usage_text =
     "                                    target otherwise (automatic), or only diagnostics and the last line\n"
     "  --details=sources,units,commands,packages,toolchain,timings|all|none\n"
     "                                    what the console shows under the targets (build.log has it all)\n"
-    "  --no-log-file                     don't write build/<mode>/build.log\n"
+    "  --no-log-file                     don't write build/<mode>/.edax/logs/build.log\n"
     "  --stop-on-error                   don't start other targets after one fails\n"
     "  --root=DIR                        project root for imports and build.ed (default: the file's\n"
     "                                    directory; for build.ed the current directory)\n"
@@ -849,7 +849,7 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
     std::error_code  ec;
     fs::path         wanted = fs::weakly_canonical(input, ec);
     std::string      wanted_name;   // a file of the standard library: its name in edaxc ("<std>/log.ed")
-    fs::path         std_dir = fs::weakly_canonical(EDAX_STD_DIR, ec);
+    fs::path         std_dir = fs::weakly_canonical(std_source_dir(), ec);
     if (fs::path rel = wanted.lexically_relative(std_dir); !rel.empty() && !rel.string().starts_with("..")) {
         // Loaded through a program that imports the module: the library is compiled into edaxc.
         std::string module = rel.replace_extension().generic_string();
@@ -882,8 +882,8 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
         const SourceFile& target = sources.file(at->file);
         LineCol lc = target.line_col(at->begin);
         fs::path path(target.path());
-        if (target.path().starts_with("<std>/")) {   // the library's files: in the tree edaxc was built from
-            fs::path tree = fs::path(EDAX_STD_DIR) / target.path().substr(6);
+        if (target.path().starts_with("<std>/")) {   // the library's files: installed with edaxc, or in the tree it was built from
+            fs::path tree = fs::path(std_source_dir()) / target.path().substr(6);
             if (fs::exists(tree, ec)) path = tree;
         } else {
             path = fs::absolute(path, ec);
@@ -1009,6 +1009,15 @@ std::string relaxed_rules(const std::map<std::string, std::string>& ms) {
 // report their progress to it.
 BuildReport* g_report = nullptr;
 
+// The file a target builds, in its output folder: `<name>` for programs and tests, `<name>.so` for
+// plugins, `lib<name>.so` for shared libraries. A dependency's target `dep:name` builds `name`.
+std::string output_file_name(const ct::BuildTarget& t) {
+    std::string name = t.name.substr(t.name.find_last_of(':') == std::string::npos ? 0 : t.name.find_last_of(':') + 1);
+    if (t.kind == ct::BuildTarget::Kind::plugin) return name + ".so";
+    if (t.shared && (t.kind == ct::BuildTarget::Kind::library || t.kind == ct::BuildTarget::Kind::c_library)) return "lib" + name + ".so";
+    return name;
+}
+
 std::string target_kind_text(ct::BuildTarget::Kind k) {
     switch (k) {
     case ct::BuildTarget::Kind::executable: return "program";
@@ -1068,12 +1077,18 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
     }
     // Up to date (spec 25): the executable is newer than every file it was built from, and was
     // built the same way (mode, settings, libraries, linker, this edaxc).
-    bool     plugin   = t.kind == ct::BuildTarget::Kind::plugin;   // `<bin>/plugins/<name>.so` (dynamic libraries)
-    bool     shared_library = t.kind == ct::BuildTarget::Kind::library && t.shared;   // `<bin>/lib<name>.so`
-    fs::path bin_dir  = opts.bin_dir.empty() ? out / mode / opts.target : fs::path(opts.bin_dir);
-    fs::path exe_path = plugin ? bin_dir / "plugins" / (t.name + ".so") : shared_library ? bin_dir / ("lib" + t.name + ".so") : bin_dir / t.name;
-    fs::path stamp    = exe_path;
-    stamp += ".inputs";
+    bool     plugin   = t.kind == ct::BuildTarget::Kind::plugin;
+    bool     shared_library = t.kind == ct::BuildTarget::Kind::library && t.shared;
+    fs::path bin_dir  = !t.output_path.empty() ? fs::path(t.output_path) : opts.bin_dir.empty() ? out / mode / opts.target : fs::path(opts.bin_dir);
+    fs::path exe_path = bin_dir / output_file_name(t);
+    // The stamp lives with the output, in edaxc's hidden folder there.
+    fs::path stamp    = bin_dir / ".edax" / "stamps" / (output_file_name(t) + ".inputs");
+    {
+        fs::path old_stamp = exe_path;   // where builds before 2026-11-26 wrote it
+        old_stamp += ".inputs";
+        fs::remove(old_stamp, ec);
+        ec.clear();
+    }
     std::string signature = std::format("mode={} target={} cc={}{}", mode, opts.target, linker_command(opts),
                                         opts.profile_generate ? " profile-generate" : "");
     for (const auto& [name, value] : t.settings) signature += std::format(" -D{}={}", name, value ? ct::to_string(*value) : "?");
@@ -1256,6 +1271,8 @@ std::string build_edax_target(const Options& opts, const std::filesystem::path& 
         g_report->unit_done(*item, unit_link);
         g_report->finish(*item, BuildReport::State::done, {}, shown_path(exe));
     }
+    fs::create_directories(stamp.parent_path(), ec);
+    ec.clear();
     if (std::ofstream st(stamp); st) {   // what the next build compares with
         st << signature << "\n";
         for (std::size_t id = 0; id < sources.count(); ++id) {
@@ -1287,7 +1304,9 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path base = t.base.empty() ? root : fs::path(t.base);
-    fs::path dir  = out / "c" / opts.target / t.name;
+    // Objects and the archive are edaxc's own files: in the hidden folder of the target's output folder.
+    fs::path work = t.output_path.empty() ? out / "c" / opts.target : fs::path(t.output_path) / ".edax" / "c";
+    fs::path dir  = work / t.name;
     fs::create_directories(dir, ec);
     bool                     cpp      = t.language == "cpp";
     std::vector<std::string> compiler = c_compiler(opts, cpp);
@@ -1449,8 +1468,9 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         }
         return made.string();
     };
-    if (t.shared) {   // a shared library: lib<name>.so, and the programs find it next to it (rpath)
-        fs::path library = out / "c" / opts.target / ("lib" + t.name + ".so");
+    if (t.shared) {   // a shared library: lib<name>.so in its output folder; the programs find it by a relative rpath
+        fs::path library = (t.output_path.empty() ? work : fs::path(t.output_path)) / output_file_name(t);
+        fs::create_directories(library.parent_path(), ec);
         std::vector<std::string> link = compiler;
         link.push_back("-shared");
         link.push_back("-o");
@@ -1464,7 +1484,7 @@ std::string build_c_target(const Options& opts, const std::filesystem::path& roo
         }
         return finished(library);
     }
-    fs::path archive = out / "c" / opts.target / ("lib" + t.name + ".a");
+    fs::path archive = work / ("lib" + t.name + ".a");
     fs::remove(archive, ec);
     std::vector<std::string> ar = {"ar", "rcs", archive.string()};
     ar.insert(ar.end(), objects.begin(), objects.end());
@@ -2286,8 +2306,15 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         dep_opts.defines.clear();
         if (!evaluate_build(dep, dep_opts, out / "deps-build" / dep_root.filename(), s, lock, lock_errors)) return ExitCode::compile_error;
         std::size_t offset = graph.targets.size();
+        std::string dep_project = fs::weakly_canonical(dep_root, ec).filename().string();
         for (ct::BuildTarget t : dep.graph.targets) {
             for (std::size_t& l : t.links) l += offset;
+            for (std::size_t& a : t.after) a += offset;
+            if (t.output_dir.empty()) t.output_dir = dep.graph.output_dir;   // the dependency's own layout,
+            if (!t.output_dir.empty() && !fs::path(t.output_dir).is_absolute() && !t.output_dir.starts_with("{build}")) {
+                t.output_dir = (fs::weakly_canonical(dep_root, ec) / t.output_dir).string();   // relative to its own folder
+            }
+            if (t.project.empty()) t.project = dep_project;
             t.steps.clear();
             if (t.base.empty()) t.base = dep_root.string();
             t.name = (graph.dependencies[d].is_package ? graph.dependencies[d].name : graph.dependencies[d].source) + ":" + t.name;
@@ -2302,6 +2329,17 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                 s.err << std::format("edaxc: error: the dependency '{}' has no target '{}'\n", graph.dependencies[d].source, t.name);
                 return ExitCode::compile_error;
             }
+            // What this build.ed said about the dependency's target (g.output_dir, g.depends_on) applies to it.
+            for (std::size_t l : t.links) {
+                if (!t.output_dir.empty()) graph.targets[l].output_dir = t.output_dir;
+                graph.targets[l].after.insert(graph.targets[l].after.end(), t.after.begin(), t.after.end());
+            }
+        }
+    }
+    {   // Each target's output folder (g.output_dir): its pattern with the placeholders filled in.
+        std::string project = fs::weakly_canonical(root, ec).filename().string();
+        for (ct::BuildTarget& t : graph.targets) {
+            if (t.project.empty()) t.project = project;
         }
     }
     if (!lock_errors.empty()) {
@@ -2350,6 +2388,37 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         s.err << std::format("note: building in mode '{}'{}: {}\n", opts.mode, base ? " (base: " + base->name + ")" : "", relaxed);
     }
 
+    // The output folders (g.output_dir): a target's own pattern, else the project's, else
+    // "{build}/{mode}" ("{build}/{mode}/<--target>" when cross-compiling); relative ones are relative
+    // to the project's folder. --bin-dir puts every output in one folder.
+    const TargetPlatform& platform = target_platform();
+    std::string default_pattern    = opts.target.empty() ? "{build}/{mode}" : "{build}/{mode}/" + opts.target;
+    fs::path    project_root       = fs::weakly_canonical(root, ec);
+    auto folder = [&](const std::string& pattern, std::map<std::string, std::string> values) {
+        if (!opts.bin_dir.empty()) return fs::absolute(opts.bin_dir, ec).lexically_normal();
+        values["build"]    = out.string();
+        values["platform"] = platform.triple;
+        values["os"]       = platform.os;
+        values["arch"]     = platform.triple.substr(0, platform.triple.find('-'));
+        if (!values.count("cpu")) values["cpu"] = platform.cpu;
+        fs::path dir(ct::expand_output_dir(pattern.empty() ? (graph.output_dir.empty() ? default_pattern : graph.output_dir) : pattern, values));
+        return (dir.is_absolute() ? dir : project_root / dir).lexically_normal();
+    };
+    for (ct::BuildTarget& t : graph.targets) {
+        std::string kind = t.kind == ct::BuildTarget::Kind::executable ? "program"
+                         : t.kind == ct::BuildTarget::Kind::c_library  ? "c_library"
+                                                                       : target_kind_text(t.kind);
+        std::map<std::string, std::string> values = {
+            {"name", t.name.substr(t.name.find_last_of(':') == std::string::npos ? 0 : t.name.find_last_of(':') + 1)},
+            {"project", t.project},
+            {"mode", t.mode ? t.mode->name : opts.mode},
+            {"kind", kind},
+        };
+        if (auto cpu = t.settings.find("std::build::cpu"); cpu != t.settings.end() && cpu->second && cpu->second->symbol) values["cpu"] = cpu->second->symbol->name;
+        t.output_path = folder(t.output_dir, values).string();
+    }
+    std::string project_name = fs::weakly_canonical(root, ec).filename().string();
+
     // 3. The targets to build: those named, else every program (build) or test (test).
     std::vector<std::size_t> selected;
     for (const std::string& name : opts.targets) {
@@ -2369,7 +2438,28 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             if (want) selected.push_back(i);
         }
     }
-    // Plugins are built with the programs: a program loads them from its `plugins` directory.
+    // A target of a dependency (g.target_of) stands for the target its build.ed added.
+    auto real = [&](std::size_t i) {
+        while (graph.targets[i].kind == ct::BuildTarget::Kind::foreign && !graph.targets[i].links.empty()) i = graph.targets[i].links[0];
+        return i;
+    };
+    // Without names: also the programs and plugins of other projects this build.ed names (g.target_of),
+    // so a build.ed can build several projects together.
+    if (opts.targets.empty() && opts.command != "test" && !opts.compile_commands) {
+        for (std::size_t i = 0; i < graph.targets.size(); ++i) {
+            if (graph.targets[i].kind != ct::BuildTarget::Kind::foreign || !graph.targets[i].base.empty()) continue;
+            ct::BuildTarget::Kind k = graph.targets[real(i)].kind;
+            bool want = k == ct::BuildTarget::Kind::executable || k == ct::BuildTarget::Kind::plugin;
+            if (want && std::find(selected.begin(), selected.end(), real(i)) == selected.end()) selected.push_back(real(i));
+        }
+    }
+    // What the selected targets depend on (g.depends_on(t, first)) is built too, also from dependencies.
+    for (std::size_t k = 0; k < selected.size(); ++k) {
+        for (std::size_t a : graph.targets[selected[k]].after) {
+            if (std::find(selected.begin(), selected.end(), real(a)) == selected.end()) selected.push_back(real(a));
+        }
+    }
+    // The project's plugins are built with its programs.
     if (!opts.compile_commands && opts.command != "test") {
         std::vector<std::size_t> plugins;
         for (std::size_t i = 0; i < graph.targets.size(); ++i) {
@@ -2401,6 +2491,61 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
         std::erase_if(selected, [&](std::size_t i) { return std::find(shared.begin(), shared.end(), i) != shared.end(); });
         selected.insert(selected.begin(), shared.begin(), shared.end());
+    }
+    {   // A target comes after what it depends on (g.depends_on(t, first)); otherwise the order stays.
+        std::vector<std::size_t> ordered;
+        std::vector<int>         state(graph.targets.size(), 0);   // 0 not placed, 1 being placed, 2 placed
+        std::string              cycle;
+        std::function<void(std::size_t)> place = [&](std::size_t i) {
+            if (state[i] == 2 || !cycle.empty()) return;
+            if (state[i] == 1) {
+                cycle = graph.targets[i].name;
+                return;
+            }
+            state[i] = 1;
+            for (std::size_t a : graph.targets[i].after) {
+                if (std::find(selected.begin(), selected.end(), real(a)) != selected.end()) place(real(a));
+            }
+            state[i] = 2;
+            ordered.push_back(i);
+        };
+        for (std::size_t i : selected) place(i);
+        if (!cycle.empty()) {
+            s.err << std::format("edaxc: error: the targets' g.depends_on form a cycle through '{}'\n", cycle);
+            return ExitCode::compile_error;
+        }
+        selected = std::move(ordered);
+    }
+    // build.log and the timings: with the program the build is for (the last one built, so the
+    // launcher rather than what it depends on), else with the first output; g.output(.log_dir)
+    // chooses another folder.
+    fs::path main_dir;
+    if (!graph.output.log_dir.empty()) {
+        main_dir = folder(graph.output.log_dir, {{"name", project_name}, {"project", project_name}, {"mode", opts.mode}, {"kind", "project"}});
+    } else {
+        for (std::size_t i : selected) {
+            const ct::BuildTarget& t = graph.targets[i];
+            bool product = t.kind == ct::BuildTarget::Kind::executable || t.kind == ct::BuildTarget::Kind::test ||
+                           t.kind == ct::BuildTarget::Kind::plugin || t.shared;
+            if (t.kind == ct::BuildTarget::Kind::executable || (product && main_dir.empty())) main_dir = t.output_path;
+        }
+        if (main_dir.empty()) main_dir = folder("", {{"name", project_name}, {"project", project_name}, {"mode", opts.mode}, {"kind", "project"}});
+    }
+    {   // Two targets that would write the same file
+        std::map<fs::path, std::string> written;
+        for (std::size_t i : selected) {
+            const ct::BuildTarget& t = graph.targets[i];
+            bool product = t.kind == ct::BuildTarget::Kind::executable || t.kind == ct::BuildTarget::Kind::test ||
+                           t.kind == ct::BuildTarget::Kind::plugin || t.shared;
+            if (!product) continue;
+            fs::path file = fs::path(t.output_path) / output_file_name(t);
+            auto [it, fresh] = written.emplace(file, t.name);
+            if (!fresh) {
+                s.err << std::format("edaxc: error: the targets '{}' and '{}' would both write '{}'; give one of them another folder with g.output_dir(t, ...)\n",
+                                     it->second, t.name, shown_path(file));
+                return ExitCode::compile_error;
+            }
+        }
     }
 
     // The build output (docs/design/build/build-output.md): the checklist, build.log. Set by
@@ -2450,8 +2595,14 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         // `run`: the program's output is stdout, so the build's goes to stderr (as cargo's does).
         bool to_err = opts.command == "run";
         if (to_err) ro.color = opts.render.color;
+        {
+            // Logs of builds before 2026-11-26, written next to the outputs.
+            std::error_code e2;
+            fs::remove(out / opts.mode / "build.log", e2);
+            for (unsigned k = 1; k <= std::max(ro.keep_logs, 5u); ++k) fs::remove(out / opts.mode / std::format("build.{}.log", k), e2);
+        }
         report.emplace(ro, to_err ? real_err : real_out, real_err, to_err ? s.err_is_terminal : s.out_is_terminal,
-                       out / opts.mode / "build.log", out / opts.mode / ".edax" / "timings", title);
+                       main_dir / ".edax" / "logs" / "build.log", main_dir / ".edax" / "timings", title);
         g_report = &*report;
         std::string toolchain = std::format("    toolchain: {}, LLVM {}, C compiler {}, linker {}{}\n", std::string("edaxc ") + EDAX_VERSION, llvm_version(),
                                             command_text(c_compiler(opts, false)), linker_command(opts),
@@ -2499,6 +2650,14 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
     std::set<std::size_t> steps_done;
     std::map<std::size_t, std::string> shared_built;   // shared Edax libraries: their lib<name>.so
     bool failed = false;
+    // Shared libraries are found by a path relative to the file that links them ($ORIGIN), so the
+    // build folder can be moved as a whole. `linking_from` is that file's folder.
+    fs::path linking_from;
+    auto rpath = [&](const fs::path& lib_dir) {
+        fs::path rel = lib_dir.lexically_normal().lexically_relative(linking_from);
+        if (linking_from.empty() || rel.empty()) return "-Wl,-rpath," + lib_dir.string();
+        return rel == "." ? std::string("-Wl,-rpath,$ORIGIN") : "-Wl,-rpath,$ORIGIN/" + rel.generic_string();
+    };
     // What a target links, directly or through other targets: archives, -l flags, and the
     // roots of dependencies whose Edax modules it imports.
     std::function<void(std::size_t, std::vector<std::string>&, std::vector<std::string>&, std::set<std::size_t>&)> collect =
@@ -2526,11 +2685,11 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
                     libs.insert(libs.end(), used.prebuilt.begin(), used.prebuilt.end());   // cmake_external's outputs
                     // C++ code needs its runtime: the program is linked by the C compiler driver.
                     if (used.language == "cpp" && !archives[l].empty()) libs.push_back("-lstdc++");
-                    if (used.shared && !archives[l].empty()) libs.push_back("-Wl,-rpath," + fs::path(archives[l]).parent_path().string());
+                    if (used.shared && !archives[l].empty()) libs.push_back(rpath(fs::path(archives[l]).parent_path()));
                 } else if (used.kind == ct::BuildTarget::Kind::library && used.shared) {   // a shared Edax library
                     if (auto it = shared_built.find(l); it != shared_built.end() && !it->second.empty()) {
                         libs.push_back(it->second);
-                        libs.push_back("-Wl,-rpath,$ORIGIN");
+                        libs.push_back(rpath(fs::path(it->second).parent_path()));
                     }
                     if (!used.base.empty() && std::find(roots.begin(), roots.end(), used.base) == roots.end()) roots.push_back(used.base);
                 } else if (used.kind == ct::BuildTarget::Kind::system_library) {
@@ -2651,8 +2810,10 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
         return std::nullopt;
     };
+    std::set<std::size_t> failed_targets;   // what g.depends_on(t, first) checks
     auto not_built = [&](const ct::BuildTarget& t, const std::string& why) {
         any_failed = true;
+        failed_targets.insert(static_cast<std::size_t>(&t - graph.targets.data()));
         if (!report) return;
         std::optional<std::size_t> item = report->find(t.name);
         if (item) report->finish(*item, BuildReport::State::skipped, why);
@@ -2663,10 +2824,21 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
             not_built(t, "not built: the build stopped at the first error");
             continue;
         }
+        {
+            std::optional<std::string> needs;
+            for (std::size_t a : t.after) {
+                if (failed_targets.count(real(a))) needs = graph.targets[real(a)].name;
+            }
+            if (needs) {
+                not_built(t, "not built: needs " + *needs);
+                continue;
+            }
+        }
         run_steps(i);
         if (failed) return ExitCode::compile_error;
         if (t.kind == ct::BuildTarget::Kind::c_library) {
             if (!archives.count(i)) archives[i] = build_c_target(opts, root, out, graph, t, own_optimization(t), lto, s, failed, &commands);
+            if (archives[i].empty()) failed_targets.insert(i);
             if (failed) any_failed = true, failed = false;
             continue;
         }
@@ -2680,6 +2852,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         }
         std::vector<std::string> libs, roots;
         std::set<std::size_t>    seen;
+        linking_from = fs::path(t.output_path).lexically_normal();
         collect(i, libs, roots, seen);
         if (opts.compile_commands) {
             if (failed) any_failed = true, failed = false;
@@ -2740,6 +2913,7 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         std::string exe           = build_edax_target(opts, root, out, with_modes, mode, libs, roots, s, target_failed);
         if (target_failed) {
             any_failed = true;
+            failed_targets.insert(i);
             continue;
         }
         if (t.kind == ct::BuildTarget::Kind::library && t.shared) {

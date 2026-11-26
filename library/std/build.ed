@@ -58,6 +58,9 @@ namespace std::build {
         compile_time void add_input(std::build::step s, std::build::path file) mut { }
         compile_time void add_output(std::build::step s, std::build::path file) mut { }
         compile_time void depends_on(std::build::target t, std::build::step s) mut { }
+        compile_time void depends_on(std::build::target t, std::build::target first) mut { }
+        compile_time void output_dir(std::static_str pattern) mut { }
+        compile_time void output_dir(std::build::target t, std::static_str pattern) mut { }
         compile_time std::build::target add_system_library(std::build::system_library lib) mut { return std::build::target{}; }
         compile_time std::build::project dependency(std::build::git source) mut { return std::build::project{}; }
         compile_time std::build::project dependency(std::build::local source) mut { return std::build::project{}; }

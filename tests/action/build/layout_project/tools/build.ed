@@ -1,0 +1,11 @@
+// Another project: an interface library and a plugin implementing it. Built on its own, its
+// outputs go to tools/build/debug; built as a dependency, where the using build.ed says.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target api = g.add_library(std::build::edax_target{ .name = "api", .root = "api/greeter.ed" });
+        std::build::target hello = g.add_plugin(std::build::edax_target{ .name = "hello", .root = "hello/hello.ed" });
+        g.link(hello, api);
+    }
+}

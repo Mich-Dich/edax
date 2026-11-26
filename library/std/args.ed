@@ -1,0 +1,1087 @@
+// The Edax standard library: module std::args (see args.edh).
+
+namespace std::args {
+    // ---- The checks of the annotations ------------------------------------------------------------------
+
+    struct range {
+        compile_time check (annotation.min <= annotation.max)
+            else f"@std::args::range: min ({annotation.min}) is larger than max ({annotation.max})";
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_integer<t>() && !std::is_float<t>()) {
+                std::compile_error(f"@std::args::range works on number fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct flag {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::is_same<t, bool>() && !std::is_integer<t>()) {
+                std::compile_error(f"@std::args::flag works on bool fields (set) and integer fields (counted); '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+        compile_time check (annotation.short_name.len() <= 1)
+            else f"@std::args::flag: short_name is one letter, not '{annotation.short_name}'";
+    }
+
+    struct option {
+        compile_time check (annotation.short_name.len() <= 1)
+            else f"@std::args::option: short_name is one letter, not '{annotation.short_name}'";
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!value_type<t>()) {
+                std::compile_error(f"@std::args::option: '{annotated.name}' is a {std::type_name<t>()}, which an argument can't hold (numbers, bool, std::string, std::filesystem::path, enums, std::option and std::darray of those)");
+            }
+        }
+    }
+
+    struct positional {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!value_type<t>()) {
+                std::compile_error(f"@std::args::positional: '{annotated.name}' is a {std::type_name<t>()}, which an argument can't hold (numbers, bool, std::string, std::filesystem::path, enums, std::option and std::darray of those)");
+            }
+        }
+    }
+
+    struct subcommand {
+        compile_time check {
+            compile_time type t = annotated.type;
+            compile_time type e = optional_inner<t>();
+            if (!std::meta::is_enum<e>()) {
+                std::compile_error(f"@std::args::subcommand works on an enum field (or a std::option of one); '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    struct flatten {
+        compile_time check {
+            compile_time type t = annotated.type;
+            if (!std::meta::is_struct<t>()) {
+                std::compile_error(f"@std::args::flatten works on struct fields; '{annotated.name}' is a {std::type_name<t>()}");
+            }
+        }
+    }
+
+    // ---- What a field is ------------------------------------------------------------------------------
+
+    // How a field is given on the command line.
+    private enum role : u8 {
+        skipped,
+        named,
+        switch_,
+        positional_,
+        subcommand_,
+        flattened,
+    }
+
+    private template<type T>
+    compile_time bool is_list() {
+        if compile_time (std::meta::template_args<T>().len() >= 1) {
+            compile_time type e = std::meta::template_args<T>()[0];
+            return std::is_same<T, std::darray<e>>();
+        } else {
+            return false;
+        }
+    }
+
+    private template<type T>
+    compile_time bool is_optional() {
+        if compile_time (std::meta::template_args<T>().len() >= 1) {
+            compile_time type e = std::meta::template_args<T>()[0];
+            return std::is_same<T, std::option<e>>();
+        } else {
+            return false;
+        }
+    }
+
+    // `E` for a `std::option<E>`, else `T`.
+    private template<type T>
+    compile_time type optional_inner() {
+        if compile_time (is_optional<T>()) {
+            return std::meta::template_args<T>()[0];
+        } else {
+            return T;
+        }
+    }
+
+    // A single value an argument holds (not a list or an option of one).
+    private template<type T>
+    compile_time bool scalar_type() {
+        if compile_time (std::is_integer<T>() || std::is_float<T>() || std::is_same<T, bool>() ||
+                         std::is_same<T, std::string>() || std::is_same<T, std::filesystem::path>()) {
+            return true;
+        } else if compile_time (std::meta::is_enum<T>()) {
+            for (std::meta::alternative a : std::meta::alternatives<T>()) {
+                if (a.has_payload) {
+                    return false;
+                }
+            }
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    private template<type T>
+    compile_time bool value_type() {
+        if compile_time (is_list<T>() || is_optional<T>()) {
+            compile_time type e = std::meta::template_args<T>()[0];
+            return scalar_type<e>();
+        } else {
+            return scalar_type<T>();
+        }
+    }
+
+    private template<type T>
+    compile_time std::args::program program_info() {
+        return std::meta::annotation<std::args::program, T>().value_or(std::args::program{});
+    }
+
+    private template<type T>
+    compile_time bool has_version() {
+        return !program_info<T>().version.is_empty();
+    }
+
+    // ---- Names ------------------------------------------------------------------------------------------
+
+    // `text` with `-` for `_`: a field's or alternative's name on the command line.
+    private std::string dashed(std::str text) {
+        mut std::string out = std::string::with_capacity(text.len());
+        for (usize i : 0..text.len()) {
+            std::str one = text.slice(i, i + 1);
+            if (one == "_") {
+                out.push('-');
+            } else {
+                out.push_str(one);
+            }
+        }
+        return out;
+    }
+
+    // `text` with `_` for `-`: an enum value as written back to an alternative's name.
+    private std::string underscored(std::str text) {
+        mut std::string out = std::string::with_capacity(text.len());
+        for (usize i : 0..text.len()) {
+            std::str one = text.slice(i, i + 1);
+            if (one == "-") {
+                out.push('_');
+            } else {
+                out.push_str(one);
+            }
+        }
+        return out;
+    }
+
+    // The long name of an option or flag field: its annotation's `name`, else the field's name dashed.
+    private std::string long_name(std::static_str given, std::static_str field_name) {
+        if (given.is_empty()) {
+            return dashed(field_name);
+        }
+        return std::string::from(given);
+    }
+
+    // The number of single-byte edits between `a` and `b` (for "did you mean").
+    private usize distance(std::str a, std::str b) {
+        mut std::darray<usize> row = default;
+        for (usize j : 0..b.len() + 1) {
+            row.push(j);
+        }
+        for (usize i : 1..a.len() + 1) {
+            mut usize diagonal = row[0];
+            row[0] = i;
+            for (usize j : 1..b.len() + 1) {
+                usize above = row[j];
+                usize cost = if (a.byte(i - 1) == b.byte(j - 1)) { 0 } else { 1 };
+                mut usize best = diagonal + cost;
+                if (above + 1 < best) {
+                    best = above + 1;
+                }
+                if (row[j - 1] + 1 < best) {
+                    best = row[j - 1] + 1;
+                }
+                row[j] = best;
+                diagonal = above;
+            }
+        }
+        return row[b.len()];
+    }
+
+    // " (did you mean '--x'?)" for the closest of `known` to `wrong`, when it is close; else "".
+    private std::string suggestion(std::str wrong, std::span<std::string> known, std::str prefix) {
+        mut usize best = 1000;
+        mut usize at = 0;
+        for (usize i : 0..known.len()) {
+            usize d = distance(wrong, known[i].as_str());
+            if (d < best) {
+                best = d;
+                at = i;
+            }
+        }
+        usize allowed = if (wrong.len() <= 4) { 1 } else { 2 };
+        if (known.is_empty() || best > allowed) {
+            return std::string::from("");
+        }
+        return std::format(f" (did you mean '{prefix}{known[at]}'?)");
+    }
+
+    // ---- Values -----------------------------------------------------------------------------------------
+
+    private std::option<bool> bool_of(std::str text) {
+        if (text == "true" || text == "yes" || text == "on" || text == "1") {
+            return std::some(true);
+        }
+        if (text == "false" || text == "no" || text == "off" || text == "0") {
+            return std::some(false);
+        }
+        return std::none;
+    }
+
+    // The alternatives of the enum `E` as the command line names them: "a, b or c".
+    private template<type E>
+    std::string choices() {
+        mut std::string out = std::string::from("");
+        if compile_time (!std::meta::is_enum<E>()) {
+            return out;
+        }
+        for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
+            if (!out.is_empty()) {
+                out.push_str(if (a.index + 1 == std::meta::alternatives<E>().len()) { " or " } else { ", " });
+            }
+            std::string shown = alternative_name(a.name, a.annotation<std::args::command>());
+            out.push_str(shown.as_str());
+        }
+        return out;
+    }
+
+    private std::string alternative_name(std::static_str name, std::option<std::args::command> about) {
+        match (about) {
+            std::some(c) => {
+                if (!c.name.is_empty()) {
+                    return std::string::from(c.name);
+                }
+            },
+            std::none => {},
+        }
+        return dashed(name);
+    }
+
+    // The value `text` gives for a `V` (a single value), or the reason it doesn't fit.
+    private template<type V>
+    std::result<V, std::string> value_of(std::str text) {
+        if compile_time (std::is_same<V, bool>()) {
+            match (bool_of(text)) {
+                std::some(b) => { return std::ok(b); },
+                std::none => { return std::error(std::format(f"expects true or false, found '{text}'")); },
+            }
+        } else if compile_time (std::is_integer<V>()) {
+            match (text.parse<V>()) {
+                std::some(n) => { return std::ok(n); },
+                std::none => {
+                    std::str kind_word = if (std::type_name<V>().starts_with("i")) { "a whole number" } else { "a whole number, 0 or more" };
+                    return std::error(std::format(f"expects {kind_word}, found '{text}'"));
+                },
+            }
+        } else if compile_time (std::is_float<V>()) {
+            match (text.parse<V>()) {
+                std::some(n) => { return std::ok(n); },
+                std::none => { return std::error(std::format(f"expects a number, found '{text}'")); },
+            }
+        } else if compile_time (std::is_same<V, std::string>()) {
+            return std::ok(std::string::from(text));
+        } else if compile_time (std::is_same<V, std::filesystem::path>()) {
+            return std::ok(std::filesystem::path::from(text));
+        } else if compile_time (!std::meta::is_enum<V>()) {
+            return std::error(std::format(f"can't be read into a {std::type_name<V>()}"));
+        } else {
+            std::string wanted = underscored(text);
+            for compile_time (std::meta::alternative a : std::meta::alternatives<V>()) {
+                std::string shown = alternative_name(a.name, a.annotation<std::args::command>());
+                if (shown.as_str() == text || a.name == wanted.as_str()) {
+                    return std::ok(a.make());
+                }
+            }
+            mut std::darray<std::string> known = default;
+            for compile_time (std::meta::alternative a : std::meta::alternatives<V>()) {
+                known.push(alternative_name(a.name, a.annotation<std::args::command>()));
+            }
+            std::string hint = suggestion(text, known.as_span(), "");
+            std::string all = choices<V>();
+            return std::error(std::format(f"must be one of {all}, found '{text}'{hint}"));
+        }
+    }
+
+    // Reads `text` into `target` (a list gets one more element); the reason when it doesn't fit.
+    private template<type V>
+    std::option<std::string> assign(mut V& target, std::str text) {
+        if compile_time (is_list<V>() || is_optional<V>()) {
+            compile_time type e = std::meta::template_args<V>()[0];
+            match (value_of<e>(text)) {
+                std::ok(v) => {
+                    if compile_time (is_list<V>()) {
+                        target.push(move v);
+                    } else {
+                        target = std::some(move v);
+                    }
+                },
+                std::error(reason) => { return std::some(move reason); },
+            }
+        } else {
+            match (value_of<V>(text)) {
+                std::ok(v) => { target = move v; },
+                std::error(reason) => { return std::some(move reason); },
+            }
+        }
+        return std::none;
+    }
+
+    // The default shown in the help for `value`, "" for none.
+    private template<type V>
+    std::string default_text(V& value) {
+        if compile_time (std::is_integer<V>() || std::is_float<V>()) {
+            return std::format(f"{value}");
+        } else if compile_time (std::is_same<V, std::string>()) {
+            return value.clone();
+        } else if compile_time (std::is_same<V, std::filesystem::path>()) {
+            return std::string::from(value.as_str());
+        } else if compile_time (std::meta::is_enum<V>() && scalar_type<V>()) {
+            return dashed(std::meta::name_of(value));
+        } else {
+            return std::string::from("");
+        }
+    }
+
+    // The range check of `value` from a field's @std::args::range; the reason when outside.
+    private template<type V>
+    std::option<std::string> check_range(V& value, std::option<std::args::range> limits) {
+        if compile_time (std::is_integer<V>() || std::is_float<V>()) {
+            match (limits) {
+                std::some(r) => {
+                    f64 x = cast<f64>(value);
+                    if (x < r.min || x > r.max) {
+                        if compile_time (std::is_integer<V>()) {
+                            i64 low = cast::saturate<i64>(r.min);
+                            i64 high = cast::saturate<i64>(r.max);
+                            return std::some(std::format(f"must be from {low} to {high}, found {value}"));
+                        } else {
+                            return std::some(std::format(f"must be from {r.min} to {r.max}, found {value}"));
+                        }
+                    }
+                },
+                std::none => {},
+            }
+        }
+        return std::none;
+    }
+
+    // ---- Parsing ----------------------------------------------------------------------------------------
+
+    // What a step of parsing found.
+    private enum found : u8 {
+        none,
+        taken,
+        // the argument needed a value and there was none
+        missing_value,
+    }
+
+    // State of one struct's parse: the tokens and where it is, what was given, what went wrong.
+    private struct cursor {
+        usize next = 0;
+        usize positionals = 0;
+        std::darray<std::string> given = default;
+        std::string problem = default;
+    }
+
+    private compile_time role role_of(std::meta::field f, bool is_bool) {
+        if (f.has<std::args::skip>()) {
+            return role::skipped;
+        } else if (f.has<std::args::subcommand>()) {
+            return role::subcommand_;
+        } else if (f.has<std::args::flatten>()) {
+            return role::flattened;
+        } else if (f.has<std::args::positional>()) {
+            return role::positional_;
+        } else if (f.has<std::args::flag>() || (!f.has<std::args::option>() && is_bool)) {
+            return role::switch_;
+        } else {
+            return role::named;
+        }
+    }
+
+    private void note_given(mut cursor& at, std::str name) {
+        at.given.push(std::string::from(name));
+    }
+
+    private bool was_given(cursor& at, std::str name) {
+        for (std::string& g : at.given) {
+            if (g.as_str() == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The option or flag of `T` (or of its flattened fields) called `name` (long, or `short_` with
+    // `is_short`): reads it with `inline_value` (after `=` or in the same `-xVALUE`) or the next
+    // token as its value.
+    private template<type T>
+    found take_named(mut T& value, std::str name, bool is_short, std::option<std::str> inline_value,
+                     std::span<std::str> tokens, mut cursor& at) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::flattened) {
+                found inner = take_named<ft>(mut f.get(mut value), name, is_short, inline_value, tokens, mut at);
+                if (inner != found::none) {
+                    return inner;
+                }
+            } else if compile_time (r == role::switch_) {
+                std::static_str given_long = f.annotation<std::args::flag>().value_or(std::args::flag{}).name;
+                std::static_str given_short = f.annotation<std::args::flag>().value_or(std::args::flag{}).short_name;
+                std::string full = long_name(given_long, f.name);
+                bool hit = if (is_short) { !given_short.is_empty() && given_short == name } else { full.as_str() == name };
+                if (hit) {
+                    note_given(mut at, full.as_str());
+                    match (inline_value) {
+                        std::some(v) => {
+                            if compile_time (std::is_same<ft, bool>()) {
+                                match (bool_of(v)) {
+                                    std::some(b) => { f.get(mut value) = b; },
+                                    std::none => {
+                                        at.problem = std::format(f"--{full} expects true or false, found '{v}'");
+                                        return found::taken;
+                                    },
+                                }
+                            } else {
+                                match (assign<ft>(mut f.get(mut value), v)) {
+                                    std::some(reason) => {
+                                        at.problem = std::format(f"--{full} {reason}");
+                                        return found::taken;
+                                    },
+                                    std::none => {},
+                                }
+                            }
+                        },
+                        std::none => {
+                            if compile_time (std::is_same<ft, bool>()) {
+                                f.get(mut value) = true;
+                            } else {
+                                f.get(mut value) += 1;
+                            }
+                        },
+                    }
+                    return found::taken;
+                }
+            } else if compile_time (r == role::named) {
+                std::args::option about = f.annotation<std::args::option>().value_or(std::args::option{});
+                std::string full = long_name(about.name, f.name);
+                bool hit = if (is_short) { !about.short_name.is_empty() && about.short_name == name } else { full.as_str() == name };
+                if (hit) {
+                    note_given(mut at, full.as_str());
+                    std::str text = match (inline_value) {
+                        std::some(v) => v,
+                        std::none => {
+                            if (at.next >= tokens.len()) {
+                                at.problem = std::format(f"--{full} needs a value");
+                                return found::missing_value;
+                            }
+                            std::str v = tokens[at.next];
+                            at.next += 1;
+                            v
+                        },
+                    };
+                    match (assign<ft>(mut f.get(mut value), text)) {
+                        std::some(reason) => {
+                            at.problem = std::format(f"--{full} {reason}");
+                            return found::taken;
+                        },
+                        std::none => {},
+                    }
+                    match (check_range<ft>(f.get(value), f.annotation<std::args::range>())) {
+                        std::some(reason) => { at.problem = std::format(f"--{full} {reason}"); },
+                        std::none => {},
+                    }
+                    return found::taken;
+                }
+            }
+        }
+        return found::none;
+    }
+
+    // Whether the short name `letter` of `T` is a flag (takes no value).
+    private template<type T>
+    bool short_is_flag(std::str letter) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::flattened) {
+                if (short_is_flag<ft>(letter)) {
+                    return true;
+                }
+            } else if compile_time (r == role::switch_) {
+                if (f.annotation<std::args::flag>().value_or(std::args::flag{}).short_name == letter) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // The long names of `T`'s options and flags, for "did you mean".
+    private template<type T>
+    void long_names(mut std::darray<std::string>& out) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::flattened) {
+                long_names<ft>(mut out);
+            } else if compile_time (r == role::switch_) {
+                out.push(long_name(f.annotation<std::args::flag>().value_or(std::args::flag{}).name, f.name));
+            } else if compile_time (r == role::named) {
+                out.push(long_name(f.annotation<std::args::option>().value_or(std::args::option{}).name, f.name));
+            }
+        }
+    }
+
+    // Puts `text` into the positional field `at.positionals` of `T` (a list field keeps taking).
+    private template<type T>
+    found take_positional(mut T& value, std::str text, mut cursor& at) {
+        mut usize index = 0;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            if compile_time (role_of(f, std::is_same<ft, bool>()) == role::positional_) {
+                if (index == at.positionals) {
+                    std::string shown = positional_name(f.annotation<std::args::positional>().value_or(std::args::positional{}), f.name);
+                    match (assign<ft>(mut f.get(mut value), text)) {
+                        std::some(reason) => {
+                            at.problem = std::format(f"<{shown}> {reason}");
+                            return found::taken;
+                        },
+                        std::none => {},
+                    }
+                    match (check_range<ft>(f.get(value), f.annotation<std::args::range>())) {
+                        std::some(reason) => { at.problem = std::format(f"<{shown}> {reason}"); },
+                        std::none => {},
+                    }
+                    note_given(mut at, shown.as_str());
+                    if compile_time (!is_list<ft>()) {
+                        at.positionals += 1;
+                    }
+                    return found::taken;
+                }
+                index += 1;
+            }
+        }
+        return found::none;
+    }
+
+    private std::string positional_name(std::args::positional about, std::static_str field_name) {
+        if (about.value_name.is_empty()) {
+            return dashed(field_name);
+        }
+        return std::string::from(about.value_name);
+    }
+
+    // `text` names a subcommand of `T`: parses the rest of the tokens as its arguments. The error
+    // when they are wrong; `at.problem` stays empty and `std::none` comes back when `text` isn't one.
+    private template<type T>
+    std::option<std::args::error> take_subcommand(mut T& value, std::str text, std::span<std::str> tokens, std::str program,
+                                                  mut cursor& at, mut bool& matched) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            if compile_time (role_of(f, std::is_same<ft, bool>()) == role::subcommand_) {
+                compile_time type e = optional_inner<ft>();
+                for compile_time (std::meta::alternative a : std::meta::alternatives<e>()) {
+                    std::string shown = alternative_name(a.name, a.annotation<std::args::command>());
+                    if (shown.as_str() == text) {
+                        matched = true;
+                        note_given(mut at, "<command>");
+                        std::string inner_program = std::format(f"{program} {shown}");
+                        std::span<std::str> rest = tokens.slice(at.next, tokens.len());
+                        at.next = tokens.len();
+                        if compile_time (a.has_payload) {
+                            compile_time type p = a.payload;
+                            mut p inner = default;
+                            match (fill<p>(mut inner, rest, inner_program.as_str())) {
+                                std::some(e2) => { return std::some(move e2); },
+                                std::none => {},
+                            }
+                            if compile_time (is_optional<ft>()) {
+                                f.get(mut value) = std::some(a.make(move inner));
+                            } else {
+                                f.get(mut value) = a.make(move inner);
+                            }
+                        } else {
+                            if (!rest.is_empty() && (rest[0] == "--help" || rest[0] == "-h")) {
+                                std::string about_text = match (a.annotation<std::args::command>()) {
+                                    std::some(c) => std::string::from(c.help),
+                                    std::none => std::string::from(""),
+                                };
+                                std::string page = if (about_text.is_empty()) { std::format(f"usage: {inner_program}\n") }
+                                                   else { std::format(f"{about_text}\n\nusage: {inner_program}\n") };
+                                return std::some(std::args::error{ .kind = stop::help, .text = move page });
+                            }
+                            if (!rest.is_empty()) {
+                                return std::some(std::args::error{ .kind = stop::invalid, .message = std::format(f"unexpected argument '{rest[0]}'"),
+                                                                   .text = std::format(f"usage: {inner_program}\ntry '{inner_program} --help' for more") });
+                            }
+                            if compile_time (is_optional<ft>()) {
+                                f.get(mut value) = std::some(a.make());
+                            } else {
+                                f.get(mut value) = a.make();
+                            }
+                        }
+                        return std::none;
+                    }
+                }
+            }
+        }
+        return std::none;
+    }
+
+    private template<type T>
+    compile_time bool has_subcommand() {
+        for (std::meta::field f : std::meta::fields<T>()) {
+            if (f.has<std::args::subcommand>()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private template<type T>
+    std::args::error invalid(std::string message, std::str program) {
+        mut std::string shown_usage = usage<T>(program);
+        shown_usage.push_str(std::format(f"\ntry '{program} --help' for more"));
+        return std::args::error{ .kind = stop::invalid, .message = move message, .text = move shown_usage };
+    }
+
+    // Reads `tokens` (without the program's name) into `value`; the error when they don't fit.
+    private template<type T>
+    std::option<std::args::error> fill(mut T& value, std::span<std::str> tokens, std::str program) {
+        mut cursor at = default;
+        mut bool only_positional = false;
+        while (at.next < tokens.len()) {
+            std::str token = tokens[at.next];
+            at.next += 1;
+            if (!only_positional && token == "--") {
+                only_positional = true;
+            } else if (!only_positional && (token == "--help" || token == "-h")) {
+                return std::some(std::args::error{ .kind = stop::help, .text = help<T>(program) });
+            } else if (!only_positional && has_version<T>() && token == "--version") {
+                std::string line = std::format(f"{program} {program_info<T>().version}\n");
+                return std::some(std::args::error{ .kind = stop::version, .text = move line });
+            } else if (!only_positional && token.starts_with("--")) {
+                std::str body = token.slice(2, token.len());
+                std::str name = match (body.find("=")) {
+                    std::some(eq) => body.slice(0, eq),
+                    std::none => body,
+                };
+                std::option<std::str> inline_value = match (body.find("=")) {
+                    std::some(eq) => std::some(body.slice(eq + 1, body.len())),
+                    std::none => std::none,
+                };
+                found result = take_named<T>(mut value, name, false, inline_value, tokens, mut at);
+                if (result == found::none) {
+                    mut std::darray<std::string> known = default;
+                    long_names<T>(mut known);
+                    std::string hint = suggestion(name, known.as_span(), "--");
+                    return std::some(invalid<T>(std::format(f"unknown option '--{name}'{hint}"), program));
+                }
+            } else if (!only_positional && token.starts_with("-") && token.len() > 1 && !is_number(token)) {
+                mut usize i = 1;
+                while (i < token.len()) {
+                    std::str letter = token.slice(i, i + 1);
+                    i += 1;
+                    bool switch_only = short_is_flag<T>(letter);
+                    std::option<std::str> attached = if (!switch_only && i < token.len()) {
+                        std::some(token.slice(i, token.len()))
+                    } else {
+                        std::none
+                    };
+                    found result = take_named<T>(mut value, letter, true, attached, tokens, mut at);
+                    if (result == found::none) {
+                        return std::some(invalid<T>(std::format(f"unknown option '-{letter}'"), program));
+                    }
+                    if (!switch_only) {
+                        i = token.len();
+                    }
+                    if (!at.problem.is_empty()) {
+                        i = token.len();
+                    }
+                }
+            } else {
+                found result = take_positional<T>(mut value, token, mut at);
+                if (result == found::none) {
+                    mut bool matched = false;
+                    if (has_subcommand<T>()) {
+                        match (take_subcommand<T>(mut value, token, tokens, program, mut at, mut matched)) {
+                            std::some(e) => { return std::some(move e); },
+                            std::none => {},
+                        }
+                    }
+                    if (!matched) {
+                        if (has_subcommand<T>()) {
+                            std::string names = command_names<T>();
+                            mut std::darray<std::string> known = default;
+                            command_list<T>(mut known);
+                            std::string hint = suggestion(token, known.as_span(), "");
+                            if (!hint.is_empty()) {
+                                return std::some(invalid<T>(std::format(f"unknown command '{token}'{hint}"), program));
+                            }
+                            return std::some(invalid<T>(std::format(f"unknown command '{token}' (one of {names})"), program));
+                        }
+                        return std::some(invalid<T>(std::format(f"unexpected argument '{token}'"), program));
+                    }
+                }
+            }
+            if (!at.problem.is_empty()) {
+                std::string why = at.problem.clone();
+                return std::some(invalid<T>(move why, program));
+            }
+        }
+        match (missing<T>(at)) {
+            std::some(what) => { return std::some(invalid<T>(move what, program)); },
+            std::none => {},
+        }
+        return std::none;
+    }
+
+    // Whether `token` is a negative number (a value, not an option).
+    private bool is_number(std::str token) {
+        return token.parse<f64>().is_some();
+    }
+
+    // The first required argument of `T` that wasn't given: "missing ...".
+    private template<type T>
+    std::option<std::string> missing(cursor& at) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::positional_) {
+                std::args::positional about = f.annotation<std::args::positional>().value_or(std::args::positional{});
+                std::string shown = positional_name(about, f.name);
+                if (about.required && !is_optional<ft>() && !is_list<ft>() && !was_given(at, shown.as_str())) {
+                    return std::some(std::format(f"missing argument <{shown}>"));
+                }
+            } else if compile_time (r == role::named) {
+                std::args::option about = f.annotation<std::args::option>().value_or(std::args::option{});
+                std::string full = long_name(about.name, f.name);
+                if (about.required && !was_given(at, full.as_str())) {
+                    return std::some(std::format(f"missing option --{full}"));
+                }
+            } else if compile_time (r == role::subcommand_) {
+                if (!is_optional<ft>() && !was_given(at, "<command>")) {
+                    std::string names = command_names<T>();
+                    return std::some(std::format(f"missing command (one of {names})"));
+                }
+            } else if compile_time (r == role::flattened) {
+                match (missing<ft>(at)) {
+                    std::some(what) => { return std::some(move what); },
+                    std::none => {},
+                }
+            }
+        }
+        return std::none;
+    }
+
+    private template<type T>
+    void command_list(mut std::darray<std::string>& out) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            if compile_time (role_of(f, std::is_same<ft, bool>()) == role::subcommand_) {
+                compile_time type e = optional_inner<ft>();
+                if compile_time (!std::meta::is_enum<e>()) {
+                    return;
+                }
+                for compile_time (std::meta::alternative a : std::meta::alternatives<e>()) {
+                    out.push(alternative_name(a.name, a.annotation<std::args::command>()));
+                }
+            }
+        }
+    }
+
+    private template<type T>
+    std::string command_names() {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            if compile_time (role_of(f, std::is_same<ft, bool>()) == role::subcommand_) {
+                compile_time type e = optional_inner<ft>();
+                return choices<e>();
+            }
+        }
+        return std::string::from("");
+    }
+
+    // The first field of `T` (or of its flattened structs) that is read from text but whose type
+    // can't be: "" when there is none.
+    private template<type T>
+    compile_time std::static_str unreadable_field() {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::named || r == role::positional_) {
+                if (!value_type<ft>()) {
+                    return f.name;
+                }
+            } else if compile_time (r == role::flattened) {
+                if compile_time (std::meta::is_struct<ft>()) {
+                    std::static_str inner = unreadable_field<ft>();
+                    if (!inner.is_empty()) {
+                        return inner;
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    template<type T>
+    std::result<T, std::args::error> parse(std::span<std::str> args) {
+        compile_time check (std::meta::is_struct<T>()) else f"std::args::parse<{std::type_name<T>()}>: the arguments are described by a struct";
+        compile_time check (unreadable_field<T>().is_empty())
+            else f"std::args::parse<{std::type_name<T>()}>: the field '{unreadable_field<T>()}' can't hold an argument; mark it @std::args::skip (not an argument) or @std::args::flatten (a struct of more arguments)";
+        std::string program = program_name<T>(args);
+        mut T value = default;
+        std::span<std::str> tokens = if (args.is_empty()) { args } else { args.slice(1, args.len()) };
+        match (fill<T>(mut value, tokens, program.as_str())) {
+            std::some(e) => { return std::error(move e); },
+            std::none => {},
+        }
+        return std::ok(move value);
+    }
+
+    private template<type T>
+    std::string program_name(std::span<std::str> args) {
+        std::static_str given = program_info<T>().name;
+        if (!given.is_empty()) {
+            return std::string::from(given);
+        }
+        if (args.is_empty()) {
+            return std::string::from("program");
+        }
+        std::str first = args[0];
+        mut usize start = 0;
+        for (usize i : 0..first.len()) {
+            std::str one = first.slice(i, i + 1);
+            if (one == "/" || one == "\\") {
+                start = i + 1;
+            }
+        }
+        return std::string::from(first.slice(start, first.len()));
+    }
+
+    // ---- Help -------------------------------------------------------------------------------------------
+
+    // One line of a help section: what to type, and what it does.
+    private struct row {
+        std::string left;
+        std::string right;
+    }
+
+    private template<type T>
+    void option_rows(T& defaults, mut std::darray<row>& rows) {
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::flattened) {
+                option_rows<ft>(f.get(defaults), mut rows);
+            } else if compile_time (r == role::switch_) {
+                std::args::flag about = f.annotation<std::args::flag>().value_or(std::args::flag{});
+                std::string full = long_name(about.name, f.name);
+                std::string left = if (about.short_name.is_empty()) { std::format(f"    --{full}") } else { std::format(f"-{about.short_name}, --{full}") };
+                rows.push(row{ .left = move left, .right = std::string::from(about.help) });
+            } else if compile_time (r == role::named) {
+                std::args::option about = f.annotation<std::args::option>().value_or(std::args::option{});
+                std::string full = long_name(about.name, f.name);
+                std::string value_name = if (about.value_name.is_empty()) { value_word<ft>() } else { std::string::from(about.value_name) };
+                std::string left = if (about.short_name.is_empty()) { std::format(f"    --{full} <{value_name}>") } else { std::format(f"-{about.short_name}, --{full} <{value_name}>") };
+                mut std::string right = std::string::from(about.help);
+                if compile_time (is_list<ft>()) {
+                    add_note(mut right, "(repeatable)");
+                }
+                if (about.required) {
+                    add_note(mut right, "(required)");
+                }
+                std::string shown_default = default_text<ft>(f.get(defaults));
+                if (!shown_default.is_empty() && !about.required) {
+                    add_note(mut right, std::format(f"[default: {shown_default}]"));
+                }
+                compile_time type plain = optional_inner<ft>();
+                if compile_time (std::meta::is_enum<plain>()) {
+                    std::string all = choices<plain>();
+                    add_note(mut right, std::format(f"[{all}]"));
+                }
+                rows.push(row{ .left = move left, .right = move right });
+            }
+        }
+    }
+
+    // The value's word in the help: "n" for numbers, "path", "text", ...
+    private template<type V>
+    std::string value_word() {
+        if compile_time (is_list<V>() || is_optional<V>()) {
+            compile_time type e = std::meta::template_args<V>()[0];
+            return value_word<e>();
+        } else if compile_time (std::is_integer<V>() || std::is_float<V>()) {
+            return std::string::from("n");
+        } else if compile_time (std::is_same<V, std::filesystem::path>()) {
+            return std::string::from("path");
+        } else if compile_time (std::is_same<V, bool>()) {
+            return std::string::from("bool");
+        } else if compile_time (std::meta::is_enum<V>()) {
+            return std::string::from("choice");
+        } else {
+            return std::string::from("text");
+        }
+    }
+
+    private template<type T>
+    std::string usage(std::str program) {
+        mut std::string out = std::format(f"usage: {program}");
+        if (has_options<T>()) {
+            out.push_str(" [options]");
+        }
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::positional_) {
+                std::args::positional about = f.annotation<std::args::positional>().value_or(std::args::positional{});
+                std::string shown = positional_name(about, f.name);
+                if compile_time (is_list<ft>()) {
+                    out.push_str(std::format(f" [<{shown}>...]"));
+                } else if (about.required && !is_optional<ft>()) {
+                    out.push_str(std::format(f" <{shown}>"));
+                } else {
+                    out.push_str(std::format(f" [<{shown}>]"));
+                }
+            } else if compile_time (r == role::subcommand_) {
+                if compile_time (is_optional<ft>()) {
+                    out.push_str(" [<command> ...]");
+                } else {
+                    out.push_str(" <command> ...");
+                }
+            } else if compile_time (r == role::named) {
+                std::args::option about = f.annotation<std::args::option>().value_or(std::args::option{});
+                if (about.required) {
+                    std::string full = long_name(about.name, f.name);
+                    std::string value_name = if (about.value_name.is_empty()) { value_word<ft>() } else { std::string::from(about.value_name) };
+                    out.push_str(std::format(f" --{full} <{value_name}>"));
+                }
+            }
+        }
+        return out;
+    }
+
+    private template<type T>
+    bool has_options() {
+        mut std::darray<std::string> names = default;
+        long_names<T>(mut names);
+        return !names.is_empty();
+    }
+
+    // Appends `note` to a help text, after a space unless it is empty.
+    private void add_note(mut std::string& text, std::str note) {
+        if (!text.is_empty()) {
+            text.push(' ');
+        }
+        text.push_str(note);
+    }
+
+    private void write_rows(mut std::string& out, std::str title, std::span<row> rows) {
+        if (rows.is_empty()) {
+            return;
+        }
+        mut usize width = 0;
+        for (row& r : rows) {
+            if (r.left.len() > width) {
+                width = r.left.len();
+            }
+        }
+        out.push_str(std::format(f"\n{title}:\n"));
+        for (row& r : rows) {
+            out.push_str("  ");
+            out.push_str(r.left.as_str());
+            if (!r.right.is_empty()) {
+                for (usize i : r.left.len()..width + 3) {
+                    out.push(' ');
+                }
+                out.push_str(r.right.as_str());
+            }
+            out.push('\n');
+        }
+    }
+
+    template<type T>
+    std::string help(std::str program) {
+        T defaults = default;
+        mut std::string out = std::string::from("");
+        std::static_str intro = program_info<T>().about;
+        if (!intro.is_empty()) {
+            out.push_str(intro);
+            out.push_str("\n\n");
+        }
+        std::string first_line = usage<T>(program);
+        out.push_str(first_line.as_str());
+        out.push('\n');
+
+        mut std::darray<row> arguments = default;
+        mut std::darray<row> commands = default;
+        for compile_time (std::meta::field f : std::meta::fields<T>()) {
+            compile_time type ft = f.type;
+            compile_time role r = role_of(f, std::is_same<ft, bool>());
+            if compile_time (r == role::positional_) {
+                std::args::positional about = f.annotation<std::args::positional>().value_or(std::args::positional{});
+                std::string shown = positional_name(about, f.name);
+                mut std::string right = std::string::from(about.help);
+                std::string shown_default = default_text<ft>(f.get(defaults));
+                if (!shown_default.is_empty() && !about.required) {
+                    add_note(mut right, std::format(f"[default: {shown_default}]"));
+                }
+                compile_time type plain = optional_inner<ft>();
+                if compile_time (std::meta::is_enum<plain>()) {
+                    std::string all = choices<plain>();
+                    add_note(mut right, std::format(f"[{all}]"));
+                }
+                arguments.push(row{ .left = std::format(f"<{shown}>"), .right = move right });
+            } else if compile_time (r == role::subcommand_) {
+                compile_time type e = optional_inner<ft>();
+                for compile_time (std::meta::alternative a : std::meta::alternatives<e>()) {
+                    std::option<std::args::command> about = a.annotation<std::args::command>();
+                    std::string shown = alternative_name(a.name, about);
+                    std::string right = match (about) {
+                        std::some(c) => std::string::from(c.help),
+                        std::none => std::string::from(""),
+                    };
+                    commands.push(row{ .left = move shown, .right = move right });
+                }
+            }
+        }
+        mut std::darray<row> options = default;
+        option_rows<T>(defaults, mut options);
+        options.push(row{ .left = std::string::from("-h, --help"), .right = std::string::from("Show this help") });
+        if (has_version<T>()) {
+            options.push(row{ .left = std::string::from("    --version"), .right = std::string::from("Show the version") });
+        }
+        write_rows(mut out, "Arguments", arguments.as_span());
+        write_rows(mut out, "Commands", commands.as_span());
+        write_rows(mut out, "Options", options.as_span());
+        if (!commands.is_empty()) {
+            out.push_str(std::format(f"\n'{program} <command> --help' shows a command's arguments.\n"));
+        }
+        return out;
+    }
+
+    struct error {
+        std::exit_code report() {
+            if (this.kind == stop::invalid) {
+                std::eprintln(f"error: {this.message}");
+                std::eprintln(this.text.as_str());
+                return std::exit_code::failure;
+            }
+            std::print(this.text.as_str());
+            return std::exit_code::success;
+        }
+    }
+}

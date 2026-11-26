@@ -3,6 +3,7 @@
 // Edax where possible). The text comes from library/std/ at build time.
 
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace edax {
@@ -23,5 +24,11 @@ std::span<const StdModule> std_modules();
 // ("text/fonts/DMSans-Regular.ttf"); a view with no data when there is none. `std::embed` in a
 // std module reads these instead of the disk.
 std::string_view std_resource(std::string_view path);
+
+// The folder with the standard library's source (std.edh, std.ed, ...), for debug info and
+// `edaxc definition`; the library itself is compiled into edaxc. An installed edaxc
+// (`cmake --install`) uses `<prefix>/share/edax/std` next to its `bin`; otherwise the tree it was
+// built from (`library/std`), which may no longer exist.
+const std::string& std_source_dir();
 
 } // namespace edax

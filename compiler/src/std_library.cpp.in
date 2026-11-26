@@ -2,6 +2,7 @@
 #include "edax/std_library.hpp"
 #include "edax/graphics_registry.hpp"
 
+#include <filesystem>
 #include <initializer_list>
 #include <string>
 
@@ -25,6 +26,19 @@ std::span<const StdModule> std_modules() {
 
 std::string_view std_resource(std::string_view path) {
 @EDAX_STD_RESOURCE_LOOKUP@    return {};
+}
+
+const std::string& std_source_dir() {
+    static const std::string dir = [] {
+        std::error_code ec;
+        std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            std::filesystem::path installed = exe.parent_path().parent_path() / "share" / "edax" / "std";
+            if (std::filesystem::exists(installed / "std.edh", ec)) return installed.string();
+        }
+        return std::string(EDAX_STD_DIR);
+    }();
+    return dir;
 }
 
 std::string_view std_registry(std::string_view file) {

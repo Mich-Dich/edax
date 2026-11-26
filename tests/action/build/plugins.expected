@@ -13,4 +13,4 @@ edaxc run: debug, 4 targets
  ✓ quiet          7 units, 630 B <t>  %t/debug/plugins/quiet.so
  ✓ wrong          7 units, 545 B <t>  %t/debug/plugins/wrong.so
  ✓ app            7 units, 1.22 KiB <t>  %t/debug/app
-built 4 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
+built 4 targets in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/.edax/logs/build.log

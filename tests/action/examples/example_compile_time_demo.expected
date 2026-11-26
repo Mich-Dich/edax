@@ -24,4 +24,4 @@ warning[W4210]: old_api() is going away; call set_pin() instead
     |         -------------------------------------------------------------------------------
     = note: reported by this check
  ✓ compile_time_demo 5 units, 4.14 KiB, 1 warning <t>  %t/debug/compile_time_demo
-built 1 target in <t> (0 up to date): 0 errors, 1 warning   details: %t/debug/build.log
+built 1 target in <t> (0 up to date): 0 errors, 1 warning   details: %t/debug/.edax/logs/build.log

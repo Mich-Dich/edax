@@ -2,6 +2,7 @@
 #include "edax/llvm_backend.hpp"
 #include "edax/lower_aggregates.hpp"
 #include "edax/thin_lto.hpp"
+#include "edax/std_library.hpp"
 #include "edax/ast_walk.hpp"
 
 #include "edax/ast_printer.hpp"
@@ -364,8 +365,8 @@ public:
         if (auto it = di_files_.find(id); it != di_files_.end()) return it->second;
         std::filesystem::path p(sources_.file(id).path());
         std::error_code ec;
-        if (p.string().starts_with("<std>/")) {   // the library's files: in the tree edaxc was built from, if it is still there
-            std::filesystem::path tree = std::filesystem::path(EDAX_STD_DIR) / p.string().substr(6);
+        if (p.string().starts_with("<std>/")) {   // the library's files: installed with edaxc, or in the tree it was built from, if it is still there
+            std::filesystem::path tree = std::filesystem::path(std_source_dir()) / p.string().substr(6);
             p = std::filesystem::exists(tree, ec) ? tree : std::filesystem::path("/<std>") / p.string().substr(6);
         }
         std::filesystem::path abs = p.is_absolute() || p.string().starts_with("<") ? p : std::filesystem::absolute(p, ec);
@@ -385,12 +386,17 @@ public:
         unsigned      line = sources_.file(span.file).line_col(span.begin).line;
         llvm::DISubroutineType* type = dib_->createSubroutineType(dib_->getOrCreateTypeArray({}));
         std::string linkage = options_.debug_variables ? name : fn->getName().str();
-        llvm::DISubprogram* sp = dib_->createFunction(file, name, linkage, file, line, type, line,
+        // A function the debugger steps through has no line at all: the function's start is
+        // written with its scope line.
+        bool through = step_through(fn, span.file);
+        unsigned shown = through ? 0 : line;
+        llvm::DISubprogram* sp = dib_->createFunction(file, name, linkage, file, shown, type, shown,
                                                       llvm::DINode::FlagPrototyped, llvm::DISubprogram::SPFlagDefinition);
         fn->setSubprogram(sp);
         // The prologue (storing the parameters) has no line, as in C/C++ at -O0: stepping into the
         // function stops at its first statement, with the parameters in place (spec 24).
-        b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, options_.debug_variables ? 0 : line, 0, sp));
+        bool no_line = options_.debug_variables || through;
+        b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, no_line ? 0 : line, 0, sp));
     }
 
     // --- debug info for variables (spec 24: debug_info() == full) ---------------------------
@@ -605,7 +611,8 @@ public:
         (void)after;
     }
 
-    // The debug location of the code generated next: `span` in the current function.
+    // The debug location of the code generated next: `span` in the current function. In the
+    // library's optimized code the line is 0, which debuggers step through (see step_through).
     void debug_at(Span span) {
         if (!dib_) return;
         llvm::DISubprogram* sp = cur_fn_ ? cur_fn_->getSubprogram() : nullptr;
@@ -613,8 +620,28 @@ public:
             if (!sp) b_.SetCurrentDebugLocation(llvm::DebugLoc());
             return;
         }
+        if (step_through(cur_fn_, span.file)) {
+            b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, 0, 0, sp));
+            return;
+        }
         LineCol lc = sources_.file(span.file).line_col(span.begin);
         b_.SetCurrentDebugLocation(llvm::DILocation::get(ctx_, lc.line, lc.column, sp));
+    }
+
+    // Whether the debugger steps through `fn` without stopping: the standard library's code when the
+    // mode optimizes it (std_optimization(), spec 24 and 34). Its statements have line 0, which
+    // lldb and gdb never stop at, so stepping out of a lambda that std::sort called goes back to the
+    // program's code instead of through the sort; backtraces still name the function. A mode with
+    // `std_optimization() == none` steps through the library line by line.
+    std::unordered_map<const llvm::Function*, bool> step_through_;
+    bool step_through(const llvm::Function* fn, FileId file) {
+        if (!fn) return false;
+        auto [it, fresh] = step_through_.try_emplace(fn, false);
+        if (fresh) {
+            llvm::StringRef level = fn->hasFnAttribute("edax-optimize") ? fn->getFnAttribute("edax-optimize").getValueAsString() : "";
+            it->second = !level.empty() && level != "none" && sources_.file(file).path().starts_with("<std>");
+        }
+        return it->second;
     }
 
     FileId di_file_of(const llvm::DISubprogram* sp) {
@@ -2218,6 +2245,7 @@ private:
         for (StmtPtr& st : blk.statements) gen_stmt(*st);
         llvm::Value* v = nullptr;
         if (blk.tail) {
+            debug_at(blk.tail->span);   // a tail without ';' is a line of its own for a debugger
             bool address = as_address && !is_void(types::strip_ref(blk.tail->type));
             v = address ? object_address(*blk.tail) : gen_expr(*blk.tail);
             if (!terminated()) moved_out(*blk.tail);
@@ -5760,7 +5788,11 @@ private:
         bool               has_value = !is_void(t) && !(t && t->is_unknown());
         llvm::AllocaInst*  slot      = has_value ? entry_alloca(as_address ? ptr_type() : lower_type(types::strip_ref(t)), "match.value") : nullptr;
         llvm::BasicBlock*  end_bb    = llvm::BasicBlock::Create(ctx_, "match.end", cur_fn_);
+        // Each arm's test is at the match, not at the arm before it: an arm's body then starts a
+        // line of its own, where a debugger stops.
+        llvm::DebugLoc match_loc = b_.getCurrentDebugLocation();
         for (MatchArm& arm : m.arms) {
+            b_.SetCurrentDebugLocation(match_loc);
             llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx_, "arm.next", cur_fn_);
             llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_, "arm.body", cur_fn_);
             pending_bindings_.clear();
@@ -5799,6 +5831,7 @@ private:
                 b_.CreateBr(body);
             }
             b_.SetInsertPoint(body);
+            if (arm.body->kind != ExprKind::block) debug_at(arm.body->span);   // `pattern => expression,`: its own line
             llvm::Value* v = as_address ? object_address(*arm.body) : gen_expr(*arm.body);
             if (!terminated() && slot && v) {
                 b_.CreateStore(v, slot);

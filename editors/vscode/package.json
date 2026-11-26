@@ -338,7 +338,7 @@
         "edax.debug.stepIntoStandardLibrary": {
           "type": "boolean",
           "default": true,
-          "description": "Step Into enters std:: functions (darray::push, string::from, ...), like stepping into a C++ library with sources."
+          "description": "Step Into enters std:: functions (darray::push, string::from, ...) when the build mode compiles the library unoptimized (std_optimization() == none). The built-in modes optimize it, and stepping goes through it to your code either way."
         },
         "edax.insights.enabled": {
           "type": "boolean",

@@ -1,0 +1,25 @@
+// build.ed with its own output layout (g.output_dir): every target in build/<name>/<mode>, a
+// plugin in a folder named by placeholders, and a plugin of another project (g.dependency) that
+// the launcher needs at run time: built first (g.depends_on) and put where the launcher looks.
+import std;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        g.output_dir("{build}/{name}/{mode}");
+
+        std::build::project tools = g.dependency(std::build::local{ .path = "tools" });
+        std::build::target  api   = g.target_of(tools, "api");
+        std::build::target  hello = g.target_of(tools, "hello");
+        g.output_dir(hello, "{build}/launcher/{mode}/mods");
+
+        std::build::target core = g.add_shared_library(std::build::edax_target{ .name = "core", .root = "core/core.ed" });
+        std::build::target extra = g.add_plugin(std::build::edax_target{ .name = "extra", .root = "extra/extra.ed" });
+        g.link(extra, api);
+        g.output_dir(extra, "{build}/{project}-{kind}s");
+
+        std::build::target launcher = g.add_executable(std::build::edax_target{ .name = "launcher", .root = "launcher/main.ed" });
+        g.link(launcher, core);
+        g.link(launcher, api);
+        g.depends_on(launcher, hello);
+    }
+}

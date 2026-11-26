@@ -8,6 +8,6 @@ PASS parsing::trims_spaces
 FAIL parsing::wrong_on_purpose
 tests/action/build/annotated_tests_project/tests/parsing.ed:15:21: panic in wrong_on_purpose: 7 is not 8
 note: the check `"7".parse<u32>().value_or(0) == 8` is at tests/action/build/annotated_tests_project/tests/parsing.ed:15:21
-built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/build.log
+built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/.edax/logs/build.log
 2 of 3 tests passed
 --- stderr

@@ -1,0 +1,11 @@
+import std;
+import api::greeter;
+
+namespace extra {
+    @std::plugin_entry
+    class plain : api::greeter {
+    public:
+        std::string greet(std::str who) override { return std::format(f"extra greets {who}"); }
+        static plain make() { return plain{}; }
+    }
+}

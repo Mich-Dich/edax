@@ -92,6 +92,45 @@ i128 Value::as_signed() const {
     return (integer & sign) ? static_cast<i128>(integer | ~unsigned_max(bits)) : static_cast<i128>(integer);
 }
 
+const std::vector<std::string>& output_dir_placeholders() {
+    static const std::vector<std::string> names = {"build", "name", "project", "mode", "kind", "platform", "os", "arch", "cpu"};
+    return names;
+}
+
+std::string check_output_dir(std::string_view pattern) {
+    if (pattern.empty()) return "the folder is empty";
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        if (pattern[i] == '}') return "a '}' without its '{'";
+        if (pattern[i] != '{') continue;
+        std::size_t close = pattern.find('}', i);
+        if (close == std::string_view::npos) return "a '{' without its '}'";
+        std::string name(pattern.substr(i + 1, close - i - 1));
+        const std::vector<std::string>& known = output_dir_placeholders();
+        if (std::find(known.begin(), known.end(), name) == known.end()) {
+            std::string list;
+            for (std::size_t k = 0; k < known.size(); ++k) list += (k ? (k + 1 == known.size() ? " or " : ", ") : "") + ("{" + known[k] + "}");
+            return std::format("'{{{}}}' is not a placeholder; the placeholders are {}", name, list);
+        }
+        i = close;
+    }
+    return "";
+}
+
+std::string expand_output_dir(std::string_view pattern, const std::map<std::string, std::string>& values) {
+    std::string out;
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        std::size_t close = pattern[i] == '{' ? pattern.find('}', i) : std::string_view::npos;
+        if (close == std::string_view::npos) {
+            out += pattern[i];
+            continue;
+        }
+        auto it = values.find(std::string(pattern.substr(i + 1, close - i - 1)));
+        if (it != values.end()) out += it->second;
+        i = close;
+    }
+    return out;
+}
+
 std::string to_string(const Value& v) {
     switch (v.kind) {
     case Value::Kind::void_: return "()";
@@ -2280,6 +2319,11 @@ struct Evaluator::Impl {
             out.details = names(member(o, "details"));
             if (const Value* l = member(o, "log_file"); l && l->kind == Value::Kind::boolean) out.log_file = l->boolean;
             if (const Value* k = member(o, "keep_logs"); k && k->kind == Value::Kind::integer) out.keep_logs = static_cast<unsigned>(k->integer);
+            if (const Value* d = member(o, "log_dir"); d && !static_text(*d).empty()) {
+                out.log_dir         = static_text(*d);
+                std::string problem = check_output_dir(out.log_dir);
+                if (!problem.empty()) failed(c.args[0]->span, std::format("the log folder \"{}\": {}", out.log_dir, problem), "not a folder pattern");
+            }
             if (const Value* x = member(o, "target_line")) out.target_line = static_text(*x);
             if (const Value* x = member(o, "done_line")) out.done_line = static_text(*x);
             if (const Value* x = member(o, "source_row")) out.source_row = static_text(*x);
@@ -2662,9 +2706,27 @@ struct Evaluator::Impl {
             return Value{};
         }
         if (n == "depends_on") {
+            bool on_target = args.at(1).type && args[1].type->is(Kind::user) && args[1].type->symbol->name == "target";
+            if (on_target) {   // g.depends_on(t, first): `first` is built before `t`, not linked
+                target_of(1);
+                std::size_t first = static_cast<std::size_t>(args[1].elements[0].integer - 1);
+                BuildTarget& t    = target_of(0);
+                if (&g->targets[first] == &t) failed(c.args[1]->span, std::format("'{}' can't depend on itself", t.name), "the same target");
+                t.after.push_back(first);
+                return Value{};
+            }
             BuildTarget& t = target_of(0);
             step_of(1);
             t.steps.push_back(static_cast<std::size_t>(args[1].elements[0].integer - 1));
+            return Value{};
+        }
+        if (n == "output_dir") {   // g.output_dir(pattern), g.output_dir(t, pattern)
+            std::size_t at      = args.size() == 2 ? 1 : 0;
+            std::string pattern = static_text(args.at(at));
+            std::string problem = check_output_dir(pattern);
+            if (!problem.empty()) failed(c.args[at]->span, std::format("the output folder \"{}\": {}", pattern, problem), "not a folder pattern");
+            if (args.size() == 2) target_of(0).output_dir = pattern;
+            else g->output_dir = pattern;
             return Value{};
         }
         if (n == "add_system_library") {

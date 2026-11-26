@@ -1,0 +1,71 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: @std::args::flag works on bool fields (set) and integer fields (counted); 'name' is a std::string
+  --> tests/action/check/std_args_checks.ed:8:5
+   |
+ 8 |     @std::args::flag std::string name = default;
+   |     ^^^^^^^^^^^^^^^^ check failed
+  ::: <std>/args.ed:<n>
+   |
+<n> |                 std::compile_error(f"@std::args::flag works on bool fields (set) and integer fields (counted); '{annotated.name}' is a {std::type_name<t>()}");
+   |                 ----------------------------------------------------------------------------------------------------------------------------------------------
+   = note: reported by this check
+
+error[E4210]: @std::args::range: min (5.0) is larger than max (1.0)
+ --> tests/action/check/std_args_checks.ed:9:5
+  |
+9 |     @std::args::range{ .min = 5.0, .max = 1.0 } u32 n = 0;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ fails the check of '@std::args::range'
+
+error[E4210]: @std::args::option: short_name is one letter, not 'ab'
+  --> tests/action/check/std_args_checks.ed:10:5
+   |
+10 |     @std::args::option{ .short_name = "ab" } u32 m = 0;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ fails the check of '@std::args::option'
+
+error[E4210]: @std::args::subcommand works on an enum field (or a std::option of one); 'sub' is a u32
+  --> tests/action/check/std_args_checks.ed:11:5
+   |
+11 |     @std::args::subcommand u32 sub = 0;
+   |     ^^^^^^^^^^^^^^^^^^^^^^ check failed
+  ::: <std>/args.ed:<n>
+   |
+<n> |                 std::compile_error(f"@std::args::subcommand works on an enum field (or a std::option of one); '{annotated.name}' is a {std::type_name<t>()}");
+   |                 ---------------------------------------------------------------------------------------------------------------------------------------------
+   = note: reported by this check
+
+error[E4210]: @std::args::positional: 'nested' is a std::darray<std::darray<u32>>, which an argument can't hold (numbers, bool, std::string, std::filesystem::path, enums, std::option and std::darray of those)
+  --> tests/action/check/std_args_checks.ed:12:5
+   |
+12 |     @std::args::positional std::darray<std::darray<u32>> nested = default;
+   |     ^^^^^^^^^^^^^^^^^^^^^^ check failed
+  ::: <std>/args.ed:<n>
+   |
+<n> |                 std::compile_error(f"@std::args::positional: '{annotated.name}' is a {std::type_name<t>()}, which an argument can't hold (numbers, bool, std::string, std::filesystem::path, enums, std::option and std::darray of those)");
+   |                 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   = note: reported by this check
+
+error[E4210]: std::args::parse<bad>: the field 'nested' can't hold an argument; mark it @std::args::skip (not an argument) or @std::args::flatten (a struct of more arguments)
+   --> tests/action/check/std_args_checks.ed:21:12
+    |
+ 21 |     match (std::args::parse<bad>(args)) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   ::: <std>/args.ed:<n>
+    |
+<n> |         compile_time check (unreadable_field<T>().is_empty())
+    |                             --------------------------------
+    = note: the check of 'parse' is here
+
+error[E4210]: std::args::parse<unmarked>: the field 'settings' can't hold an argument; mark it @std::args::skip (not an argument) or @std::args::flatten (a struct of more arguments)
+   --> tests/action/check/std_args_checks.ed:25:12
+    |
+ 25 |     match (std::args::parse<unmarked>(args)) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   ::: <std>/args.ed:<n>
+    |
+<n> |         compile_time check (unreadable_field<T>().is_empty())
+    |                             --------------------------------
+    = note: the check of 'parse' is here
+
+7 errors, 0 warnings

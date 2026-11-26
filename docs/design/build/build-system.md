@@ -39,7 +39,7 @@ edaxc simd-report <file> [<function>]   # how vector types and operations map to
 - `--root=DIR` names the project root (default: the current directory) and `--out-dir=DIR` the build directory (default: `<root>/build`).
 - A mode that relaxes a rule prints its note first (see [Build Modes](build-modes.md)). `edaxc test` prints `PASS`/`FAIL` per test and fails when one fails.
 - Without `build.ed`, `edaxc build main.ed` builds that one file as a program in `debug` mode.
-- Build output goes to `build/<mode>/` (`build/<mode>/<platform>/` when cross-compiling).
+- Build output goes to `build/<mode>/` (`build/<mode>/<platform>/` when cross-compiling), unless `build.ed` chooses other folders (see "Output folders" below). edaxc's own files go to the hidden `.edax/` inside the output folders: each target's (up-to-date stamps, C objects), and the build's log and timings with the program the build is for. Each folder shows only what was built and keeps its helper files with it.
 - What a build prints (the checklist of targets, details, `build.log`, `--progress`, `--details`, `--stop-on-error`) is described in [Build output and diagnostics](build-output.md).
 
 ### Targets
@@ -47,10 +47,10 @@ edaxc simd-report <file> [<function>]   # how vector types and operations map to
 |---|---|
 | `g.add_executable(std::build::edax_target{...})` | A Edax program: `.root` is its main `.ed` file, relative to the project root |
 | `g.add_library(std::build::edax_target{...})` | A static Edax library (one or more modules) |
-| `g.add_shared_library(std::build::edax_target{...})` | A shared Edax library, `lib<name>.so` next to the programs that link it, loaded when they start (see [Dynamic Libraries and Plugins](../stdlib/system/dynamic-libraries.md)) |
+| `g.add_shared_library(std::build::edax_target{...})` | A shared Edax library, `lib<name>.so`, loaded when the programs that link it start; they find it wherever its output folder is (a relative rpath) (see [Dynamic Libraries and Plugins](../stdlib/system/dynamic-libraries.md)) |
 | `g.add_plugin(std::build::edax_target{...})` | A shared library loaded by the program at run time (see [Dynamic Libraries and Plugins](../stdlib/system/dynamic-libraries.md)) |
 | `g.add_c_library(std::build::c_target{...})` | A static C or C++ library |
-| `g.add_shared_library(std::build::c_target{...})` | A shared C or C++ library: the programs that link it find it next to them |
+| `g.add_shared_library(std::build::c_target{...})` | A shared C or C++ library, `lib<name>.so`: the programs that link it find it the same way |
 | `g.add_test(std::build::edax_target{...})` | A test program, run by `edaxc test`: its `main`, or each of its `@std::test` functions |
 
 Each method returns a **target handle** (`std::build::target`), a small copy type used to connect targets:
@@ -122,6 +122,39 @@ namespace build {
 - **Target CPU:** `g.target_cpu(t, std::build::cpu::x86_64_v3)` checks and compiles the Edax code of `t` for a CPU level instead of the platform's baseline: `std::build::target_has_cpu_feature` answers for that level, and the program needs such a CPU to run. A level of another architecture is an error when `t` is built.
 - **Per-file values:** `g.set_for_files(t, "net/*.ed", setting, value)` passes a value to the files of `t` matching a glob (relative to the directory of the target's root file; a glob that matches nothing is an error). `setting.value_at(where)`, where `where` is a `std::call_site`, gives the file's value, else the target's, else `std::none`.
 - Settings may be declared in any module both sides import; the standard library declares its own (e.g. the logger's levels, see [Logging](../stdlib/logging/logging.md)).
+
+### Output folders
+Where each target's file goes is the project's choice:
+```edax
+g.output_dir("{build}/{name}/{mode}");            // every target: build/launcher/debug, build/engine/debug, ...
+g.output_dir(terrain, "../bin/{mode}/plugins");   // one target differs: next to the project folder
+```
+- The folder is relative to the project's folder (the one with `build.ed`), wherever edaxc is started from; `..` and absolute paths are allowed. Without `g.output_dir` it is `{build}/{mode}` (`{build}/{mode}/<--target>` when cross-compiling).
+- Placeholders: `{build}` (the build directory: `<project>/build`, or `--out-dir`), `{name}` (the target), `{project}` (the project's folder name), `{mode}` (the mode it is built in), `{kind}` (`program`, `test`, `library`, `plugin`, `c_library`), `{platform}` (the target triple), `{os}` (`linux`, `windows`, `macos`, `none`), `{arch}` (the triple's CPU: `x86_64`, `aarch64`, ...), `{cpu}` (the CPU level, `g.target_cpu`'s if set). Any other `{...}` is an error in `build.ed`.
+- A program is `<name>`, a plugin `<name>.so`, a shared library `lib<name>.so`. Two targets that would write the same file are an error.
+- **edaxc doesn't decide where a program looks for plugins.** A plugin is an output like any other; the program loads it from whatever path it chooses (`std::plugin<I>::load(path)`), from its own folder, a config file or the command line.
+- Shared libraries are linked with an rpath relative to the file that loads them (`$ORIGIN/../../engine/debug`), so the build folder can be moved or packed as a whole.
+- The build's log and timings are in the `.edax/` of the program the build is for (the last program built, so the launcher rather than what it depends on; without a program, the first output). `g.output(std::build::output{ .log_dir = "..." })` chooses another folder.
+- `--bin-dir=DIR` puts every output in one folder, whatever `build.ed` says.
+
+### Building other projects first
+A target can need another target at run time without linking it, for example a launcher and the plugins it loads, also from another project:
+```edax
+std::build::project tools = g.dependency(std::build::local{ .path = "plugins/terrain" });
+std::build::target  terrain = g.target_of(tools, "terrain");   // runs plugins/terrain/build.ed
+g.depends_on(launcher, terrain);                               // built before the launcher, not linked
+g.output_dir(terrain, "{build}/launcher/{mode}/plugins");      // optional: where the launcher looks
+```
+- `g.depends_on(t, first)` builds `first` whenever `t` is built (also with `edaxc run t`), and before it. When `first` fails, `t` isn't built (`not built: needs ...`). A cycle is an error.
+- A dependency's targets keep the output folders of its own `build.ed` (relative to its own folder; `{build}` is this build's directory) unless this `build.ed` sets one with `g.output_dir`.
+- `edaxc build` without target names also builds the programs and plugins this `build.ed` names with `g.target_of`. A `build.ed` above several projects can build them all:
+  ```edax
+  std::build::project core     = g.dependency(std::build::local{ .path = "core" });
+  std::build::project launcher = g.dependency(std::build::local{ .path = "launcher" });
+  g.depends_on(g.target_of(launcher, "launcher"), g.target_of(core, "engine"));
+  ```
+- `edaxc build --root=core` builds one project from another folder.
+- `edaxc build` in the dependency's own folder still builds it on its own.
 
 ### Names from `build.ed`
 - `build.ed` declares everything in `namespace build`, and **every target of the project imports it automatically**. Code names its declarations like any other: `build::profile` in a mode list (`run_time(build::profile) check`), `build::vulkan_validation.value()` for a setting, and types the build defines for shared use.

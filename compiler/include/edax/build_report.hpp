@@ -3,7 +3,7 @@
 // a checklist with a line per target (and for build.ed and the packages), each target's details
 // (its source files, ...) when asked for, the diagnostics in full, and a last line. On a terminal
 // the lines of the targets still running are live: rewritten in place under what is finished.
-// Everything also goes to build/<mode>/build.log.
+// Everything also goes to build/<mode>/.edax/logs/build.log.
 //
 // The reporter is thread-safe: C/C++ units finish on worker threads.
 

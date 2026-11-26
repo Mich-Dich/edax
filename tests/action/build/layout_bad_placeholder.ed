@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/layout_bad_project --out-dir=%t
+// An unknown placeholder in g.output_dir is an error in build.ed that lists the placeholders.

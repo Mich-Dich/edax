@@ -33,7 +33,7 @@ target_include_directories(edax PUBLIC include)
 # filesystem.*. The first one is the core module.
 set(EDAX_STD_MODULES std filesystem env build build/mode thread time meta derive log parallel
     graphics windowing/core windowing/bindings windowing/x11 windowing
-    math image text/font ui ui/opengl ui/immediate ui/platform ui/routing ui/plot ui/debug ui/dock ui/nodes)
+    math image text/font ui ui/opengl ui/immediate ui/platform ui/routing ui/plot ui/debug ui/dock ui/nodes args)
 set(EDAX_STD_ENTRIES "")
 set(EDAX_STD_TEXTS "")
 # A text becomes a function that joins pieces of at most 60000 characters at startup: C++ only
@@ -157,3 +157,13 @@ target_link_libraries(edax PRIVATE ${EDAX_LLVM_LTO} ${EDAX_LLVM_EXTENSIONS} ${ED
 # edaxc: the command-line driver.
 add_executable(edaxc driver/main.cpp)
 target_link_libraries(edaxc PRIVATE edax)
+
+# `cmake --install build` (add `--prefix ~/.local` to install for one user): edaxc in bin, and in
+# share/edax the standard library's source (debuggers show it, `edaxc definition` jumps into it;
+# the library itself is compiled into edaxc) and the debugger's formatters (lldb).
+include(GNUInstallDirs)
+install(TARGETS edaxc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/library/std/ DESTINATION ${CMAKE_INSTALL_DATADIR}/edax/std
+        FILES_MATCHING PATTERN "*.ed" PATTERN "*.edh"
+        PATTERN "registry" EXCLUDE PATTERN "fonts" EXCLUDE)
+install(FILES ${PROJECT_SOURCE_DIR}/editors/vscode/lldb/edax_formatters.py DESTINATION ${CMAKE_INSTALL_DATADIR}/edax/lldb)

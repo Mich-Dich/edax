@@ -31,11 +31,11 @@ edaxc build: debug, 4 targets
 ### Failures don't stop the build
 - A target that fails is `✗` with its error count; the targets that don't need it are still built (like `make -k`). A target that links a failed one is `- not built: needs broken`.
 - `--stop-on-error` starts no target after the first failure (`not built: the build stopped at the first error`).
-- The last line becomes `build failed: 1 error, 0 warnings   details: build/debug/build.log`, and edaxc exits with status 1.
+- The last line becomes `build failed: 1 error, 0 warnings   details: build/debug/.edax/logs/build.log`, and edaxc exits with status 1.
 
 ### The last line
 ```
-built 5 targets in 21.3 s (1 up to date): 0 errors, 2 warnings   details: build/debug/build.log
+built 5 targets in 21.3 s (1 up to date): 0 errors, 2 warnings   details: build/debug/.edax/logs/build.log
 ```
 Warnings and errors are printed in full as they happen, but a terminal keeps only so much; the last line says where all of it is.
 
@@ -77,7 +77,7 @@ A **detail** is shown under the line it belongs to. Every detail is always writt
 - Paths are relative to the target's root; the columns are sized to the table's widest value. An up-to-date unit has no time.
 
 ### `build.log`
-- Every build writes `build/<mode>/build.log` and keeps the previous 5 as `build.1.log` (the newest) to `build.5.log`.
+- Every build writes `build.log` into the hidden `.edax/logs/` of the output folder of the program it builds (`build/<mode>/.edax/logs/build.log` by default; see "Output folders" in [Edax as a Build System](build-system.md)) and keeps the previous 5 next to it as `build.1.log` (the newest) to `build.5.log`. Like the timings and each target's up-to-date stamps (`.edax/stamps/<file>.inputs` in the target's folder), the logs are edaxc's own files: hidden, but next to what was built.
 - It has everything the console has, without colors, plus every detail, every command, and **every** diagnostic: also the ones the error limit (below) leaves off the console.
 - `--no-log-file` (or `.log_file = false`) writes none; the last line then says `(no build.log)`.
 
@@ -158,7 +158,7 @@ error[E2016]: unclosed '{'
 ### The error limit
 - After the first **20** errors, the rest are counted, not shown:
   ```
-  ... and 14 more errors not shown: all of them are in build/debug/build.log
+  ... and 14 more errors not shown: all of them are in build/debug/.edax/logs/build.log
   ```
   (`--error-limit=0 shows them all` when there is no `build.log`, as for a single file.)
 - `--error-limit=N` changes the limit; `0` shows every error. Warnings after the limit are counted too.
@@ -170,7 +170,7 @@ error[E2016]: unclosed '{'
 - **Finished counts and named running units:** a counter of started jobs sits on `[122/123]` while the slowest job runs. The names and times of what is running are the honest progress, and they point at the slow file.
 - **The detail table as the target's own checklist:** marks and times on each source row turn a file list into progress.
 - **Keep going after a failure:** one broken library shouldn't hide the errors of the other targets; one build shows them all.
-- **`build.log` and the last line:** a terminal forgets; the log doesn't. Naming it in the last line means a warning that scrolled away is one `less build/debug/build.log` away, so the console can stay short.
+- **`build.log` and the last line:** a terminal forgets; the log doesn't. Naming it in the last line means a warning that scrolled away is one `less build/debug/.edax/logs/build.log` away, so the console can stay short.
 - **`run` on stderr:** the program's output can be piped without the build's lines in it.
 - **Repairing brackets by indentation:** the parser can't know which `}` was meant, but the person who indented the code told it. Indentation is a hint only for errors: a file with matching brackets means exactly what its brackets say.
 - **The error limit:** the first errors are the ones to fix; the hundredth follow-up error overflows the terminal and hides them. Nothing is lost: `build.log` has the rest.

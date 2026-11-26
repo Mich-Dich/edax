@@ -1,12 +1,16 @@
 // build.ed with Edax plugins (dynamic libraries): two plugins of one interface, loaded by the
-// program at run time, and one built against another interface.
+// program at run time, and one built against another interface. The program looks for its
+// plugins in `plugins` next to it, so build.ed puts them there (g.output_dir).
 import std;
 
 namespace build {
     compile_time void build(mut std::build::graph& g) {
-        _ = g.add_plugin(std::build::edax_target{ .name = "shout", .root = "shout/shout.ed" });
-        _ = g.add_plugin(std::build::edax_target{ .name = "quiet", .root = "quiet/quiet.ed" });
-        _ = g.add_plugin(std::build::edax_target{ .name = "wrong", .root = "wrong/wrong.ed" });
+        std::build::target shout = g.add_plugin(std::build::edax_target{ .name = "shout", .root = "shout/shout.ed" });
+        std::build::target quiet = g.add_plugin(std::build::edax_target{ .name = "quiet", .root = "quiet/quiet.ed" });
+        std::build::target wrong = g.add_plugin(std::build::edax_target{ .name = "wrong", .root = "wrong/wrong.ed" });
+        g.output_dir(shout, "{build}/{mode}/plugins");
+        g.output_dir(quiet, "{build}/{mode}/plugins");
+        g.output_dir(wrong, "{build}/{mode}/plugins");
         _ = g.add_executable(std::build::edax_target{ .name = "app", .root = "app/main.ed" });
     }
 }

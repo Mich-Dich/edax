@@ -1,0 +1,4 @@
+// RUN: edaxc run --root=%S/layout_project --out-dir=%t launcher
+// g.output_dir: the project's layout ("{name}/{mode}"), one target's own folder, and a plugin of a
+// dependency built before the launcher (g.depends_on) into the folder the launcher loads from.
+// The shared library is found through a relative rpath; build.log is in the project's folder.

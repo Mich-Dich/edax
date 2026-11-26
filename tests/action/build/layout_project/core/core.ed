@@ -1,0 +1,5 @@
+import std;
+
+namespace core {
+    i32 answer() { return 42; }
+}

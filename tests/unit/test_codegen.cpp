@@ -244,3 +244,74 @@ TEST_CASE("codegen: stop_debugger_on_panic() == false leaves out the debugger st
     CHECK(std::regex_search(ir, std::regex(R"(call void @edax_panic_values\([^\n]*\n\s*call void @edax_panic_end\(i1 false\))")));
     CHECK(!std::regex_search(ir, std::regex(R"(call void @edax_panic_values\([^\n]*\n\s*call void @llvm\.debugtrap)")));
 }
+
+// --- debug info: where a debugger stops (spec 24) ----------------------------------------------
+
+namespace {
+
+// The IR of `main` with DWARF line tables, `std_optimization` as given.
+std::string debug_ir(const std::string& main, const std::string& std_optimization) {
+    Project p({{"main.ed", main}});
+    REQUIRE(!p.diags.has_errors());
+    p.program.mode_settings["std_optimization"] = std_optimization;
+    edax::LlvmOptions options;
+    options.debug_info = true;
+    return edax::generate_llvm_ir(p.program, p.sources, p.diags, options);
+}
+
+// The line of the !dbg location on the first line of `ir` that matches `pattern`, or -1.
+int line_of_call(const std::string& ir, const std::string& pattern) {
+    std::smatch m;
+    if (!std::regex_search(ir, m, std::regex(pattern + R"([^\n]*!dbg !(\d+))"))) return -1;
+    std::smatch l;
+    if (!std::regex_search(ir, l, std::regex("!" + m[1].str() + R"( = !DILocation\(line: (\d+))"))) return -1;
+    return std::stoi(l[1].str());
+}
+
+} // namespace
+
+TEST_CASE("codegen: a block's tail expression has a line of its own") {
+    std::string ir = debug_ir("bool check(u32 i) { return i > 1; }\n"
+                              "u32 main() {\n"
+                              "    mut u32 n = 0;\n"
+                              "    for (u32 i : 0..3) {\n"
+                              "        if (check(i)) {\n"
+                              "            n += 1;\n"
+                              "        }\n"
+                              "    }\n"
+                              "    return n;\n"
+                              "}\n",
+                              "none");
+    CHECK_EQ(line_of_call(ir, R"(call i1 @\S*check)"), 5);
+}
+
+TEST_CASE("codegen: an arm's expression body and the next arm's test have their own lines") {
+    std::string ir = debug_ir("import std; void one() { }\nvoid two() { }\n"
+                              "u32 main() {\n"
+                              "    std::option<u32> x = std::some(3);\n"
+                              "    match (x) {\n"
+                              "        std::some(_) => one(),\n"
+                              "        std::none => two(),\n"
+                              "    }\n"
+                              "    return 0;\n"
+                              "}\n",
+                              "none");
+    CHECK_EQ(line_of_call(ir, R"(call void @\S*one\()"), 6);
+    CHECK_EQ(line_of_call(ir, R"(call void @\S*two\()"), 7);
+    // The test of the second arm is at the match, so the first arm's body starts a line.
+    CHECK_EQ(line_of_call(ir, R"(arm\.next:[^\n]*\n[^\n]*)"), 5);
+}
+
+TEST_CASE("codegen: the optimized standard library has line 0, which debuggers step through") {
+    std::string program = "import std;\nu32 main() { mut std::darray<u32> xs = default; xs.push(5); return xs[0]; }\n";
+    std::string fast = debug_ir(program, "speed");
+    // LLVM leaves out `line:` when it is 0.
+    std::regex push_with_line(R"(DISubprogram\(name: "push"[^\n]*line: \d+)");
+    std::regex main_with_line(R"(DISubprogram\(name: "main"[^\n]*line: \d+)");
+    CHECK(contains(fast, "DISubprogram(name: \"push\""));
+    CHECK(!std::regex_search(fast, push_with_line));
+    CHECK(std::regex_search(fast, main_with_line));
+    // std_optimization() == none: the library's lines, to step through it.
+    std::string plain = debug_ir(program, "none");
+    CHECK(std::regex_search(plain, push_with_line));
+}

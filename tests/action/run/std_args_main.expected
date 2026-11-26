@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+game.proj files=1 verbose=true threads=3 renderer=opengl
+--- stderr

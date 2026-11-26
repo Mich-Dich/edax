@@ -19,7 +19,8 @@ Ctrl+click a name (or F12, or right-click -> **Go to Definition**) to jump to wh
 Open a `.ed` file and press **F5** (or use the ▷ / 🐞 buttons in the editor title). The extension builds the file with `edaxc build --mode=debug`, shows compile errors in **Problems**, and starts the debugger. It works like C++ in VS Code:
 
 - Breakpoints in `.ed` files, Step Over / Into / Out, Continue, Run to Cursor.
-- **Step Into enters the standard library**: `list.push(7)` opens `library/std/std.ed` at `darray<T>::push`. The call stack shows Edax names (`std::darray<u32>::push`, `geometry::area`).
+- **Stepping stays in your code**: the built-in modes compile the standard library optimized (`std_optimization()` is `speed`), and its code has no lines, so Step Over and Step Into go through it: Step Into on `if (load(assets[i]))` enters `load`, and stepping out of a lambda that `list.sort_by` called comes back to your code, not into the sort. The call stack still names the library's functions (`std::insertion_sort`).
+- **Stepping into the standard library**: a mode with `std_optimization()` returning `none` compiles the library unoptimized with its lines; then Step Into on `list.push(7)` opens `library/std/std.ed` at `darray<T>::push` (with `edax.debug.stepIntoStandardLibrary` on).
 - **Variables and Watch**: locals, parameters, `this`, loop variables and `match` bindings, with Edax types (`u32`, `std::string`, `geometry::point`). Standard library values are shown by content:
 
   | Value | Shown as |
@@ -50,7 +51,7 @@ Debug a target of a `build.ed` project with a launch configuration (**Run -> Add
 | `edax.compilerPath` | `""` | `edaxc` to use. Empty: `build/compiler/edaxc` in a workspace folder, else `edaxc` on `PATH` |
 | `edax.standardLibraryPath` | `""` | `library/std` sources, only needed if the checkout edaxc was built from has moved |
 | `edax.debug.buildMode` | `debug` | Build mode for debugging |
-| `edax.debug.stepIntoStandardLibrary` | `true` | Step Into enters `std::` functions |
+| `edax.debug.stepIntoStandardLibrary` | `true` | Step Into enters `std::` functions that have lines (a mode with `std_optimization() == none`) |
 
 Variables need `debug_info()` to be `full` (the `debug` mode). `line_tables` gives breakpoints, stepping and call stacks only.
 

@@ -205,6 +205,9 @@ struct Place {
     bool        is_temporary = false;
     std::string name;
     const Symbol* local = nullptr;
+    // An element of a container whose operator[] gives only immutable references (std::span<T>):
+    // the container's spelling, for the note.
+    std::string immutable_elements;
 };
 
 class Instantiator;
@@ -2351,6 +2354,7 @@ private:
                 } else {
                     if (declared && declared->is(Kind::reference)) reject_packed_reference(*v.init, "borrowed");
                     coerce(*v.init, declared);
+                    require_mut_reference(*v.init, declared, "borrow mutably");
                 }
             }
             if (v.symbol) set_local(v.symbol, declared ? declared : tc_.error());
@@ -2555,6 +2559,26 @@ private:
                 base.is_mutable = true;
                 return base;
             }
+            if (const FunctionDecl* f = ix.op_symbol ? ix.op_symbol->function() : nullptr;
+                f && f->result && f->result->kind == TypeKind::reference && !f->result->as<ReferenceType>().is_mut &&
+                ix.op_symbol->parent) {
+                bool has_mut = false;   // a `mut operator[]` beside it changes elements of a mutable container
+                if (auto it = ix.op_symbol->parent->members.find(ix.op_symbol->name); it != ix.op_symbol->parent->members.end()) {
+                    for (const Symbol* o : it->second) {
+                        const FunctionDecl* of = o->function();
+                        if (of && (of->is_mut || (of->result && of->result->kind == TypeKind::reference &&
+                                                  of->result->as<ReferenceType>().is_mut))) {
+                            has_mut = true;
+                        }
+                    }
+                }
+                if (!has_mut && base.is_place) {
+                    base.is_mutable         = false;
+                    base.via_this           = false;
+                    base.immutable_elements = ot ? types::to_string(ot) : "the container";
+                    return base;
+                }
+            }
             if (!base.is_place) {
                 base.is_place = base.is_mutable = true;
             }
@@ -2576,6 +2600,14 @@ private:
         }
     }
 
+    // `value` becomes a `target` (a local, field or result): a `mut T&` needs a mutable place.
+    // A call giving `mut T&` is checked by its own signature.
+    void require_mut_reference(const Expr& value, const Type* target, std::string_view action) {
+        if (!target || !target->is(Kind::reference) || !target->is_mut) return;
+        Place p = place_of(value);
+        if (p.is_place && !p.is_temporary) require_mutable(p, value, action);
+    }
+
     void require_mutable(const Place& p, const Expr& e, std::string_view action) {
         if (!p.is_place) {
             error(DiagCode::E4025, e.span, std::format("cannot {} this expression", action), "not a variable or field");
@@ -2590,6 +2622,10 @@ private:
         }
         Diagnostic& d = error(DiagCode::E4020, e.span, std::format("cannot {} '{}': it is not mutable", action, p.name),
                               "immutable");
+        if (!p.immutable_elements.empty()) {
+            note(d, std::format("'{}' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them", p.immutable_elements));
+            return;
+        }
         if (p.local) {
             const Type* t = type_of_symbol(p.local);
             if (p.local->local_kind == sema::LocalKind::capture && !t->is(Kind::reference)) {
@@ -2772,6 +2808,7 @@ private:
             return;
         }
         coerce(*r.value, result);
+        require_mut_reference(*r.value, result, "return mutably");
     }
 
     void check_condition(Expr& e, std::string_view construct) {
@@ -4957,7 +4994,10 @@ private:
                             Diagnostic& d = error(DiagCode::E4022, c.span,
                                                   std::format("'{}' changes {}, but '{}' is not mutable", name, quoted(t), p.name),
                                                   "immutable receiver");
-                            if (p.local) note(d, std::format("declare it 'mut {} {}'", types::to_string(type_of_symbol(p.local)),
+                            if (!p.immutable_elements.empty())
+                                note(d, std::format("'{}' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them",
+                                                    p.immutable_elements));
+                            else if (p.local) note(d, std::format("declare it 'mut {} {}'", types::to_string(type_of_symbol(p.local)),
                                                              p.local->name),
                                               p.local->span);
                         }
@@ -5068,7 +5108,10 @@ private:
                         Diagnostic& d = error(DiagCode::E4022, c.span,
                                               std::format("'{}' is a mut method, but '{}' is not mutable", name, p.name),
                                               "immutable receiver");
-                        if (p.local) note(d, std::format("declare it 'mut {} {}'", types::to_string(type_of_symbol(p.local)),
+                        if (!p.immutable_elements.empty())
+                            note(d, std::format("'{}' gives its elements as immutable references; a std::span<mut T> (as_mut_span()) changes them",
+                                                p.immutable_elements));
+                        else if (p.local) note(d, std::format("declare it 'mut {} {}'", types::to_string(type_of_symbol(p.local)),
                                                          p.local->name),
                                           p.local->span);
                     }
@@ -5904,7 +5947,11 @@ private:
             }
             bool    opaque = false;
             Symbol* field  = find_member(t->symbol, f.name, opaque);
-            if (field && field->kind == SymbolKind::field) coerce(*f.value, lower_owned(field, *field->decl->as<VariableDecl>().type));
+            if (field && field->kind == SymbolKind::field) {
+                const Type* ft = lower_owned(field, *field->decl->as<VariableDecl>().type);
+                coerce(*f.value, ft);
+                require_mut_reference(*f.value, ft, "borrow mutably");
+            }
         }
         return set(sl, t);
     }

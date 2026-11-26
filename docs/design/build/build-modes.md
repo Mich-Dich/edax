@@ -106,6 +106,7 @@ Code that must keep a guarantee in **every** mode uses the explicit operators, w
       compile_time std::build::optimization std_optimization() override { return std::build::optimization::none; }
   }
   ```
+  The optimized library's code has line 0 in the line tables (its functions keep their names): optimized code jumps between lines and would make stepping wander, and debuggers don't stop at line 0. So Step Over and Step Into go through the library to the program's code, Step Into on `if (load(assets[i]))` enters `load`, and returning from a lambda that `std::sort` called lands back in the program, not in the sort. A crash inside the library shows its function in the call stack without a line; the caller's frame has the program's line.
   Measured on `bench/` in a debug build: `sort` 0.129 s → 0.036 s; a loop of `vec3` math whose functions are the program's own, 0.29 s → 0.20 s (only its `darray` accesses got faster). Building costs about 0.1 s more for small programs.
 - `sanitize()`: `none` (the default), `address` or `thread`. Every Edax function is instrumented (AddressSanitizer: out-of-bounds and use-after-free in `unsafe` code; ThreadSanitizer: data races), the program is linked with the sanitizer runtime, and the C and C++ targets of the build are compiled with the same `-fsanitize=`. Safe Edax code can't have these bugs; the setting finds them in `unsafe` code and in C/C++ dependencies.
   ```edax

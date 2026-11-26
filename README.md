@@ -111,6 +111,18 @@ $ ./build/compiler/edaxc check --root=proj proj/main.ed  # project root for impo
 $ ./build/compiler/edaxc explain E1003                      # what a diagnostic code means
 ```
 
+### Installing
+
+```bash
+cmake --build build && cmake --install build --prefix ~/.local   # or: sudo cmake --install build (/usr/local)
+```
+
+This puts `edaxc` in `<prefix>/bin`, and in `<prefix>/share/edax` the standard library's source (the
+library is compiled into `edaxc`; the source is for debuggers and go-to-definition) and the lldb
+formatters. With `~/.local/bin` on `PATH`, `edaxc` works from any folder, and the VS Code extension finds
+it there (outside the Edax checkout, where it prefers `build/compiler/edaxc`). Run the install again after
+each build to update it; `xargs rm < build/install_manifest.txt` removes it.
+
 ## Testing
 
 ```bash

@@ -1,0 +1,130 @@
+// RUN: edaxc run %s
+// std::args: command lines read into structs (options, flags, positionals, subcommands, errors, help).
+import std;
+
+enum render_api : u8 { vulkan, opengl, software_raster }
+
+@std::args::program{ .name = "editor", .about = "Edits a project", .version = "1.2.0" }
+struct options {
+    @std::args::positional{ .help = "The project file" }
+    std::filesystem::path project = default;
+
+    @std::args::flag{ .short_name = "v", .help = "More output" }
+    u32 verbosity = 0;
+
+    @std::args::flag{ .short_name = "q" }
+    bool quiet = false;
+
+    @std::args::option{ .short_name = "t", .help = "Worker threads" }
+    @std::args::range{ .min = 1.0, .max = 64.0 }
+    u32 threads = 4;
+
+    @std::args::option{ .help = "Graphics backend" }
+    render_api renderer = render_api::vulkan;
+
+    std::option<std::filesystem::path> log_file = std::none;
+
+    @std::args::option{ .name = "plugin", .value_name = "name" }
+    std::darray<std::string> plugins = default;
+
+    f64 scale = 1.0;
+
+    @std::args::skip
+    u32 internal = 7;
+}
+
+void show(std::span<std::str> line) {
+    match (std::args::parse<options>(line)) {
+        std::ok(o) => {
+            std::print(f"ok: project={o.project.as_str()} v={o.verbosity} quiet={o.quiet} threads={o.threads} renderer={std::meta::name_of(o.renderer)} scale={o.scale} plugins=");
+            for (std::string& p : o.plugins) {
+                std::print(f"{p};");
+            }
+            match (o.log_file) {
+                std::some(p) => std::println(f" log={p.as_str()}"),
+                std::none => std::println(" log=none"),
+            }
+        },
+        std::error(e) => {
+            if (e.kind == std::args::stop::invalid) {
+                std::println(f"error: {e.message}");
+            } else {
+                std::print(e.text.as_str());
+            }
+        },
+    }
+}
+
+struct build_options {
+    @std::args::flag{ .short_name = "r" }
+    bool release = false;
+
+    @std::args::positional{ .required = false }
+    std::darray<std::string> targets = default;
+}
+
+enum command : u8 {
+    @std::args::command{ .help = "Build targets" }
+    build(build_options),
+    @std::args::command{ .help = "Remove build output" }
+    clean_all,
+}
+
+struct logging {
+    @std::args::flag{ .short_name = "v" }
+    u32 verbosity = 0;
+}
+
+@std::args::program{ .name = "tool" }
+struct cli {
+    @std::args::flatten
+    logging log = default;
+
+    @std::args::subcommand
+    std::option<command> cmd = std::none;
+}
+
+void show_cli(std::span<std::str> line) {
+    match (std::args::parse<cli>(line)) {
+        std::ok(c) => {
+            std::print(f"ok: v={c.log.verbosity} ");
+            match (c.cmd) {
+                std::some(command::build(b)) => std::println(f"build release={b.release} targets={b.targets.len()}"),
+                std::some(command::clean_all) => std::println("clean-all"),
+                std::none => std::println("no command"),
+            }
+        },
+        std::error(e) => {
+            if (e.kind == std::args::stop::invalid) {
+                std::println(f"error: {e.message}");
+            } else {
+                std::print(e.text.as_str());
+            }
+        },
+    }
+}
+
+std::exit_code main() {
+    show(["editor", "game.proj"]);
+    show(["editor", "-vv", "-q", "--threads=8", "--renderer", "software-raster", "--plugin", "x", "--plugin=y", "--log-file", "out.log", "--scale", "-0.5", "game.proj"]);
+    show(["editor", "-vqt16", "--", "-dash.proj"]);
+    show(["editor"]);
+    show(["editor", "p", "--treads", "2"]);
+    show(["editor", "p", "-t", "100"]);
+    show(["editor", "p", "--renderer", "opengel"]);
+    show(["editor", "p", "--scale"]);
+    show(["editor", "p", "q"]);
+    show(["editor", "p", "-t", "x"]);
+    show(["editor", "-x", "p"]);
+    show(["editor", "--version"]);
+    show(["editor", "--help"]);
+
+    show_cli(["tool"]);
+    show_cli(["tool", "-vv", "build", "-r", "app", "lib"]);
+    show_cli(["tool", "clean-all"]);
+    show_cli(["tool", "biuld"]);
+    show_cli(["tool", "build", "--fast"]);
+    show_cli(["tool", "--help"]);
+    show_cli(["tool", "build", "-h"]);
+    return std::exit_code::success;
+}

@@ -14,7 +14,9 @@ python3 bench/run.py [--edaxc build/compiler/edaxc] [--runs 3] [filter...]
 - Every program prints a checksum; the runner fails if Edax and C++ disagree.
 - The table shows the best wall-clock time over `--runs` and Edax relative to the fastest C++.
 
-Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
+Requirements: a C++20 compiler; optionally `libabsl-dev`, `libboost-dev`, EnTT (`libentt-dev`) and GLM
+(`libglm-dev`); for the last two, `EDAX_BENCH_INCLUDE` can name folders that have `entt/entt.hpp` and
+`glm/glm.hpp` instead.
 
 | Benchmark | Workload |
 |---|---|
@@ -30,6 +32,8 @@ Requirements: a C++20 compiler; optionally `libabsl-dev` and `libboost-dev`.
 | `plot_decimate` | `std::ui::plot::decimate_indexed`: 1M `f32` reduced to 1000 pixel columns, 200 times (C++: the same algorithm, a plain loop) |
 | `ecs` | 1M entities with `vec3` position and velocity columns, three systems as lambdas that a generic `each` calls per entity, 200 frames (C++: `std::vector` columns, the shape of EnTT's `view.each`) |
 | `ecs_soa` | The same with one column per component field, made by field-generating templates (C++: the columns written by hand) |
+| `ecs_world` | `std::ecs`: spawn 1M entities, add components, 100 frames of two queries, 1M lookups, add/remove churn, destroy (C++: EnTT 3.13, `cpp/ecs_world.entt.cpp`; needs `entt/entt.hpp`: `libentt-dev`, or `EDAX_BENCH_INCLUDE=<folder>`). `EDAX_BENCH_PHASES=1` prints each phase's time |
+| `math_scene` | `std::math`: 20k nodes in a tree, 300 frames of building local matrices from position, interpolated rotation and scale, multiplying them down the tree, moving every node's box to world space and culling it (C++: GLM 1.0.1, `cpp/math_scene.glm.cpp`; needs `glm/glm.hpp`: `libglm-dev`, or `EDAX_BENCH_INCLUDE=<folder>`). Measured: Edax 0.195 s, GLM 0.350 s (GCC 13), 0.377 s (Clang 18) |
 
 ## Results (spec 34, x86-64 baseline, GCC 13 `-O2` for C++)
 
@@ -41,6 +45,7 @@ installed there, so the comparison is against libstdc++ only; the earlier table 
 | hash_int | 0.260 | 0.795 | 0.33x | |
 | ecs | 0.565 | 0.386 | 1.46x | `vec3` columns: strided 12-byte elements, which LLVM vectorizes worse than GCC at the SSE2 baseline (clang++ -O2 takes 0.55 s; with `-march=x86-64-v3` 0.41 s). No overlap checks (span alias scopes) |
 | ecs_soa | 0.302 | 0.451 | 0.67x | one column per component field (field-generating templates): every loop unit-stride, no overlap checks |
+| ecs_world | 0.533 | EnTT 1.182 | 0.45x | `std::ecs` against EnTT 3.13 (views): queries 2-6x faster (archetype tables, the query is the lambda's parameter list), adding/removing components ~3.5x slower (a row moves to another table). Per phase: [ECS](../docs/design/stdlib/ecs/ecs.md) |
 | hash_words | 0.077 | 0.154 | 0.50x | |
 | particles | 0.135 | 0.247 | 0.55x | alias scopes for owned memory, conditional stores as selects: vectorized (was 1.37x) |
 | plot_decimate | 0.278 | 0.879 | 0.32x | a column of an index-x series is a slice (1.4 ms per million points) |

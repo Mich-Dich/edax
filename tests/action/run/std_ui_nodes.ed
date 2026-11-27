@@ -186,7 +186,7 @@ void main() {
     ui::vec2 before = (cursor - view.pan) * (1.0 / view.zoom);
     _ = frame_of(mut ctx, mut view, mut g, ui::input{ .cursor = cursor, .scroll = 2.0, .dt = 0.016 });
     ui::vec2 still = (cursor - view.pan) * (1.0 / view.zoom);
-    std::println(f"zoom {view.zoom > 1.0}, the point under the cursor stays {(still - before).length() < 0.01}");
+    std::println(f"zoom {view.zoom > 1.0}, the point under the cursor stays {std::math::length(still - before) < 0.01}");
 
     // Topological order: Time, Scale, Output; with Output feeding Time it is a cycle.
     std::array<u64, 3> ids = [3, 1, 2];

@@ -1,94 +1,1079 @@
-// The Edax standard library: module std::math, vectors, rectangles and colours.
+// The Edax standard library: module std::math (math.md), the math of games and renderers.
 //
-// The first part of std::math (game_engine_additions, roadmap M1 of std::ui): what a UI and a 2-D
-// renderer need. Every type is a plain copy type of f32s with C layout, so arrays of them can go
-// to the GPU as they are. Loaded when a program names `std::math` (or `std::ui`, which uses it).
+// Vectors, matrices and quaternions in the style of GLM and GLSL: plain copy types with C layout
+// and free functions (`dot(a, b)`, `normalize(v)`, `inverse(m)`), so shader code reads the same on
+// the CPU. Every type takes its number type as a template argument, f32 when none is written:
+// `vec3` is `vec3<f32>`; `vec3<f64>` and `vec3<i32>` are others.
+//
+// Conventions: matrices are column-major and multiply column vectors (`m * v`), as in GLSL.
+// Coordinates are right-handed with y up and -z forward, and clip-space depth goes from 0 to 1
+// (`perspective`, `ortho`, `look_at`); the other conventions have their own names
+// (`perspective_lh_no`). Angles are `radians`: `deg(90.0)` makes one from degrees.
+//
+// Loaded when a program names `std::math` (or the UI module, which uses it).
 
 namespace std::math {
-    // π as an f32.
+    // ---- constants --------------------------------------------------------------------------------------
+
+    // π, 2π (a full turn), π/2, Euler's number and √2, as f32s; `pi_f64` and `tau_f64` for f64 math.
     compile_time f32 pi = 3.14159265358979;
+    compile_time f32 tau = 6.28318530717959;
+    compile_time f32 half_pi = 1.5707963267949;
+    compile_time f32 e = 2.71828182845905;
+    compile_time f32 sqrt_2 = 1.4142135623731;
+    compile_time f64 pi_f64 = 3.141592653589793;
+    compile_time f64 tau_f64 = 6.283185307179586;
+    // The gap between 1.0 and the next f32: the scale of rounding errors near 1.
+    compile_time f32 epsilon = 0.00000011920929;
 
-    // `a` when `t` is 0, `b` when `t` is 1, the straight line between them otherwise.
-    f32 lerp(f32 a, f32 b, f32 t);
+    // ---- angles -----------------------------------------------------------------------------------------
 
-    // 0 below `edge0`, 1 above `edge1`, a smooth (Hermite) step in between.
-    f32 smoothstep(f32 edge0, f32 edge1, f32 x);
+    // An angle in radians: what the trigonometric and rotation functions take. A plain f32 can't
+    // be passed for one, so degrees are never mistaken for radians: write `deg(90.0)` or
+    // `rad(1.57)`. Angles add, subtract, negate and compare; `a * 2.0` scales one, `a / b` is an
+    // f32, and `cast<f32>(a)` is the number of radians.
+    @std::derive::arithmetic
+    distinct type radians = f32;
 
-    // ---- vectors ------------------------------------------------------------------------------------
+    // An angle in degrees, for values people edit (a field-of-view setting, a rotation in an
+    // editor). Functions take `radians`: `to_radians(d)` converts.
+    @std::derive::arithmetic
+    distinct type degrees = f32;
 
-    @std::derive::formattable
+    // `value` radians as an angle.
+    compile_time run_time radians rad(f32 value);
+
+    // `value` degrees as an angle (in radians): `rotate(m, deg(45.0), axis)`.
+    compile_time run_time radians deg(f32 value);
+
+    // Between the two angle types.
+    compile_time run_time radians to_radians(degrees a);
+    compile_time run_time degrees to_degrees(radians a);
+
+    // Sine, cosine and tangent.
+    compile_time run_time f32 sin(radians a);
+    compile_time run_time f32 cos(radians a);
+    compile_time run_time f32 tan(radians a);
+
+    // The angle whose sine, cosine or tangent is `x`: `asin` in [-π/2, π/2], `acos` in [0, π],
+    // `atan` in (-π/2, π/2).
+    compile_time run_time radians asin(f32 x);
+    compile_time run_time radians acos(f32 x);
+    compile_time run_time radians atan(f32 x);
+
+    // The angle of the point (x, y) from the x axis, in (-π, π]: every quadrant, and x may be 0.
+    compile_time run_time radians atan2(f32 y, f32 x);
+
+    // The same direction as `a`, in [-π, π).
+    compile_time run_time radians wrap_angle(radians a);
+
+    // The shortest way from the direction `from` to the direction `to`, in [-π, π).
+    compile_time run_time radians angle_difference(radians from, radians to);
+
+    // From `a` (t = 0) to `b` (t = 1) the shortest way around the circle.
+    compile_time run_time radians lerp_angle(radians a, radians b, f32 t);
+
+    // ---- numbers -----------------------------------------------------------------------------------------
+    // The scalar forms of the functions below work on every number type (f32 when only literals
+    // are written); the vector forms work component by component.
+
+    // The value without its sign.
+    template<type T = f32> compile_time run_time T abs(T x);
+
+    // -1, 0 or 1: the sign of `x`.
+    template<type T = f32> compile_time run_time T sign(T x);
+
+    // The smaller and the larger of two values. Compiled to one instruction for floats; when one
+    // of them is NaN the result is `a`.
+    template<type T = f32> compile_time run_time T min(T a, T b);
+    template<type T = f32> compile_time run_time T max(T a, T b);
+
+    // `x` kept inside [lo, hi]; `lo <= hi` is the caller's business (not checked).
+    template<type T = f32> compile_time run_time T clamp(T x, T lo, T hi);
+
+    // `x` kept inside [0, 1].
+    template<type T = f32> compile_time run_time T saturate(T x);
+
+    // Rounding: down, up, to the nearest whole number (halves away from zero) and toward zero.
+    // `fract(x)` is `x - floor(x)`, in [0, 1).
+    template<type T = f32> compile_time run_time T floor(T x);
+    template<type T = f32> compile_time run_time T ceil(T x);
+    template<type T = f32> compile_time run_time T round(T x);
+    template<type T = f32> compile_time run_time T trunc(T x);
+    template<type T = f32> compile_time run_time T fract(T x);
+
+    // The remainder of `x / y` with the sign of `y` (GLSL's mod): `x - y * floor(x / y)`, so
+    // `mod(-0.25, 1.0)` is 0.75.
+    template<type T = f32> compile_time run_time T mod(T x, T y);
+
+    // The square root, and 1 / the square root.
+    template<type T = f32> compile_time run_time T sqrt(T x);
+    template<type T = f32> compile_time run_time T inverse_sqrt(T x);
+
+    // `x` to the power `y`; e to the power `x`, 2 to the power `x`; the natural and the base-2 logarithm.
+    template<type T = f32> compile_time run_time T pow(T x, T y);
+    template<type T = f32> compile_time run_time T exp(T x);
+    template<type T = f32> compile_time run_time T exp2(T x);
+    template<type T = f32> compile_time run_time T log(T x);
+    template<type T = f32> compile_time run_time T log2(T x);
+
+    // `a` when `t` is 0, `b` when `t` is 1, the straight line between (and beyond) them otherwise:
+    // GLSL's mix.
+    template<type T = f32> compile_time run_time T lerp(T a, T b, T t);
+
+    // Where `v` is between `a` (0) and `b` (1): the `t` for which `lerp(a, b, t)` is `v`.
+    template<type T = f32> compile_time run_time T inverse_lerp(T a, T b, T v);
+
+    // `v` moved from the range [in_lo, in_hi] to the range [out_lo, out_hi] (not clamped).
+    template<type T = f32> compile_time run_time T remap(T v, T in_lo, T in_hi, T out_lo, T out_hi);
+
+    // 0 when `x < edge`, else 1.
+    template<type T = f32> compile_time run_time T step(T edge, T x);
+
+    // 0 below `edge0`, 1 above `edge1`, a smooth (Hermite) step in between; `smootherstep` also
+    // has no acceleration at the edges (Perlin's 6t⁵ - 15t⁴ + 10t³).
+    template<type T = f32> compile_time run_time T smoothstep(T edge0, T edge1, T x);
+    template<type T = f32> compile_time run_time T smootherstep(T edge0, T edge1, T x);
+
+    // Whether `a` and `b` differ by at most `tolerance`.
+    template<type T = f32> compile_time run_time bool approx_equal(T a, T b, T tolerance);
+
+    // ---- vectors -----------------------------------------------------------------------------------------
+
+    // A vector of two numbers of type `T` (f32 when none is written: `vec2` is `vec2<f32>`;
+    // `vec2<f64>`, `vec2<i32>`, `vec2<u16>` are the others; `vec2<bool>` is what comparisons give).
+    // A plain copy type with C layout (2 × T, no padding), so arrays of it go to the GPU as they
+    // are. Arithmetic is component by component, as in GLSL; the functions (`dot`, `length`,
+    // `normalize`, ...) are free functions below. vec3 and vec4 work the same way.
+    template<type T = f32>
     struct vec2 {
-        f32 x = 0.0;
-        f32 y = 0.0;
+        T x = default;
+        T y = default;
 
-        // Both components `v`.
-        static vec2 splat(f32 v);
+        // The vector (x, y).
+        compile_time run_time static vec2<T> make(T x, T y);
+        // Every component `v`.
+        compile_time run_time static vec2<T> splat(T v);
+        // All zeros, all ones, and the unit vectors along the axes.
+        compile_time run_time static vec2<T> zero();
+        compile_time run_time static vec2<T> one();
+        compile_time run_time static vec2<T> unit_x();
+        compile_time run_time static vec2<T> unit_y();
+        // The same vector with another number type: `v.to<i32>()`, `v.to<f64>()`. A float becomes an
+        // integer by dropping its fraction, clamped to the integer's range (NaN is 0).
+        template<type U>
+        compile_time run_time vec2<U> to();
+        // The components as a span, for C and graphics APIs: `glUniform2fv(at, 1, v.as_span().as_ptr())`.
+        std::span<T> as_span();
 
-        f32 dot(vec2& other);
-        f32 length();
-        f32 length_squared();
-        // This vector scaled to length 1; the zero vector stays zero.
-        vec2 normalized();
-        // Rotated by 90° counter-clockwise (in a y-up system): (-y, x).
-        vec2 perpendicular();
-        vec2 abs();
-        // The smaller / larger component of each pair.
-        vec2 min(vec2& other);
-        vec2 max(vec2& other);
-        vec2 lerp(vec2& to, f32 t);
-
-        vec2 operator+(vec2& other);
-        vec2 operator-(vec2& other);
         // Component by component.
-        vec2 operator*(vec2& other);
-        vec2 operator*(f32 k);
-        vec2 operator/(f32 k);
-        vec2 operator-();
-        bool operator==(vec2& other) = default;
+        compile_time run_time vec2<T> operator+(vec2<T> other);
+        compile_time run_time vec2<T> operator-(vec2<T> other);
+        compile_time run_time vec2<T> operator*(vec2<T> other);
+        compile_time run_time vec2<T> operator/(vec2<T> other);
+        // Every component times, or divided by, `k`.
+        compile_time run_time vec2<T> operator*(T k);
+        compile_time run_time vec2<T> operator/(T k);
+        compile_time run_time vec2<T> operator-();
+        bool operator==(vec2<T>& other) = default;
+        // Component `i` (0 is x); panics when `i` is out of range.
+        T& operator[](usize i);
+        mut T& operator[](usize i) mut;
+        // Prints as `(x, y)`.
+        void format(mut std::formatter& out);
     }
 
-    @std::derive::formattable
+    // `k * v`.
+    template<type T>
+    compile_time run_time vec2<T> operator*(T k, vec2<T> v);
+
+    // A vector of three numbers (see vec2).
+    template<type T = f32>
     struct vec3 {
-        f32 x = 0.0;
-        f32 y = 0.0;
-        f32 z = 0.0;
+        T x = default;
+        T y = default;
+        T z = default;
 
-        static vec3 splat(f32 v);
+        // The vector (x, y, z).
+        compile_time run_time static vec3<T> make(T x, T y, T z);
+        // Every component `v`.
+        compile_time run_time static vec3<T> splat(T v);
+        // All zeros, all ones, and the unit vectors along the axes.
+        compile_time run_time static vec3<T> zero();
+        compile_time run_time static vec3<T> one();
+        compile_time run_time static vec3<T> unit_x();
+        compile_time run_time static vec3<T> unit_y();
+        compile_time run_time static vec3<T> unit_z();
+        // A vec2 and a z: `vec3::from_xy(uv, 0.0)`.
+        compile_time run_time static vec3<T> from_xy(vec2<T> xy, T z);
+        // Two of the components as a vec2.
+        compile_time run_time vec2<T> xy();
+        compile_time run_time vec2<T> xz();
+        compile_time run_time vec2<T> yz();
+        // The same vector with another number type (see vec2).
+        template<type U>
+        compile_time run_time vec3<U> to();
+        // The components as a span (see vec2).
+        std::span<T> as_span();
 
-        f32 dot(vec3& other);
-        vec3 cross(vec3& other);
-        f32 length();
-        vec3 normalized();
-        vec3 lerp(vec3& to, f32 t);
-
-        vec3 operator+(vec3& other);
-        vec3 operator-(vec3& other);
-        vec3 operator*(f32 k);
-        vec3 operator/(f32 k);
-        vec3 operator-();
-        bool operator==(vec3& other) = default;
+        compile_time run_time vec3<T> operator+(vec3<T> other);
+        compile_time run_time vec3<T> operator-(vec3<T> other);
+        compile_time run_time vec3<T> operator*(vec3<T> other);
+        compile_time run_time vec3<T> operator/(vec3<T> other);
+        compile_time run_time vec3<T> operator*(T k);
+        compile_time run_time vec3<T> operator/(T k);
+        compile_time run_time vec3<T> operator-();
+        bool operator==(vec3<T>& other) = default;
+        T& operator[](usize i);
+        mut T& operator[](usize i) mut;
+        // Prints as `(x, y, z)`.
+        void format(mut std::formatter& out);
     }
 
-    @std::derive::formattable
+    template<type T>
+    compile_time run_time vec3<T> operator*(T k, vec3<T> v);
+
+    // A vector of four numbers (see vec2).
+    template<type T = f32>
     struct vec4 {
-        f32 x = 0.0;
-        f32 y = 0.0;
-        f32 z = 0.0;
-        f32 w = 0.0;
+        T x = default;
+        T y = default;
+        T z = default;
+        T w = default;
 
-        static vec4 splat(f32 v);
+        // The vector (x, y, z, w).
+        compile_time run_time static vec4<T> make(T x, T y, T z, T w);
+        // Every component `v`.
+        compile_time run_time static vec4<T> splat(T v);
+        // All zeros, all ones, and the unit vectors along the axes.
+        compile_time run_time static vec4<T> zero();
+        compile_time run_time static vec4<T> one();
+        compile_time run_time static vec4<T> unit_x();
+        compile_time run_time static vec4<T> unit_y();
+        compile_time run_time static vec4<T> unit_z();
+        compile_time run_time static vec4<T> unit_w();
+        // A vec3 and a w: `vec4::from_xyz(position, 1.0)`.
+        compile_time run_time static vec4<T> from_xyz(vec3<T> xyz, T w);
+        // The first three, the first two and the last two components.
+        compile_time run_time vec3<T> xyz();
+        compile_time run_time vec2<T> xy();
+        compile_time run_time vec2<T> zw();
+        // The same vector with another number type (see vec2).
+        template<type U>
+        compile_time run_time vec4<U> to();
+        // The components as a span (see vec2).
+        std::span<T> as_span();
 
-        f32 dot(vec4& other);
-        vec4 lerp(vec4& to, f32 t);
-
-        vec4 operator+(vec4& other);
-        vec4 operator-(vec4& other);
-        vec4 operator*(f32 k);
-        bool operator==(vec4& other) = default;
+        compile_time run_time vec4<T> operator+(vec4<T> other);
+        compile_time run_time vec4<T> operator-(vec4<T> other);
+        compile_time run_time vec4<T> operator*(vec4<T> other);
+        compile_time run_time vec4<T> operator/(vec4<T> other);
+        compile_time run_time vec4<T> operator*(T k);
+        compile_time run_time vec4<T> operator/(T k);
+        compile_time run_time vec4<T> operator-();
+        bool operator==(vec4<T>& other) = default;
+        T& operator[](usize i);
+        mut T& operator[](usize i) mut;
+        // Prints as `(x, y, z, w)`.
+        void format(mut std::formatter& out);
     }
 
-    // ---- rectangles -------------------------------------------------------------------------------
+    template<type T>
+    compile_time run_time vec4<T> operator*(T k, vec4<T> v);
 
+    // ---- vector functions --------------------------------------------------------------------------------
+
+    // The dot product: the sum of the products of the components. For unit vectors it is the
+    // cosine of the angle between them.
+    template<type T> compile_time run_time T dot(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time T dot(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time T dot(vec4<T> a, vec4<T> b);
+
+    // The cross product: a vector perpendicular to both, as long as the area of the
+    // parallelogram they span (right-handed: `cross(x, y)` is `z`). For vec2s it is the z of that
+    // vector: positive when `b` is counter-clockwise from `a`.
+    template<type T> compile_time run_time vec3<T> cross(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time T cross(vec2<T> a, vec2<T> b);
+
+    // The length, and its square (no square root: enough to compare lengths).
+    template<type T> compile_time run_time T length(vec2<T> v);
+    template<type T> compile_time run_time T length(vec3<T> v);
+    template<type T> compile_time run_time T length(vec4<T> v);
+    template<type T> compile_time run_time T length_squared(vec2<T> v);
+    template<type T> compile_time run_time T length_squared(vec3<T> v);
+    template<type T> compile_time run_time T length_squared(vec4<T> v);
+
+    // The distance between two points, and its square.
+    template<type T> compile_time run_time T distance(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time T distance(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time T distance(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time T distance_squared(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time T distance_squared(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time T distance_squared(vec4<T> a, vec4<T> b);
+
+    // The vector scaled to length 1. `normalize` doesn't look at the length: a zero vector gives
+    // NaNs. `normalize_or_zero` returns the zero vector for it instead.
+    template<type T> compile_time run_time vec2<T> normalize(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> normalize(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> normalize(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> normalize_or_zero(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> normalize_or_zero(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> normalize_or_zero(vec4<T> v);
+
+    // `v` mirrored at the plane with the unit normal `n`: the direction a ray `v` leaves in after
+    // hitting a surface.
+    template<type T> compile_time run_time vec2<T> reflect(vec2<T> v, vec2<T> n);
+    template<type T> compile_time run_time vec3<T> reflect(vec3<T> v, vec3<T> n);
+
+    // The direction of the unit vector `v` after entering a surface with the unit normal `n`,
+    // `eta` being the ratio of the refraction indices; the zero vector on total internal reflection.
+    template<type T> compile_time run_time vec2<T> refract(vec2<T> v, vec2<T> n, T eta);
+    template<type T> compile_time run_time vec3<T> refract(vec3<T> v, vec3<T> n, T eta);
+
+    // `n`, turned to point against `v`: `-n` when they point the same way.
+    template<type T> compile_time run_time vec2<T> face_forward(vec2<T> n, vec2<T> v);
+    template<type T> compile_time run_time vec3<T> face_forward(vec3<T> n, vec3<T> v);
+
+    // The part of `v` along `onto` (`project`) and the rest, perpendicular to it (`reject`).
+    template<type T> compile_time run_time vec2<T> project(vec2<T> v, vec2<T> onto);
+    template<type T> compile_time run_time vec3<T> project(vec3<T> v, vec3<T> onto);
+    template<type T> compile_time run_time vec2<T> reject(vec2<T> v, vec2<T> from);
+    template<type T> compile_time run_time vec3<T> reject(vec3<T> v, vec3<T> from);
+
+    // The angle between two vectors (of any length), from 0 to π.
+    template<type T> compile_time run_time radians angle(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time radians angle(vec3<T> a, vec3<T> b);
+
+    // `v` turned by 90° counter-clockwise (y up): (-y, x); and `v` turned by `a`
+    // counter-clockwise.
+    template<type T> compile_time run_time vec2<T> perpendicular(vec2<T> v);
+    template<type T> compile_time run_time vec2<T> rotate(vec2<T> v, radians a);
+
+    // Component by component, as the scalar functions above:
+    template<type T> compile_time run_time vec2<T> abs(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> abs(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> abs(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> sign(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> sign(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> sign(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> floor(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> floor(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> floor(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> ceil(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> ceil(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> ceil(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> round(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> round(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> round(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> trunc(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> trunc(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> trunc(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> fract(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> fract(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> fract(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> sqrt(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> sqrt(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> sqrt(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> saturate(vec2<T> v);
+    template<type T> compile_time run_time vec3<T> saturate(vec3<T> v);
+    template<type T> compile_time run_time vec4<T> saturate(vec4<T> v);
+    template<type T> compile_time run_time vec2<T> min(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<T> min(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<T> min(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<T> max(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<T> max(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<T> max(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<T> min(vec2<T> v, T k);
+    template<type T> compile_time run_time vec3<T> min(vec3<T> v, T k);
+    template<type T> compile_time run_time vec4<T> min(vec4<T> v, T k);
+    template<type T> compile_time run_time vec2<T> max(vec2<T> v, T k);
+    template<type T> compile_time run_time vec3<T> max(vec3<T> v, T k);
+    template<type T> compile_time run_time vec4<T> max(vec4<T> v, T k);
+    template<type T> compile_time run_time vec2<T> mod(vec2<T> v, T k);
+    template<type T> compile_time run_time vec3<T> mod(vec3<T> v, T k);
+    template<type T> compile_time run_time vec4<T> mod(vec4<T> v, T k);
+    template<type T> compile_time run_time vec2<T> clamp(vec2<T> v, T lo, T hi);
+    template<type T> compile_time run_time vec3<T> clamp(vec3<T> v, T lo, T hi);
+    template<type T> compile_time run_time vec4<T> clamp(vec4<T> v, T lo, T hi);
+    template<type T> compile_time run_time vec2<T> clamp(vec2<T> v, vec2<T> lo, vec2<T> hi);
+    template<type T> compile_time run_time vec3<T> clamp(vec3<T> v, vec3<T> lo, vec3<T> hi);
+    template<type T> compile_time run_time vec4<T> clamp(vec4<T> v, vec4<T> lo, vec4<T> hi);
+    template<type T> compile_time run_time vec2<T> lerp(vec2<T> a, vec2<T> b, T t);
+    template<type T> compile_time run_time vec3<T> lerp(vec3<T> a, vec3<T> b, T t);
+    template<type T> compile_time run_time vec4<T> lerp(vec4<T> a, vec4<T> b, T t);
+    template<type T> compile_time run_time vec2<T> step(T edge, vec2<T> v);
+    template<type T> compile_time run_time vec3<T> step(T edge, vec3<T> v);
+    template<type T> compile_time run_time vec4<T> step(T edge, vec4<T> v);
+    template<type T> compile_time run_time vec2<T> smoothstep(T edge0, T edge1, vec2<T> v);
+    template<type T> compile_time run_time vec3<T> smoothstep(T edge0, T edge1, vec3<T> v);
+    template<type T> compile_time run_time vec4<T> smoothstep(T edge0, T edge1, vec4<T> v);
+
+    // The smallest and the largest component.
+    template<type T> compile_time run_time T min_component(vec2<T> v);
+    template<type T> compile_time run_time T min_component(vec3<T> v);
+    template<type T> compile_time run_time T min_component(vec4<T> v);
+    template<type T> compile_time run_time T max_component(vec2<T> v);
+    template<type T> compile_time run_time T max_component(vec3<T> v);
+    template<type T> compile_time run_time T max_component(vec4<T> v);
+
+    // Whether every component of `a` is within `tolerance` of `b`'s.
+    template<type T> compile_time run_time bool approx_equal(vec2<T> a, vec2<T> b, T tolerance);
+    template<type T> compile_time run_time bool approx_equal(vec3<T> a, vec3<T> b, T tolerance);
+    template<type T> compile_time run_time bool approx_equal(vec4<T> a, vec4<T> b, T tolerance);
+
+    // Comparisons, component by component: a vector of bools (`vec3<bool>`). `any` and `all` turn
+    // one into a bool: `if (all(less_than(p, bounds)))`.
+    template<type T> compile_time run_time vec2<bool> less_than(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> less_than(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> less_than(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<bool> less_than_equal(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> less_than_equal(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> less_than_equal(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<bool> greater_than(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> greater_than(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> greater_than(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<bool> greater_than_equal(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> greater_than_equal(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> greater_than_equal(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<bool> equal(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> equal(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> equal(vec4<T> a, vec4<T> b);
+    template<type T> compile_time run_time vec2<bool> not_equal(vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<bool> not_equal(vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<bool> not_equal(vec4<T> a, vec4<T> b);
+
+    // Whether some component, or every component, is true.
+    compile_time run_time bool any(vec2<bool> v);
+    compile_time run_time bool any(vec3<bool> v);
+    compile_time run_time bool any(vec4<bool> v);
+    compile_time run_time bool all(vec2<bool> v);
+    compile_time run_time bool all(vec3<bool> v);
+    compile_time run_time bool all(vec4<bool> v);
+
+    // Component by component: `a` where `pick` is true, `b` where it is false (no branches).
+    template<type T> compile_time run_time vec2<T> select(vec2<bool> pick, vec2<T> a, vec2<T> b);
+    template<type T> compile_time run_time vec3<T> select(vec3<bool> pick, vec3<T> a, vec3<T> b);
+    template<type T> compile_time run_time vec4<T> select(vec4<bool> pick, vec4<T> a, vec4<T> b);
+
+    // ---- matrices ----------------------------------------------------------------------------------------
+
+    // A 2 × 2 matrix of `T` (f32 or f64; f32 when none is written). Matrices are column-major, as
+    // in GLSL and GLM: `c0` is the first column, `m[1]` the second, `m[1].x` the element in column 1
+    // and row 0; `m * v` transforms a column vector and `a * b` applies `b` first. The memory is the
+    // columns one after the other with no padding, which is what OpenGL, Vulkan and shaders expect.
+    // A matrix written without values (`mat4 m = default;`) is the identity. mat3 and mat4 work the
+    // same way.
+    template<type T = f32>
+    struct mat2 {
+        vec2<T> c0 = vec2<T>{ .x = scalar_one<T>() };
+        vec2<T> c1 = vec2<T>{ .y = scalar_one<T>() };
+
+        // The identity (1 on the diagonal) and the matrix of zeros.
+        compile_time run_time static mat2<T> identity();
+        compile_time run_time static mat2<T> zero();
+        // From its columns, and from its rows (as a matrix is written on paper).
+        compile_time run_time static mat2<T> from_columns(vec2<T> c0, vec2<T> c1);
+        compile_time run_time static mat2<T> from_rows(vec2<T> r0, vec2<T> r1);
+        // `v` on the diagonal: the matrix that scales by `v`.
+        compile_time run_time static mat2<T> from_diagonal(vec2<T> v);
+        // The rotation by `angle`, counter-clockwise (y up).
+        compile_time run_time static mat2<T> rotation(radians angle);
+        compile_time run_time static mat2<T> scaling(vec2<T> factors);
+
+        // Row `i` (the columns are the fields).
+        compile_time run_time vec2<T> row(usize i);
+        // The same matrix with another number type: `m.to<f64>()`.
+        template<type U>
+        compile_time run_time mat2<U> to();
+        // The 4 numbers, column by column, as a span: `glUniformMatrix2fv(at, 1, GL_FALSE, m.as_span().as_ptr())`.
+        std::span<T> as_span();
+
+        // The matrix product (`other` is applied first), and the matrix applied to a column vector.
+        @std::inline_always
+        compile_time run_time mat2<T> operator*(mat2<T> other);
+        @std::inline_always
+        compile_time run_time vec2<T> operator*(vec2<T> v);
+        // Element by element.
+        compile_time run_time mat2<T> operator+(mat2<T> other);
+        compile_time run_time mat2<T> operator-(mat2<T> other);
+        compile_time run_time mat2<T> operator*(T k);
+        compile_time run_time mat2<T> operator/(T k);
+        compile_time run_time mat2<T> operator-();
+        bool operator==(mat2<T>& other) = default;
+        // Column `i`; panics when `i` is out of range.
+        vec2<T>& operator[](usize i);
+        mut vec2<T>& operator[](usize i) mut;
+        // Prints the rows: `[(1.0, 0.0), (0.0, 1.0)]`.
+        void format(mut std::formatter& out);
+    }
+
+    // `k * m`.
+    template<type T>
+    compile_time run_time mat2<T> operator*(T k, mat2<T> m);
+
+    // A 3 × 3 matrix (see mat2).
+    template<type T = f32>
+    struct mat3 {
+        vec3<T> c0 = vec3<T>{ .x = scalar_one<T>() };
+        vec3<T> c1 = vec3<T>{ .y = scalar_one<T>() };
+        vec3<T> c2 = vec3<T>{ .z = scalar_one<T>() };
+
+        // The identity (1 on the diagonal) and the matrix of zeros.
+        compile_time run_time static mat3<T> identity();
+        compile_time run_time static mat3<T> zero();
+        // From its columns, and from its rows (as a matrix is written on paper).
+        compile_time run_time static mat3<T> from_columns(vec3<T> c0, vec3<T> c1, vec3<T> c2);
+        compile_time run_time static mat3<T> from_rows(vec3<T> r0, vec3<T> r1, vec3<T> r2);
+        // `v` on the diagonal: the matrix that scales by `v`.
+        compile_time run_time static mat3<T> from_diagonal(vec3<T> v);
+        // The rotation by `angle` around the unit vector `axis`, counter-clockwise when the axis
+        // points at the viewer (right-handed); and around the x, y and z axes.
+        compile_time run_time static mat3<T> rotation(radians angle, vec3<T> axis);
+        compile_time run_time static mat3<T> rotation_x(radians angle);
+        compile_time run_time static mat3<T> rotation_y(radians angle);
+        compile_time run_time static mat3<T> rotation_z(radians angle);
+        compile_time run_time static mat3<T> scaling(vec3<T> factors);
+        // The rotation of a unit quaternion.
+        compile_time run_time static mat3<T> from_quat(quat<T> q);
+        // The upper-left 3 × 3 of a mat4: its rotation and scale, without the translation.
+        compile_time run_time static mat3<T> from_mat4(mat4<T> m);
+        // Transforms of 2D points as 3 × 3 matrices (the third column is the translation): what a
+        // sprite batch or a 2D camera uses. `transform_point(m, p)` applies one to a vec2.
+        compile_time run_time static mat3<T> translation_2d(vec2<T> offset);
+        compile_time run_time static mat3<T> rotation_2d(radians angle);
+        compile_time run_time static mat3<T> scaling_2d(vec2<T> factors);
+
+        // Row `i` (the columns are the fields).
+        compile_time run_time vec3<T> row(usize i);
+        template<type U>
+        compile_time run_time mat3<U> to();
+        // The 9 numbers, column by column, as a span (see mat2).
+        std::span<T> as_span();
+
+        @std::inline_always
+        compile_time run_time mat3<T> operator*(mat3<T> other);
+        @std::inline_always
+        compile_time run_time vec3<T> operator*(vec3<T> v);
+        compile_time run_time mat3<T> operator+(mat3<T> other);
+        compile_time run_time mat3<T> operator-(mat3<T> other);
+        compile_time run_time mat3<T> operator*(T k);
+        compile_time run_time mat3<T> operator/(T k);
+        compile_time run_time mat3<T> operator-();
+        bool operator==(mat3<T>& other) = default;
+        vec3<T>& operator[](usize i);
+        mut vec3<T>& operator[](usize i) mut;
+        void format(mut std::formatter& out);
+    }
+
+    template<type T>
+    compile_time run_time mat3<T> operator*(T k, mat3<T> m);
+
+    // A 4 × 4 matrix (see mat2).
+    template<type T = f32>
+    struct mat4 {
+        vec4<T> c0 = vec4<T>{ .x = scalar_one<T>() };
+        vec4<T> c1 = vec4<T>{ .y = scalar_one<T>() };
+        vec4<T> c2 = vec4<T>{ .z = scalar_one<T>() };
+        vec4<T> c3 = vec4<T>{ .w = scalar_one<T>() };
+
+        // The identity (1 on the diagonal) and the matrix of zeros.
+        compile_time run_time static mat4<T> identity();
+        compile_time run_time static mat4<T> zero();
+        // From its columns, and from its rows (as a matrix is written on paper).
+        compile_time run_time static mat4<T> from_columns(vec4<T> c0, vec4<T> c1, vec4<T> c2, vec4<T> c3);
+        compile_time run_time static mat4<T> from_rows(vec4<T> r0, vec4<T> r1, vec4<T> r2, vec4<T> r3);
+        // `v` on the diagonal: the matrix that scales by `v`.
+        compile_time run_time static mat4<T> from_diagonal(vec4<T> v);
+        // The matrix that moves points by `offset`.
+        compile_time run_time static mat4<T> translation(vec3<T> offset);
+        // The rotation by `angle` around the unit vector `axis`, counter-clockwise when the axis
+        // points at the viewer (right-handed); and around the x, y and z axes.
+        compile_time run_time static mat4<T> rotation(radians angle, vec3<T> axis);
+        compile_time run_time static mat4<T> rotation_x(radians angle);
+        compile_time run_time static mat4<T> rotation_y(radians angle);
+        compile_time run_time static mat4<T> rotation_z(radians angle);
+        compile_time run_time static mat4<T> scaling(vec3<T> factors);
+        // The rotation of a unit quaternion.
+        compile_time run_time static mat4<T> from_quat(quat<T> q);
+        // A mat3 as the upper-left 3 × 3, with no translation.
+        compile_time run_time static mat4<T> from_mat3(mat3<T> m);
+        // Scale, then rotate, then move: the model matrix of an object, built directly (cheaper
+        // than multiplying the three matrices).
+        compile_time run_time static mat4<T> trs(vec3<T> translation, quat<T> rotation, vec3<T> scale);
+
+        // Row `i` (the columns are the fields).
+        compile_time run_time vec4<T> row(usize i);
+        template<type U>
+        compile_time run_time mat4<U> to();
+        // The 16 numbers, column by column, as a span (see mat2).
+        std::span<T> as_span();
+
+        @std::inline_always
+        compile_time run_time mat4<T> operator*(mat4<T> other);
+        @std::inline_always
+        compile_time run_time vec4<T> operator*(vec4<T> v);
+        compile_time run_time mat4<T> operator+(mat4<T> other);
+        compile_time run_time mat4<T> operator-(mat4<T> other);
+        compile_time run_time mat4<T> operator*(T k);
+        compile_time run_time mat4<T> operator/(T k);
+        compile_time run_time mat4<T> operator-();
+        bool operator==(mat4<T>& other) = default;
+        vec4<T>& operator[](usize i);
+        mut vec4<T>& operator[](usize i) mut;
+        void format(mut std::formatter& out);
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> operator*(T k, mat4<T> m);
+
+    // ---- matrix functions --------------------------------------------------------------------------------
+
+    // The matrix with rows and columns swapped.
+    template<type T = f32> compile_time run_time mat2<T> transpose(mat2<T> m);
+    template<type T = f32> compile_time run_time mat3<T> transpose(mat3<T> m);
+    template<type T = f32> compile_time run_time mat4<T> transpose(mat4<T> m);
+
+    // The determinant: the factor by which the matrix scales areas (mat2) or volumes; 0 when it
+    // has no inverse, negative when it mirrors.
+    template<type T = f32> compile_time run_time T determinant(mat2<T> m);
+    template<type T = f32> compile_time run_time T determinant(mat3<T> m);
+    template<type T = f32> compile_time run_time T determinant(mat4<T> m);
+
+    // The inverse: `inverse(m) * m` is the identity. Not checked: a matrix with determinant 0
+    // gives infinities and NaNs. For a mat4 made of rotations, scales and translations
+    // `affine_inverse` is cheaper.
+    template<type T = f32> compile_time run_time mat2<T> inverse(mat2<T> m);
+    template<type T = f32> compile_time run_time mat3<T> inverse(mat3<T> m);
+    template<type T = f32> compile_time run_time mat4<T> inverse(mat4<T> m);
+
+    // The inverse of a matrix whose last row is (0, 0, 0, 1): any mix of rotations, scales, shears
+    // and translations, which is every model and view matrix (but no projection). About half the work
+    // of `inverse`.
+    template<type T = f32> compile_time run_time mat4<T> affine_inverse(mat4<T> m);
+
+    // The matrix for normals of a model matrix: the transpose of the inverse of its upper-left
+    // 3 × 3, so normals stay perpendicular under non-uniform scales.
+    template<type T = f32> compile_time run_time mat3<T> normal_matrix(mat4<T> m);
+
+    // `m` followed by a move, a rotation or a scale in `m`'s own space: `m * mat4::translation(v)`
+    // and so on, without building the second matrix (GLM's translate, rotate and scale).
+    template<type T = f32> compile_time run_time mat4<T> translate(mat4<T> m, vec3<T> offset);
+    template<type T = f32> compile_time run_time mat4<T> rotate(mat4<T> m, radians angle, vec3<T> axis);
+    template<type T = f32> compile_time run_time mat4<T> scale(mat4<T> m, vec3<T> factors);
+
+    // A point (w = 1) and a direction (w = 0, so translations don't move it) through a mat4
+    // whose last row is (0, 0, 0, 1); `project_point` also divides by w, for projection matrices. With
+    // a mat3, the same for 2D points and directions.
+    @std::inline_always
+    template<type T = f32> compile_time run_time vec3<T> transform_point(mat4<T> m, vec3<T> p);
+    @std::inline_always
+    template<type T = f32> compile_time run_time vec3<T> transform_vector(mat4<T> m, vec3<T> v);
+    template<type T = f32> compile_time run_time vec3<T> project_point(mat4<T> m, vec3<T> p);
+    template<type T = f32> compile_time run_time vec2<T> transform_point(mat3<T> m, vec2<T> p);
+    template<type T = f32> compile_time run_time vec2<T> transform_vector(mat3<T> m, vec2<T> v);
+
+    // Whether every element of `a` is within `tolerance` of `b`'s.
+    template<type T = f32> compile_time run_time bool approx_equal(mat2<T> a, mat2<T> b, T tolerance);
+    template<type T = f32> compile_time run_time bool approx_equal(mat3<T> a, mat3<T> b, T tolerance);
+    template<type T = f32> compile_time run_time bool approx_equal(mat4<T> a, mat4<T> b, T tolerance);
+
+    // ---- projections and views ---------------------------------------------------------------------------
+    // Projection matrices take the vertical field of view, the aspect ratio (width / height) and
+    // the distances of the near and far planes (both positive). The plain names are right-handed
+    // (the camera looks along -z) with clip-space depth from 0 (near) to 1 (far): Vulkan, Direct3D,
+    // Metal, WebGPU, and OpenGL with `glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE)`. The suffixes
+    // name the others: `_lh` is left-handed (the camera looks along +z), `_no` is depth from -1 to 1
+    // (OpenGL's default), `_zo` depth from 0 to 1. In clip space y points up; Vulkan's points down,
+    // which a negative viewport height (or negating `m.c1.y`) accounts for.
+
+    // A perspective projection (see above for the conventions and the suffixes).
+    template<type T = f32> compile_time run_time mat4<T> perspective(radians fov_y, T aspect, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> perspective_rh_zo(radians fov_y, T aspect, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> perspective_rh_no(radians fov_y, T aspect, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> perspective_lh_zo(radians fov_y, T aspect, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> perspective_lh_no(radians fov_y, T aspect, T near, T far);
+
+    // Perspective projections for better depth precision (right-handed, depth 0 to 1):
+    // `perspective_infinite` has no far plane; the `reversed` ones map near to 1 and far to 0, which
+    // with a float depth buffer and a `greater` depth test spreads precision evenly over the distance;
+    // `perspective_infinite_reversed` does both and is the usual choice for large worlds.
+    template<type T = f32> compile_time run_time mat4<T> perspective_infinite(radians fov_y, T aspect, T near);
+    template<type T = f32> compile_time run_time mat4<T> perspective_reversed(radians fov_y, T aspect, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> perspective_infinite_reversed(radians fov_y, T aspect, T near);
+
+    // A perspective projection from the edges of the near plane (GLM's frustum): for off-centre
+    // views such as VR eyes, tiled rendering and jittered anti-aliasing. Right-handed, depth 0 to 1.
+    template<type T = f32> compile_time run_time mat4<T> perspective_off_center(T left, T right, T bottom, T top, T near, T far);
+
+    // An orthographic projection of the box between the given planes (the same conventions and
+    // suffixes as `perspective`); `ortho_2d` is the one for 2D drawing, with z from -1 to 1.
+    template<type T = f32> compile_time run_time mat4<T> ortho(T left, T right, T bottom, T top, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> ortho_rh_zo(T left, T right, T bottom, T top, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> ortho_rh_no(T left, T right, T bottom, T top, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> ortho_lh_zo(T left, T right, T bottom, T top, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> ortho_lh_no(T left, T right, T bottom, T top, T near, T far);
+    template<type T = f32> compile_time run_time mat4<T> ortho_2d(T left, T right, T bottom, T top);
+
+    // The view matrix of a camera at `eye` looking at `target`, with `up` giving the roll (it
+    // needn't be perpendicular to the view direction, only not parallel to it). `look_at` is
+    // right-handed, as `look_at_rh`.
+    template<type T = f32> compile_time run_time mat4<T> look_at(vec3<T> eye, vec3<T> target, vec3<T> up);
+    template<type T = f32> compile_time run_time mat4<T> look_at_rh(vec3<T> eye, vec3<T> target, vec3<T> up);
+    template<type T = f32> compile_time run_time mat4<T> look_at_lh(vec3<T> eye, vec3<T> target, vec3<T> up);
+
+    // ---- quaternions -------------------------------------------------------------------------------------
+
+    // A rotation in 3D as a unit quaternion (x, y, z, w with w the real part): four numbers that
+    // combine (`a * b` applies `b` first), interpolate (`slerp`, `nlerp`) and rotate vectors
+    // (`q * v`) without the problems of angles, and convert to a matrix when the transform is
+    // complete. `quat q = default;` is no rotation. Functions that rotate expect unit length:
+    // `normalize` after many multiplications.
+    template<type T = f32>
+    struct quat {
+        T x = default;
+        T y = default;
+        T z = default;
+        T w = scalar_one<T>();
+
+        // No rotation.
+        compile_time run_time static quat<T> identity();
+        // From the four numbers (not normalized).
+        compile_time run_time static quat<T> make(T x, T y, T z, T w);
+        // The rotation by `angle` around the unit vector `axis`, counter-clockwise when the axis
+        // points at the viewer; and around the x, y and z axes.
+        compile_time run_time static quat<T> from_axis_angle(vec3<T> axis, radians angle);
+        compile_time run_time static quat<T> rotation_x(radians angle);
+        compile_time run_time static quat<T> rotation_y(radians angle);
+        compile_time run_time static quat<T> rotation_z(radians angle);
+        // From Euler angles: `roll` around z first, then `pitch` around x, then `yaw` around y
+        // (the order of a first-person camera with y up: looking up and down never tilts the horizon).
+        compile_time run_time static quat<T> from_euler(radians pitch, radians yaw, radians roll);
+        // The rotation of a rotation matrix (orthonormal columns: no scale).
+        compile_time run_time static quat<T> from_mat3(mat3<T> m);
+        compile_time run_time static quat<T> from_mat4(mat4<T> m);
+        // The rotation that turns -z (forward) into the direction `forward` and keeps +y as close to
+        // `up` as it can: an object, or a camera, facing that way. `forward` and `up` needn't be
+        // unit vectors, only not parallel.
+        compile_time run_time static quat<T> look_rotation(vec3<T> forward, vec3<T> up);
+
+        // The unit axis and the angle (0 to 2π) of the rotation; the axis is +x for no rotation.
+        compile_time run_time vec3<T> axis();
+        compile_time run_time radians angle();
+        // The angles `from_euler` takes: pitch in x, yaw in y, roll in z, in radians.
+        compile_time run_time euler_angles to_euler();
+        // Where the rotation turns -z, +x and +y: the directions an object with this rotation
+        // faces.
+        compile_time run_time vec3<T> forward();
+        compile_time run_time vec3<T> right();
+        compile_time run_time vec3<T> up();
+        template<type U>
+        compile_time run_time quat<U> to();
+
+        // The rotation `other` followed by this one.
+        @std::inline_always
+        compile_time run_time quat<T> operator*(quat<T> other);
+        // `v` rotated (the quaternion must have unit length).
+        @std::inline_always
+        compile_time run_time vec3<T> operator*(vec3<T> v);
+        // Component by component: the pieces of interpolation.
+        compile_time run_time quat<T> operator+(quat<T> other);
+        compile_time run_time quat<T> operator-(quat<T> other);
+        compile_time run_time quat<T> operator*(T k);
+        compile_time run_time quat<T> operator-();
+        bool operator==(quat<T>& other) = default;
+        // Prints as `(x, y, z, w)`.
+        void format(mut std::formatter& out);
+    }
+
+    // Pitch (around x), yaw (around y) and roll (around z): see quat::from_euler.
+    struct euler_angles {
+        radians pitch = rad(0.0);
+        radians yaw = rad(0.0);
+        radians roll = rad(0.0);
+    }
+
+    // The dot product of two quaternions (the cosine of half the angle between two rotations),
+    // the length, and the quaternion scaled to length 1.
+    template<type T = f32> compile_time run_time T dot(quat<T> a, quat<T> b);
+    template<type T = f32> compile_time run_time T length(quat<T> q);
+    template<type T = f32> compile_time run_time quat<T> normalize(quat<T> q);
+
+    // The opposite rotation: `conjugate` for unit quaternions (it only flips signs), `inverse`
+    // for any length.
+    template<type T = f32> compile_time run_time quat<T> conjugate(quat<T> q);
+    template<type T = f32> compile_time run_time quat<T> inverse(quat<T> q);
+
+    // Between the rotations `a` (t = 0) and `b` (t = 1), the short way round. `slerp` turns at a
+    // constant speed; `nlerp` (a normalized lerp) is several times cheaper, takes the same path and is
+    // only slightly uneven in speed: the usual choice for blending animations.
+    template<type T = f32> compile_time run_time quat<T> nlerp(quat<T> a, quat<T> b, T t);
+    template<type T = f32> compile_time run_time quat<T> slerp(quat<T> a, quat<T> b, T t);
+
+    // The shortest rotation that turns the unit vector `from` into the unit vector `to`.
+    template<type T = f32> compile_time run_time quat<T> rotation_between(vec3<T> from, vec3<T> to);
+
+    // The angle of the rotation that turns `a` into `b`, from 0 to π.
+    template<type T = f32> compile_time run_time radians angle(quat<T> a, quat<T> b);
+
+    // Whether every component of `a` is within `tolerance` of `b`'s. (`q` and `-q` are the same
+    // rotation but not approximately equal here.)
+    template<type T = f32> compile_time run_time bool approx_equal(quat<T> a, quat<T> b, T tolerance);
+
+    // ---- transforms --------------------------------------------------------------------------------------
+
+    // A position, a rotation and a scale: what a scene stores per object instead of a matrix (40
+    // bytes instead of 64 for f32, and it interpolates and never drifts into a shear). `a * b`
+    // puts `b` into `a`'s space (parent * child), and `to_mat4` makes the matrix for the GPU.
+    // Scaling happens first, then the rotation, then the move.
+    template<type T = f32>
+    struct transform {
+        vec3<T> translation = default;
+        quat<T> rotation = default;
+        vec3<T> scale = vec3<T>{ .x = scalar_one<T>(), .y = scalar_one<T>(), .z = scalar_one<T>() };
+
+        // Nothing moved, turned or scaled.
+        compile_time run_time static transform<T> identity();
+        compile_time run_time static transform<T> make(vec3<T> translation, quat<T> rotation, vec3<T> scale);
+        compile_time run_time static transform<T> from_translation(vec3<T> translation);
+        compile_time run_time static transform<T> from_rotation(quat<T> rotation);
+        // The parts of a matrix made of a move, a rotation and a scale (no shear; a mirrored
+        // matrix gets a negative x scale).
+        compile_time run_time static transform<T> from_mat4(mat4<T> m);
+
+        // The matrix that does the same: `mat4::trs(translation, rotation, scale)`.
+        compile_time run_time mat4<T> to_mat4();
+        // Where the transform turns -z, +x and +y.
+        compile_time run_time vec3<T> forward();
+        compile_time run_time vec3<T> right();
+        compile_time run_time vec3<T> up();
+        template<type U>
+        compile_time run_time transform<U> to();
+
+        // `child` in this transform's space: its world transform when this is its parent's. Exact
+        // when the scales are uniform (a non-uniform scale on a rotated child would be a shear,
+        // which a transform can't hold).
+        compile_time run_time transform<T> operator*(transform<T> child);
+        bool operator==(transform<T>& other) = default;
+        // Prints as `(translation, rotation, scale)`.
+        void format(mut std::formatter& out);
+    }
+
+    // A point (scaled, rotated and moved) and a direction (scaled and rotated) through a
+    // transform.
+    template<type T = f32> compile_time run_time vec3<T> transform_point(transform<T> t, vec3<T> p);
+    template<type T = f32> compile_time run_time vec3<T> transform_vector(transform<T> t, vec3<T> v);
+
+    // The transform that undoes `t`: exact when its scale is uniform (see transform's `*`).
+    template<type T = f32> compile_time run_time transform<T> inverse(transform<T> t);
+
+    // Between two transforms: positions and scales in a straight line, the rotation by
+    // `nlerp`.
+    template<type T = f32> compile_time run_time transform<T> lerp(transform<T> a, transform<T> b, T t);
+
+    // ---- curves and motion -------------------------------------------------------------------------------
+    // The functions of this section take numbers or vectors (`P` below is T, vec2, vec3 or vec4),
+    // with `t` from 0 to 1.
+
+    // A quadratic Bézier curve from `p0` to `p2` that is pulled towards `p1`, and a cubic one
+    // from `p0` to `p3` with the handles `p1` and `p2` (what vector graphics and animation curves are
+    // made of).
+    template<type T = f32> compile_time run_time T bezier(T p0, T p1, T p2, T t);
+    template<type T = f32> compile_time run_time vec2<T> bezier(vec2<T> p0, vec2<T> p1, vec2<T> p2, T t);
+    template<type T = f32> compile_time run_time vec3<T> bezier(vec3<T> p0, vec3<T> p1, vec3<T> p2, T t);
+    template<type T = f32> compile_time run_time vec4<T> bezier(vec4<T> p0, vec4<T> p1, vec4<T> p2, T t);
+    template<type T = f32> compile_time run_time T bezier(T p0, T p1, T p2, T p3, T t);
+    template<type T = f32> compile_time run_time vec2<T> bezier(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t);
+    template<type T = f32> compile_time run_time vec3<T> bezier(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t);
+    template<type T = f32> compile_time run_time vec4<T> bezier(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t);
+
+    // The direction and speed of the cubic Bézier curve at `t` (its derivative).
+    template<type T = f32> compile_time run_time T bezier_tangent(T p0, T p1, T p2, T p3, T t);
+    template<type T = f32> compile_time run_time vec2<T> bezier_tangent(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t);
+    template<type T = f32> compile_time run_time vec3<T> bezier_tangent(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t);
+    template<type T = f32> compile_time run_time vec4<T> bezier_tangent(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t);
+
+    // A cubic Hermite curve from `p0` to `p1`, leaving with the tangent `m0` and arriving with
+    // the tangent `m1`.
+    template<type T = f32> compile_time run_time T hermite(T p0, T m0, T p1, T m1, T t);
+    template<type T = f32> compile_time run_time vec2<T> hermite(vec2<T> p0, vec2<T> m0, vec2<T> p1, vec2<T> m1, T t);
+    template<type T = f32> compile_time run_time vec3<T> hermite(vec3<T> p0, vec3<T> m0, vec3<T> p1, vec3<T> m1, T t);
+    template<type T = f32> compile_time run_time vec4<T> hermite(vec4<T> p0, vec4<T> m0, vec4<T> p1, vec4<T> m1, T t);
+
+    // A Catmull-Rom spline: the smooth curve from `p1` to `p2` through a list of points, `p0`
+    // and `p3` being the points before and after (camera paths, smoothed input).
+    template<type T = f32> compile_time run_time T catmull_rom(T p0, T p1, T p2, T p3, T t);
+    template<type T = f32> compile_time run_time vec2<T> catmull_rom(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t);
+    template<type T = f32> compile_time run_time vec3<T> catmull_rom(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t);
+    template<type T = f32> compile_time run_time vec4<T> catmull_rom(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t);
+
+    // `current` moved towards `target` by an exponential decay that is independent of the frame
+    // rate: `position = damp(position, goal, 8.0, dt)` each frame. A larger `rate` is faster: after
+    // 1 / rate seconds 63 % of the way is done. (What `lerp(a, b, 0.1)` per frame is meant to be.)
+    template<type T = f32> compile_time run_time T damp(T current, T target, T rate, T dt);
+    template<type T = f32> compile_time run_time vec2<T> damp(vec2<T> current, vec2<T> target, T rate, T dt);
+    template<type T = f32> compile_time run_time vec3<T> damp(vec3<T> current, vec3<T> target, T rate, T dt);
+    template<type T = f32> compile_time run_time vec4<T> damp(vec4<T> current, vec4<T> target, T rate, T dt);
+
+    // `current` moved towards `target` by at most `max_step`, never past it.
+    template<type T = f32> compile_time run_time T move_towards(T current, T target, T max_step);
+    template<type T = f32> compile_time run_time vec2<T> move_towards(vec2<T> current, vec2<T> target, T max_step);
+    template<type T = f32> compile_time run_time vec3<T> move_towards(vec3<T> current, vec3<T> target, T max_step);
+    template<type T = f32> compile_time run_time vec4<T> move_towards(vec4<T> current, vec4<T> target, T max_step);
+
+    // `current` moved towards `target` like a critically damped spring: fast when far, slowing
+    // down smoothly, no overshoot, and following a moving target without a jerk (camera follow, UI
+    // motion). `velocity` is state the caller keeps between frames; `smooth_time` is roughly the time
+    // to arrive.
+    template<type T = f32> T smooth_damp(T current, T target, mut T& velocity, T smooth_time, T dt);
+    template<type T = f32> vec2<T> smooth_damp(vec2<T> current, vec2<T> target, mut vec2<T>& velocity, T smooth_time, T dt);
+    template<type T = f32> vec3<T> smooth_damp(vec3<T> current, vec3<T> target, mut vec3<T>& velocity, T smooth_time, T dt);
+    template<type T = f32> vec4<T> smooth_damp(vec4<T> current, vec4<T> target, mut vec4<T>& velocity, T smooth_time, T dt);
+
+    // `x` wrapped into [lo, hi): `wrap(370.0, 0.0, 360.0)` is 10. `ping_pong(x, length)` goes from
+    // 0 up to `length` and back down again as `x` grows.
+    template<type T = f32> compile_time run_time T wrap(T x, T lo, T hi);
+    template<type T = f32> compile_time run_time T ping_pong(T x, T length);
+
+    // ---- shapes ------------------------------------------------------------------------------------------
+    // The shapes of culling, picking and collision tests, with the functions on them below:
+    // `intersects`, `contains`, `closest_point`, `intersect` (a ray with a shape) and `merge`.
+
+    // An axis-aligned box: its corner with the smallest and the one with the largest coordinates.
+    template<type T = f32>
+    struct aabb {
+        vec3<T> min = default;
+        vec3<T> max = default;
+
+        // From its centre and its extents (half its size along each axis).
+        compile_time run_time static aabb<T> from_center_extents(vec3<T> center, vec3<T> extents);
+        // The box with nothing in it: merging a point or a box into it gives that point or box.
+        compile_time run_time static aabb<T> empty();
+        // The smallest box around the points; `empty()` for none.
+        static aabb<T> from_points(std::span<vec3<T>> points);
+        compile_time run_time vec3<T> center();
+        compile_time run_time vec3<T> extents();
+        compile_time run_time vec3<T> size();
+        // Whether no point is inside (`min` is beyond `max` on some axis).
+        compile_time run_time bool is_empty();
+        bool operator==(aabb<T>& other) = default;
+    }
+
+    // A sphere: its centre and radius.
+    template<type T = f32>
+    struct sphere {
+        vec3<T> center = default;
+        T radius = default;
+
+        compile_time run_time static sphere<T> make(vec3<T> center, T radius);
+        bool operator==(sphere<T>& other) = default;
+    }
+
+    // A plane: the points `p` with `dot(normal, p) + d == 0`. The side the normal points to is
+    // in front (positive distances). The functions expect a unit normal: `normalize(p)`.
+    template<type T = f32>
+    struct plane {
+        vec3<T> normal = vec3<T>{ .y = scalar_one<T>() };
+        T d = default;
+
+        // The plane through `point` with the unit normal `normal`.
+        compile_time run_time static plane<T> from_point_normal(vec3<T> point, vec3<T> normal);
+        // The plane through three points; the normal points at a viewer who sees them
+        // counter-clockwise.
+        compile_time run_time static plane<T> from_points(vec3<T> a, vec3<T> b, vec3<T> c);
+        bool operator==(plane<T>& other) = default;
+    }
+
+    // A ray: the points `origin + direction * t` for `t >= 0`. With a unit direction, `t` is a
+    // distance.
+    template<type T = f32>
+    struct ray {
+        vec3<T> origin = default;
+        vec3<T> direction = vec3<T>{ .z = -scalar_one<T>() };
+
+        compile_time run_time static ray<T> make(vec3<T> origin, vec3<T> direction);
+        // The point at `t`.
+        compile_time run_time vec3<T> at(T t);
+        bool operator==(ray<T>& other) = default;
+    }
+
+    // The volume a camera sees: six planes with their normals pointing inwards.
+    template<type T = f32>
+    struct frustum {
+        plane<T> left = default;
+        plane<T> right = default;
+        plane<T> bottom = default;
+        plane<T> top = default;
+        plane<T> near = default;
+        plane<T> far = default;
+
+        // The frustum of a view-projection matrix (`projection * view`), in the space the matrix
+        // takes points from: world space for `projection * view`, an object's own space for
+        // `projection * view * model`. For clip-space depth from 0 to 1 (`perspective`, `ortho`);
+        // `from_view_projection_no` is for depth from -1 to 1 (the `_no` projections).
+        compile_time run_time static frustum<T> from_view_projection(mat4<T> m);
+        compile_time run_time static frustum<T> from_view_projection_no(mat4<T> m);
+    }
+
+    // The distance of a point from a plane: positive in front of it (where the normal points),
+    // negative behind.
+    template<type T = f32> compile_time run_time T signed_distance(plane<T> p, vec3<T> point);
+
+    // The plane with a unit normal (the same plane).
+    template<type T = f32> compile_time run_time plane<T> normalize(plane<T> p);
+
+    // The smallest box around both boxes, or around a box and a point (growing a box point by
+    // point).
+    template<type T = f32> compile_time run_time aabb<T> merge(aabb<T> a, aabb<T> b);
+    template<type T = f32> compile_time run_time aabb<T> merge(aabb<T> box, vec3<T> point);
+
+    // The axis-aligned box around a box after the transform `m` (a matrix whose last row is
+    // (0, 0, 0, 1)): the world-space bounds of an object from its local bounds, without transforming
+    // the eight corners.
+    template<type T = f32> compile_time run_time aabb<T> transform_aabb(mat4<T> m, aabb<T> box);
+
+    // The sphere around a box.
+    template<type T = f32> compile_time run_time sphere<T> bounding_sphere(aabb<T> box);
+
+    // Whether a point is inside a shape (on its surface counts), or a box is completely inside
+    // another.
+    template<type T = f32> compile_time run_time bool contains(aabb<T> box, vec3<T> point);
+    template<type T = f32> compile_time run_time bool contains(aabb<T> outer, aabb<T> inner);
+    template<type T = f32> compile_time run_time bool contains(sphere<T> s, vec3<T> point);
+    template<type T = f32> compile_time run_time bool contains(frustum<T> f, vec3<T> point);
+
+    // The point of a shape that is closest to `point` (the point itself when it is inside).
+    template<type T = f32> compile_time run_time vec3<T> closest_point(aabb<T> box, vec3<T> point);
+    template<type T = f32> compile_time run_time vec3<T> closest_point(sphere<T> s, vec3<T> point);
+    template<type T = f32> compile_time run_time vec3<T> closest_point(plane<T> p, vec3<T> point);
+    template<type T = f32> compile_time run_time vec3<T> closest_point(ray<T> r, vec3<T> point);
+
+    // Whether two shapes overlap (touching counts). With a frustum the test is conservative, as
+    // culling wants it: a shape near a corner of the frustum can count as overlapping when it is just
+    // outside.
+    template<type T = f32> compile_time run_time bool intersects(aabb<T> a, aabb<T> b);
+    template<type T = f32> compile_time run_time bool intersects(sphere<T> a, sphere<T> b);
+    template<type T = f32> compile_time run_time bool intersects(aabb<T> box, sphere<T> s);
+    template<type T = f32> compile_time run_time bool intersects(sphere<T> s, aabb<T> box);
+    template<type T = f32> compile_time run_time bool intersects(frustum<T> f, sphere<T> s);
+    template<type T = f32> compile_time run_time bool intersects(frustum<T> f, aabb<T> box);
+
+    // Where a ray hits a shape: the `t` of the first hit (`r.at(t)` is the point), or nothing. A
+    // ray that starts inside a box or a sphere hits at 0. `intersect_triangle` hits both sides of the
+    // triangle (a, b, c).
+    template<type T = f32> compile_time run_time std::option<T> intersect(ray<T> r, plane<T> p);
+    template<type T = f32> compile_time run_time std::option<T> intersect(ray<T> r, sphere<T> s);
+    template<type T = f32> compile_time run_time std::option<T> intersect(ray<T> r, aabb<T> box);
+    template<type T = f32> compile_time run_time std::option<T> intersect_triangle(ray<T> r, vec3<T> a, vec3<T> b, vec3<T> c);
+
+    // Frustum culling of many shapes at once: `visible[i]` becomes whether `shapes[i]` overlaps the
+    // frustum (as `intersects`), and the result is the number that do. For f32 every shape is tested
+    // against all six planes at once with SIMD and without branches, so the time doesn't depend on
+    // how many shapes are visible or in which order they come. `visible` must be at least as long as
+    // the shapes.
+    template<type T = f32> usize cull(frustum<T> f, std::span<aabb<T>> boxes, std::span<mut bool> visible);
+    template<type T = f32> usize cull(frustum<T> f, std::span<sphere<T>> spheres, std::span<mut bool> visible);
+
+    // ---- rectangles --------------------------------------------------------------------------------------
     // An axis-aligned rectangle: its top-left corner and its size. y grows downwards, as on screens.
     @std::derive::formattable
     struct rect {
@@ -123,8 +1108,7 @@ namespace std::math {
         bool operator==(rect& other) = default;
     }
 
-    // ---- colours ------------------------------------------------------------------------------------
-
+    // ---- colours -----------------------------------------------------------------------------------------
     // A colour in OKLCH, the cylindrical form of OKLab: perceptual lightness `l` (0 black, 1 white),
     // chroma `c` (0 grey, about 0.37 at most for sRGB colours) and hue `h` in degrees. Equal steps
     // in `l` look equally large, which makes it the space to derive shades of a theme in.
@@ -167,6 +1151,13 @@ namespace std::math {
         f32 luminance();
         // The WCAG 2 contrast ratio with `other`, from 1 to 21 (ignores alpha).
         f32 contrast(color& other);
+        // The channels as a vector (r, g, b, a), and back.
+        vec4 to_vec4();
+        static color from_vec4(vec4 v);
+        // The colour in linear light (alpha unchanged): what shaders compute with and what an sRGB
+        // framebuffer expects from them; `from_linear` is the way back.
+        vec4 to_linear();
+        static color from_linear(vec4 linear);
         // Packed as the bytes r, g, b, a (r in the lowest byte): GL_RGBA + GL_UNSIGNED_BYTE.
         u32 packed();
         bool operator==(color& other) = default;

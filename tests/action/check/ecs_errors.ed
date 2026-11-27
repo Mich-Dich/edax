@@ -1,0 +1,21 @@
+// RUN: edaxc check %s
+// std::ecs: what a query or system can't take is a compile error at the call: a component by value,
+// commands outside a system, a resource type without @std::ecs::resource, added/changed on an
+// untracked component, and a lambda that changes its captures on several threads.
+import std;
+import std::ecs;
+
+struct position { f32 x = 0.0; }
+struct velocity { f32 x = 0.0; }
+
+void misuse(mut std::ecs::world& w, std::thread_pool& pool) {
+    w.each([](position p) { });
+    w.each([](mut std::ecs::commands& c, position& p) { });
+    w.set_resource(velocity{});
+    std::ecs::filter f = std::ecs::filter::make().changed<position>();
+    w.par_each(pool, [mut seen = 0u32](position& p) { seen += 1; });
+}
+
+i32 main() {
+    return 0;
+}

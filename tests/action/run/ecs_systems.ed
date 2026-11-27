@@ -1,0 +1,86 @@
+// RUN: edaxc run %s
+// std::ecs: the parent/child hierarchy (set_parent, children_of, each_descendant, destroy and
+// destroy_recursive), and systems: stages from their reads and writes, run on a pool and on one
+// thread, commands applied after a stage.
+import std;
+import std::ecs;
+
+namespace ecs = std::ecs;
+
+struct position { f32 x = 0.0; f32 y = 0.0; }
+struct velocity { f32 x = 0.0; f32 y = 0.0; }
+struct name { std::string text = default; }
+struct enemy { }
+struct dead { }
+
+@ecs::tracked
+struct health { i32 value = 100; }
+
+@ecs::resource
+struct frame_time { f32 dt = 0.5; }
+
+@ecs::resource
+struct counter { u32 n = 0; }
+
+struct hit { ecs::entity target = default; i32 damage = 0; }
+
+void hierarchy() {
+    mut ecs::world w = ecs::world::make();
+    ecs::entity root = w.spawn(name{ .text = std::string::from("root") });
+    ecs::entity a = w.spawn(name{ .text = std::string::from("a") });
+    ecs::entity b = w.spawn(name{ .text = std::string::from("b") });
+    ecs::entity a1 = w.spawn(name{ .text = std::string::from("a1") });
+    w.set_parent(a, root);
+    w.set_parent(b, root);
+    w.set_parent(a1, a);
+    mut std::string order = default;
+    w.each_descendant(root, [mut &order, &w](ecs::entity e) {
+        order.push_str(w.get<name>(e).text.as_str());
+        order.push_str(" ");
+    });
+    std::println(f"order: {order}");
+    w.set_parent(a1, b);
+    std::println(f"a children {w.children_of(a).length()}, b children {w.children_of(b).length()}");
+    w.destroy(b);
+    std::println(f"a1 orphaned: {w.parent_of(a1).is_none()} root children {w.children_of(root).length()}");
+    w.set_parent(a1, a);
+    w.destroy_recursive(root);
+    std::println(f"after destroy_recursive: {w.count()} entities");
+}
+
+void systems() {
+    mut ecs::world w = ecs::world::make();
+    w.set_resource(frame_time{ .dt = 1.0 });
+    w.set_resource(counter{});
+    for (u32 i : 0..10000) {
+        _ = w.spawn(position{}, velocity{ .x = 1.0 }, health{});
+    }
+    w.add_system("update", "movement", [](mut position& p, velocity& v, frame_time& t) { p.x += v.x * t.dt; });
+    w.add_system("update", "regen", [](mut health& h) { h.value += 1; });
+    w.add_system("update", "count", [](position& p, mut counter& c) { c.n += 1; });
+    w.add_system("update", "reap", [](ecs::entity e, health& h, mut ecs::commands& cmd) {
+        if (h.value > 102) { cmd.destroy(e); }
+    });
+    for (ecs::stage_info s : w.stages("update")) {
+        mut std::string line = default;
+        for (std::static_str n : s.systems) {
+            line.push_str(n);
+            line.push_str(" ");
+        }
+        std::println(f"stage: {line}");
+    }
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });
+    w.run("update", pool);
+    w.run("update");
+    mut f32 x = 0.0;
+    w.each([mut &x](position& p) { x += p.x; });
+    std::println(f"positions {x}, counted {w.resource<counter>().n}, entities {w.count()}");
+    w.run("update", pool);
+    std::println(f"after the third run: {w.count()} entities");
+}
+
+i32 main() {
+    hierarchy();
+    systems();
+    return 0;
+}

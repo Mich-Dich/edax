@@ -1,97 +1,2166 @@
 // The Edax standard library: module std::math (see math.edh).
 
 namespace std::math {
-    f32 lerp(f32 a, f32 b, f32 t) {
-        return a + (b - a) * t;
+    // ---- angles -----------------------------------------------------------------------------------------
+
+    compile_time run_time radians rad(f32 value) { return cast<radians>(value); }
+
+    compile_time run_time radians deg(f32 value) { return cast<radians>(value * 0.017453292519943295); }
+
+    compile_time run_time radians to_radians(degrees a) { return cast<radians>(cast<f32>(a) * 0.017453292519943295); }
+
+    compile_time run_time degrees to_degrees(radians a) { return cast<degrees>(cast<f32>(a) * 57.29577951308232); }
+
+    compile_time run_time f32 sin(radians a) { return cast<f32>(a).sin(); }
+
+    compile_time run_time f32 cos(radians a) { return cast<f32>(a).cos(); }
+
+    compile_time run_time f32 tan(radians a) { return cast<f32>(a).tan(); }
+
+    compile_time run_time radians asin(f32 x) { return cast<radians>(x.asin()); }
+
+    compile_time run_time radians acos(f32 x) { return cast<radians>(x.acos()); }
+
+    compile_time run_time radians atan(f32 x) { return cast<radians>(x.atan()); }
+
+    compile_time run_time radians atan2(f32 y, f32 x) { return cast<radians>(y.atan2(x)); }
+
+    compile_time run_time radians wrap_angle(radians a) {
+        f32 v = cast<f32>(a);
+        return cast<radians>(v - 6.28318530717959 * ((v + 3.14159265358979) / 6.28318530717959).floor());
     }
 
-    f32 smoothstep(f32 edge0, f32 edge1, f32 x) {
-        f32 t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    compile_time run_time radians angle_difference(radians from, radians to) { return wrap_angle(to - from); }
+
+    compile_time run_time radians lerp_angle(radians a, radians b, f32 t) { return a + angle_difference(a, b) * t; }
+
+    // ---- numbers -----------------------------------------------------------------------------------------
+
+    template<type T>
+    compile_time run_time T abs(T x) { return x.abs(); }
+
+    template<type T>
+    compile_time run_time T sign(T x) {
+        T zero = default;
+        if (x > zero) { return scalar_one<T>(); }
+        if (x < zero) { return zero - scalar_one<T>(); }
+        return zero;
+    }
+
+    template<type T>
+    compile_time run_time T min(T a, T b) {
+        if (b < a) { return b; }
+        return a;
+    }
+
+    template<type T>
+    compile_time run_time T max(T a, T b) {
+        if (a < b) { return b; }
+        return a;
+    }
+
+    template<type T>
+    compile_time run_time T clamp(T x, T lo, T hi) { return min(max(x, lo), hi); }
+
+    template<type T>
+    compile_time run_time T saturate(T x) {
+        T zero = default;
+        return min(max(x, zero), scalar_one<T>());
+    }
+
+    template<type T>
+    compile_time run_time T floor(T x) { return x.floor(); }
+
+    template<type T>
+    compile_time run_time T ceil(T x) { return x.ceil(); }
+
+    template<type T>
+    compile_time run_time T round(T x) { return x.round(); }
+
+    template<type T>
+    compile_time run_time T trunc(T x) { return x.trunc(); }
+
+    template<type T>
+    compile_time run_time T fract(T x) { return x - x.floor(); }
+
+    template<type T>
+    compile_time run_time T mod(T x, T y) { return x - y * (x / y).floor(); }
+
+    template<type T>
+    compile_time run_time T sqrt(T x) { return x.sqrt(); }
+
+    template<type T>
+    compile_time run_time T inverse_sqrt(T x) { return scalar_one<T>() / x.sqrt(); }
+
+    template<type T>
+    compile_time run_time T pow(T x, T y) { return x.pow(y); }
+
+    template<type T>
+    compile_time run_time T exp(T x) { return x.exp(); }
+
+    template<type T>
+    compile_time run_time T exp2(T x) { return x.exp2(); }
+
+    template<type T>
+    compile_time run_time T log(T x) { return x.log(); }
+
+    template<type T>
+    compile_time run_time T log2(T x) { return x.log2(); }
+
+    template<type T>
+    compile_time run_time T lerp(T a, T b, T t) { return a + (b - a) * t; }
+
+    template<type T>
+    compile_time run_time T inverse_lerp(T a, T b, T v) { return (v - a) / (b - a); }
+
+    template<type T>
+    compile_time run_time T remap(T v, T in_lo, T in_hi, T out_lo, T out_hi) { return out_lo + (v - in_lo) * (out_hi - out_lo) / (in_hi - in_lo); }
+
+    template<type T>
+    compile_time run_time T step(T edge, T x) {
+        T zero = default;
+        if (x < edge) { return zero; }
+        return scalar_one<T>();
+    }
+
+    template<type T>
+    compile_time run_time T smoothstep(T edge0, T edge1, T x) {
+        T t = saturate((x - edge0) / (edge1 - edge0));
         return t * t * (3.0 - 2.0 * t);
     }
 
-    struct vec2 {
-        static vec2 splat(f32 v) { return vec2{ .x = v, .y = v }; }
-
-        f32 dot(vec2& other) { return this.x * other.x + this.y * other.y; }
-        f32 length() { return this.length_squared().sqrt(); }
-        f32 length_squared() { return this.x * this.x + this.y * this.y; }
-
-        vec2 normalized() {
-            f32 n = this.length();
-            if (n == 0.0) {
-                return this;
-            }
-            return vec2{ .x = this.x / n, .y = this.y / n };
-        }
-
-        vec2 perpendicular() { return vec2{ .x = -this.y, .y = this.x }; }
-        vec2 abs() { return vec2{ .x = this.x.abs(), .y = this.y.abs() }; }
-        vec2 min(vec2& other) { return vec2{ .x = this.x.min(other.x), .y = this.y.min(other.y) }; }
-        vec2 max(vec2& other) { return vec2{ .x = this.x.max(other.x), .y = this.y.max(other.y) }; }
-        vec2 lerp(vec2& to, f32 t) { return vec2{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t) }; }
-
-        vec2 operator+(vec2& other) { return vec2{ .x = this.x + other.x, .y = this.y + other.y }; }
-        vec2 operator-(vec2& other) { return vec2{ .x = this.x - other.x, .y = this.y - other.y }; }
-        vec2 operator*(vec2& other) { return vec2{ .x = this.x * other.x, .y = this.y * other.y }; }
-        vec2 operator*(f32 k) { return vec2{ .x = this.x * k, .y = this.y * k }; }
-        vec2 operator/(f32 k) { return vec2{ .x = this.x / k, .y = this.y / k }; }
-        vec2 operator-() { return vec2{ .x = -this.x, .y = -this.y }; }
+    template<type T>
+    compile_time run_time T smootherstep(T edge0, T edge1, T x) {
+        T t = saturate((x - edge0) / (edge1 - edge0));
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
     }
 
+    template<type T>
+    compile_time run_time bool approx_equal(T a, T b, T tolerance) { return (a - b).abs() <= tolerance; }
+
+    // ---- vectors -----------------------------------------------------------------------------------------
+
+    private template<type T>
+    compile_time run_time T scalar_one() {
+        if compile_time (std::is_float<T>()) {
+            return 1.0;
+        } else {
+            return 1;
+        }
+    }
+
+    private template<type U, type T>
+    compile_time run_time U scalar_cast(T v) {
+        if compile_time (std::is_float<U>()) {
+            return cast::round<U>(v);
+        } else {
+            return cast::saturate<U>(v);
+        }
+    }
+
+    template<type T>
+    struct vec2 {
+        compile_time run_time static vec2<T> make(T x, T y) { return vec2<T>{ .x = x, .y = y }; }
+        compile_time run_time static vec2<T> splat(T v) { return vec2<T>{ .x = v, .y = v }; }
+        compile_time run_time static vec2<T> zero() { return vec2<T>{}; }
+        compile_time run_time static vec2<T> one() { return vec2<T>{ .x = scalar_one<T>(), .y = scalar_one<T>() }; }
+        compile_time run_time static vec2<T> unit_x() { return vec2<T>{ .x = scalar_one<T>() }; }
+        compile_time run_time static vec2<T> unit_y() { return vec2<T>{ .y = scalar_one<T>() }; }
+        template<type U>
+        compile_time run_time vec2<U> to() { return vec2<U>{ .x = scalar_cast<U, T>(this.x), .y = scalar_cast<U, T>(this.y) }; }
+
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.x, 2); }
+        }
+
+        compile_time run_time vec2<T> operator+(vec2<T> other) { return vec2<T>{ .x = this.x + other.x, .y = this.y + other.y }; }
+        compile_time run_time vec2<T> operator-(vec2<T> other) { return vec2<T>{ .x = this.x - other.x, .y = this.y - other.y }; }
+        compile_time run_time vec2<T> operator*(vec2<T> other) { return vec2<T>{ .x = this.x * other.x, .y = this.y * other.y }; }
+        compile_time run_time vec2<T> operator/(vec2<T> other) { return vec2<T>{ .x = this.x / other.x, .y = this.y / other.y }; }
+        compile_time run_time vec2<T> operator*(T k) { return vec2<T>{ .x = this.x * k, .y = this.y * k }; }
+        compile_time run_time vec2<T> operator/(T k) { return vec2<T>{ .x = this.x / k, .y = this.y / k }; }
+        compile_time run_time vec2<T> operator-() { return vec2<T>{ .x = -this.x, .y = -this.y }; }
+
+        T& operator[](usize i) {
+            run_time check (i < 2) else "a vec2 has the components 0 to 1";
+            unsafe { return *(&this.x).offset(i); }
+        }
+
+        mut T& operator[](usize i) mut {
+            run_time check (i < 2) else "a vec2 has the components 0 to 1";
+            unsafe { return *(mut &this.x).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"({this.x}, {this.y})")); }
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> operator*(T k, vec2<T> v) { return vec2<T>{ .x = k * v.x, .y = k * v.y }; }
+
+    template<type T>
     struct vec3 {
-        static vec3 splat(f32 v) { return vec3{ .x = v, .y = v, .z = v }; }
+        compile_time run_time static vec3<T> make(T x, T y, T z) { return vec3<T>{ .x = x, .y = y, .z = z }; }
+        compile_time run_time static vec3<T> splat(T v) { return vec3<T>{ .x = v, .y = v, .z = v }; }
+        compile_time run_time static vec3<T> zero() { return vec3<T>{}; }
+        compile_time run_time static vec3<T> one() { return vec3<T>{ .x = scalar_one<T>(), .y = scalar_one<T>(), .z = scalar_one<T>() }; }
+        compile_time run_time static vec3<T> unit_x() { return vec3<T>{ .x = scalar_one<T>() }; }
+        compile_time run_time static vec3<T> unit_y() { return vec3<T>{ .y = scalar_one<T>() }; }
+        compile_time run_time static vec3<T> unit_z() { return vec3<T>{ .z = scalar_one<T>() }; }
+        compile_time run_time static vec3<T> from_xy(vec2<T> xy, T z) { return vec3<T>{ .x = xy.x, .y = xy.y, .z = z }; }
+        compile_time run_time vec2<T> xy() { return vec2<T>{ .x = this.x, .y = this.y }; }
+        compile_time run_time vec2<T> xz() { return vec2<T>{ .x = this.x, .y = this.z }; }
+        compile_time run_time vec2<T> yz() { return vec2<T>{ .x = this.y, .y = this.z }; }
+        template<type U>
+        compile_time run_time vec3<U> to() { return vec3<U>{ .x = scalar_cast<U, T>(this.x), .y = scalar_cast<U, T>(this.y), .z = scalar_cast<U, T>(this.z) }; }
 
-        f32 dot(vec3& other) { return this.x * other.x + this.y * other.y + this.z * other.z; }
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.x, 3); }
+        }
 
-        vec3 cross(vec3& other) {
-            return vec3{
-                .x = this.y * other.z - this.z * other.y,
-                .y = this.z * other.x - this.x * other.z,
-                .z = this.x * other.y - this.y * other.x,
+        compile_time run_time vec3<T> operator+(vec3<T> other) { return vec3<T>{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z }; }
+        compile_time run_time vec3<T> operator-(vec3<T> other) { return vec3<T>{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z }; }
+        compile_time run_time vec3<T> operator*(vec3<T> other) { return vec3<T>{ .x = this.x * other.x, .y = this.y * other.y, .z = this.z * other.z }; }
+        compile_time run_time vec3<T> operator/(vec3<T> other) { return vec3<T>{ .x = this.x / other.x, .y = this.y / other.y, .z = this.z / other.z }; }
+        compile_time run_time vec3<T> operator*(T k) { return vec3<T>{ .x = this.x * k, .y = this.y * k, .z = this.z * k }; }
+        compile_time run_time vec3<T> operator/(T k) { return vec3<T>{ .x = this.x / k, .y = this.y / k, .z = this.z / k }; }
+        compile_time run_time vec3<T> operator-() { return vec3<T>{ .x = -this.x, .y = -this.y, .z = -this.z }; }
+
+        T& operator[](usize i) {
+            run_time check (i < 3) else "a vec3 has the components 0 to 2";
+            unsafe { return *(&this.x).offset(i); }
+        }
+
+        mut T& operator[](usize i) mut {
+            run_time check (i < 3) else "a vec3 has the components 0 to 2";
+            unsafe { return *(mut &this.x).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"({this.x}, {this.y}, {this.z})")); }
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> operator*(T k, vec3<T> v) { return vec3<T>{ .x = k * v.x, .y = k * v.y, .z = k * v.z }; }
+
+    template<type T>
+    struct vec4 {
+        compile_time run_time static vec4<T> make(T x, T y, T z, T w) { return vec4<T>{ .x = x, .y = y, .z = z, .w = w }; }
+        compile_time run_time static vec4<T> splat(T v) { return vec4<T>{ .x = v, .y = v, .z = v, .w = v }; }
+        compile_time run_time static vec4<T> zero() { return vec4<T>{}; }
+        compile_time run_time static vec4<T> one() { return vec4<T>{ .x = scalar_one<T>(), .y = scalar_one<T>(), .z = scalar_one<T>(), .w = scalar_one<T>() }; }
+        compile_time run_time static vec4<T> unit_x() { return vec4<T>{ .x = scalar_one<T>() }; }
+        compile_time run_time static vec4<T> unit_y() { return vec4<T>{ .y = scalar_one<T>() }; }
+        compile_time run_time static vec4<T> unit_z() { return vec4<T>{ .z = scalar_one<T>() }; }
+        compile_time run_time static vec4<T> unit_w() { return vec4<T>{ .w = scalar_one<T>() }; }
+        compile_time run_time static vec4<T> from_xyz(vec3<T> xyz, T w) { return vec4<T>{ .x = xyz.x, .y = xyz.y, .z = xyz.z, .w = w }; }
+        compile_time run_time vec3<T> xyz() { return vec3<T>{ .x = this.x, .y = this.y, .z = this.z }; }
+        compile_time run_time vec2<T> xy() { return vec2<T>{ .x = this.x, .y = this.y }; }
+        compile_time run_time vec2<T> zw() { return vec2<T>{ .x = this.z, .y = this.w }; }
+        template<type U>
+        compile_time run_time vec4<U> to() { return vec4<U>{ .x = scalar_cast<U, T>(this.x), .y = scalar_cast<U, T>(this.y), .z = scalar_cast<U, T>(this.z), .w = scalar_cast<U, T>(this.w) }; }
+
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.x, 4); }
+        }
+
+        compile_time run_time vec4<T> operator+(vec4<T> other) { return vec4<T>{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z, .w = this.w + other.w }; }
+        compile_time run_time vec4<T> operator-(vec4<T> other) { return vec4<T>{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z, .w = this.w - other.w }; }
+        compile_time run_time vec4<T> operator*(vec4<T> other) { return vec4<T>{ .x = this.x * other.x, .y = this.y * other.y, .z = this.z * other.z, .w = this.w * other.w }; }
+        compile_time run_time vec4<T> operator/(vec4<T> other) { return vec4<T>{ .x = this.x / other.x, .y = this.y / other.y, .z = this.z / other.z, .w = this.w / other.w }; }
+        compile_time run_time vec4<T> operator*(T k) { return vec4<T>{ .x = this.x * k, .y = this.y * k, .z = this.z * k, .w = this.w * k }; }
+        compile_time run_time vec4<T> operator/(T k) { return vec4<T>{ .x = this.x / k, .y = this.y / k, .z = this.z / k, .w = this.w / k }; }
+        compile_time run_time vec4<T> operator-() { return vec4<T>{ .x = -this.x, .y = -this.y, .z = -this.z, .w = -this.w }; }
+
+        T& operator[](usize i) {
+            run_time check (i < 4) else "a vec4 has the components 0 to 3";
+            unsafe { return *(&this.x).offset(i); }
+        }
+
+        mut T& operator[](usize i) mut {
+            run_time check (i < 4) else "a vec4 has the components 0 to 3";
+            unsafe { return *(mut &this.x).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"({this.x}, {this.y}, {this.z}, {this.w})")); }
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> operator*(T k, vec4<T> v) { return vec4<T>{ .x = k * v.x, .y = k * v.y, .z = k * v.z, .w = k * v.w }; }
+
+    // ---- vector functions --------------------------------------------------------------------------------
+
+    template<type T>
+    compile_time run_time T dot(vec2<T> a, vec2<T> b) { return a.x * b.x + a.y * b.y; }
+
+    template<type T>
+    compile_time run_time T dot(vec3<T> a, vec3<T> b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+    template<type T>
+    compile_time run_time T dot(vec4<T> a, vec4<T> b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+
+    template<type T>
+    compile_time run_time vec3<T> cross(vec3<T> a, vec3<T> b) { return vec3<T>{ .x = a.y * b.z - a.z * b.y, .y = a.z * b.x - a.x * b.z, .z = a.x * b.y - a.y * b.x }; }
+
+    template<type T>
+    compile_time run_time T cross(vec2<T> a, vec2<T> b) { return a.x * b.y - a.y * b.x; }
+
+    template<type T>
+    compile_time run_time T length(vec2<T> v) { return dot(v, v).sqrt(); }
+
+    template<type T>
+    compile_time run_time T length(vec3<T> v) { return dot(v, v).sqrt(); }
+
+    template<type T>
+    compile_time run_time T length(vec4<T> v) { return dot(v, v).sqrt(); }
+
+    template<type T>
+    compile_time run_time T length_squared(vec2<T> v) { return dot(v, v); }
+
+    template<type T>
+    compile_time run_time T length_squared(vec3<T> v) { return dot(v, v); }
+
+    template<type T>
+    compile_time run_time T length_squared(vec4<T> v) { return dot(v, v); }
+
+    template<type T>
+    compile_time run_time T distance(vec2<T> a, vec2<T> b) { return length(a - b); }
+
+    template<type T>
+    compile_time run_time T distance(vec3<T> a, vec3<T> b) { return length(a - b); }
+
+    template<type T>
+    compile_time run_time T distance(vec4<T> a, vec4<T> b) { return length(a - b); }
+
+    template<type T>
+    compile_time run_time T distance_squared(vec2<T> a, vec2<T> b) { return length_squared(a - b); }
+
+    template<type T>
+    compile_time run_time T distance_squared(vec3<T> a, vec3<T> b) { return length_squared(a - b); }
+
+    template<type T>
+    compile_time run_time T distance_squared(vec4<T> a, vec4<T> b) { return length_squared(a - b); }
+
+    template<type T>
+    compile_time run_time vec2<T> normalize(vec2<T> v) { return v * (scalar_one<T>() / dot(v, v).sqrt()); }
+
+    template<type T>
+    compile_time run_time vec3<T> normalize(vec3<T> v) { return v * (scalar_one<T>() / dot(v, v).sqrt()); }
+
+    template<type T>
+    compile_time run_time vec4<T> normalize(vec4<T> v) { return v * (scalar_one<T>() / dot(v, v).sqrt()); }
+
+    template<type T>
+    compile_time run_time vec2<T> normalize_or_zero(vec2<T> v) {
+        T n = dot(v, v);
+        T zero = default;
+        if (n == zero) { return v; }
+        return v * (scalar_one<T>() / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> normalize_or_zero(vec3<T> v) {
+        T n = dot(v, v);
+        T zero = default;
+        if (n == zero) { return v; }
+        return v * (scalar_one<T>() / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> normalize_or_zero(vec4<T> v) {
+        T n = dot(v, v);
+        T zero = default;
+        if (n == zero) { return v; }
+        return v * (scalar_one<T>() / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> reflect(vec2<T> v, vec2<T> n) { return v - n * (dot(n, v) * 2.0); }
+
+    template<type T>
+    compile_time run_time vec3<T> reflect(vec3<T> v, vec3<T> n) { return v - n * (dot(n, v) * 2.0); }
+
+    template<type T>
+    compile_time run_time vec2<T> refract(vec2<T> v, vec2<T> n, T eta) {
+        T d = dot(n, v);
+        T k = 1.0 - eta * eta * (1.0 - d * d);
+        if (k < 0.0) { return vec2<T>{}; }
+        return v * eta - n * (eta * d + k.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> refract(vec3<T> v, vec3<T> n, T eta) {
+        T d = dot(n, v);
+        T k = 1.0 - eta * eta * (1.0 - d * d);
+        if (k < 0.0) { return vec3<T>{}; }
+        return v * eta - n * (eta * d + k.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> face_forward(vec2<T> n, vec2<T> v) {
+        T zero = default;
+        if (dot(n, v) > zero) { return -n; }
+        return n;
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> face_forward(vec3<T> n, vec3<T> v) {
+        T zero = default;
+        if (dot(n, v) > zero) { return -n; }
+        return n;
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> project(vec2<T> v, vec2<T> onto) { return onto * (dot(v, onto) / dot(onto, onto)); }
+
+    template<type T>
+    compile_time run_time vec3<T> project(vec3<T> v, vec3<T> onto) { return onto * (dot(v, onto) / dot(onto, onto)); }
+
+    template<type T>
+    compile_time run_time vec2<T> reject(vec2<T> v, vec2<T> from) { return v - from * (dot(v, from) / dot(from, from)); }
+
+    template<type T>
+    compile_time run_time vec3<T> reject(vec3<T> v, vec3<T> from) { return v - from * (dot(v, from) / dot(from, from)); }
+
+    template<type T>
+    compile_time run_time radians angle(vec2<T> a, vec2<T> b) {
+        T c = dot(a, b) / (dot(a, a) * dot(b, b)).sqrt();
+        return cast<radians>(scalar_cast<f32, T>(clamp(c, -1.0, 1.0).acos()));
+    }
+
+    template<type T>
+    compile_time run_time radians angle(vec3<T> a, vec3<T> b) {
+        T c = dot(a, b) / (dot(a, a) * dot(b, b)).sqrt();
+        return cast<radians>(scalar_cast<f32, T>(clamp(c, -1.0, 1.0).acos()));
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> perpendicular(vec2<T> v) { return vec2<T>{ .x = -v.y, .y = v.x }; }
+
+    template<type T>
+    compile_time run_time vec2<T> rotate(vec2<T> v, radians a) {
+        T s = scalar_cast<T, f32>(sin(a));
+        T c = scalar_cast<T, f32>(cos(a));
+        return vec2<T>{ .x = v.x * c - v.y * s, .y = v.x * s + v.y * c };
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> abs(vec2<T> v) { return vec2<T>{ .x = abs(v.x), .y = abs(v.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> abs(vec3<T> v) { return vec3<T>{ .x = abs(v.x), .y = abs(v.y), .z = abs(v.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> abs(vec4<T> v) { return vec4<T>{ .x = abs(v.x), .y = abs(v.y), .z = abs(v.z), .w = abs(v.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> sign(vec2<T> v) { return vec2<T>{ .x = sign(v.x), .y = sign(v.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> sign(vec3<T> v) { return vec3<T>{ .x = sign(v.x), .y = sign(v.y), .z = sign(v.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> sign(vec4<T> v) { return vec4<T>{ .x = sign(v.x), .y = sign(v.y), .z = sign(v.z), .w = sign(v.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> floor(vec2<T> v) { return vec2<T>{ .x = v.x.floor(), .y = v.y.floor() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> floor(vec3<T> v) { return vec3<T>{ .x = v.x.floor(), .y = v.y.floor(), .z = v.z.floor() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> floor(vec4<T> v) { return vec4<T>{ .x = v.x.floor(), .y = v.y.floor(), .z = v.z.floor(), .w = v.w.floor() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> ceil(vec2<T> v) { return vec2<T>{ .x = v.x.ceil(), .y = v.y.ceil() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> ceil(vec3<T> v) { return vec3<T>{ .x = v.x.ceil(), .y = v.y.ceil(), .z = v.z.ceil() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> ceil(vec4<T> v) { return vec4<T>{ .x = v.x.ceil(), .y = v.y.ceil(), .z = v.z.ceil(), .w = v.w.ceil() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> round(vec2<T> v) { return vec2<T>{ .x = v.x.round(), .y = v.y.round() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> round(vec3<T> v) { return vec3<T>{ .x = v.x.round(), .y = v.y.round(), .z = v.z.round() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> round(vec4<T> v) { return vec4<T>{ .x = v.x.round(), .y = v.y.round(), .z = v.z.round(), .w = v.w.round() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> trunc(vec2<T> v) { return vec2<T>{ .x = v.x.trunc(), .y = v.y.trunc() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> trunc(vec3<T> v) { return vec3<T>{ .x = v.x.trunc(), .y = v.y.trunc(), .z = v.z.trunc() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> trunc(vec4<T> v) { return vec4<T>{ .x = v.x.trunc(), .y = v.y.trunc(), .z = v.z.trunc(), .w = v.w.trunc() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> fract(vec2<T> v) { return vec2<T>{ .x = v.x - v.x.floor(), .y = v.y - v.y.floor() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> fract(vec3<T> v) { return vec3<T>{ .x = v.x - v.x.floor(), .y = v.y - v.y.floor(), .z = v.z - v.z.floor() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> fract(vec4<T> v) { return vec4<T>{ .x = v.x - v.x.floor(), .y = v.y - v.y.floor(), .z = v.z - v.z.floor(), .w = v.w - v.w.floor() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> sqrt(vec2<T> v) { return vec2<T>{ .x = v.x.sqrt(), .y = v.y.sqrt() }; }
+
+    template<type T>
+    compile_time run_time vec3<T> sqrt(vec3<T> v) { return vec3<T>{ .x = v.x.sqrt(), .y = v.y.sqrt(), .z = v.z.sqrt() }; }
+
+    template<type T>
+    compile_time run_time vec4<T> sqrt(vec4<T> v) { return vec4<T>{ .x = v.x.sqrt(), .y = v.y.sqrt(), .z = v.z.sqrt(), .w = v.w.sqrt() }; }
+
+    template<type T>
+    compile_time run_time vec2<T> saturate(vec2<T> v) { return vec2<T>{ .x = saturate(v.x), .y = saturate(v.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> saturate(vec3<T> v) { return vec3<T>{ .x = saturate(v.x), .y = saturate(v.y), .z = saturate(v.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> saturate(vec4<T> v) { return vec4<T>{ .x = saturate(v.x), .y = saturate(v.y), .z = saturate(v.z), .w = saturate(v.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> min(vec2<T> a, vec2<T> b) { return vec2<T>{ .x = min(a.x, b.x), .y = min(a.y, b.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> min(vec3<T> a, vec3<T> b) { return vec3<T>{ .x = min(a.x, b.x), .y = min(a.y, b.y), .z = min(a.z, b.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> min(vec4<T> a, vec4<T> b) { return vec4<T>{ .x = min(a.x, b.x), .y = min(a.y, b.y), .z = min(a.z, b.z), .w = min(a.w, b.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> max(vec2<T> a, vec2<T> b) { return vec2<T>{ .x = max(a.x, b.x), .y = max(a.y, b.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> max(vec3<T> a, vec3<T> b) { return vec3<T>{ .x = max(a.x, b.x), .y = max(a.y, b.y), .z = max(a.z, b.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> max(vec4<T> a, vec4<T> b) { return vec4<T>{ .x = max(a.x, b.x), .y = max(a.y, b.y), .z = max(a.z, b.z), .w = max(a.w, b.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> min(vec2<T> v, T k) { return vec2<T>{ .x = min(v.x, k), .y = min(v.y, k) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> min(vec3<T> v, T k) { return vec3<T>{ .x = min(v.x, k), .y = min(v.y, k), .z = min(v.z, k) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> min(vec4<T> v, T k) { return vec4<T>{ .x = min(v.x, k), .y = min(v.y, k), .z = min(v.z, k), .w = min(v.w, k) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> max(vec2<T> v, T k) { return vec2<T>{ .x = max(v.x, k), .y = max(v.y, k) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> max(vec3<T> v, T k) { return vec3<T>{ .x = max(v.x, k), .y = max(v.y, k), .z = max(v.z, k) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> max(vec4<T> v, T k) { return vec4<T>{ .x = max(v.x, k), .y = max(v.y, k), .z = max(v.z, k), .w = max(v.w, k) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> mod(vec2<T> v, T k) { return vec2<T>{ .x = mod(v.x, k), .y = mod(v.y, k) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> mod(vec3<T> v, T k) { return vec3<T>{ .x = mod(v.x, k), .y = mod(v.y, k), .z = mod(v.z, k) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> mod(vec4<T> v, T k) { return vec4<T>{ .x = mod(v.x, k), .y = mod(v.y, k), .z = mod(v.z, k), .w = mod(v.w, k) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> clamp(vec2<T> v, T lo, T hi) { return vec2<T>{ .x = min(max(v.x, lo), hi), .y = min(max(v.y, lo), hi) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> clamp(vec3<T> v, T lo, T hi) { return vec3<T>{ .x = min(max(v.x, lo), hi), .y = min(max(v.y, lo), hi), .z = min(max(v.z, lo), hi) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> clamp(vec4<T> v, T lo, T hi) { return vec4<T>{ .x = min(max(v.x, lo), hi), .y = min(max(v.y, lo), hi), .z = min(max(v.z, lo), hi), .w = min(max(v.w, lo), hi) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> clamp(vec2<T> v, vec2<T> lo, vec2<T> hi) { return vec2<T>{ .x = min(max(v.x, lo.x), hi.x), .y = min(max(v.y, lo.y), hi.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> clamp(vec3<T> v, vec3<T> lo, vec3<T> hi) { return vec3<T>{ .x = min(max(v.x, lo.x), hi.x), .y = min(max(v.y, lo.y), hi.y), .z = min(max(v.z, lo.z), hi.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> clamp(vec4<T> v, vec4<T> lo, vec4<T> hi) { return vec4<T>{ .x = min(max(v.x, lo.x), hi.x), .y = min(max(v.y, lo.y), hi.y), .z = min(max(v.z, lo.z), hi.z), .w = min(max(v.w, lo.w), hi.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> lerp(vec2<T> a, vec2<T> b, T t) { return vec2<T>{ .x = a.x + (b.x - a.x) * t, .y = a.y + (b.y - a.y) * t }; }
+
+    template<type T>
+    compile_time run_time vec3<T> lerp(vec3<T> a, vec3<T> b, T t) { return vec3<T>{ .x = a.x + (b.x - a.x) * t, .y = a.y + (b.y - a.y) * t, .z = a.z + (b.z - a.z) * t }; }
+
+    template<type T>
+    compile_time run_time vec4<T> lerp(vec4<T> a, vec4<T> b, T t) { return vec4<T>{ .x = a.x + (b.x - a.x) * t, .y = a.y + (b.y - a.y) * t, .z = a.z + (b.z - a.z) * t, .w = a.w + (b.w - a.w) * t }; }
+
+    template<type T>
+    compile_time run_time vec2<T> step(T edge, vec2<T> v) { return vec2<T>{ .x = step(edge, v.x), .y = step(edge, v.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> step(T edge, vec3<T> v) { return vec3<T>{ .x = step(edge, v.x), .y = step(edge, v.y), .z = step(edge, v.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> step(T edge, vec4<T> v) { return vec4<T>{ .x = step(edge, v.x), .y = step(edge, v.y), .z = step(edge, v.z), .w = step(edge, v.w) }; }
+
+    template<type T>
+    compile_time run_time vec2<T> smoothstep(T edge0, T edge1, vec2<T> v) { return vec2<T>{ .x = smoothstep(edge0, edge1, v.x), .y = smoothstep(edge0, edge1, v.y) }; }
+
+    template<type T>
+    compile_time run_time vec3<T> smoothstep(T edge0, T edge1, vec3<T> v) { return vec3<T>{ .x = smoothstep(edge0, edge1, v.x), .y = smoothstep(edge0, edge1, v.y), .z = smoothstep(edge0, edge1, v.z) }; }
+
+    template<type T>
+    compile_time run_time vec4<T> smoothstep(T edge0, T edge1, vec4<T> v) { return vec4<T>{ .x = smoothstep(edge0, edge1, v.x), .y = smoothstep(edge0, edge1, v.y), .z = smoothstep(edge0, edge1, v.z), .w = smoothstep(edge0, edge1, v.w) }; }
+
+    template<type T>
+    compile_time run_time T min_component(vec2<T> v) { return min(v.x, v.y); }
+
+    template<type T>
+    compile_time run_time T min_component(vec3<T> v) { return min(min(v.x, v.y), v.z); }
+
+    template<type T>
+    compile_time run_time T min_component(vec4<T> v) { return min(min(min(v.x, v.y), v.z), v.w); }
+
+    template<type T>
+    compile_time run_time T max_component(vec2<T> v) { return max(v.x, v.y); }
+
+    template<type T>
+    compile_time run_time T max_component(vec3<T> v) { return max(max(v.x, v.y), v.z); }
+
+    template<type T>
+    compile_time run_time T max_component(vec4<T> v) { return max(max(max(v.x, v.y), v.z), v.w); }
+
+    template<type T>
+    compile_time run_time bool approx_equal(vec2<T> a, vec2<T> b, T tolerance) { return (a.x - b.x).abs() <= tolerance && (a.y - b.y).abs() <= tolerance; }
+
+    template<type T>
+    compile_time run_time bool approx_equal(vec3<T> a, vec3<T> b, T tolerance) { return (a.x - b.x).abs() <= tolerance && (a.y - b.y).abs() <= tolerance && (a.z - b.z).abs() <= tolerance; }
+
+    template<type T>
+    compile_time run_time bool approx_equal(vec4<T> a, vec4<T> b, T tolerance) { return (a.x - b.x).abs() <= tolerance && (a.y - b.y).abs() <= tolerance && (a.z - b.z).abs() <= tolerance && (a.w - b.w).abs() <= tolerance; }
+
+    template<type T>
+    compile_time run_time vec2<bool> less_than(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x < b.x, .y = a.y < b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> less_than(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x < b.x, .y = a.y < b.y, .z = a.z < b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> less_than(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x < b.x, .y = a.y < b.y, .z = a.z < b.z, .w = a.w < b.w }; }
+
+    template<type T>
+    compile_time run_time vec2<bool> less_than_equal(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x <= b.x, .y = a.y <= b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> less_than_equal(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x <= b.x, .y = a.y <= b.y, .z = a.z <= b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> less_than_equal(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x <= b.x, .y = a.y <= b.y, .z = a.z <= b.z, .w = a.w <= b.w }; }
+
+    template<type T>
+    compile_time run_time vec2<bool> greater_than(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x > b.x, .y = a.y > b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> greater_than(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x > b.x, .y = a.y > b.y, .z = a.z > b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> greater_than(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x > b.x, .y = a.y > b.y, .z = a.z > b.z, .w = a.w > b.w }; }
+
+    template<type T>
+    compile_time run_time vec2<bool> greater_than_equal(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x >= b.x, .y = a.y >= b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> greater_than_equal(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x >= b.x, .y = a.y >= b.y, .z = a.z >= b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> greater_than_equal(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x >= b.x, .y = a.y >= b.y, .z = a.z >= b.z, .w = a.w >= b.w }; }
+
+    template<type T>
+    compile_time run_time vec2<bool> equal(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x == b.x, .y = a.y == b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> equal(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x == b.x, .y = a.y == b.y, .z = a.z == b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> equal(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x == b.x, .y = a.y == b.y, .z = a.z == b.z, .w = a.w == b.w }; }
+
+    template<type T>
+    compile_time run_time vec2<bool> not_equal(vec2<T> a, vec2<T> b) { return vec2<bool>{ .x = a.x != b.x, .y = a.y != b.y }; }
+
+    template<type T>
+    compile_time run_time vec3<bool> not_equal(vec3<T> a, vec3<T> b) { return vec3<bool>{ .x = a.x != b.x, .y = a.y != b.y, .z = a.z != b.z }; }
+
+    template<type T>
+    compile_time run_time vec4<bool> not_equal(vec4<T> a, vec4<T> b) { return vec4<bool>{ .x = a.x != b.x, .y = a.y != b.y, .z = a.z != b.z, .w = a.w != b.w }; }
+
+    compile_time run_time bool any(vec2<bool> v) { return v.x || v.y; }
+
+    compile_time run_time bool any(vec3<bool> v) { return v.x || v.y || v.z; }
+
+    compile_time run_time bool any(vec4<bool> v) { return v.x || v.y || v.z || v.w; }
+
+    compile_time run_time bool all(vec2<bool> v) { return v.x && v.y; }
+
+    compile_time run_time bool all(vec3<bool> v) { return v.x && v.y && v.z; }
+
+    compile_time run_time bool all(vec4<bool> v) { return v.x && v.y && v.z && v.w; }
+
+    template<type T>
+    compile_time run_time vec2<T> select(vec2<bool> pick, vec2<T> a, vec2<T> b) { return vec2<T>{ .x = if (pick.x) { a.x } else { b.x }, .y = if (pick.y) { a.y } else { b.y } }; }
+
+    template<type T>
+    compile_time run_time vec3<T> select(vec3<bool> pick, vec3<T> a, vec3<T> b) { return vec3<T>{ .x = if (pick.x) { a.x } else { b.x }, .y = if (pick.y) { a.y } else { b.y }, .z = if (pick.z) { a.z } else { b.z } }; }
+
+    template<type T>
+    compile_time run_time vec4<T> select(vec4<bool> pick, vec4<T> a, vec4<T> b) { return vec4<T>{ .x = if (pick.x) { a.x } else { b.x }, .y = if (pick.y) { a.y } else { b.y }, .z = if (pick.z) { a.z } else { b.z }, .w = if (pick.w) { a.w } else { b.w } }; }
+
+    // ---- matrices ----------------------------------------------------------------------------------------
+
+    private template<type T>
+    compile_time run_time T angle_sin(radians a) { return scalar_cast<T, f32>(cast<f32>(a)).sin(); }
+
+    private template<type T>
+    compile_time run_time T angle_cos(radians a) { return scalar_cast<T, f32>(cast<f32>(a)).cos(); }
+
+    template<type T>
+    struct mat2 {
+        compile_time run_time static mat2<T> identity() { return mat2<T>{}; }
+        compile_time run_time static mat2<T> zero() { return mat2<T>{ .c0 = vec2<T>{}, .c1 = vec2<T>{} }; }
+        compile_time run_time static mat2<T> from_columns(vec2<T> c0, vec2<T> c1) { return mat2<T>{ .c0 = c0, .c1 = c1 }; }
+        compile_time run_time static mat2<T> from_rows(vec2<T> r0, vec2<T> r1) { return mat2<T>{ .c0 = vec2<T>{ .x = r0.x, .y = r1.x }, .c1 = vec2<T>{ .x = r0.y, .y = r1.y } }; }
+        compile_time run_time static mat2<T> from_diagonal(vec2<T> v) { return mat2<T>{ .c0 = vec2<T>{ .x = v.x }, .c1 = vec2<T>{ .y = v.y } }; }
+        compile_time run_time static mat2<T> rotation(radians angle) {
+            T c = angle_cos<T>(angle);
+            T s = angle_sin<T>(angle);
+            return mat2<T>{ .c0 = vec2<T>{ .x = c, .y = s }, .c1 = vec2<T>{ .x = -s, .y = c } };
+        }
+
+        compile_time run_time static mat2<T> scaling(vec2<T> factors) { return mat2<T>{ .c0 = vec2<T>{ .x = factors.x }, .c1 = vec2<T>{ .y = factors.y } }; }
+        compile_time run_time vec2<T> row(usize i) {
+            return vec2<T>{ .x = this.c0[i], .y = this.c1[i] };
+        }
+
+        template<type U>
+        compile_time run_time mat2<U> to() { return mat2<U>{ .c0 = this.c0.to<U>(), .c1 = this.c1.to<U>() }; }
+
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.c0.x, 4); }
+        }
+
+        compile_time run_time mat2<T> operator*(mat2<T> other) { return mat2<T>{ .c0 = this * other.c0, .c1 = this * other.c1 }; }
+        compile_time run_time vec2<T> operator*(vec2<T> v) { return this.c0 * v.x + this.c1 * v.y; }
+        compile_time run_time mat2<T> operator+(mat2<T> other) { return mat2<T>{ .c0 = this.c0 + other.c0, .c1 = this.c1 + other.c1 }; }
+        compile_time run_time mat2<T> operator-(mat2<T> other) { return mat2<T>{ .c0 = this.c0 - other.c0, .c1 = this.c1 - other.c1 }; }
+        compile_time run_time mat2<T> operator*(T k) { return mat2<T>{ .c0 = this.c0 * k, .c1 = this.c1 * k }; }
+        compile_time run_time mat2<T> operator/(T k) {
+            T r = 1.0 / k;
+            return mat2<T>{ .c0 = this.c0 * r, .c1 = this.c1 * r };
+        }
+
+        compile_time run_time mat2<T> operator-() { return mat2<T>{ .c0 = -this.c0, .c1 = -this.c1 }; }
+
+        vec2<T>& operator[](usize i) {
+            run_time check (i < 2) else "a mat2 has the columns 0 to 1";
+            unsafe { return *(&this.c0).offset(i); }
+        }
+
+        mut vec2<T>& operator[](usize i) mut {
+            run_time check (i < 2) else "a mat2 has the columns 0 to 1";
+            unsafe { return *(mut &this.c0).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"[{this.row(0)}, {this.row(1)}]")); }
+    }
+
+    template<type T>
+    compile_time run_time mat2<T> operator*(T k, mat2<T> m) { return mat2<T>{ .c0 = m.c0 * k, .c1 = m.c1 * k }; }
+
+    template<type T>
+    struct mat3 {
+        compile_time run_time static mat3<T> identity() { return mat3<T>{}; }
+        compile_time run_time static mat3<T> zero() { return mat3<T>{ .c0 = vec3<T>{}, .c1 = vec3<T>{}, .c2 = vec3<T>{} }; }
+        compile_time run_time static mat3<T> from_columns(vec3<T> c0, vec3<T> c1, vec3<T> c2) { return mat3<T>{ .c0 = c0, .c1 = c1, .c2 = c2 }; }
+        compile_time run_time static mat3<T> from_rows(vec3<T> r0, vec3<T> r1, vec3<T> r2) { return mat3<T>{ .c0 = vec3<T>{ .x = r0.x, .y = r1.x, .z = r2.x }, .c1 = vec3<T>{ .x = r0.y, .y = r1.y, .z = r2.y }, .c2 = vec3<T>{ .x = r0.z, .y = r1.z, .z = r2.z } }; }
+        compile_time run_time static mat3<T> from_diagonal(vec3<T> v) { return mat3<T>{ .c0 = vec3<T>{ .x = v.x }, .c1 = vec3<T>{ .y = v.y }, .c2 = vec3<T>{ .z = v.z } }; }
+        compile_time run_time static mat3<T> rotation(radians angle, vec3<T> axis) {
+            T c = angle_cos<T>(angle);
+            T s = angle_sin<T>(angle);
+            T t = 1.0 - c;
+            return mat3<T>{
+                .c0 = vec3<T>{ .x = t * axis.x * axis.x + c, .y = t * axis.x * axis.y + s * axis.z, .z = t * axis.x * axis.z - s * axis.y },
+                .c1 = vec3<T>{ .x = t * axis.x * axis.y - s * axis.z, .y = t * axis.y * axis.y + c, .z = t * axis.y * axis.z + s * axis.x },
+                .c2 = vec3<T>{ .x = t * axis.x * axis.z + s * axis.y, .y = t * axis.y * axis.z - s * axis.x, .z = t * axis.z * axis.z + c },
             };
         }
 
-        f32 length() { return this.dot(this).sqrt(); }
+        compile_time run_time static mat3<T> rotation_x(radians angle) {
+            T c = angle_cos<T>(angle);
+            T s = angle_sin<T>(angle);
+            return mat3<T>{ .c0 = vec3<T>{ .x = 1.0 }, .c1 = vec3<T>{ .y = c, .z = s }, .c2 = vec3<T>{ .y = -s, .z = c } };
+        }
 
-        vec3 normalized() {
-            f32 n = this.length();
-            if (n == 0.0) {
-                return this;
+        compile_time run_time static mat3<T> rotation_y(radians angle) {
+            T c = angle_cos<T>(angle);
+            T s = angle_sin<T>(angle);
+            return mat3<T>{ .c0 = vec3<T>{ .x = c, .z = -s }, .c1 = vec3<T>{ .y = 1.0 }, .c2 = vec3<T>{ .x = s, .z = c } };
+        }
+
+        compile_time run_time static mat3<T> rotation_z(radians angle) {
+            T c = angle_cos<T>(angle);
+            T s = angle_sin<T>(angle);
+            return mat3<T>{ .c0 = vec3<T>{ .x = c, .y = s }, .c1 = vec3<T>{ .x = -s, .y = c }, .c2 = vec3<T>{ .z = 1.0 } };
+        }
+
+        compile_time run_time static mat3<T> scaling(vec3<T> factors) { return mat3<T>{ .c0 = vec3<T>{ .x = factors.x }, .c1 = vec3<T>{ .y = factors.y }, .c2 = vec3<T>{ .z = factors.z } }; }
+        compile_time run_time static mat3<T> from_quat(quat<T> q) {
+            T x2 = q.x + q.x;
+            T y2 = q.y + q.y;
+            T z2 = q.z + q.z;
+            T xx = q.x * x2;
+            T xy = q.x * y2;
+            T xz = q.x * z2;
+            T yy = q.y * y2;
+            T yz = q.y * z2;
+            T zz = q.z * z2;
+            T wx = q.w * x2;
+            T wy = q.w * y2;
+            T wz = q.w * z2;
+            return mat3<T>{
+                .c0 = vec3<T>{ .x = 1.0 - (yy + zz), .y = xy + wz, .z = xz - wy },
+                .c1 = vec3<T>{ .x = xy - wz, .y = 1.0 - (xx + zz), .z = yz + wx },
+                .c2 = vec3<T>{ .x = xz + wy, .y = yz - wx, .z = 1.0 - (xx + yy) },
+            };
+        }
+
+        compile_time run_time static mat3<T> from_mat4(mat4<T> m) { return mat3<T>{ .c0 = m.c0.xyz(), .c1 = m.c1.xyz(), .c2 = m.c2.xyz() }; }
+        compile_time run_time static mat3<T> translation_2d(vec2<T> offset) { return mat3<T>{ .c2 = vec3<T>{ .x = offset.x, .y = offset.y, .z = 1.0 } }; }
+        compile_time run_time static mat3<T> rotation_2d(radians angle) { return mat3<T>::rotation_z(angle); }
+        compile_time run_time static mat3<T> scaling_2d(vec2<T> factors) { return mat3<T>{ .c0 = vec3<T>{ .x = factors.x }, .c1 = vec3<T>{ .y = factors.y } }; }
+        compile_time run_time vec3<T> row(usize i) {
+            return vec3<T>{ .x = this.c0[i], .y = this.c1[i], .z = this.c2[i] };
+        }
+
+        template<type U>
+        compile_time run_time mat3<U> to() { return mat3<U>{ .c0 = this.c0.to<U>(), .c1 = this.c1.to<U>(), .c2 = this.c2.to<U>() }; }
+
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.c0.x, 9); }
+        }
+
+        compile_time run_time mat3<T> operator*(mat3<T> other) { return mat3<T>{ .c0 = this * other.c0, .c1 = this * other.c1, .c2 = this * other.c2 }; }
+        compile_time run_time vec3<T> operator*(vec3<T> v) { return this.c0 * v.x + this.c1 * v.y + this.c2 * v.z; }
+        compile_time run_time mat3<T> operator+(mat3<T> other) { return mat3<T>{ .c0 = this.c0 + other.c0, .c1 = this.c1 + other.c1, .c2 = this.c2 + other.c2 }; }
+        compile_time run_time mat3<T> operator-(mat3<T> other) { return mat3<T>{ .c0 = this.c0 - other.c0, .c1 = this.c1 - other.c1, .c2 = this.c2 - other.c2 }; }
+        compile_time run_time mat3<T> operator*(T k) { return mat3<T>{ .c0 = this.c0 * k, .c1 = this.c1 * k, .c2 = this.c2 * k }; }
+        compile_time run_time mat3<T> operator/(T k) {
+            T r = 1.0 / k;
+            return mat3<T>{ .c0 = this.c0 * r, .c1 = this.c1 * r, .c2 = this.c2 * r };
+        }
+
+        compile_time run_time mat3<T> operator-() { return mat3<T>{ .c0 = -this.c0, .c1 = -this.c1, .c2 = -this.c2 }; }
+
+        vec3<T>& operator[](usize i) {
+            run_time check (i < 3) else "a mat3 has the columns 0 to 2";
+            unsafe { return *(&this.c0).offset(i); }
+        }
+
+        mut vec3<T>& operator[](usize i) mut {
+            run_time check (i < 3) else "a mat3 has the columns 0 to 2";
+            unsafe { return *(mut &this.c0).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"[{this.row(0)}, {this.row(1)}, {this.row(2)}]")); }
+    }
+
+    template<type T>
+    compile_time run_time mat3<T> operator*(T k, mat3<T> m) { return mat3<T>{ .c0 = m.c0 * k, .c1 = m.c1 * k, .c2 = m.c2 * k }; }
+
+    template<type T>
+    struct mat4 {
+        compile_time run_time static mat4<T> identity() { return mat4<T>{}; }
+        compile_time run_time static mat4<T> zero() { return mat4<T>{ .c0 = vec4<T>{}, .c1 = vec4<T>{}, .c2 = vec4<T>{}, .c3 = vec4<T>{} }; }
+        compile_time run_time static mat4<T> from_columns(vec4<T> c0, vec4<T> c1, vec4<T> c2, vec4<T> c3) { return mat4<T>{ .c0 = c0, .c1 = c1, .c2 = c2, .c3 = c3 }; }
+        compile_time run_time static mat4<T> from_rows(vec4<T> r0, vec4<T> r1, vec4<T> r2, vec4<T> r3) { return mat4<T>{ .c0 = vec4<T>{ .x = r0.x, .y = r1.x, .z = r2.x, .w = r3.x }, .c1 = vec4<T>{ .x = r0.y, .y = r1.y, .z = r2.y, .w = r3.y }, .c2 = vec4<T>{ .x = r0.z, .y = r1.z, .z = r2.z, .w = r3.z }, .c3 = vec4<T>{ .x = r0.w, .y = r1.w, .z = r2.w, .w = r3.w } }; }
+        compile_time run_time static mat4<T> from_diagonal(vec4<T> v) { return mat4<T>{ .c0 = vec4<T>{ .x = v.x }, .c1 = vec4<T>{ .y = v.y }, .c2 = vec4<T>{ .z = v.z }, .c3 = vec4<T>{ .w = v.w } }; }
+        compile_time run_time static mat4<T> translation(vec3<T> offset) { return mat4<T>{ .c3 = vec4<T>{ .x = offset.x, .y = offset.y, .z = offset.z, .w = 1.0 } }; }
+        compile_time run_time static mat4<T> rotation(radians angle, vec3<T> axis) { return mat4<T>::from_mat3(mat3<T>::rotation(angle, axis)); }
+        compile_time run_time static mat4<T> rotation_x(radians angle) { return mat4<T>::from_mat3(mat3<T>::rotation_x(angle)); }
+        compile_time run_time static mat4<T> rotation_y(radians angle) { return mat4<T>::from_mat3(mat3<T>::rotation_y(angle)); }
+        compile_time run_time static mat4<T> rotation_z(radians angle) { return mat4<T>::from_mat3(mat3<T>::rotation_z(angle)); }
+        compile_time run_time static mat4<T> scaling(vec3<T> factors) { return mat4<T>{ .c0 = vec4<T>{ .x = factors.x }, .c1 = vec4<T>{ .y = factors.y }, .c2 = vec4<T>{ .z = factors.z } }; }
+        compile_time run_time static mat4<T> from_quat(quat<T> q) { return mat4<T>::from_mat3(mat3<T>::from_quat(q)); }
+        compile_time run_time static mat4<T> from_mat3(mat3<T> m) {
+            return mat4<T>{
+                .c0 = vec4<T>{ .x = m.c0.x, .y = m.c0.y, .z = m.c0.z },
+                .c1 = vec4<T>{ .x = m.c1.x, .y = m.c1.y, .z = m.c1.z },
+                .c2 = vec4<T>{ .x = m.c2.x, .y = m.c2.y, .z = m.c2.z },
+            };
+        }
+
+        compile_time run_time static mat4<T> trs(vec3<T> translation, quat<T> rotation, vec3<T> scale) {
+            quat<T> q = rotation;
+            T x2 = q.x + q.x;
+            T y2 = q.y + q.y;
+            T z2 = q.z + q.z;
+            T xx = q.x * x2;
+            T xy = q.x * y2;
+            T xz = q.x * z2;
+            T yy = q.y * y2;
+            T yz = q.y * z2;
+            T zz = q.z * z2;
+            T wx = q.w * x2;
+            T wy = q.w * y2;
+            T wz = q.w * z2;
+            return mat4<T>{
+                .c0 = vec4<T>{ .x = (1.0 - (yy + zz)) * scale.x, .y = (xy + wz) * scale.x, .z = (xz - wy) * scale.x },
+                .c1 = vec4<T>{ .x = (xy - wz) * scale.y, .y = (1.0 - (xx + zz)) * scale.y, .z = (yz + wx) * scale.y },
+                .c2 = vec4<T>{ .x = (xz + wy) * scale.z, .y = (yz - wx) * scale.z, .z = (1.0 - (xx + yy)) * scale.z },
+                .c3 = vec4<T>{ .x = translation.x, .y = translation.y, .z = translation.z, .w = 1.0 },
+            };
+        }
+
+        compile_time run_time vec4<T> row(usize i) {
+            return vec4<T>{ .x = this.c0[i], .y = this.c1[i], .z = this.c2[i], .w = this.c3[i] };
+        }
+
+        template<type U>
+        compile_time run_time mat4<U> to() { return mat4<U>{ .c0 = this.c0.to<U>(), .c1 = this.c1.to<U>(), .c2 = this.c2.to<U>(), .c3 = this.c3.to<U>() }; }
+
+        std::span<T> as_span() {
+            unsafe { return std::span<T>::from_raw(&this.c0.x, 16); }
+        }
+
+        compile_time run_time mat4<T> operator*(mat4<T> other) { return mat4<T>{ .c0 = this * other.c0, .c1 = this * other.c1, .c2 = this * other.c2, .c3 = this * other.c3 }; }
+        // For f32 the four columns are four SIMD registers, written out: left to the optimizer, a
+        // loop over matrices is vectorized across iterations instead, with the elements gathered by
+        // shuffles, which is several times slower than this.
+        compile_time run_time vec4<T> operator*(vec4<T> v) {
+            if compile_time (std::is_same<T, f32>()) {
+                if (!std::at_compile_time()) {
+                    f32x4 a = [this.c0.x, this.c0.y, this.c0.z, this.c0.w];
+                    f32x4 b = [this.c1.x, this.c1.y, this.c1.z, this.c1.w];
+                    f32x4 c = [this.c2.x, this.c2.y, this.c2.z, this.c2.w];
+                    f32x4 d = [this.c3.x, this.c3.y, this.c3.z, this.c3.w];
+                    f32x4 r = a * f32x4::splat(v.x) + b * f32x4::splat(v.y) + c * f32x4::splat(v.z) + d * f32x4::splat(v.w);
+                    return vec4<T>{ .x = r[0], .y = r[1], .z = r[2], .w = r[3] };
+                }
             }
-            return vec3{ .x = this.x / n, .y = this.y / n, .z = this.z / n };
+            return this.c0 * v.x + this.c1 * v.y + this.c2 * v.z + this.c3 * v.w;
         }
 
-        vec3 lerp(vec3& to, f32 t) {
-            return vec3{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t), .z = std::math::lerp(this.z, to.z, t) };
+        compile_time run_time mat4<T> operator+(mat4<T> other) { return mat4<T>{ .c0 = this.c0 + other.c0, .c1 = this.c1 + other.c1, .c2 = this.c2 + other.c2, .c3 = this.c3 + other.c3 }; }
+        compile_time run_time mat4<T> operator-(mat4<T> other) { return mat4<T>{ .c0 = this.c0 - other.c0, .c1 = this.c1 - other.c1, .c2 = this.c2 - other.c2, .c3 = this.c3 - other.c3 }; }
+        compile_time run_time mat4<T> operator*(T k) { return mat4<T>{ .c0 = this.c0 * k, .c1 = this.c1 * k, .c2 = this.c2 * k, .c3 = this.c3 * k }; }
+        compile_time run_time mat4<T> operator/(T k) {
+            T r = 1.0 / k;
+            return mat4<T>{ .c0 = this.c0 * r, .c1 = this.c1 * r, .c2 = this.c2 * r, .c3 = this.c3 * r };
         }
 
-        vec3 operator+(vec3& other) { return vec3{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z }; }
-        vec3 operator-(vec3& other) { return vec3{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z }; }
-        vec3 operator*(f32 k) { return vec3{ .x = this.x * k, .y = this.y * k, .z = this.z * k }; }
-        vec3 operator/(f32 k) { return vec3{ .x = this.x / k, .y = this.y / k, .z = this.z / k }; }
-        vec3 operator-() { return vec3{ .x = -this.x, .y = -this.y, .z = -this.z }; }
+        compile_time run_time mat4<T> operator-() { return mat4<T>{ .c0 = -this.c0, .c1 = -this.c1, .c2 = -this.c2, .c3 = -this.c3 }; }
+
+        vec4<T>& operator[](usize i) {
+            run_time check (i < 4) else "a mat4 has the columns 0 to 3";
+            unsafe { return *(&this.c0).offset(i); }
+        }
+
+        mut vec4<T>& operator[](usize i) mut {
+            run_time check (i < 4) else "a mat4 has the columns 0 to 3";
+            unsafe { return *(mut &this.c0).offset(i); }
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"[{this.row(0)}, {this.row(1)}, {this.row(2)}, {this.row(3)}]")); }
     }
 
-    struct vec4 {
-        static vec4 splat(f32 v) { return vec4{ .x = v, .y = v, .z = v, .w = v }; }
+    template<type T>
+    compile_time run_time mat4<T> operator*(T k, mat4<T> m) { return mat4<T>{ .c0 = m.c0 * k, .c1 = m.c1 * k, .c2 = m.c2 * k, .c3 = m.c3 * k }; }
 
-        f32 dot(vec4& other) { return this.x * other.x + this.y * other.y + this.z * other.z + this.w * other.w; }
+    // ---- matrix functions --------------------------------------------------------------------------------
 
-        vec4 lerp(vec4& to, f32 t) {
-            return vec4{ .x = std::math::lerp(this.x, to.x, t), .y = std::math::lerp(this.y, to.y, t),
-                         .z = std::math::lerp(this.z, to.z, t), .w = std::math::lerp(this.w, to.w, t) };
+    template<type T>
+    compile_time run_time mat2<T> transpose(mat2<T> m) { return mat2<T>::from_rows(m.c0, m.c1); }
+
+    template<type T>
+    compile_time run_time mat3<T> transpose(mat3<T> m) { return mat3<T>::from_rows(m.c0, m.c1, m.c2); }
+
+    template<type T>
+    compile_time run_time mat4<T> transpose(mat4<T> m) { return mat4<T>::from_rows(m.c0, m.c1, m.c2, m.c3); }
+
+    template<type T>
+    compile_time run_time T determinant(mat2<T> m) { return m.c0.x * m.c1.y - m.c1.x * m.c0.y; }
+
+    template<type T>
+    compile_time run_time T determinant(mat3<T> m) { return dot(m.c0, cross(m.c1, m.c2)); }
+
+    template<type T>
+    compile_time run_time T determinant(mat4<T> m) {
+        T a00 = m.c0.x;
+        T a01 = m.c0.y;
+        T a02 = m.c0.z;
+        T a03 = m.c0.w;
+        T a10 = m.c1.x;
+        T a11 = m.c1.y;
+        T a12 = m.c1.z;
+        T a13 = m.c1.w;
+        T a20 = m.c2.x;
+        T a21 = m.c2.y;
+        T a22 = m.c2.z;
+        T a23 = m.c2.w;
+        T a30 = m.c3.x;
+        T a31 = m.c3.y;
+        T a32 = m.c3.z;
+        T a33 = m.c3.w;
+        T b00 = a00 * a11 - a01 * a10;
+        T b01 = a00 * a12 - a02 * a10;
+        T b02 = a00 * a13 - a03 * a10;
+        T b03 = a01 * a12 - a02 * a11;
+        T b04 = a01 * a13 - a03 * a11;
+        T b05 = a02 * a13 - a03 * a12;
+        T b06 = a20 * a31 - a21 * a30;
+        T b07 = a20 * a32 - a22 * a30;
+        T b08 = a20 * a33 - a23 * a30;
+        T b09 = a21 * a32 - a22 * a31;
+        T b10 = a21 * a33 - a23 * a31;
+        T b11 = a22 * a33 - a23 * a32;
+        return b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    }
+
+    template<type T>
+    compile_time run_time mat2<T> inverse(mat2<T> m) {
+        T r = 1.0 / (m.c0.x * m.c1.y - m.c1.x * m.c0.y);
+        return mat2<T>{ .c0 = vec2<T>{ .x = m.c1.y * r, .y = -m.c0.y * r }, .c1 = vec2<T>{ .x = -m.c1.x * r, .y = m.c0.x * r } };
+    }
+
+    template<type T>
+    compile_time run_time mat3<T> inverse(mat3<T> m) {
+        vec3<T> r0 = cross(m.c1, m.c2);
+        vec3<T> r1 = cross(m.c2, m.c0);
+        vec3<T> r2 = cross(m.c0, m.c1);
+        T r = 1.0 / dot(m.c0, r0);
+        return mat3<T>::from_rows(r0 * r, r1 * r, r2 * r);
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> inverse(mat4<T> m) {
+        T a00 = m.c0.x;
+        T a01 = m.c0.y;
+        T a02 = m.c0.z;
+        T a03 = m.c0.w;
+        T a10 = m.c1.x;
+        T a11 = m.c1.y;
+        T a12 = m.c1.z;
+        T a13 = m.c1.w;
+        T a20 = m.c2.x;
+        T a21 = m.c2.y;
+        T a22 = m.c2.z;
+        T a23 = m.c2.w;
+        T a30 = m.c3.x;
+        T a31 = m.c3.y;
+        T a32 = m.c3.z;
+        T a33 = m.c3.w;
+        T b00 = a00 * a11 - a01 * a10;
+        T b01 = a00 * a12 - a02 * a10;
+        T b02 = a00 * a13 - a03 * a10;
+        T b03 = a01 * a12 - a02 * a11;
+        T b04 = a01 * a13 - a03 * a11;
+        T b05 = a02 * a13 - a03 * a12;
+        T b06 = a20 * a31 - a21 * a30;
+        T b07 = a20 * a32 - a22 * a30;
+        T b08 = a20 * a33 - a23 * a30;
+        T b09 = a21 * a32 - a22 * a31;
+        T b10 = a21 * a33 - a23 * a31;
+        T b11 = a22 * a33 - a23 * a32;
+        T r = 1.0 / (b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06);
+        return mat4<T>{
+            .c0 = vec4<T>{
+                .x = (a11 * b11 - a12 * b10 + a13 * b09) * r,
+                .y = (a02 * b10 - a01 * b11 - a03 * b09) * r,
+                .z = (a31 * b05 - a32 * b04 + a33 * b03) * r,
+                .w = (a22 * b04 - a21 * b05 - a23 * b03) * r,
+            },
+            .c1 = vec4<T>{
+                .x = (a12 * b08 - a10 * b11 - a13 * b07) * r,
+                .y = (a00 * b11 - a02 * b08 + a03 * b07) * r,
+                .z = (a32 * b02 - a30 * b05 - a33 * b01) * r,
+                .w = (a20 * b05 - a22 * b02 + a23 * b01) * r,
+            },
+            .c2 = vec4<T>{
+                .x = (a10 * b10 - a11 * b08 + a13 * b06) * r,
+                .y = (a01 * b08 - a00 * b10 - a03 * b06) * r,
+                .z = (a30 * b04 - a31 * b02 + a33 * b00) * r,
+                .w = (a21 * b02 - a20 * b04 - a23 * b00) * r,
+            },
+            .c3 = vec4<T>{
+                .x = (a11 * b07 - a10 * b09 - a12 * b06) * r,
+                .y = (a00 * b09 - a01 * b07 + a02 * b06) * r,
+                .z = (a31 * b01 - a30 * b03 - a32 * b00) * r,
+                .w = (a20 * b03 - a21 * b01 + a22 * b00) * r,
+            },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> affine_inverse(mat4<T> m) {
+        vec3<T> a = m.c0.xyz();
+        vec3<T> b = m.c1.xyz();
+        vec3<T> c = m.c2.xyz();
+        vec3<T> t = m.c3.xyz();
+        vec3<T> n0 = cross(b, c);
+        T r = 1.0 / dot(a, n0);
+        vec3<T> r0 = n0 * r;
+        vec3<T> r1 = cross(c, a) * r;
+        vec3<T> r2 = cross(a, b) * r;
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = r0.x, .y = r1.x, .z = r2.x },
+            .c1 = vec4<T>{ .x = r0.y, .y = r1.y, .z = r2.y },
+            .c2 = vec4<T>{ .x = r0.z, .y = r1.z, .z = r2.z },
+            .c3 = vec4<T>{ .x = -dot(r0, t), .y = -dot(r1, t), .z = -dot(r2, t), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat3<T> normal_matrix(mat4<T> m) {
+        vec3<T> a = m.c0.xyz();
+        vec3<T> b = m.c1.xyz();
+        vec3<T> c = m.c2.xyz();
+        vec3<T> r0 = cross(b, c);
+        T r = 1.0 / dot(a, r0);
+        return mat3<T>{ .c0 = r0 * r, .c1 = cross(c, a) * r, .c2 = cross(a, b) * r };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> translate(mat4<T> m, vec3<T> offset) { return mat4<T>{ .c0 = m.c0, .c1 = m.c1, .c2 = m.c2, .c3 = m.c0 * offset.x + m.c1 * offset.y + m.c2 * offset.z + m.c3 }; }
+
+    template<type T>
+    compile_time run_time mat4<T> rotate(mat4<T> m, radians angle, vec3<T> axis) {
+        mat3<T> r = mat3<T>::rotation(angle, axis);
+        return mat4<T>{
+            .c0 = m.c0 * r.c0.x + m.c1 * r.c0.y + m.c2 * r.c0.z,
+            .c1 = m.c0 * r.c1.x + m.c1 * r.c1.y + m.c2 * r.c1.z,
+            .c2 = m.c0 * r.c2.x + m.c1 * r.c2.y + m.c2 * r.c2.z,
+            .c3 = m.c3,
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> scale(mat4<T> m, vec3<T> factors) { return mat4<T>{ .c0 = m.c0 * factors.x, .c1 = m.c1 * factors.y, .c2 = m.c2 * factors.z, .c3 = m.c3 }; }
+
+    template<type T>
+    compile_time run_time vec3<T> transform_point(mat4<T> m, vec3<T> p) { return (m.c0 * p.x + m.c1 * p.y + m.c2 * p.z + m.c3).xyz(); }
+
+    template<type T>
+    compile_time run_time vec3<T> transform_vector(mat4<T> m, vec3<T> v) { return (m.c0 * v.x + m.c1 * v.y + m.c2 * v.z).xyz(); }
+
+    template<type T>
+    compile_time run_time vec3<T> project_point(mat4<T> m, vec3<T> p) {
+        vec4<T> r = m.c0 * p.x + m.c1 * p.y + m.c2 * p.z + m.c3;
+        return r.xyz() * (1.0 / r.w);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> transform_point(mat3<T> m, vec2<T> p) { return (m.c0 * p.x + m.c1 * p.y + m.c2).xy(); }
+
+    template<type T>
+    compile_time run_time vec2<T> transform_vector(mat3<T> m, vec2<T> v) { return (m.c0 * v.x + m.c1 * v.y).xy(); }
+
+    template<type T>
+    compile_time run_time bool approx_equal(mat2<T> a, mat2<T> b, T tolerance) { return approx_equal(a.c0, b.c0, tolerance) && approx_equal(a.c1, b.c1, tolerance); }
+
+    template<type T>
+    compile_time run_time bool approx_equal(mat3<T> a, mat3<T> b, T tolerance) { return approx_equal(a.c0, b.c0, tolerance) && approx_equal(a.c1, b.c1, tolerance) && approx_equal(a.c2, b.c2, tolerance); }
+
+    template<type T>
+    compile_time run_time bool approx_equal(mat4<T> a, mat4<T> b, T tolerance) { return approx_equal(a.c0, b.c0, tolerance) && approx_equal(a.c1, b.c1, tolerance) && approx_equal(a.c2, b.c2, tolerance) && approx_equal(a.c3, b.c3, tolerance); }
+
+    // ---- projections and views ---------------------------------------------------------------------------
+
+    private template<type T>
+    compile_time run_time T angle_tan_half(radians a) { return (scalar_cast<T, f32>(cast<f32>(a)) * 0.5).tan(); }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective(radians fov_y, T aspect, T near, T far) { return perspective_rh_zo(fov_y, aspect, near, far); }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_rh_zo(radians fov_y, T aspect, T near, T far) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = far / (near - far), .w = -1.0 },
+            .c3 = vec4<T>{ .z = near * far / (near - far), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_rh_no(radians fov_y, T aspect, T near, T far) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = (far + near) / (near - far), .w = -1.0 },
+            .c3 = vec4<T>{ .z = 2.0 * far * near / (near - far), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_lh_zo(radians fov_y, T aspect, T near, T far) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = far / (far - near), .w = 1.0 },
+            .c3 = vec4<T>{ .z = near * far / (near - far), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_lh_no(radians fov_y, T aspect, T near, T far) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = (far + near) / (far - near), .w = 1.0 },
+            .c3 = vec4<T>{ .z = 2.0 * far * near / (near - far), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_infinite(radians fov_y, T aspect, T near) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = -1.0, .w = -1.0 },
+            .c3 = vec4<T>{ .z = -near, .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_reversed(radians fov_y, T aspect, T near, T far) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = near / (far - near), .w = -1.0 },
+            .c3 = vec4<T>{ .z = near * far / (far - near), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_infinite_reversed(radians fov_y, T aspect, T near) {
+        T f = 1.0 / angle_tan_half<T>(fov_y);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = f / aspect },
+            .c1 = vec4<T>{ .y = f },
+            .c2 = vec4<T>{ .z = 0.0, .w = -1.0 },
+            .c3 = vec4<T>{ .z = near, .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> perspective_off_center(T left, T right, T bottom, T top, T near, T far) {
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = 2.0 * near / (right - left) },
+            .c1 = vec4<T>{ .y = 2.0 * near / (top - bottom) },
+            .c2 = vec4<T>{ .x = (right + left) / (right - left), .y = (top + bottom) / (top - bottom), .z = far / (near - far), .w = -1.0 },
+            .c3 = vec4<T>{ .z = near * far / (near - far), .w = 0.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho(T left, T right, T bottom, T top, T near, T far) { return ortho_rh_zo(left, right, bottom, top, near, far); }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho_rh_zo(T left, T right, T bottom, T top, T near, T far) {
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = 2.0 / (right - left) },
+            .c1 = vec4<T>{ .y = 2.0 / (top - bottom) },
+            .c2 = vec4<T>{ .z = 1.0 / (near - far) },
+            .c3 = vec4<T>{ .x = (left + right) / (left - right), .y = (bottom + top) / (bottom - top), .z = near / (near - far), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho_rh_no(T left, T right, T bottom, T top, T near, T far) {
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = 2.0 / (right - left) },
+            .c1 = vec4<T>{ .y = 2.0 / (top - bottom) },
+            .c2 = vec4<T>{ .z = 2.0 / (near - far) },
+            .c3 = vec4<T>{ .x = (left + right) / (left - right), .y = (bottom + top) / (bottom - top), .z = (far + near) / (near - far), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho_lh_zo(T left, T right, T bottom, T top, T near, T far) {
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = 2.0 / (right - left) },
+            .c1 = vec4<T>{ .y = 2.0 / (top - bottom) },
+            .c2 = vec4<T>{ .z = 1.0 / (far - near) },
+            .c3 = vec4<T>{ .x = (left + right) / (left - right), .y = (bottom + top) / (bottom - top), .z = near / (near - far), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho_lh_no(T left, T right, T bottom, T top, T near, T far) {
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = 2.0 / (right - left) },
+            .c1 = vec4<T>{ .y = 2.0 / (top - bottom) },
+            .c2 = vec4<T>{ .z = 2.0 / (far - near) },
+            .c3 = vec4<T>{ .x = (left + right) / (left - right), .y = (bottom + top) / (bottom - top), .z = (far + near) / (near - far), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> ortho_2d(T left, T right, T bottom, T top) { return ortho_rh_no(left, right, bottom, top, -1.0, 1.0); }
+
+    template<type T>
+    compile_time run_time mat4<T> look_at(vec3<T> eye, vec3<T> target, vec3<T> up) { return look_at_rh(eye, target, up); }
+
+    template<type T>
+    compile_time run_time mat4<T> look_at_rh(vec3<T> eye, vec3<T> target, vec3<T> up) {
+        vec3<T> f = normalize(target - eye);
+        vec3<T> s = normalize(cross(f, up));
+        vec3<T> u = cross(s, f);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = s.x, .y = u.x, .z = -f.x },
+            .c1 = vec4<T>{ .x = s.y, .y = u.y, .z = -f.y },
+            .c2 = vec4<T>{ .x = s.z, .y = u.z, .z = -f.z },
+            .c3 = vec4<T>{ .x = -dot(s, eye), .y = -dot(u, eye), .z = dot(f, eye), .w = 1.0 },
+        };
+    }
+
+    template<type T>
+    compile_time run_time mat4<T> look_at_lh(vec3<T> eye, vec3<T> target, vec3<T> up) {
+        vec3<T> f = normalize(target - eye);
+        vec3<T> s = normalize(cross(up, f));
+        vec3<T> u = cross(f, s);
+        return mat4<T>{
+            .c0 = vec4<T>{ .x = s.x, .y = u.x, .z = f.x },
+            .c1 = vec4<T>{ .x = s.y, .y = u.y, .z = f.y },
+            .c2 = vec4<T>{ .x = s.z, .y = u.z, .z = f.z },
+            .c3 = vec4<T>{ .x = -dot(s, eye), .y = -dot(u, eye), .z = -dot(f, eye), .w = 1.0 },
+        };
+    }
+
+    // ---- quaternions -------------------------------------------------------------------------------------
+
+    private template<type T>
+    compile_time run_time T half_sin(radians a) { return (scalar_cast<T, f32>(cast<f32>(a)) * 0.5).sin(); }
+
+    private template<type T>
+    compile_time run_time T half_cos(radians a) { return (scalar_cast<T, f32>(cast<f32>(a)) * 0.5).cos(); }
+
+    template<type T>
+    struct quat {
+        compile_time run_time static quat<T> identity() { return quat<T>{}; }
+        compile_time run_time static quat<T> make(T x, T y, T z, T w) { return quat<T>{ .x = x, .y = y, .z = z, .w = w }; }
+
+        compile_time run_time static quat<T> from_axis_angle(vec3<T> axis, radians angle) {
+            T s = half_sin<T>(angle);
+            return quat<T>{ .x = axis.x * s, .y = axis.y * s, .z = axis.z * s, .w = half_cos<T>(angle) };
         }
 
-        vec4 operator+(vec4& other) { return vec4{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z, .w = this.w + other.w }; }
-        vec4 operator-(vec4& other) { return vec4{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z, .w = this.w - other.w }; }
-        vec4 operator*(f32 k) { return vec4{ .x = this.x * k, .y = this.y * k, .z = this.z * k, .w = this.w * k }; }
+        compile_time run_time static quat<T> rotation_x(radians angle) { return quat<T>{ .x = half_sin<T>(angle), .w = half_cos<T>(angle) }; }
+        compile_time run_time static quat<T> rotation_y(radians angle) { return quat<T>{ .y = half_sin<T>(angle), .w = half_cos<T>(angle) }; }
+        compile_time run_time static quat<T> rotation_z(radians angle) { return quat<T>{ .z = half_sin<T>(angle), .w = half_cos<T>(angle) }; }
+
+        compile_time run_time static quat<T> from_euler(radians pitch, radians yaw, radians roll) {
+            T sx = half_sin<T>(pitch);
+            T cx = half_cos<T>(pitch);
+            T sy = half_sin<T>(yaw);
+            T cy = half_cos<T>(yaw);
+            T sz = half_sin<T>(roll);
+            T cz = half_cos<T>(roll);
+            return quat<T>{
+                .x = cy * sx * cz + sy * cx * sz,
+                .y = sy * cx * cz - cy * sx * sz,
+                .z = cy * cx * sz - sy * sx * cz,
+                .w = cy * cx * cz + sy * sx * sz,
+            };
+        }
+
+        // Shepperd's method: the largest of w, x, y, z is computed from the diagonal, the others
+        // from it, so nothing is divided by a small number.
+        compile_time run_time static quat<T> from_mat3(mat3<T> m) {
+            T trace = m.c0.x + m.c1.y + m.c2.z;
+            if (trace > 0.0) {
+                T s = (trace + 1.0).sqrt() * 2.0;
+                T r = 1.0 / s;
+                return quat<T>{ .x = (m.c1.z - m.c2.y) * r, .y = (m.c2.x - m.c0.z) * r, .z = (m.c0.y - m.c1.x) * r, .w = s * 0.25 };
+            }
+            if (m.c0.x > m.c1.y && m.c0.x > m.c2.z) {
+                T s = (1.0 + m.c0.x - m.c1.y - m.c2.z).sqrt() * 2.0;
+                T r = 1.0 / s;
+                return quat<T>{ .x = s * 0.25, .y = (m.c1.x + m.c0.y) * r, .z = (m.c2.x + m.c0.z) * r, .w = (m.c1.z - m.c2.y) * r };
+            }
+            if (m.c1.y > m.c2.z) {
+                T s = (1.0 + m.c1.y - m.c0.x - m.c2.z).sqrt() * 2.0;
+                T r = 1.0 / s;
+                return quat<T>{ .x = (m.c1.x + m.c0.y) * r, .y = s * 0.25, .z = (m.c2.y + m.c1.z) * r, .w = (m.c2.x - m.c0.z) * r };
+            }
+            T s = (1.0 + m.c2.z - m.c0.x - m.c1.y).sqrt() * 2.0;
+            T r = 1.0 / s;
+            return quat<T>{ .x = (m.c2.x + m.c0.z) * r, .y = (m.c2.y + m.c1.z) * r, .z = s * 0.25, .w = (m.c0.y - m.c1.x) * r };
+        }
+
+        compile_time run_time static quat<T> from_mat4(mat4<T> m) { return quat<T>::from_mat3(mat3<T>::from_mat4(m)); }
+
+        compile_time run_time static quat<T> look_rotation(vec3<T> forward, vec3<T> up) {
+            vec3<T> f = normalize(forward);
+            vec3<T> r = normalize(cross(f, up));
+            vec3<T> u = cross(r, f);
+            return quat<T>::from_mat3(mat3<T>{ .c0 = r, .c1 = u, .c2 = -f });
+        }
+
+        compile_time run_time vec3<T> axis() {
+            T n = this.x * this.x + this.y * this.y + this.z * this.z;
+            if (n <= 0.0) { return vec3<T>{ .x = 1.0 }; }
+            T r = 1.0 / n.sqrt();
+            return vec3<T>{ .x = this.x * r, .y = this.y * r, .z = this.z * r };
+        }
+
+        compile_time run_time radians angle() {
+            T s = (this.x * this.x + this.y * this.y + this.z * this.z).sqrt();
+            return cast<radians>(scalar_cast<f32, T>(2.0 * s.atan2(this.w)));
+        }
+
+        compile_time run_time euler_angles to_euler() {
+            T sp = 2.0 * (w * x - y * z);
+            if (sp.abs() > 0.99999) {   // looking straight up or down: yaw and roll turn around the same axis
+                T half = 1.5707963267948966;
+                return euler_angles{
+                    .pitch = cast<radians>(scalar_cast<f32, T>(half.copysign(sp))),
+                    .yaw = cast<radians>(scalar_cast<f32, T>((2.0 * (w * y - x * z)).atan2(1.0 - 2.0 * (y * y + z * z)))),
+                };
+            }
+            return euler_angles{
+                .pitch = cast<radians>(scalar_cast<f32, T>(sp.asin())),
+                .yaw = cast<radians>(scalar_cast<f32, T>((2.0 * (x * z + w * y)).atan2(1.0 - 2.0 * (x * x + y * y)))),
+                .roll = cast<radians>(scalar_cast<f32, T>((2.0 * (x * y + w * z)).atan2(1.0 - 2.0 * (x * x + z * z)))),
+            };
+        }
+
+        compile_time run_time vec3<T> forward() { return this * vec3<T>{ .z = -1.0 }; }
+        compile_time run_time vec3<T> right() { return this * vec3<T>{ .x = 1.0 }; }
+        compile_time run_time vec3<T> up() { return this * vec3<T>{ .y = 1.0 }; }
+
+        template<type U>
+        compile_time run_time quat<U> to() {
+            return quat<U>{ .x = scalar_cast<U, T>(this.x), .y = scalar_cast<U, T>(this.y), .z = scalar_cast<U, T>(this.z), .w = scalar_cast<U, T>(this.w) };
+        }
+
+        compile_time run_time quat<T> operator*(quat<T> other) {
+            return quat<T>{
+                .x = this.w * other.x + this.x * other.w + this.y * other.z - this.z * other.y,
+                .y = this.w * other.y - this.x * other.z + this.y * other.w + this.z * other.x,
+                .z = this.w * other.z + this.x * other.y - this.y * other.x + this.z * other.w,
+                .w = this.w * other.w - this.x * other.x - this.y * other.y - this.z * other.z,
+            };
+        }
+
+        // v + 2w(u × v) + 2u × (u × v), with u the vector part: 15 multiplications and no matrix.
+        compile_time run_time vec3<T> operator*(vec3<T> v) {
+            vec3<T> u = vec3<T>{ .x = this.x, .y = this.y, .z = this.z };
+            vec3<T> t = cross(u, v) * 2.0;
+            return v + t * this.w + cross(u, t);
+        }
+
+        compile_time run_time quat<T> operator+(quat<T> other) { return quat<T>{ .x = this.x + other.x, .y = this.y + other.y, .z = this.z + other.z, .w = this.w + other.w }; }
+        compile_time run_time quat<T> operator-(quat<T> other) { return quat<T>{ .x = this.x - other.x, .y = this.y - other.y, .z = this.z - other.z, .w = this.w - other.w }; }
+        compile_time run_time quat<T> operator*(T k) { return quat<T>{ .x = this.x * k, .y = this.y * k, .z = this.z * k, .w = this.w * k }; }
+        compile_time run_time quat<T> operator-() { return quat<T>{ .x = -this.x, .y = -this.y, .z = -this.z, .w = -this.w }; }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"({this.x}, {this.y}, {this.z}, {this.w})")); }
     }
+
+    template<type T>
+    compile_time run_time T dot(quat<T> a, quat<T> b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+
+    template<type T>
+    compile_time run_time T length(quat<T> q) { return dot(q, q).sqrt(); }
+
+    template<type T>
+    compile_time run_time quat<T> normalize(quat<T> q) { return q * (1.0 / dot(q, q).sqrt()); }
+
+    template<type T>
+    compile_time run_time quat<T> conjugate(quat<T> q) { return quat<T>{ .x = -q.x, .y = -q.y, .z = -q.z, .w = q.w }; }
+
+    template<type T>
+    compile_time run_time quat<T> inverse(quat<T> q) { return conjugate(q) * (1.0 / dot(q, q)); }
+
+    template<type T>
+    compile_time run_time quat<T> nlerp(quat<T> a, quat<T> b, T t) {
+        T s = 1.0 - t;
+        T k = if (dot(a, b) < 0.0) { -t } else { t };
+        return normalize(quat<T>{ .x = a.x * s + b.x * k, .y = a.y * s + b.y * k, .z = a.z * s + b.z * k, .w = a.w * s + b.w * k });
+    }
+
+    template<type T>
+    compile_time run_time quat<T> slerp(quat<T> a, quat<T> b, T t) {
+        mut T d = dot(a, b);
+        mut T sign = 1.0;
+        if (d < 0.0) {
+            d = -d;
+            sign = -1.0;
+        }
+        if (d > 0.9995) {   // nearly the same rotation: sin(θ) is too small to divide by
+            T s = 1.0 - t;
+            T k = t * sign;
+            return normalize(quat<T>{ .x = a.x * s + b.x * k, .y = a.y * s + b.y * k, .z = a.z * s + b.z * k, .w = a.w * s + b.w * k });
+        }
+        T theta = d.acos();
+        T r = 1.0 / theta.sin();
+        T wa = ((1.0 - t) * theta).sin() * r;
+        T wb = (t * theta).sin() * r * sign;
+        return quat<T>{ .x = a.x * wa + b.x * wb, .y = a.y * wa + b.y * wb, .z = a.z * wa + b.z * wb, .w = a.w * wa + b.w * wb };
+    }
+
+    template<type T>
+    compile_time run_time quat<T> rotation_between(vec3<T> from, vec3<T> to) {
+        T d = dot(from, to);
+        if (d < -0.999999) {   // opposite: half a turn around any axis perpendicular to `from`
+            mut vec3<T> axis = cross(vec3<T>{ .x = 1.0 }, from);
+            if (dot(axis, axis) < 0.000001) {
+                axis = cross(vec3<T>{ .y = 1.0 }, from);
+            }
+            axis = normalize(axis);
+            return quat<T>{ .x = axis.x, .y = axis.y, .z = axis.z, .w = 0.0 };
+        }
+        vec3<T> c = cross(from, to);
+        return normalize(quat<T>{ .x = c.x, .y = c.y, .z = c.z, .w = 1.0 + d });
+    }
+
+    template<type T>
+    compile_time run_time radians angle(quat<T> a, quat<T> b) {
+        T d = min(dot(a, b).abs(), 1.0);
+        return cast<radians>(scalar_cast<f32, T>(2.0 * d.acos()));
+    }
+
+    template<type T>
+    compile_time run_time bool approx_equal(quat<T> a, quat<T> b, T tolerance) { return (a.x - b.x).abs() <= tolerance && (a.y - b.y).abs() <= tolerance && (a.z - b.z).abs() <= tolerance && (a.w - b.w).abs() <= tolerance; }
+
+    // ---- transforms --------------------------------------------------------------------------------------
+
+    template<type T>
+    struct transform {
+        compile_time run_time static transform<T> identity() { return transform<T>{}; }
+
+        compile_time run_time static transform<T> make(vec3<T> translation, quat<T> rotation, vec3<T> scale) {
+            return transform<T>{ .translation = translation, .rotation = rotation, .scale = scale };
+        }
+
+        compile_time run_time static transform<T> from_translation(vec3<T> translation) { return transform<T>{ .translation = translation }; }
+        compile_time run_time static transform<T> from_rotation(quat<T> rotation) { return transform<T>{ .rotation = rotation }; }
+
+        compile_time run_time static transform<T> from_mat4(mat4<T> m) {
+            vec3<T> a = m.c0.xyz();
+            vec3<T> b = m.c1.xyz();
+            vec3<T> c = m.c2.xyz();
+            mut T sx = length(a);
+            T sy = length(b);
+            T sz = length(c);
+            if (dot(a, cross(b, c)) < 0.0) {
+                sx = -sx;
+            }
+            return transform<T>{
+                .translation = m.c3.xyz(),
+                .rotation = quat<T>::from_mat3(mat3<T>{ .c0 = a * (1.0 / sx), .c1 = b * (1.0 / sy), .c2 = c * (1.0 / sz) }),
+                .scale = vec3<T>{ .x = sx, .y = sy, .z = sz },
+            };
+        }
+
+        compile_time run_time mat4<T> to_mat4() { return mat4<T>::trs(this.translation, this.rotation, this.scale); }
+        compile_time run_time vec3<T> forward() { return this.rotation * vec3<T>{ .z = -1.0 }; }
+        compile_time run_time vec3<T> right() { return this.rotation * vec3<T>{ .x = 1.0 }; }
+        compile_time run_time vec3<T> up() { return this.rotation * vec3<T>{ .y = 1.0 }; }
+
+        template<type U>
+        compile_time run_time transform<U> to() {
+            return transform<U>{ .translation = this.translation.to<U>(), .rotation = this.rotation.to<U>(), .scale = this.scale.to<U>() };
+        }
+
+        compile_time run_time transform<T> operator*(transform<T> child) {
+            return transform<T>{
+                .translation = this.translation + this.rotation * (this.scale * child.translation),
+                .rotation = this.rotation * child.rotation,
+                .scale = this.scale * child.scale,
+            };
+        }
+
+        void format(mut std::formatter& out) { out.write(std::format(f"({this.translation}, {this.rotation}, {this.scale})")); }
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> transform_point(transform<T> t, vec3<T> p) { return t.translation + t.rotation * (t.scale * p); }
+
+    template<type T>
+    compile_time run_time vec3<T> transform_vector(transform<T> t, vec3<T> v) { return t.rotation * (t.scale * v); }
+
+    template<type T>
+    compile_time run_time transform<T> inverse(transform<T> t) {
+        quat<T> r = conjugate(t.rotation);
+        vec3<T> s = vec3<T>{ .x = 1.0 / t.scale.x, .y = 1.0 / t.scale.y, .z = 1.0 / t.scale.z };
+        return transform<T>{ .translation = s * (r * -t.translation), .rotation = r, .scale = s };
+    }
+
+    template<type T>
+    compile_time run_time transform<T> lerp(transform<T> a, transform<T> b, T t) {
+        return transform<T>{
+            .translation = lerp(a.translation, b.translation, t),
+            .rotation = nlerp(a.rotation, b.rotation, t),
+            .scale = lerp(a.scale, b.scale, t),
+        };
+    }
+
+    // ---- curves and motion -------------------------------------------------------------------------------
+
+    template<type T>
+    compile_time run_time T bezier(T p0, T p1, T p2, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s) + p1 * (2.0 * s * t) + p2 * (t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> bezier(vec2<T> p0, vec2<T> p1, vec2<T> p2, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s) + p1 * (2.0 * s * t) + p2 * (t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> bezier(vec3<T> p0, vec3<T> p1, vec3<T> p2, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s) + p1 * (2.0 * s * t) + p2 * (t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> bezier(vec4<T> p0, vec4<T> p1, vec4<T> p2, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s) + p1 * (2.0 * s * t) + p2 * (t * t);
+    }
+
+    template<type T>
+    compile_time run_time T bezier(T p0, T p1, T p2, T p3, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s * s) + p1 * (3.0 * s * s * t) + p2 * (3.0 * s * t * t) + p3 * (t * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> bezier(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s * s) + p1 * (3.0 * s * s * t) + p2 * (3.0 * s * t * t) + p3 * (t * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> bezier(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s * s) + p1 * (3.0 * s * s * t) + p2 * (3.0 * s * t * t) + p3 * (t * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> bezier(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t) {
+        T s = 1.0 - t;
+        return p0 * (s * s * s) + p1 * (3.0 * s * s * t) + p2 * (3.0 * s * t * t) + p3 * (t * t * t);
+    }
+
+    template<type T>
+    compile_time run_time T bezier_tangent(T p0, T p1, T p2, T p3, T t) {
+        T s = 1.0 - t;
+        return (p1 - p0) * (3.0 * s * s) + (p2 - p1) * (6.0 * s * t) + (p3 - p2) * (3.0 * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> bezier_tangent(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t) {
+        T s = 1.0 - t;
+        return (p1 - p0) * (3.0 * s * s) + (p2 - p1) * (6.0 * s * t) + (p3 - p2) * (3.0 * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> bezier_tangent(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t) {
+        T s = 1.0 - t;
+        return (p1 - p0) * (3.0 * s * s) + (p2 - p1) * (6.0 * s * t) + (p3 - p2) * (3.0 * t * t);
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> bezier_tangent(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t) {
+        T s = 1.0 - t;
+        return (p1 - p0) * (3.0 * s * s) + (p2 - p1) * (6.0 * s * t) + (p3 - p2) * (3.0 * t * t);
+    }
+
+    template<type T>
+    compile_time run_time T hermite(T p0, T m0, T p1, T m1, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return p0 * (2.0 * t3 - 3.0 * t2 + 1.0) + m0 * (t3 - 2.0 * t2 + t) + p1 * (3.0 * t2 - 2.0 * t3) + m1 * (t3 - t2);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> hermite(vec2<T> p0, vec2<T> m0, vec2<T> p1, vec2<T> m1, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return p0 * (2.0 * t3 - 3.0 * t2 + 1.0) + m0 * (t3 - 2.0 * t2 + t) + p1 * (3.0 * t2 - 2.0 * t3) + m1 * (t3 - t2);
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> hermite(vec3<T> p0, vec3<T> m0, vec3<T> p1, vec3<T> m1, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return p0 * (2.0 * t3 - 3.0 * t2 + 1.0) + m0 * (t3 - 2.0 * t2 + t) + p1 * (3.0 * t2 - 2.0 * t3) + m1 * (t3 - t2);
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> hermite(vec4<T> p0, vec4<T> m0, vec4<T> p1, vec4<T> m1, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return p0 * (2.0 * t3 - 3.0 * t2 + 1.0) + m0 * (t3 - 2.0 * t2 + t) + p1 * (3.0 * t2 - 2.0 * t3) + m1 * (t3 - t2);
+    }
+
+    template<type T>
+    compile_time run_time T catmull_rom(T p0, T p1, T p2, T p3, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return (p1 * 2.0 + (p2 - p0) * t + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2 + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * t3) * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> catmull_rom(vec2<T> p0, vec2<T> p1, vec2<T> p2, vec2<T> p3, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return (p1 * 2.0 + (p2 - p0) * t + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2 + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * t3) * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> catmull_rom(vec3<T> p0, vec3<T> p1, vec3<T> p2, vec3<T> p3, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return (p1 * 2.0 + (p2 - p0) * t + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2 + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * t3) * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> catmull_rom(vec4<T> p0, vec4<T> p1, vec4<T> p2, vec4<T> p3, T t) {
+        T t2 = t * t;
+        T t3 = t2 * t;
+        return (p1 * 2.0 + (p2 - p0) * t + (p0 * 2.0 - p1 * 5.0 + p2 * 4.0 - p3) * t2 + (p1 * 3.0 - p0 - p2 * 3.0 + p3) * t3) * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T damp(T current, T target, T rate, T dt) { return current + (target - current) * (1.0 - (-rate * dt).exp()); }
+
+    template<type T>
+    compile_time run_time vec2<T> damp(vec2<T> current, vec2<T> target, T rate, T dt) { return current + (target - current) * (1.0 - (-rate * dt).exp()); }
+
+    template<type T>
+    compile_time run_time vec3<T> damp(vec3<T> current, vec3<T> target, T rate, T dt) { return current + (target - current) * (1.0 - (-rate * dt).exp()); }
+
+    template<type T>
+    compile_time run_time vec4<T> damp(vec4<T> current, vec4<T> target, T rate, T dt) { return current + (target - current) * (1.0 - (-rate * dt).exp()); }
+
+    template<type T>
+    compile_time run_time T move_towards(T current, T target, T max_step) {
+        T d = target - current;
+        if (d.abs() <= max_step) { return target; }
+        return current + max_step.copysign(d);
+    }
+
+    template<type T>
+    compile_time run_time vec2<T> move_towards(vec2<T> current, vec2<T> target, T max_step) {
+        vec2<T> d = target - current;
+        T n = dot(d, d);
+        if (n <= max_step * max_step) { return target; }
+        return current + d * (max_step / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> move_towards(vec3<T> current, vec3<T> target, T max_step) {
+        vec3<T> d = target - current;
+        T n = dot(d, d);
+        if (n <= max_step * max_step) { return target; }
+        return current + d * (max_step / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec4<T> move_towards(vec4<T> current, vec4<T> target, T max_step) {
+        vec4<T> d = target - current;
+        T n = dot(d, d);
+        if (n <= max_step * max_step) { return target; }
+        return current + d * (max_step / n.sqrt());
+    }
+
+    template<type T>
+    T smooth_damp(T current, T target, mut T& velocity, T smooth_time, T dt) {
+        T omega = 2.0 / smooth_time;
+        T x = omega * dt;
+        T decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+        T change = current - target;
+        T temp = (velocity + change * omega) * dt;
+        velocity = (velocity - temp * omega) * decay;
+        return target + (change + temp) * decay;
+    }
+
+    template<type T>
+    vec2<T> smooth_damp(vec2<T> current, vec2<T> target, mut vec2<T>& velocity, T smooth_time, T dt) {
+        T omega = 2.0 / smooth_time;
+        T x = omega * dt;
+        T decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+        vec2<T> change = current - target;
+        vec2<T> temp = (velocity + change * omega) * dt;
+        velocity = (velocity - temp * omega) * decay;
+        return target + (change + temp) * decay;
+    }
+
+    template<type T>
+    vec3<T> smooth_damp(vec3<T> current, vec3<T> target, mut vec3<T>& velocity, T smooth_time, T dt) {
+        T omega = 2.0 / smooth_time;
+        T x = omega * dt;
+        T decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+        vec3<T> change = current - target;
+        vec3<T> temp = (velocity + change * omega) * dt;
+        velocity = (velocity - temp * omega) * decay;
+        return target + (change + temp) * decay;
+    }
+
+    template<type T>
+    vec4<T> smooth_damp(vec4<T> current, vec4<T> target, mut vec4<T>& velocity, T smooth_time, T dt) {
+        T omega = 2.0 / smooth_time;
+        T x = omega * dt;
+        T decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+        vec4<T> change = current - target;
+        vec4<T> temp = (velocity + change * omega) * dt;
+        velocity = (velocity - temp * omega) * decay;
+        return target + (change + temp) * decay;
+    }
+
+    template<type T>
+    compile_time run_time T wrap(T x, T lo, T hi) {
+        T range = hi - lo;
+        return x - range * ((x - lo) / range).floor();
+    }
+
+    template<type T>
+    compile_time run_time T ping_pong(T x, T length) {
+        T m = x - 2.0 * length * (x / (2.0 * length)).floor();
+        return length - (m - length).abs();
+    }
+
+    // ---- shapes ------------------------------------------------------------------------------------------
+
+    template<type T>
+    struct aabb {
+        compile_time run_time static aabb<T> from_center_extents(vec3<T> center, vec3<T> extents) { return aabb<T>{ .min = center - extents, .max = center + extents }; }
+
+        compile_time run_time static aabb<T> empty() {
+            T inf = T::infinity;
+            return aabb<T>{ .min = vec3<T>{ .x = inf, .y = inf, .z = inf }, .max = vec3<T>{ .x = -inf, .y = -inf, .z = -inf } };
+        }
+
+        static aabb<T> from_points(std::span<vec3<T>> points) {
+            mut aabb<T> box = aabb<T>::empty();
+            for (vec3<T> p : points) {
+                box = merge(box, p);
+            }
+            return box;
+        }
+
+        compile_time run_time vec3<T> center() { return (this.min + this.max) * 0.5; }
+        compile_time run_time vec3<T> extents() { return (this.max - this.min) * 0.5; }
+        compile_time run_time vec3<T> size() { return this.max - this.min; }
+        compile_time run_time bool is_empty() { return this.min.x > this.max.x || this.min.y > this.max.y || this.min.z > this.max.z; }
+    }
+
+    template<type T>
+    struct sphere {
+        compile_time run_time static sphere<T> make(vec3<T> center, T radius) { return sphere<T>{ .center = center, .radius = radius }; }
+    }
+
+    template<type T>
+    struct plane {
+        compile_time run_time static plane<T> from_point_normal(vec3<T> point, vec3<T> normal) { return plane<T>{ .normal = normal, .d = -dot(normal, point) }; }
+
+        compile_time run_time static plane<T> from_points(vec3<T> a, vec3<T> b, vec3<T> c) {
+            vec3<T> n = normalize(cross(b - a, c - a));
+            return plane<T>{ .normal = n, .d = -dot(n, a) };
+        }
+    }
+
+    template<type T>
+    struct ray {
+        compile_time run_time static ray<T> make(vec3<T> origin, vec3<T> direction) { return ray<T>{ .origin = origin, .direction = direction }; }
+        compile_time run_time vec3<T> at(T t) { return this.origin + this.direction * t; }
+    }
+
+    // A row combination of the matrix as a plane with a unit normal (Gribb and Hartmann).
+    private template<type T>
+    compile_time run_time plane<T> frustum_plane(T x, T y, T z, T w) {
+        T r = 1.0 / (x * x + y * y + z * z).sqrt();
+        return plane<T>{ .normal = vec3<T>{ .x = x * r, .y = y * r, .z = z * r }, .d = w * r };
+    }
+
+    template<type T>
+    struct frustum {
+        compile_time run_time static frustum<T> from_view_projection(mat4<T> m) {
+            return frustum<T>{
+                .left = frustum_plane<T>(m.c0.w + m.c0.x, m.c1.w + m.c1.x, m.c2.w + m.c2.x, m.c3.w + m.c3.x),
+                .right = frustum_plane<T>(m.c0.w - m.c0.x, m.c1.w - m.c1.x, m.c2.w - m.c2.x, m.c3.w - m.c3.x),
+                .bottom = frustum_plane<T>(m.c0.w + m.c0.y, m.c1.w + m.c1.y, m.c2.w + m.c2.y, m.c3.w + m.c3.y),
+                .top = frustum_plane<T>(m.c0.w - m.c0.y, m.c1.w - m.c1.y, m.c2.w - m.c2.y, m.c3.w - m.c3.y),
+                .near = frustum_plane<T>(m.c0.z, m.c1.z, m.c2.z, m.c3.z),
+                .far = frustum_plane<T>(m.c0.w - m.c0.z, m.c1.w - m.c1.z, m.c2.w - m.c2.z, m.c3.w - m.c3.z),
+            };
+        }
+
+        compile_time run_time static frustum<T> from_view_projection_no(mat4<T> m) {
+            return frustum<T>{
+                .left = frustum_plane<T>(m.c0.w + m.c0.x, m.c1.w + m.c1.x, m.c2.w + m.c2.x, m.c3.w + m.c3.x),
+                .right = frustum_plane<T>(m.c0.w - m.c0.x, m.c1.w - m.c1.x, m.c2.w - m.c2.x, m.c3.w - m.c3.x),
+                .bottom = frustum_plane<T>(m.c0.w + m.c0.y, m.c1.w + m.c1.y, m.c2.w + m.c2.y, m.c3.w + m.c3.y),
+                .top = frustum_plane<T>(m.c0.w - m.c0.y, m.c1.w - m.c1.y, m.c2.w - m.c2.y, m.c3.w - m.c3.y),
+                .near = frustum_plane<T>(m.c0.w + m.c0.z, m.c1.w + m.c1.z, m.c2.w + m.c2.z, m.c3.w + m.c3.z),
+                .far = frustum_plane<T>(m.c0.w - m.c0.z, m.c1.w - m.c1.z, m.c2.w - m.c2.z, m.c3.w - m.c3.z),
+            };
+        }
+    }
+
+    template<type T>
+    compile_time run_time T signed_distance(plane<T> p, vec3<T> point) { return dot(p.normal, point) + p.d; }
+
+    template<type T>
+    compile_time run_time plane<T> normalize(plane<T> p) {
+        T r = 1.0 / dot(p.normal, p.normal).sqrt();
+        return plane<T>{ .normal = p.normal * r, .d = p.d * r };
+    }
+
+    template<type T>
+    compile_time run_time aabb<T> merge(aabb<T> a, aabb<T> b) { return aabb<T>{ .min = min(a.min, b.min), .max = max(a.max, b.max) }; }
+
+    template<type T>
+    compile_time run_time aabb<T> merge(aabb<T> box, vec3<T> point) { return aabb<T>{ .min = min(box.min, point), .max = max(box.max, point) }; }
+
+    template<type T>
+    compile_time run_time aabb<T> transform_aabb(mat4<T> m, aabb<T> box) {
+        vec3<T> c = (box.min + box.max) * 0.5;
+        vec3<T> e = (box.max - box.min) * 0.5;
+        vec3<T> center = transform_point(m, c);
+        vec3<T> extents = abs(m.c0.xyz()) * e.x + abs(m.c1.xyz()) * e.y + abs(m.c2.xyz()) * e.z;
+        return aabb<T>{ .min = center - extents, .max = center + extents };
+    }
+
+    template<type T>
+    compile_time run_time sphere<T> bounding_sphere(aabb<T> box) { return sphere<T>{ .center = (box.min + box.max) * 0.5, .radius = length(box.max - box.min) * 0.5 }; }
+
+    template<type T>
+    compile_time run_time bool contains(aabb<T> box, vec3<T> point) { return point.x >= box.min.x && point.x <= box.max.x && point.y >= box.min.y && point.y <= box.max.y && point.z >= box.min.z && point.z <= box.max.z; }
+
+    template<type T>
+    compile_time run_time bool contains(aabb<T> outer, aabb<T> inner) { return inner.min.x >= outer.min.x && inner.max.x <= outer.max.x && inner.min.y >= outer.min.y && inner.max.y <= outer.max.y && inner.min.z >= outer.min.z && inner.max.z <= outer.max.z; }
+
+    template<type T>
+    compile_time run_time bool contains(sphere<T> s, vec3<T> point) { return distance_squared(s.center, point) <= s.radius * s.radius; }
+
+    template<type T>
+    compile_time run_time bool contains(frustum<T> f, vec3<T> point) { return signed_distance(f.left, point) >= 0.0 && signed_distance(f.right, point) >= 0.0 && signed_distance(f.bottom, point) >= 0.0 && signed_distance(f.top, point) >= 0.0 && signed_distance(f.near, point) >= 0.0 && signed_distance(f.far, point) >= 0.0; }
+
+    template<type T>
+    compile_time run_time vec3<T> closest_point(aabb<T> box, vec3<T> point) { return min(max(point, box.min), box.max); }
+
+    template<type T>
+    compile_time run_time vec3<T> closest_point(sphere<T> s, vec3<T> point) {
+        vec3<T> d = point - s.center;
+        T n = dot(d, d);
+        if (n <= s.radius * s.radius) { return point; }
+        return s.center + d * (s.radius / n.sqrt());
+    }
+
+    template<type T>
+    compile_time run_time vec3<T> closest_point(plane<T> p, vec3<T> point) { return point - p.normal * (dot(p.normal, point) + p.d); }
+
+    template<type T>
+    compile_time run_time vec3<T> closest_point(ray<T> r, vec3<T> point) {
+        T t = dot(point - r.origin, r.direction) / dot(r.direction, r.direction);
+        return r.origin + r.direction * max(t, 0.0);
+    }
+
+    template<type T>
+    compile_time run_time bool intersects(aabb<T> a, aabb<T> b) { return a.min.x <= b.max.x && a.max.x >= b.min.x && a.min.y <= b.max.y && a.max.y >= b.min.y && a.min.z <= b.max.z && a.max.z >= b.min.z; }
+
+    template<type T>
+    compile_time run_time bool intersects(sphere<T> a, sphere<T> b) {
+        T r = a.radius + b.radius;
+        return distance_squared(a.center, b.center) <= r * r;
+    }
+
+    template<type T>
+    compile_time run_time bool intersects(aabb<T> box, sphere<T> s) { return distance_squared(min(max(s.center, box.min), box.max), s.center) <= s.radius * s.radius; }
+
+    template<type T>
+    compile_time run_time bool intersects(sphere<T> s, aabb<T> box) { return intersects(box, s); }
+
+    template<type T>
+    compile_time run_time bool intersects(frustum<T> f, sphere<T> s) { return signed_distance(f.left, s.center) >= -s.radius && signed_distance(f.right, s.center) >= -s.radius && signed_distance(f.bottom, s.center) >= -s.radius && signed_distance(f.top, s.center) >= -s.radius && signed_distance(f.near, s.center) >= -s.radius && signed_distance(f.far, s.center) >= -s.radius; }
+
+    template<type T>
+    compile_time run_time bool intersects(frustum<T> f, aabb<T> box) {
+        vec3<T> c = (box.min + box.max) * 0.5;
+        vec3<T> e = (box.max - box.min) * 0.5;
+        return outside_by(f.left, c, e) >= 0.0 && outside_by(f.right, c, e) >= 0.0 && outside_by(f.bottom, c, e) >= 0.0 &&
+               outside_by(f.top, c, e) >= 0.0 && outside_by(f.near, c, e) >= 0.0 && outside_by(f.far, c, e) >= 0.0;
+    }
+
+    // The signed distance from the plane of the corner of the box (centre `c`, extents `e`) that
+    // is furthest in front of it: negative when the whole box is behind the plane.
+    private template<type T>
+    compile_time run_time T outside_by(plane<T> p, vec3<T> c, vec3<T> e) {
+        return dot(p.normal, c) + p.d + p.normal.x.abs() * e.x + p.normal.y.abs() * e.y + p.normal.z.abs() * e.z;
+    }
+
+    template<type T>
+    compile_time run_time std::option<T> intersect(ray<T> r, plane<T> p) {
+        T along = dot(p.normal, r.direction);
+        if (along == 0.0) { return std::none; }
+        T t = -(dot(p.normal, r.origin) + p.d) / along;
+        if (t < 0.0) { return std::none; }
+        return std::some(t);
+    }
+
+    template<type T>
+    compile_time run_time std::option<T> intersect(ray<T> r, sphere<T> s) {
+        vec3<T> m = r.origin - s.center;
+        T a = dot(r.direction, r.direction);
+        T b = dot(m, r.direction);
+        T c = dot(m, m) - s.radius * s.radius;
+        if (c <= 0.0) { return std::some(0.0); }
+        if (b > 0.0) { return std::none; }
+        T disc = b * b - a * c;
+        if (disc < 0.0) { return std::none; }
+        return std::some((-b - disc.sqrt()) / a);
+    }
+
+    template<type T>
+    compile_time run_time std::option<T> intersect(ray<T> r, aabb<T> box) {
+        vec3<T> inv = vec3<T>{ .x = 1.0 / r.direction.x, .y = 1.0 / r.direction.y, .z = 1.0 / r.direction.z };
+        vec3<T> t0 = (box.min - r.origin) * inv;
+        vec3<T> t1 = (box.max - r.origin) * inv;
+        T enter = max_component(min(t0, t1));
+        T leave = min_component(max(t0, t1));
+        if (leave < max(enter, 0.0)) { return std::none; }
+        return std::some(max(enter, 0.0));
+    }
+
+    template<type T>
+    compile_time run_time std::option<T> intersect_triangle(ray<T> r, vec3<T> a, vec3<T> b, vec3<T> c) {
+        vec3<T> e1 = b - a;
+        vec3<T> e2 = c - a;
+        vec3<T> p = cross(r.direction, e2);
+        T det = dot(e1, p);
+        if (det.abs() < 0.00000001) { return std::none; }
+        T inv = 1.0 / det;
+        vec3<T> s = r.origin - a;
+        T u = dot(s, p) * inv;
+        if (u < 0.0 || u > 1.0) { return std::none; }
+        vec3<T> q = cross(s, e1);
+        T v = dot(r.direction, q) * inv;
+        if (v < 0.0 || u + v > 1.0) { return std::none; }
+        T t = dot(e2, q) * inv;
+        if (t < 0.0) { return std::none; }
+        return std::some(t);
+    }
+
+    // The six planes of a frustum as two groups of four SIMD lanes (near and far are in the second
+    // group twice): one shape is tested against all planes with a dozen vector operations.
+    private struct frustum_lanes {
+        f32x4 x0 = default;
+        f32x4 y0 = default;
+        f32x4 z0 = default;
+        f32x4 d0 = default;
+        f32x4 x1 = default;
+        f32x4 y1 = default;
+        f32x4 z1 = default;
+        f32x4 d1 = default;
+    }
+
+    private frustum_lanes lanes_of(frustum<f32>& f) {
+        return frustum_lanes{
+            .x0 = [f.left.normal.x, f.right.normal.x, f.bottom.normal.x, f.top.normal.x],
+            .y0 = [f.left.normal.y, f.right.normal.y, f.bottom.normal.y, f.top.normal.y],
+            .z0 = [f.left.normal.z, f.right.normal.z, f.bottom.normal.z, f.top.normal.z],
+            .d0 = [f.left.d, f.right.d, f.bottom.d, f.top.d],
+            .x1 = [f.near.normal.x, f.far.normal.x, f.near.normal.x, f.far.normal.x],
+            .y1 = [f.near.normal.y, f.far.normal.y, f.near.normal.y, f.far.normal.y],
+            .z1 = [f.near.normal.z, f.far.normal.z, f.near.normal.z, f.far.normal.z],
+            .d1 = [f.near.d, f.far.d, f.near.d, f.far.d],
+        };
+    }
+
+    template<type T>
+    usize cull(frustum<T> f, std::span<aabb<T>> boxes, std::span<mut bool> visible) {
+        usize n = boxes.length();
+        run_time check (visible.length() >= n) else "cull: 'visible' is shorter than the boxes";
+        mut usize count = 0;
+        if compile_time (std::is_same<T, f32>()) {
+            frustum_lanes p = lanes_of(f);
+            f32x4 ax0 = p.x0.abs();
+            f32x4 ay0 = p.y0.abs();
+            f32x4 az0 = p.z0.abs();
+            f32x4 ax1 = p.x1.abs();
+            f32x4 ay1 = p.y1.abs();
+            f32x4 az1 = p.z1.abs();
+            f32x4 zero = f32x4::splat(0.0);
+            for (usize i : 0..n) {
+                aabb<T> box = boxes[i];
+                f32x4 cx = f32x4::splat((box.min.x + box.max.x) * 0.5);
+                f32x4 cy = f32x4::splat((box.min.y + box.max.y) * 0.5);
+                f32x4 cz = f32x4::splat((box.min.z + box.max.z) * 0.5);
+                f32x4 ex = f32x4::splat((box.max.x - box.min.x) * 0.5);
+                f32x4 ey = f32x4::splat((box.max.y - box.min.y) * 0.5);
+                f32x4 ez = f32x4::splat((box.max.z - box.min.z) * 0.5);
+                f32x4 r0 = p.x0 * cx + p.y0 * cy + p.z0 * cz + p.d0 + ax0 * ex + ay0 * ey + az0 * ez;
+                f32x4 r1 = p.x1 * cx + p.y1 * cy + p.z1 * cz + p.d1 + ax1 * ex + ay1 * ey + az1 * ez;
+                bool inside = (r0.min(r1) >= zero).all();
+                visible[i] = inside;
+                count += cast<usize>(inside);
+            }
+        } else {
+            for (usize i : 0..n) {
+                bool inside = intersects(f, boxes[i]);
+                visible[i] = inside;
+                count += cast<usize>(inside);
+            }
+        }
+        return count;
+    }
+
+    template<type T>
+    usize cull(frustum<T> f, std::span<sphere<T>> spheres, std::span<mut bool> visible) {
+        usize n = spheres.length();
+        run_time check (visible.length() >= n) else "cull: 'visible' is shorter than the spheres";
+        mut usize count = 0;
+        if compile_time (std::is_same<T, f32>()) {
+            frustum_lanes p = lanes_of(f);
+            for (usize i : 0..n) {
+                sphere<T> s = spheres[i];
+                f32x4 cx = f32x4::splat(s.center.x);
+                f32x4 cy = f32x4::splat(s.center.y);
+                f32x4 cz = f32x4::splat(s.center.z);
+                f32x4 r0 = p.x0 * cx + p.y0 * cy + p.z0 * cz + p.d0;
+                f32x4 r1 = p.x1 * cx + p.y1 * cy + p.z1 * cz + p.d1;
+                bool inside = (r0.min(r1) >= f32x4::splat(-s.radius)).all();
+                visible[i] = inside;
+                count += cast<usize>(inside);
+            }
+        } else {
+            for (usize i : 0..n) {
+                bool inside = intersects(f, spheres[i]);
+                visible[i] = inside;
+                count += cast<usize>(inside);
+            }
+        }
+        return count;
+    }
+
+    // ---- rectangles --------------------------------------------------------------------------------------
 
     struct rect {
         static rect from_corners(vec2 a, vec2 b) {
-            vec2 low = a.min(b);
-            vec2 high = a.max(b);
+            vec2 low = min(a, b);
+            vec2 high = max(a, b);
             return rect{ .x = low.x, .y = low.y, .width = high.x - low.x, .height = high.y - low.y };
         }
 
@@ -139,6 +2208,8 @@ namespace std::math {
         rect translated(vec2 by) { return rect{ .x = this.x + by.x, .y = this.y + by.y, .width = this.width, .height = this.height }; }
         bool is_empty() { return this.width <= 0.0 || this.height <= 0.0; }
     }
+
+    // ---- colours -----------------------------------------------------------------------------------------
 
     f32 srgb_to_linear(f32 v) {
         if (v <= 0.04045) {
@@ -208,7 +2279,7 @@ namespace std::math {
         return oklab{ .l = c.l, .a = chroma * h.cos(), .b = chroma * h.sin() };
     }
 
-    private color from_linear(vec3& v, f32 alpha) {
+    private color color_from_linear(vec3& v, f32 alpha) {
         return color{
             .r = linear_to_srgb(v.x.clamp(0.0, 1.0)),
             .g = linear_to_srgb(v.y.clamp(0.0, 1.0)),
@@ -248,7 +2319,7 @@ namespace std::math {
         static color from_oklch(oklch& c, f32 alpha) {
             vec3 direct = linear_of(lab_of_lch(c, c.c));
             if (in_gamut(direct)) {
-                return from_linear(direct, alpha);
+                return color_from_linear(direct, alpha);
             }
             mut f32 low = 0.0;
             mut f32 high = c.c;
@@ -260,7 +2331,7 @@ namespace std::math {
                     high = middle;
                 }
             }
-            return from_linear(linear_of(lab_of_lch(c, low)), alpha);
+            return color_from_linear(linear_of(lab_of_lch(c, low)), alpha);
         }
 
         static color white() { return color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; }
@@ -284,7 +2355,7 @@ namespace std::math {
             oklab x = lab_of(this);
             oklab y = lab_of(to);
             oklab m = oklab{ .l = std::math::lerp(x.l, y.l, t), .a = std::math::lerp(x.a, y.a, t), .b = std::math::lerp(x.b, y.b, t) };
-            return from_linear(linear_of(m), std::math::lerp(this.a, to.a, t));
+            return color_from_linear(linear_of(m), std::math::lerp(this.a, to.a, t));
         }
 
         color lighter(f32 amount) {
@@ -300,6 +2371,17 @@ namespace std::math {
             f32 mine = this.luminance();
             f32 theirs = other.luminance();
             return (mine.max(theirs) + 0.05) / (mine.min(theirs) + 0.05);
+        }
+
+        vec4 to_vec4() { return vec4{ .x = this.r, .y = this.g, .z = this.b, .w = this.a }; }
+        static color from_vec4(vec4 v) { return color{ .r = v.x, .g = v.y, .b = v.z, .a = v.w }; }
+
+        vec4 to_linear() {
+            return vec4{ .x = srgb_to_linear(this.r), .y = srgb_to_linear(this.g), .z = srgb_to_linear(this.b), .w = this.a };
+        }
+
+        static color from_linear(vec4 linear) {
+            return color{ .r = linear_to_srgb(linear.x), .g = linear_to_srgb(linear.y), .b = linear_to_srgb(linear.z), .a = linear.w };
         }
 
         u32 packed() {

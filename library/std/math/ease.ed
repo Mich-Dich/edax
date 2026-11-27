@@ -1,0 +1,179 @@
+// The Edax standard library: module std::math::ease (see ease.edh).
+
+namespace std::math::ease {
+
+    template<type T>
+    compile_time run_time T in_quad(T t) { return t * t; }
+
+    template<type T>
+    compile_time run_time T out_quad(T t) {
+        T u = 1.0 - t;
+        return 1.0 - u * u;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_quad(T t) {
+        if (t < 0.5) { return 2.0 * t * t; }
+        T u = 2.0 - 2.0 * t;
+        return 1.0 - u * u * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_cubic(T t) { return t * t * t; }
+
+    template<type T>
+    compile_time run_time T out_cubic(T t) {
+        T u = 1.0 - t;
+        return 1.0 - u * u * u;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_cubic(T t) {
+        if (t < 0.5) { return 4.0 * t * t * t; }
+        T u = 2.0 - 2.0 * t;
+        return 1.0 - u * u * u * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_quart(T t) { return t * t * t * t; }
+
+    template<type T>
+    compile_time run_time T out_quart(T t) {
+        T u = 1.0 - t;
+        return 1.0 - u * u * u * u;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_quart(T t) {
+        if (t < 0.5) { return 8.0 * t * t * t * t; }
+        T u = 2.0 - 2.0 * t;
+        return 1.0 - u * u * u * u * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_quint(T t) { return t * t * t * t * t; }
+
+    template<type T>
+    compile_time run_time T out_quint(T t) {
+        T u = 1.0 - t;
+        return 1.0 - u * u * u * u * u;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_quint(T t) {
+        if (t < 0.5) { return 16.0 * t * t * t * t * t; }
+        T u = 2.0 - 2.0 * t;
+        return 1.0 - u * u * u * u * u * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_sine(T t) { return 1.0 - (t * 1.5707963267948966).cos(); }
+
+    template<type T>
+    compile_time run_time T out_sine(T t) { return (t * 1.5707963267948966).sin(); }
+
+    template<type T>
+    compile_time run_time T in_out_sine(T t) { return 0.5 - 0.5 * (t * 3.141592653589793).cos(); }
+
+    template<type T>
+    compile_time run_time T in_expo(T t) {
+        if (t <= 0.0) { return 0.0; }
+        return (10.0 * t - 10.0).exp2();
+    }
+
+    template<type T>
+    compile_time run_time T out_expo(T t) {
+        if (t >= 1.0) { return 1.0; }
+        return 1.0 - (-10.0 * t).exp2();
+    }
+
+    template<type T>
+    compile_time run_time T in_out_expo(T t) {
+        if (t <= 0.0) { return 0.0; }
+        if (t >= 1.0) { return 1.0; }
+        if (t < 0.5) { return (20.0 * t - 10.0).exp2() * 0.5; }
+        return 1.0 - (10.0 - 20.0 * t).exp2() * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_circ(T t) { return 1.0 - (1.0 - t * t).sqrt(); }
+
+    template<type T>
+    compile_time run_time T out_circ(T t) {
+        T u = t - 1.0;
+        return (1.0 - u * u).sqrt();
+    }
+
+    template<type T>
+    compile_time run_time T in_out_circ(T t) {
+        if (t < 0.5) { return 0.5 - 0.5 * (1.0 - 4.0 * t * t).sqrt(); }
+        T u = 2.0 - 2.0 * t;
+        return 0.5 + 0.5 * (1.0 - u * u).sqrt();
+    }
+
+    template<type T>
+    compile_time run_time T in_back(T t) { return 2.70158 * t * t * t - 1.70158 * t * t; }
+
+    template<type T>
+    compile_time run_time T out_back(T t) {
+        T u = t - 1.0;
+        return 1.0 + 2.70158 * u * u * u + 1.70158 * u * u;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_back(T t) {
+        if (t < 0.5) {
+            T a = 2.0 * t;
+            return a * a * (3.5949095 * a - 2.5949095) * 0.5;
+        }
+        T u = 2.0 * t - 2.0;
+        return (u * u * (3.5949095 * u + 2.5949095) + 2.0) * 0.5;
+    }
+
+    template<type T>
+    compile_time run_time T in_elastic(T t) {
+        if (t <= 0.0) { return 0.0; }
+        if (t >= 1.0) { return 1.0; }
+        return -(10.0 * t - 10.0).exp2() * ((10.0 * t - 10.75) * 2.0943951023931953).sin();
+    }
+
+    template<type T>
+    compile_time run_time T out_elastic(T t) {
+        if (t <= 0.0) { return 0.0; }
+        if (t >= 1.0) { return 1.0; }
+        return (-10.0 * t).exp2() * ((10.0 * t - 0.75) * 2.0943951023931953).sin() + 1.0;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_elastic(T t) {
+        if (t <= 0.0) { return 0.0; }
+        if (t >= 1.0) { return 1.0; }
+        T s = ((20.0 * t - 11.125) * 1.3962634015954636).sin();
+        if (t < 0.5) { return -(20.0 * t - 10.0).exp2() * s * 0.5; }
+        return (10.0 - 20.0 * t).exp2() * s * 0.5 + 1.0;
+    }
+
+    template<type T>
+    compile_time run_time T in_bounce(T t) { return 1.0 - out_bounce(1.0 - t); }
+
+    template<type T>
+    compile_time run_time T out_bounce(T t) {
+        if (t < 0.36363636363636365) { return 7.5625 * t * t; }
+        if (t < 0.7272727272727273) {
+            T a = t - 0.5454545454545454;
+            return 7.5625 * a * a + 0.75;
+        }
+        if (t < 0.9090909090909091) {
+            T b = t - 0.8181818181818182;
+            return 7.5625 * b * b + 0.9375;
+        }
+        T c = t - 0.9545454545454546;
+        return 7.5625 * c * c + 0.984375;
+    }
+
+    template<type T>
+    compile_time run_time T in_out_bounce(T t) {
+        if (t < 0.5) { return 0.5 - 0.5 * out_bounce(1.0 - 2.0 * t); }
+        return 0.5 + 0.5 * out_bounce(2.0 * t - 1.0);
+    }
+}

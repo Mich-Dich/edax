@@ -1,0 +1,16 @@
+exit: 1
+--- stdout
+--- stderr
+error[E2001]: a loop in an argument list is an argument generator: write 'for compile_time'
+ --> tests/action/check/argument_generators.ed:8:25
+  |
+8 |     std::println(f"{add(for (usize k : 0..2) { 1 })}");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^ not compile_time
+
+error[E2001]: an argument generator ends with the argument it passes, without ';'
+ --> tests/action/check/argument_generators.ed:9:25
+  |
+9 |     std::println(f"{add(for compile_time (usize k : 0..2) { 1; })}");
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no argument
+
+2 errors, 0 warnings

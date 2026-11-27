@@ -1,0 +1,368 @@
+// The Edax standard library: module std::math::noise (see noise.edh).
+
+namespace std::math::noise {
+
+    compile_time run_time u32 hash(u32 x) {
+        mut u32 h = x;
+        h = (h ^ (h >> 16)) *% 0x7FEB352D;
+        h = (h ^ (h >> 15)) *% 0x846CA68B;
+        return h ^ (h >> 16);
+    }
+
+    compile_time run_time u32 hash(i32 x, i32 y, u32 seed) { return std::math::noise::hash(seed ^ (std::bit_cast<u32>(x) *% 501125321) ^ (std::bit_cast<u32>(y) *% 1136930381)); }
+
+    compile_time run_time u32 hash(i32 x, i32 y, i32 z, u32 seed) { return std::math::noise::hash(seed ^ (std::bit_cast<u32>(x) *% 501125321) ^ (std::bit_cast<u32>(y) *% 1136930381) ^ (std::bit_cast<u32>(z) *% 1720413743)); }
+
+    template<type T>
+    compile_time run_time T unit(u32 h) { return cast::round<T>(h >> 8) * 0.000000059604644775390625; }
+
+    // floor(x) as an integer: one conversion instruction and a compare (the floor function itself
+    // is a library call on x86-64 without SSE4.1). Positions beyond ±2³¹ have no meaning here.
+    private template<type T>
+    compile_time run_time i32 floor_to_i32(T x) {
+        i32 i = cast::truncate<i32>(x);
+        if (cast::round<T>(i) > x) { return i -% 1; }
+        return i;
+    }
+
+    // 6t⁵ - 15t⁴ + 10t³: no kink in the first and second derivative at the lattice points.
+    private template<type T>
+    compile_time run_time T fade(T t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+
+    // The hash of a lattice point from the products of its coordinates: its top bits choose
+    // the gradient.
+    private compile_time run_time u32 corner(u32 h) { return h *% 0x27D4EB2D; }
+
+    // Eight gradients of length √2 (the diagonals and the axes), as (x, y) pairs, and the twelve
+    // edge directions of a cube plus four of them again (Perlin's improved noise), as (x, y, z, -).
+    // Tables instead of arithmetic on the hash bits: those would be branches the CPU can't predict.
+    private compile_time std::array<f32, 16> gradients_2d = [
+        1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0,
+        1.4142135623730951, 0.0, -1.4142135623730951, 0.0, 0.0, 1.4142135623730951, 0.0, -1.4142135623730951,
+    ];
+    private compile_time std::array<f32, 64> gradients_3d = [
+        1.0, 1.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0,
+        1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0,
+        0.0, 1.0, 1.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, -1.0, -1.0, 0.0,
+        1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0,
+    ];
+
+    // The gradient the top bits of `h` choose, dotted with (x, y) or (x, y, z).
+    private template<type T>
+    compile_time run_time T gradient(u32 h, T x, T y) {
+        usize i = cast<usize>((h >> 28) & 14);
+        return cast::round<T>(gradients_2d[i]) * x + cast::round<T>(gradients_2d[i + 1]) * y;
+    }
+
+    private template<type T>
+    compile_time run_time T gradient(u32 h, T x, T y, T z) {
+        usize i = cast<usize>((h >> 26) & 60);
+        return cast::round<T>(gradients_3d[i]) * x + cast::round<T>(gradients_3d[i + 1]) * y + cast::round<T>(gradients_3d[i + 2]) * z;
+    }
+
+    // A lattice value from -1 to 1.
+    private template<type T>
+    compile_time run_time T lattice_value(u32 h) {
+        mut u32 v = h *% 0x27D4EB2D;
+        v = (v ^ (v >> 15)) *% 0x2C1B3C6D;
+        v = v ^ (v >> 12);
+        return cast::round<T>(v >> 8) * 0.00000011920928955078125 - 1.0;
+    }
+
+    template<type T>
+    compile_time run_time T value(std::math::vec2<T> p) { return value(p, 0); }
+
+    template<type T>
+    compile_time run_time T value(std::math::vec2<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        u32 x0 = std::bit_cast<u32>(ix) *% 501125321;
+        u32 y0 = std::bit_cast<u32>(iy) *% 1136930381;
+        u32 x1 = x0 +% 501125321;
+        u32 y1 = y0 +% 1136930381;
+        T u = fade(fx);
+        T v = fade(fy);
+        T a = lattice_value<T>(seed ^ x0 ^ y0);
+        T b = lattice_value<T>(seed ^ x1 ^ y0);
+        T c = lattice_value<T>(seed ^ x0 ^ y1);
+        T d = lattice_value<T>(seed ^ x1 ^ y1);
+        T low = a + (b - a) * u;
+        T high = c + (d - c) * u;
+        return low + (high - low) * v;
+    }
+
+    template<type T>
+    compile_time run_time T value(std::math::vec3<T> p) { return value(p, 0); }
+
+    template<type T>
+    compile_time run_time T value(std::math::vec3<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        i32 iz = floor_to_i32<T>(p.z);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        T fz = p.z - cast::round<T>(iz);
+        u32 x0 = std::bit_cast<u32>(ix) *% 501125321;
+        u32 y0 = std::bit_cast<u32>(iy) *% 1136930381;
+        u32 z0 = std::bit_cast<u32>(iz) *% 1720413743;
+        u32 x1 = x0 +% 501125321;
+        u32 y1 = y0 +% 1136930381;
+        u32 z1 = z0 +% 1720413743;
+        T u = fade(fx);
+        T v = fade(fy);
+        T w = fade(fz);
+        T a = lattice_value<T>(seed ^ x0 ^ y0 ^ z0);
+        T b = lattice_value<T>(seed ^ x1 ^ y0 ^ z0);
+        T c = lattice_value<T>(seed ^ x0 ^ y1 ^ z0);
+        T d = lattice_value<T>(seed ^ x1 ^ y1 ^ z0);
+        T e = lattice_value<T>(seed ^ x0 ^ y0 ^ z1);
+        T f = lattice_value<T>(seed ^ x1 ^ y0 ^ z1);
+        T g = lattice_value<T>(seed ^ x0 ^ y1 ^ z1);
+        T h = lattice_value<T>(seed ^ x1 ^ y1 ^ z1);
+        T near_low = a + (b - a) * u;
+        T near_high = c + (d - c) * u;
+        T far_low = e + (f - e) * u;
+        T far_high = g + (h - g) * u;
+        T near = near_low + (near_high - near_low) * v;
+        T far = far_low + (far_high - far_low) * v;
+        return near + (far - near) * w;
+    }
+
+    template<type T>
+    compile_time run_time T perlin(std::math::vec2<T> p) { return perlin(p, 0); }
+
+    template<type T>
+    compile_time run_time T perlin(std::math::vec2<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        u32 x0 = std::bit_cast<u32>(ix) *% 501125321;
+        u32 y0 = std::bit_cast<u32>(iy) *% 1136930381;
+        u32 x1 = x0 +% 501125321;
+        u32 y1 = y0 +% 1136930381;
+        T u = fade(fx);
+        T v = fade(fy);
+        T a = gradient<T>(corner(seed ^ x0 ^ y0), fx, fy);
+        T b = gradient<T>(corner(seed ^ x1 ^ y0), fx - 1.0, fy);
+        T c = gradient<T>(corner(seed ^ x0 ^ y1), fx, fy - 1.0);
+        T d = gradient<T>(corner(seed ^ x1 ^ y1), fx - 1.0, fy - 1.0);
+        T low = a + (b - a) * u;
+        T high = c + (d - c) * u;
+        return low + (high - low) * v;
+    }
+
+    template<type T>
+    compile_time run_time T perlin(std::math::vec3<T> p) { return perlin(p, 0); }
+
+    template<type T>
+    compile_time run_time T perlin(std::math::vec3<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        i32 iz = floor_to_i32<T>(p.z);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        T fz = p.z - cast::round<T>(iz);
+        u32 x0 = std::bit_cast<u32>(ix) *% 501125321;
+        u32 y0 = std::bit_cast<u32>(iy) *% 1136930381;
+        u32 z0 = std::bit_cast<u32>(iz) *% 1720413743;
+        u32 x1 = x0 +% 501125321;
+        u32 y1 = y0 +% 1136930381;
+        u32 z1 = z0 +% 1720413743;
+        T u = fade(fx);
+        T v = fade(fy);
+        T w = fade(fz);
+        T a = gradient<T>(corner(seed ^ x0 ^ y0 ^ z0), fx, fy, fz);
+        T b = gradient<T>(corner(seed ^ x1 ^ y0 ^ z0), fx - 1.0, fy, fz);
+        T c = gradient<T>(corner(seed ^ x0 ^ y1 ^ z0), fx, fy - 1.0, fz);
+        T d = gradient<T>(corner(seed ^ x1 ^ y1 ^ z0), fx - 1.0, fy - 1.0, fz);
+        T e = gradient<T>(corner(seed ^ x0 ^ y0 ^ z1), fx, fy, fz - 1.0);
+        T f = gradient<T>(corner(seed ^ x1 ^ y0 ^ z1), fx - 1.0, fy, fz - 1.0);
+        T g = gradient<T>(corner(seed ^ x0 ^ y1 ^ z1), fx, fy - 1.0, fz - 1.0);
+        T h = gradient<T>(corner(seed ^ x1 ^ y1 ^ z1), fx - 1.0, fy - 1.0, fz - 1.0);
+        T near_low = a + (b - a) * u;
+        T near_high = c + (d - c) * u;
+        T far_low = e + (f - e) * u;
+        T far_high = g + (h - g) * u;
+        T near = near_low + (near_high - near_low) * v;
+        T far = far_low + (far_high - far_low) * v;
+        return (near + (far - near) * w) * 0.9649214;   // the largest value is 1.0363537
+    }
+
+    // The contribution of one corner of a simplex: (r² - d²)⁴ times the gradient, 0 outside the
+    // corner's radius.
+    private template<type T>
+    compile_time run_time T simplex_corner(u32 h, T x, T y) {
+        T t = std::math::max(0.5 - x * x - y * y, 0.0);
+        T t2 = t * t;
+        return t2 * t2 * gradient<T>(h, x, y);
+    }
+
+    private template<type T>
+    compile_time run_time T simplex_corner(u32 h, T x, T y, T z) {
+        T t = std::math::max(0.5 - x * x - y * y - z * z, 0.0);
+        T t2 = t * t;
+        return t2 * t2 * gradient<T>(h, x, y, z);
+    }
+
+    template<type T>
+    compile_time run_time T simplex(std::math::vec2<T> p) { return simplex(p, 0); }
+
+    template<type T>
+    compile_time run_time T simplex(std::math::vec2<T> p, u32 seed) {
+        T skew = (p.x + p.y) * 0.3660254037844386;
+        i32 i = floor_to_i32<T>(p.x + skew);
+        i32 j = floor_to_i32<T>(p.y + skew);
+        T unskew = cast::round<T>(i +% j) * 0.21132486540518713;
+        T x0 = p.x - (cast::round<T>(i) - unskew);
+        T y0 = p.y - (cast::round<T>(j) - unskew);
+        bool lower = x0 > y0;   // which of the two triangles of the cell
+        T x1 = x0 + 0.21132486540518713 - (if (lower) { 1.0 } else { 0.0 });
+        T y1 = y0 + 0.21132486540518713 - (if (lower) { 0.0 } else { 1.0 });
+        T x2 = x0 - 0.5773502691896257;
+        T y2 = y0 - 0.5773502691896257;
+        u32 hx = std::bit_cast<u32>(i) *% 501125321;
+        u32 hy = std::bit_cast<u32>(j) *% 1136930381;
+        u32 hx1 = hx +% 501125321;
+        u32 hy1 = hy +% 1136930381;
+        T n0 = simplex_corner<T>(corner(seed ^ hx ^ hy), x0, y0);
+        T n1 = simplex_corner<T>(corner(seed ^ (if (lower) { hx1 } else { hx }) ^ (if (lower) { hy } else { hy1 })), x1, y1);
+        T n2 = simplex_corner<T>(corner(seed ^ hx1 ^ hy1), x2, y2);
+        return (n0 + n1 + n2) * 70.0;   // the largest sum is 0.014256
+    }
+
+    template<type T>
+    compile_time run_time T simplex(std::math::vec3<T> p) { return simplex(p, 0); }
+
+    template<type T>
+    compile_time run_time T simplex(std::math::vec3<T> p, u32 seed) {
+        T skew = (p.x + p.y + p.z) * 0.3333333333333333;
+        i32 i = floor_to_i32<T>(p.x + skew);
+        i32 j = floor_to_i32<T>(p.y + skew);
+        i32 k = floor_to_i32<T>(p.z + skew);
+        T unskew = cast::round<T>(i +% j +% k) * 0.16666666666666666;
+        T x0 = p.x - (cast::round<T>(i) - unskew);
+        T y0 = p.y - (cast::round<T>(j) - unskew);
+        T z0 = p.z - (cast::round<T>(k) - unskew);
+        // The order of x0, y0 and z0 says which of the six tetrahedra of the cell the point is in:
+        // the second corner steps along the largest, the third along the two largest.
+        bool xy = x0 >= y0;
+        bool yz = y0 >= z0;
+        bool xz = x0 >= z0;
+        bool i1 = xy && xz;
+        bool j1 = !xy && yz;
+        bool k1 = !xz && !yz;
+        bool i2 = xy || xz;
+        bool j2 = !xy || yz;
+        bool k2 = !(xz && yz);
+        T x1 = x0 + 0.16666666666666666 - (if (i1) { 1.0 } else { 0.0 });
+        T y1 = y0 + 0.16666666666666666 - (if (j1) { 1.0 } else { 0.0 });
+        T z1 = z0 + 0.16666666666666666 - (if (k1) { 1.0 } else { 0.0 });
+        T x2 = x0 + 0.3333333333333333 - (if (i2) { 1.0 } else { 0.0 });
+        T y2 = y0 + 0.3333333333333333 - (if (j2) { 1.0 } else { 0.0 });
+        T z2 = z0 + 0.3333333333333333 - (if (k2) { 1.0 } else { 0.0 });
+        T x3 = x0 - 0.5;
+        T y3 = y0 - 0.5;
+        T z3 = z0 - 0.5;
+        u32 hx = std::bit_cast<u32>(i) *% 501125321;
+        u32 hy = std::bit_cast<u32>(j) *% 1136930381;
+        u32 hz = std::bit_cast<u32>(k) *% 1720413743;
+        u32 hx1 = hx +% 501125321;
+        u32 hy1 = hy +% 1136930381;
+        u32 hz1 = hz +% 1720413743;
+        T n0 = simplex_corner<T>(corner(seed ^ hx ^ hy ^ hz), x0, y0, z0);
+        T n1 = simplex_corner<T>(corner(seed ^ (if (i1) { hx1 } else { hx }) ^ (if (j1) { hy1 } else { hy }) ^ (if (k1) { hz1 } else { hz })), x1, y1, z1);
+        T n2 = simplex_corner<T>(corner(seed ^ (if (i2) { hx1 } else { hx }) ^ (if (j2) { hy1 } else { hy }) ^ (if (k2) { hz1 } else { hz })), x2, y2, z2);
+        T n3 = simplex_corner<T>(corner(seed ^ hx1 ^ hy1 ^ hz1), x3, y3, z3);
+        return (n0 + n1 + n2 + n3) * 76.8;   // the largest sum is 0.013006
+    }
+
+    template<type T>
+    compile_time run_time T worley(std::math::vec2<T> p) { return worley(p, 0); }
+
+    template<type T>
+    compile_time run_time T worley(std::math::vec2<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        mut T best = 8.0;
+        for (i32 dy : -1..2) {
+            for (i32 dx : -1..2) {
+                u32 h = std::math::noise::hash(ix +% dx, iy +% dy, seed);
+                T x = cast::round<T>(dx) + cast::round<T>(h & 0xFFFF) * 0.0000152587890625 - fx;
+                T y = cast::round<T>(dy) + cast::round<T>(h >> 16) * 0.0000152587890625 - fy;
+                T d = x * x + y * y;
+                if (d < best) { best = d; }
+            }
+        }
+        return best.sqrt();
+    }
+
+    template<type T>
+    compile_time run_time T worley(std::math::vec3<T> p) { return worley(p, 0); }
+
+    template<type T>
+    compile_time run_time T worley(std::math::vec3<T> p, u32 seed) {
+        i32 ix = floor_to_i32<T>(p.x);
+        i32 iy = floor_to_i32<T>(p.y);
+        i32 iz = floor_to_i32<T>(p.z);
+        T fx = p.x - cast::round<T>(ix);
+        T fy = p.y - cast::round<T>(iy);
+        T fz = p.z - cast::round<T>(iz);
+        mut T best = 8.0;
+        for (i32 dz : -1..2) {
+            for (i32 dy : -1..2) {
+                for (i32 dx : -1..2) {
+                    u32 h = std::math::noise::hash(ix +% dx, iy +% dy, iz +% dz, seed);
+                    T x = cast::round<T>(dx) + cast::round<T>(h & 0x3FF) * 0.0009765625 - fx;
+                    T y = cast::round<T>(dy) + cast::round<T>((h >> 10) & 0x3FF) * 0.0009765625 - fy;
+                    T z = cast::round<T>(dz) + cast::round<T>(h >> 22) * 0.0009765625 - fz;
+                    T d = x * x + y * y + z * z;
+                    if (d < best) { best = d; }
+                }
+            }
+        }
+        return best.sqrt();
+    }
+
+    template<type T>
+    compile_time run_time T fbm(std::math::vec2<T> p, u32 octaves) { return fbm(p, octaves, 2.0, 0.5, 0); }
+
+    template<type T>
+    compile_time run_time T fbm(std::math::vec2<T> p, u32 octaves, T lacunarity, T gain, u32 seed) {
+        mut T sum = 0.0;
+        mut T amplitude = 1.0;
+        mut T total = 0.0;
+        mut std::math::vec2<T> q = p;
+        for (u32 i : 0..octaves) {
+            sum += perlin(q, seed +% i) * amplitude;
+            total += amplitude;
+            amplitude *= gain;
+            q = q * lacunarity;
+        }
+        if (total == 0.0) { return 0.0; }
+        return sum / total;
+    }
+
+    template<type T>
+    compile_time run_time T fbm(std::math::vec3<T> p, u32 octaves) { return fbm(p, octaves, 2.0, 0.5, 0); }
+
+    template<type T>
+    compile_time run_time T fbm(std::math::vec3<T> p, u32 octaves, T lacunarity, T gain, u32 seed) {
+        mut T sum = 0.0;
+        mut T amplitude = 1.0;
+        mut T total = 0.0;
+        mut std::math::vec3<T> q = p;
+        for (u32 i : 0..octaves) {
+            sum += perlin(q, seed +% i) * amplitude;
+            total += amplitude;
+            amplitude *= gain;
+            q = q * lacunarity;
+        }
+        if (total == 0.0) { return 0.0; }
+        return sum / total;
+    }
+}

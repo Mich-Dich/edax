@@ -1,0 +1,85 @@
+// RUN: edaxc run %s
+// std::ecs: change detection on @std::ecs::tracked components (added, changed, removed), events
+// kept for one frame, and commands recorded inside a query and applied afterwards (provisional
+// entities, spawn, set_parent, send).
+import std;
+import std::ecs;
+
+namespace ecs = std::ecs;
+
+struct position { f32 x = 0.0; f32 y = 0.0; }
+struct velocity { f32 x = 0.0; f32 y = 0.0; }
+struct name { std::string text = default; }
+struct enemy { }
+struct dead { }
+
+@ecs::tracked
+struct health { i32 value = 100; }
+
+@ecs::resource
+struct frame_time { f32 dt = 0.5; }
+
+@ecs::resource
+struct counter { u32 n = 0; }
+
+struct hit { ecs::entity target = default; i32 damage = 0; }
+
+void tracking() {
+    mut ecs::world w = ecs::world::make();
+    ecs::entity a = w.spawn(health{}, position{});
+    ecs::entity b = w.spawn(health{}, position{});
+    w.update();
+    w.get_mut<health>(b).value -= 10;
+    ecs::entity c = w.spawn(health{ .value = 5 });
+    mut u32 changed = 0;
+    w.each(ecs::filter::make().changed<health>(), [mut &changed](health& h) { changed += 1; });
+    mut u32 added = 0;
+    w.each(ecs::filter::make().added<health>(), [mut &added](health& h) { added += 1; });
+    std::println(f"changed {changed} (b and c), added {added} (c)");
+    w.update();
+    w.each([](mut health& h) { h.value += 1; });
+    mut u32 again = 0;
+    w.each(ecs::filter::make().changed<health>(), [mut &again](health& h) { again += 1; });
+    std::println(f"changed after a write to all: {again}");
+    w.remove<health>(a);
+    w.destroy(c);
+    std::println(f"removed {w.removed<health>().length()}");
+    w.update();
+    std::println(f"removed after update {w.removed<health>().length()}");
+}
+
+void events_and_commands() {
+    mut ecs::world w = ecs::world::make();
+    ecs::entity a = w.spawn(health{}, name{ .text = std::string::from("a") });
+    w.send(hit{ .target = a, .damage = 30 });
+    w.send(hit{ .target = a, .damage = 5 });
+    for (usize i : 0..w.events<hit>().length()) {
+        hit h = w.events<hit>()[i];
+        w.get_mut<health>(h.target).value -= h.damage;
+    }
+    std::println(f"health {w.get<health>(a).value}, events {w.events<hit>().length()}");
+    w.update();
+    std::println(f"events one frame later {w.events<hit>().length()}");
+    w.update();
+    std::println(f"events two frames later {w.events<hit>().length()}");
+    mut ecs::commands cmd = ecs::commands::make();
+    w.each([mut &cmd](ecs::entity e, health& h) {
+        if (h.value < 100) {
+            ecs::entity child = cmd.spawn(name{ .text = std::string::from("child") }, position{ .x = 3.0 });
+            cmd.set_parent(child, e);
+            cmd.add(e, dead{});
+            cmd.send(hit{ .target = e, .damage = 1 });
+        }
+    });
+    std::println(f"recorded {cmd.length()} commands, entities {w.count()}");
+    w.apply(mut cmd);
+    std::println(f"applied: entities {w.count()}, dead {w.has<dead>(a)}, children {w.children_of(a).length()}, events {w.events<hit>().length()}");
+    ecs::entity kid = w.children_of(a)[0];
+    std::println(f"child name {w.get<name>(kid).text}, parent is a {w.parent_of(kid).value_or(ecs::entity::null()) == a}");
+}
+
+i32 main() {
+    tracking();
+    events_and_commands();
+    return 0;
+}

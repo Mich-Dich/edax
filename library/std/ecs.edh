@@ -1,0 +1,251 @@
+// The Edax standard library: module std::ecs, an entity component system (ecs.md).
+//
+// Entities are handles; components are plain structs; a world keeps every entity's components in
+// archetype tables: one table per set of component types, one cache-line-aligned column per type.
+// A query walks the tables that have its components, column by column, so the loop over a table
+// is a loop over plain arrays that the compiler vectorizes.
+//
+//     mut std::ecs::world w = std::ecs::world::make();
+//     std::ecs::entity e = w.spawn(position{}, velocity{ .x = 1.0 });
+//     w.each([](mut position& p, velocity& v) { p.x += v.x; });   // the parameters are the query
+//
+// Loaded for programs that name std::ecs.
+
+namespace std::ecs {
+    // An entity: an index into the world's entity list and the generation of that slot, so a
+    // handle to a destroyed entity is never mistaken for the entity that reuses its slot.
+    struct entity {
+        u32 index = 4294967295;
+        u32 generation = 0;
+
+        // The handle of no entity.
+        static entity null();
+        bool is_null();
+        bool operator==(entity& other) = default;
+        u64 hash();
+        void format(mut std::formatter& out);
+    }
+
+    // On a type: it is a resource, one value per world (the frame time, the input state, a
+    // random generator) instead of a component per entity. A query or system parameter of a
+    // resource type is that value: `[](mut position& p, frame_time& t) { ... }`.
+    annotation(std::meta::target::type)
+    struct resource { }
+
+    // On a component type: the world keeps, per entity, the tick it was added and the tick it was
+    // last changed, so queries can ask for `added<T>()` / `changed<T>()`, and `removed<T>()` lists
+    // the entities that lost it. Components without it cost nothing for this.
+    annotation(std::meta::target::type)
+    struct tracked { }
+
+    // The parent of an entity (`world.set_parent`). Kept by the world together with `children`.
+    struct parent {
+        std::ecs::entity value = default;
+    }
+
+    // The children of an entity, in the order they were given their parent.
+    struct children {
+        std::darray<std::ecs::entity> list = default;
+    }
+
+    // What a query needs besides the components it hands out: components an entity must have or
+    // must not have, and components that must have been added or changed since `since` (a world
+    // tick; by default the last `world.update()`).
+    //
+    //     std::ecs::filter f = std::ecs::filter::make().with<enemy>().without<dead>();
+    //     w.each(f, [](mut position& p) { ... });
+    struct filter {
+        static filter make();
+        template<type C>
+        filter with() move;
+        template<type C>
+        filter without() move;
+        // Entities whose `C` was added since `since` (C must be @std::ecs::tracked).
+        template<type C>
+        filter added() move;
+        // Entities whose `C` was added or changed (handed out as `mut C&`, or written with `add`
+        // or `get_mut`) since `since` (C must be @std::ecs::tracked).
+        template<type C>
+        filter changed() move;
+        // Compares `added` and `changed` with `tick` instead of the last `world.update()`.
+        filter since(u32 tick) move;
+
+        // ---- read by the world ----
+        std::darray<u64> with_ids = default;
+        std::darray<u64> without_ids = default;
+        std::darray<u64> added_ids = default;
+        std::darray<u64> changed_ids = default;
+        std::darray<std::static_str> names = default;
+        std::option<u32> since_tick = std::none;
+    }
+
+    // Changes to a world recorded while it is being read (inside `each`, or by systems), applied
+    // later with `world.apply` in the order they were made. Entities it creates are usable in the
+    // following commands before they exist.
+    class commands {
+    public:
+        static commands make();
+        // A new entity, created when the commands are applied.
+        std::ecs::entity create() mut;
+        // A new entity with these components.
+        template<type... C>
+        std::ecs::entity spawn(C... components) mut;
+        void destroy(std::ecs::entity e) mut;
+        // Destroys the entity and its descendants.
+        void destroy_recursive(std::ecs::entity e) mut;
+        // Adds the component, or replaces the entity's one.
+        template<type C>
+        void add(std::ecs::entity e, C component) mut;
+        template<type C>
+        void remove(std::ecs::entity e) mut;
+        void set_parent(std::ecs::entity child, std::ecs::entity parent) mut;
+        // Sends an event (`world.send`).
+        template<type E>
+        void send(E event) mut;
+        // The number of commands waiting.
+        usize length();
+        bool is_empty();
+        ~commands();
+    }
+
+    // How a world reports the systems of a schedule: which run together.
+    struct stage_info {
+        std::darray<std::static_str> systems = default;
+    }
+
+    // Entities and their components, resources, events and systems.
+    class world {
+    public:
+        static world make();
+
+        // ---- entities ----
+        std::ecs::entity create() mut;
+        // A new entity with these components, moved straight into their table.
+        template<type... C>
+        std::ecs::entity spawn(C... components) mut;
+        // Destroys the entity and its components; its children lose their parent.
+        void destroy(std::ecs::entity e) mut;
+        // Destroys the entity and its descendants.
+        void destroy_recursive(std::ecs::entity e) mut;
+        // Whether `e` is an entity of this world that wasn't destroyed.
+        bool alive(std::ecs::entity e);
+        // The number of entities.
+        usize count();
+        // The number of entities with `C`.
+        template<type C>
+        usize count_with();
+
+        // ---- components ----
+        // Adds the component, or replaces the entity's one (marking it changed).
+        template<type C>
+        void add(std::ecs::entity e, C component) mut;
+        // Removes the component; nothing when the entity doesn't have it.
+        template<type C>
+        void remove(std::ecs::entity e) mut;
+        template<type C>
+        bool has(std::ecs::entity e);
+        // The component; panics when the entity doesn't have it.
+        template<type C>
+        C& get(std::ecs::entity e);
+        // The component to change (marking it changed); panics when the entity doesn't have it.
+        template<type C>
+        mut C& get_mut(std::ecs::entity e) mut;
+        template<type C>
+        std::option<C&> find(std::ecs::entity e);
+        template<type C>
+        std::option<mut C&> find_mut(std::ecs::entity e) mut;
+
+        // ---- queries ----
+        // Calls `fn` once per entity that has every component `fn` takes. Its parameters say what
+        // it reads and writes: `T&` reads a component, `mut T&` changes it, `std::ecs::entity`
+        // is the entity, and a parameter of a @std::ecs::resource type is that resource.
+        //     w.each([](std::ecs::entity e, mut position& p, velocity& v, frame_time& t) { ... });
+        // Entities must not be created, destroyed or given other components inside: record
+        // those in std::ecs::commands and `apply` them afterwards.
+        template<type F>
+        void each(mut F fn) mut;
+        template<type F>
+        void each(std::ecs::filter& f, mut F fn) mut;
+        // Calls `fn` once per table with spans of the columns: `std::span<T>` reads a component,
+        // `std::span<mut T>` changes it, `std::span<std::ecs::entity>` lists the entities, and a
+        // resource parameter is the resource. For hand-written SIMD loops over whole columns.
+        template<type F>
+        void each_table(mut F fn) mut;
+        template<type F>
+        void each_table(std::ecs::filter& f, mut F fn) mut;
+        // `each` with the entities split into chunks run in parallel on `pool`. `fn` must be
+        // shareable and must not change its own captures.
+        template<type F : std::shareable>
+        void par_each(std::thread_pool& pool, F fn) mut;
+        template<type F : std::shareable>
+        void par_each(std::thread_pool& pool, std::ecs::filter& f, F fn) mut;
+
+        // ---- resources ----
+        // Sets the resource (`R` must be @std::ecs::resource), replacing the old value.
+        template<type R>
+        void set_resource(R value) mut;
+        template<type R>
+        bool has_resource();
+        // The resource; panics when it isn't set.
+        template<type R>
+        R& resource();
+        template<type R>
+        mut R& resource_mut() mut;
+        // Removes the resource and returns it.
+        template<type R>
+        std::option<R> take_resource() mut;
+
+        // ---- events ----
+        // Sends an event. Events stay readable until the second `update()` after they were sent,
+        // so a reader that looks once per frame sees each event, whenever in the frame it was sent.
+        template<type E>
+        void send(E event) mut;
+        // The events of type E, the oldest first.
+        template<type E>
+        std::span<E> events();
+
+        // ---- change detection ----
+        // The current tick: what `added` and `changed` are compared with.
+        u32 tick();
+        // The entities that lost their `C` (or were destroyed with it) since the last `update()`;
+        // `C` must be @std::ecs::tracked.
+        template<type C>
+        std::span<std::ecs::entity> removed();
+        // Ends a frame: a new tick, events older than one frame dropped, `removed` lists emptied.
+        void update() mut;
+
+        // ---- commands ----
+        // Carries out the recorded commands in order and empties `c`.
+        void apply(mut std::ecs::commands& c) mut;
+
+        // ---- hierarchy ----
+        // Makes `parent` the parent of `child` (a std::ecs::parent component on the child, the
+        // child at the end of the parent's std::ecs::children). Panics on a cycle.
+        void set_parent(std::ecs::entity child, std::ecs::entity parent) mut;
+        void remove_parent(std::ecs::entity child) mut;
+        std::option<std::ecs::entity> parent_of(std::ecs::entity e);
+        // The children of `e`, empty when it has none.
+        std::span<std::ecs::entity> children_of(std::ecs::entity e);
+        // Calls `fn(e)` for `root` and then every descendant, parents before their children.
+        template<type F>
+        void each_descendant(std::ecs::entity root, mut F fn);
+
+        // ---- systems ----
+        // Adds a system to the schedule called `schedule`: a function over entities like `each`'s,
+        // which may also take `mut std::ecs::commands&` (applied after its stage). Systems run in
+        // the order they were added, except that systems whose components and resources don't
+        // conflict (one writes what another reads or writes) run at the same time.
+        template<type F : std::shareable>
+        void add_system(std::static_str schedule, std::static_str name, F system) mut;
+        template<type F : std::shareable>
+        void add_system(std::static_str schedule, std::static_str name, std::ecs::filter f, F system) mut;
+        // Runs the systems of `schedule` once, in parallel on `pool`.
+        void run(std::static_str schedule, std::thread_pool& pool) mut;
+        // Runs the systems of `schedule` once on this thread, in order.
+        void run(std::static_str schedule) mut;
+        // The stages `run` makes of a schedule: the systems that run together.
+        std::darray<std::ecs::stage_info> stages(std::static_str schedule) mut;
+
+        ~world();
+    }
+}

@@ -1,0 +1,87 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: velocity is not marked @std::ecs::resource
+   --> tests/action/check/ecs_errors.ed:14:5
+    |
+ 14 |     w.set_resource(velocity{});
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   ::: <std>/ecs.ed:<n>
+    |
+<n> |             compile_time check (std::meta::has_annotation<std::ecs::resource, R>())
+    |                                 --------------------------------------------------
+    = note: the check of 'set_resource' is here
+
+error[E4210]: changed<position>() needs a component marked @std::ecs::tracked
+   --> tests/action/check/ecs_errors.ed:15:26
+    |
+ 15 |     std::ecs::filter f = std::ecs::filter::make().changed<position>();
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this call fails the check
+   ::: <std>/ecs.ed:<n>
+    |
+<n> |             compile_time check (std::meta::has_annotation<std::ecs::tracked, C>())
+    |                                 -------------------------------------------------
+    = note: the check of 'changed' is here
+
+error[E4210]: only systems take std::ecs::commands; capture one in the lambda passed to each
+    --> <std>/ecs.ed:<n>
+     |
+ <n> |                     std::compile_error("only systems take std::ecs::commands; capture one in the lambda passed to each");
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
+     |
+ <n> |             check_parameters<F>(false, false);
+     |             ---------------------------------
+     = note: in the instance 'check_parameters<lambda(mut std::ecs::commands&, position&), false, false>', asked for here
+     |
+ <n> |             this.each(none, move fn);
+     |             ------------------------
+     = note: in the instance 'each<lambda(mut std::ecs::commands&, position&)>', asked for here
+    ::: tests/action/check/ecs_errors.ed:13:5
+     |
+  13 |     w.each([](mut std::ecs::commands& c, position& p) { });
+     |     ------------------------------------------------------
+     = note: in the instance 'each<lambda(mut std::ecs::commands&, position&)>', asked for here
+
+error[E4210]: a component is passed by reference: write 'position&' or 'mut position&'
+    --> <std>/ecs.ed:<n>
+     |
+ <n> |                 std::compile_error(f"a component is passed by reference: write '{std::type_name<t>()}&' or 'mut {std::type_name<t>()}&'");
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ check failed
+     |
+ <n> |             check_parameters<F>(false, false);
+     |             ---------------------------------
+     = note: in the instance 'check_parameters<lambda(position), false, false>', asked for here
+     |
+ <n> |             this.each(none, move fn);
+     |             ------------------------
+     = note: in the instance 'each<lambda(position)>', asked for here
+    ::: tests/action/check/ecs_errors.ed:12:5
+     |
+  12 |     w.each([](position p) { });
+     |     --------------------------
+     = note: in the instance 'each<lambda(position)>', asked for here
+
+error[E4022]: calling 'fn' changes its 'mut' captures, but 'fn' is not mutable
+    --> <std>/ecs.ed:<n>
+     |
+ <n> |                 fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+     |                 ^^ immutable lambda
+     |
+ <n> |     void probe_shared_call(F& fn) {
+     |                            -----
+     = note: declare it 'mut': 'mut auto fn = ...' (a parameter: 'mut F fn')
+     |
+ <n> |             probe_shared_call<F>(fn);
+     |             ------------------------
+     = note: in the instance 'probe_shared_call<lambda(position&)>', asked for here
+     |
+ <n> |             this.par_each(pool, none, move fn);
+     |             ----------------------------------
+     = note: in the instance 'par_each<lambda(position&)>', asked for here
+    ::: tests/action/check/ecs_errors.ed:16:5
+     |
+  16 |     w.par_each(pool, [mut seen = 0u32](position& p) { seen += 1; });
+     |     ---------------------------------------------------------------
+     = note: in the instance 'par_each<lambda(position&)>', asked for here
+
+5 errors, 0 warnings

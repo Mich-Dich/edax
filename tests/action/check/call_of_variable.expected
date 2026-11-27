@@ -1,0 +1,18 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4033]: 'r' is a variable of type 'f32', not a function
+  --> tests/action/check/call_of_variable.ed:17:13
+   |
+17 |     f32 x = r(2.0);
+   |             ^ not callable
+   = note: if a function is named 'r' too, the variable hides it here: give one of them another name
+
+error[E4033]: 'at' is a variable of type 'point', not a function
+  --> tests/action/check/call_of_variable.ed:18:13
+   |
+18 |     f32 y = at(2.0);
+   |             ^^ not callable
+   = note: if a function is named 'at' too, the variable hides it here: give one of them another name
+
+2 errors, 0 warnings

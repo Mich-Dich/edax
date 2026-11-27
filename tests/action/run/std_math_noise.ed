@@ -1,0 +1,59 @@
+// RUN: edaxc run %s
+// std::math::ease and std::math::noise: the easing curves, and the range, smoothness and
+// repeatability of the noise functions.
+import std;
+namespace m = std::math;
+namespace ease = std::math::ease;
+namespace noise = std::math::noise;
+
+f32 rounded(f32 v) { return (v * 10000.0).round() / 10000.0 + 0.0; }
+
+// Samples `f` on a grid: whether every value is inside [lo, hi], whether the values use most of
+// that range, and whether neighbouring samples are close (the noise is continuous).
+template<type F>
+void survey(std::str name, F f, f32 lo, f32 hi, f32 largest_step) {
+    mut f32 least = 1000.0;
+    mut f32 most = -1000.0;
+    mut f32 jump = 0.0;
+    mut f32 last = 0.0;
+    for (i32 y : 0..160) {
+        for (i32 x : 0..160) {
+            f32 v = f(cast::round<f32>(x) * 0.0537 - 3.3, cast::round<f32>(y) * 0.0471 - 2.7);
+            least = m::min(least, v);
+            most = m::max(most, v);
+            if (x > 0) { jump = m::max(jump, (v - last).abs()); }
+            last = v;
+        }
+    }
+    f32 used = (most - least) / (hi - lo);
+    std::println(f"{name}: inside {least >= lo && most <= hi}, uses the range {used > 0.4}, smooth {jump <= largest_step}");
+}
+
+i32 main() {
+    std::println(f"{rounded(ease::in_quad(0.5))} {rounded(ease::out_quad(0.5))} {rounded(ease::in_out_quad(0.25))} {rounded(ease::in_out_quad(0.75))} {rounded(ease::in_cubic(0.5))} {rounded(ease::out_cubic(0.5))} {rounded(ease::in_out_cubic(0.25))} {rounded(ease::in_quart(0.5))} {rounded(ease::out_quint(0.5))} {rounded(ease::in_out_quint(0.75))}");
+    std::println(f"{rounded(ease::in_sine(0.5))} {rounded(ease::out_sine(0.5))} {rounded(ease::in_out_sine(0.5))} {rounded(ease::in_expo(0.5))} {rounded(ease::out_expo(0.5))} {rounded(ease::in_out_expo(0.25))} {rounded(ease::in_circ(0.5))} {rounded(ease::out_circ(0.5))} {rounded(ease::in_out_circ(0.75))}");
+    std::println(f"{rounded(ease::in_back(0.5))} {rounded(ease::out_back(0.5))} {rounded(ease::in_out_back(0.25))} {rounded(ease::in_elastic(0.9))} {rounded(ease::out_elastic(0.1))} {rounded(ease::in_out_elastic(0.45))} {rounded(ease::in_bounce(0.5))} {rounded(ease::out_bounce(0.5))} {rounded(ease::out_bounce(0.8))} {rounded(ease::out_bounce(0.95))} {rounded(ease::in_out_bounce(0.25))}");
+    std::println(f"{rounded(ease::in_quad(0.0))} {rounded(ease::in_quad(1.0))} {rounded(ease::out_expo(0.0))} {rounded(ease::out_expo(1.0))} {rounded(ease::in_out_elastic(0.0))} {rounded(ease::in_out_elastic(1.0))} {rounded(ease::out_bounce(1.0))} {rounded(ease::in_out_back(1.0))} {ease::in_out_cubic<f64>(0.3)}");
+    compile_time f32 eased = ease::out_cubic(0.5);
+    std::println(f"{eased} {noise::hash(1)} {noise::hash(2)} {noise::hash(3, -4, 7)} {noise::hash(3, -4, 5, 7)} {noise::unit(noise::hash(1))} {noise::unit<f64>(0xFFFFFFFF)}");
+
+    survey("value 2D", [](f32 x, f32 y) { return noise::value(m::vec2::make(x, y)); }, -1.0, 1.0, 0.2);
+    survey("perlin 2D", [](f32 x, f32 y) { return noise::perlin(m::vec2::make(x, y)); }, -1.0, 1.0, 0.2);
+    survey("simplex 2D", [](f32 x, f32 y) { return noise::simplex(m::vec2::make(x, y)); }, -1.0, 1.0, 0.4);
+    survey("worley 2D", [](f32 x, f32 y) { return noise::worley(m::vec2::make(x, y)); }, 0.0, 1.5, 0.1);
+    survey("fbm 2D", [](f32 x, f32 y) { return noise::fbm(m::vec2::make(x, y), 5); }, -1.0, 1.0, 0.3);
+    survey("value 3D", [](f32 x, f32 y) { return noise::value(m::vec3::make(x, y, x * 0.37 + y * 0.21)); }, -1.0, 1.0, 0.2);
+    survey("perlin 3D", [](f32 x, f32 y) { return noise::perlin(m::vec3::make(x, y, x * 0.37 + y * 0.21)); }, -1.0, 1.0, 0.2);
+    survey("simplex 3D", [](f32 x, f32 y) { return noise::simplex(m::vec3::make(x, y, x * 0.37 + y * 0.21)); }, -1.0, 1.0, 0.45);
+    survey("worley 3D", [](f32 x, f32 y) { return noise::worley(m::vec3::make(x, y, x * 0.37 + y * 0.21)); }, 0.0, 1.8, 0.1);
+    survey("fbm 3D", [](f32 x, f32 y) { return noise::fbm(m::vec3::make(x, y, x * 0.37 + y * 0.21), 4); }, -1.0, 1.0, 0.3);
+    // 0 on the lattice; the same value for the same input, another for another seed; f64 agrees with f32.
+    m::vec2 at = m::vec2::make(0.5, 0.25);
+    m::vec3 at3 = m::vec3::make(0.5, 0.25, -3.75);
+    std::println(f"{noise::perlin(m::vec2::make(3.0, -7.0))} {noise::perlin(m::vec3::make(3.0, -7.0, 2.0))} {noise::perlin(at) == noise::perlin(at)} {noise::perlin(at) != noise::perlin(at, 99)} {noise::simplex(at3) != noise::simplex(at3, 1)} {noise::worley(at) != noise::worley(at, 5)} {noise::value(at) != noise::value(at, 7)}");
+    std::println(f"{(cast<f64>(noise::perlin(at)) - noise::perlin(at.to<f64>())).abs() < 0.00001} {(cast<f64>(noise::simplex(at3)) - noise::simplex(at3.to<f64>())).abs() < 0.00001} {(cast<f64>(noise::worley(at3)) - noise::worley(at3.to<f64>())).abs() < 0.00001} {(cast<f64>(noise::fbm(at, 4)) - noise::fbm(at.to<f64>(), 4)).abs() < 0.00001}");
+    std::println(f"{rounded(noise::perlin(at))} {rounded(noise::perlin(at3))} {rounded(noise::simplex(at))} {rounded(noise::simplex(at3))} {rounded(noise::value(at))} {rounded(noise::worley(at))} {rounded(noise::fbm(at, 4))} {rounded(noise::fbm(at3, 3, 2.5, 0.4, 11))}");
+    compile_time f32 baked = noise::perlin(m::vec2::make(0.5, 0.25));
+    std::println(f"{baked == noise::perlin(at)} {noise::hash(0) != noise::hash(1)} {noise::hash(1, 2, 3) != noise::hash(2, 1, 3)} {noise::unit(0) == 0.0} {noise::unit(0xFFFFFFFF) < 1.0}");
+    return 0;
+}

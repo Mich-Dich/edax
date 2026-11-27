@@ -182,8 +182,12 @@ private:
         // The node editor, for programs that name it.
         if (name == "std::ui::nodes") return {"std::ui::nodes"};
         if (name == "std::math" || name == "std::image" || name == "std::text::font") return {name, "std::ui"};
+        // Easing curves and noise, for programs that name std::math (std::ui alone doesn't need them).
+        if (name == "std::math::ease" || name == "std::math::noise") return {"std::math"};
         // Command-line arguments, for programs that name them.
         if (name == "std::args") return {"std::args"};
+        // The entity component system, for programs that name it.
+        if (name == "std::ecs") return {"std::ecs"};
         return {};
     }
     static bool on_demand(std::string_view name) { return !on_demand_triggers(name).empty(); }

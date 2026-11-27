@@ -1,17 +1,59 @@
 // RUN: edaxc run %s
-// std::math: vectors, rectangles, colours and OKLCH.
+// std::math: numbers, typed angles, vectors (f32, f64, integers), rectangles and colours.
 import std;
 namespace m = std::math;
 
-void main() {
-    m::vec2 a = m::vec2{ .x = 3.0, .y = 4.0 };
-    std::println(f"{a.length()} {(a + m::vec2::splat(1.0) * 2.0).x} {a.normalized().y} {a.perpendicular().x}");
-    m::rect r = m::rect{ .x = 10.0, .y = 10.0, .width = 100.0, .height = 50.0 };
-    std::println(f"{r.contains(m::vec2{ .x = 10.0, .y = 10.0 })} {r.contains(m::vec2{ .x = 110.0, .y = 20.0 })} {r.shrunk(5.0).width}");
-    std::println(f"{r.intersection(m::rect{ .x = 50.0, .y = 0.0, .width = 100.0, .height = 20.0 })}");
+// Four decimals: what the C library's sin and cos return may differ in the last bit between systems.
+f32 rounded(f32 v) { return (v * 10000.0).round() / 10000.0 + 0.0; }
+
+i32 main() {
+    m::vec3 a = m::vec3::make(1.0, 2.0, 3.0);
+    m::vec3 b = m::vec3::splat(2.0);
+    std::println(f"{a + b} {a * b} {2.0 * a} {-a} {m::dot(a, b)} {m::cross(a, b)} {m::length(a)} {a / b} {a - b} {a / 2.0}");
+    m::vec2 p = m::vec2::make(3.0, 4.0);
+    m::vec4 q = m::vec4::from_xyz(a, 1.0);
+    std::println(f"{m::length(p)} {m::normalize(p)} {m::normalize_or_zero(m::vec2::zero())} {m::distance(p, m::vec2::one())} {m::perpendicular(p)} {m::cross(p, m::vec2::unit_x())}");
+    std::println(f"{q} {q.xyz()} {q.xy()} {q.zw()} {a.xy()} {a.xz()} {a.yz()} {m::vec3::from_xy(p, 9.0)} {m::vec4::unit_w()} {m::length_squared(q)}");
+    std::println(f"{m::reflect(m::vec3::make(1.0, -1.0, 0.0), m::vec3::unit_y())} {m::refract(m::normalize(m::vec3::make(1.0, -1.0, 0.0)), m::vec3::unit_y(), 0.75)} {m::face_forward(m::vec3::unit_y(), m::vec3::make(0.0, 1.0, 0.0))}");
+    std::println(f"{m::project(a, m::vec3::unit_x())} {m::reject(a, m::vec3::unit_x())} {rounded(cast<f32>(m::angle(m::vec3::unit_x(), m::vec3::unit_y())))} {rounded(m::rotate(m::vec2::unit_x(), m::deg(90.0)).y)}");
+    m::vec3 f = m::vec3::make(-1.5, 0.25, 2.75);
+    std::println(f"{m::abs(f)} {m::sign(f)} {m::floor(f)} {m::ceil(f)} {m::round(f)} {m::trunc(f)} {m::fract(f)} {m::sqrt(m::abs(f))} {m::saturate(f)}");
+    std::println(f"{m::min(a, b)} {m::max(a, b)} {m::min(a, 1.5)} {m::max(a, 1.5)} {m::mod(f, 1.0)} {m::clamp(f, 0.0, 1.0)} {m::clamp(f, m::vec3::zero(), a)} {m::lerp(a, b, 0.5)} {m::step(1.0, f)} {m::smoothstep(0.0, 3.0, a)}");
+    std::println(f"{m::min_component(f)} {m::max_component(f)} {m::approx_equal(a, a + m::vec3::splat(0.001), 0.01)} {m::less_than(a, b)} {m::any(m::less_than(a, b))} {m::all(m::greater_than_equal(a, b))} {m::select(m::less_than(a, b), a, b)} {m::equal(a, a)} {m::not_equal(p, p)}");
+    m::vec3<f64> d = m::vec3<f64>::make(1.0, 2.0, 2.0);
+    m::vec3<i32> g = m::vec3<i32>::make(-3, 4, 5);
+    m::vec2<u32> u = m::vec2<u32>::make(7, 9);
+    std::println(f"{m::length(d)} {m::normalize(d)} {m::dot(g, g)} {m::abs(g)} {m::sign(g)} {m::min(g, 0)} {m::clamp(g, -1, 1)} {g * 2} {g + g} {m::max_component(g)} {u * u} {m::min(u, u)}");
+    std::println(f"{d.to<f32>()} {a.to<f64>()} {f.to<i32>()} {g.to<f32>()} {g.to<u32>()} {u.to<f64>()} {u.to<i32>()} {a.to<f32>()} {a[2]} {a.as_span().length()}");
+    mut m::vec3 w = a;
+    w += b;
+    w *= 2.0;
+    w[0] = 100.0;
+    w -= m::vec3::unit_z();
+    w /= 2.0;
+    std::println(f"{w} {w == w} {w == a}");
+    std::println(f"{m::abs(-2.5)} {m::sign(-2.5)} {m::min(1.0, 2.0)} {m::max(1i32, 2)} {m::clamp(5.0, 0.0, 1.0)} {m::saturate(-1.0)} {m::floor(1.5)} {m::ceil(1.5)} {m::round(2.5)} {m::trunc(-1.5)} {m::fract(1.25)} {m::mod(-0.25, 1.0)}");
+    std::println(f"{m::sqrt(16.0)} {m::inverse_sqrt(4.0)} {m::pow(2.0, 10.0)} {m::exp(0.0)} {m::exp2(3.0)} {m::log(1.0)} {m::log2(8.0)} {m::lerp(0.0, 10.0, 0.25)} {m::inverse_lerp(0.0, 10.0, 2.5)} {m::remap(5.0, 0.0, 10.0, 100.0, 200.0)} {m::step(1.0, 0.5)} {m::smoothstep(0.0, 1.0, 0.5)} {m::smootherstep(0.0, 1.0, 0.25)} {m::approx_equal(1.0, 1.001, 0.01)}");
+    f64 x64 = 2.0;
+    i32 i = -7;
+    std::println(f"{m::sqrt(x64)} {m::abs(i)} {m::sign(i)} {m::clamp(i, 0, 5)} {m::lerp(x64, 4.0, 0.5)}");
+    m::radians half_turn = m::deg(180.0);
+    std::println(f"{rounded(cast<f32>(half_turn))} {rounded(m::sin(m::deg(90.0)))} {rounded(m::cos(half_turn))} {rounded(m::tan(m::deg(45.0)))} {rounded(cast<f32>(m::asin(1.0)))} {rounded(cast<f32>(m::acos(1.0)))} {rounded(cast<f32>(m::atan(1.0)))} {rounded(cast<f32>(m::atan2(1.0, -1.0)))} {rounded(cast<f32>(m::to_degrees(half_turn)))} {rounded(cast<f32>(m::to_radians(cast<m::degrees>(90.0))))}");
+    std::println(f"{rounded(cast<f32>(m::wrap_angle(m::deg(270.0))))} {rounded(cast<f32>(m::angle_difference(m::deg(350.0), m::deg(10.0))))} {rounded(cast<f32>(m::lerp_angle(m::deg(350.0), m::deg(10.0), 0.5)))} {m::pi} {m::tau} {rounded(cast<f32>(m::rad(1.0) * 2.0))} {half_turn > m::deg(90.0)} {rounded(half_turn / m::deg(45.0))} {rounded(cast<f32>(-half_turn + m::deg(90.0)))}");
+    compile_time m::vec3 up = m::vec3::unit_y();
+    compile_time f32 l = m::length(m::cross(m::vec3::unit_x(), up) + m::vec3::make(3.0, 4.0, -1.0));
+    compile_time f32 s = m::sin(m::deg(30.0));
+    std::println(f"{l} {rounded(s)} {up}");
+    // Rectangles and colours.
+    m::rect box = m::rect{ .x = 10.0, .y = 10.0, .width = 100.0, .height = 50.0 };
+    std::println(f"{box.contains(m::vec2::make(10.0, 10.0))} {box.contains(m::vec2::make(110.0, 20.0))} {box.shrunk(5.0).width} {m::rect::from_corners(m::vec2::make(5.0, 9.0), m::vec2::make(1.0, 2.0))}");
+    std::println(f"{box.intersection(m::rect{ .x = 50.0, .y = 0.0, .width = 100.0, .height = 20.0 })} {box.center()} {box.overlaps(m::rect::at(m::vec2::make(200.0, 0.0), m::vec2::one()))}");
     m::color accent = m::color::hex(0x4f7cff);
     std::println(f"{accent.packed():x} {m::color::from_oklch(accent.to_oklch(), 1.0).packed():x}");
     std::println(f"{m::color::white().contrast(m::color::black()) > 20.9} {m::color::black().mix(m::color::white(), 0.0).packed():x}");
     m::color out_of_gamut = m::color::from_oklch(m::oklch{ .l = 0.7, .c = 0.4, .h = 140.0 }, 1.0);
     std::println(f"{out_of_gamut.r >= 0.0 && out_of_gamut.g <= 1.0 && out_of_gamut.b >= 0.0}");
+    m::vec4 linear = m::color::rgb8(255, 128, 0).to_linear();
+    std::println(f"{m::color::white().to_vec4()} {linear.x} {rounded(linear.y)} {linear.z} {m::color::from_linear(linear).packed():x} {m::color::from_vec4(m::vec4::make(1.0, 0.0, 0.0, 0.5)).packed():x}");
+    return 0;
 }

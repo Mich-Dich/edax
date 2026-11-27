@@ -565,6 +565,10 @@ struct ForExpr : Expr {
     std::vector<BlockPtr>  copies;          // the checked copies of the body, in order (set by the checker)
     std::vector<SymbolRef> copy_symbols;    // each copy's loop variable
     bool        unrolled = false;           // the checker made `copies` (else the body was checked as is)
+    // `f(for compile_time (std::meta::parameter p : list) { p.pass(x) })`: an argument generator
+    // (spec 26). Each element adds one argument: the body's tail, after its compile-time
+    // declarations; `p.pass(x)` passes `x` the way the parameter `p` is declared.
+    bool        generates_arguments = false;
     bool        is_mut = false;
     TypePtr     type;
     std::string name;

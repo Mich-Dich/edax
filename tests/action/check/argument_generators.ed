@@ -1,0 +1,14 @@
+// RUN: edaxc check %s
+// Argument generators (spec 26): written with `for compile_time` and ending with the argument.
+import std;
+
+u32 add(u32 a, u32 b) { return a + b; }
+
+void f(u32 n) {
+    std::println(f"{add(for (usize k : 0..2) { 1 })}");
+    std::println(f"{add(for compile_time (usize k : 0..2) { 1; })}");
+}
+
+i32 main() {
+    return 0;
+}

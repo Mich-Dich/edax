@@ -1,0 +1,71 @@
+// RUN: edaxc run %s
+// Overloads of templates (spec 14, 16): the most specific one wins, a default template argument
+// decides what the arguments leave open, operators can be free templates, a static function is
+// reached through a type's default arguments, number limits work on a template parameter;
+// compile_time values of struct types at run time; std::at_compile_time; cast::truncate on floats.
+import std;
+
+template<type T = f32>
+struct pair {
+    T a = default;
+    T b = default;
+
+    compile_time run_time static pair<T> make(T a, T b) { return pair<T>{ .a = a, .b = b }; }
+    compile_time run_time pair<T> operator+(pair<T> other) { return pair<T>{ .a = this.a + other.a, .b = this.b + other.b }; }
+    compile_time run_time pair<T> operator*(T k) { return pair<T>{ .a = this.a * k, .b = this.b * k }; }
+}
+
+// `k * p`: a free operator template.
+template<type T>
+compile_time run_time pair<T> operator*(T k, pair<T> p) { return pair<T>{ .a = k * p.a, .b = k * p.b }; }
+
+// The same name for a number and for a pair of numbers: `largest(pair)` is more specific than
+// `largest(T)` with T = pair.
+template<type T = f32>
+compile_time run_time T largest(T a, T b) {
+    if (a < b) { return b; }
+    return a;
+}
+
+template<type T = f32>
+compile_time run_time T largest(pair<T> p) { return largest(p.a, p.b); }
+
+template<type T = f32>
+compile_time run_time pair<T> largest(pair<T> p, pair<T> q) { return pair<T>{ .a = largest(p.a, q.a), .b = largest(p.b, q.b) }; }
+
+// Nothing says what T is in `half()`: the default does.
+template<type T = f32>
+compile_time run_time T half() { return 0.5; }
+
+template<type T>
+compile_time run_time T top() { return T::max; }
+
+template<type T>
+compile_time run_time T endless() { return T::infinity; }
+
+// The evaluator takes the first branch, the compiled program the second.
+compile_time run_time u32 where() {
+    if (std::at_compile_time()) { return 1; }
+    return 2;
+}
+
+f32 sum(pair& p) { return p.a + p.b; }
+
+i32 main() {
+    pair p = pair::make(1.0, 2.0);                    // pair<f32>::make
+    pair<f64> wide = pair<f64>::make(1.0, 2.0);
+    pair<i32> whole = pair<i32>::make(3, 4);
+    pair q = 2.0 * p + p * 0.5;
+    std::println(f"{q.a} {q.b} {(3 * whole).b} {(2.0 * wide).a}");
+    std::println(f"{largest(1.0, 2.0)} {largest(3i32, 2)} {largest(p)} {largest(whole)} {largest(p, pair::make(0.0, 5.0)).b} {largest(wide)}");
+    std::println(f"{half()} {half<f64>()} {std::size_of<pair>()} {top<u8>()} {top<i16>()} {endless<f32>() > 1000000.0} {-endless<f64>() < 0.0}");
+    compile_time pair fixed = pair::make(1.5, 2.5) + pair::make(1.0, 1.0);
+    compile_time f32 best = largest(fixed);
+    std::println(f"{fixed.a} {best} {sum(fixed)} {largest(fixed, p).a}");
+    compile_time u32 early = where();
+    std::println(f"{early} {where()} {std::at_compile_time()}");
+    compile_time i32 cut = cast::truncate<i32>(-2.9);
+    f32 big = 300.7;
+    std::println(f"{cast::truncate<i32>(2.9)} {cut} {cast::truncate<u8>(big - 100.0)} {cast::truncate<i64>(-0.5)} {cast::truncate<u32>(123456.789)}");
+    return 0;
+}

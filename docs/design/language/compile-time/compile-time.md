@@ -78,6 +78,18 @@ f32 c = double_it(3.14f32);          // ERROR: f64 doesn't convert to f32 implic
 ### Built-in compile-time functions
 `std::is_integer<T>()`, `std::is_float<T>()`, `std::is_same<A, B>()`, `std::implements<T, iface>()`, `std::size_of<T>()`, `std::align_of<T>()`, `std::type_name<T>()`.
 
+**`std::at_compile_time()`** is `true` while the compiler evaluates the function and `false` in the compiled program. A `compile_time run_time` function uses it to give the two their own code, when the fast way isn't something the compiler can evaluate (SIMD, C functions, `unsafe` memory):
+```edax
+compile_time run_time f32 sum(f32 a, f32 b, f32 c, f32 d) {
+    if (std::at_compile_time()) {
+        return a + b + c + d;                   // plain code for the evaluator
+    }
+    f32x4 v = [a, b, c, d];
+    return v.reduce_add();                      // what the program runs
+}
+```
+It is not a constant: `if compile_time (std::at_compile_time())` is an error. In the compiled program the test is `false` and its branch costs nothing. Both branches must compute the same result; nothing checks that.
+
 Types as compile-time values, reflection (`std::meta`) and `for compile_time` loops are described in 26.
 
 Checks (`compile_time check`, `run_time check`) and the diagnostic functions (`std::compile_error`, `std::compile_warning`, `std::compile_note`) are described in 23.

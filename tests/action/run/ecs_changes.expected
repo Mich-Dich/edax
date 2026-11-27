@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+changed 2 (b and c), added 1 (c)
+changed after a write to all: 3
+removed 2
+removed after update 0
+health 65, events 2
+events one frame later 2
+events two frames later 0
+recorded 6 commands, entities 1
+applied: entities 2, dead true, children 1, events 1
+child name child, parent is a true
+--- stderr

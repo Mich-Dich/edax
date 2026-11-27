@@ -1,0 +1,20 @@
+// RUN: edaxc check %s
+// A variable that has the name of a function hides it: calling it is an error, not a silent
+// value of no type.
+import std;
+
+struct point {
+    f32 x = 0.0;
+    f32 y = 0.0;
+}
+
+f32 r(f32 v) { return v * 2.0; }
+f32 at(f32 v) { return v + 1.0; }
+
+i32 main() {
+    f32 r = 1.0;
+    point at = point{};
+    f32 x = r(2.0);
+    f32 y = at(2.0);
+    return 0;
+}

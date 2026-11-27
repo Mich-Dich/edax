@@ -28,13 +28,14 @@ Everything in `std::` is ordinary Edax code, except for the few things the compi
 | Synchronization | `std::atomic<T>`, `std::memory_order`, `std::mutex<T>`, `std::rw_mutex<T>`, `std::condition` | [Synchronization](concurrency/synchronization.md) |
 | Channels | `std::channel<T>`, `std::channel_sender<T>`, `std::channel_receiver<T>` | [Channels](concurrency/channels.md) |
 | Thread pool | `std::thread_pool`, `task<R>`, `scoped_task<R>`; `std::parallel::sort`, `find`, `transform`, ... | [Thread pool](concurrency/thread-pool.md) |
+| Entities | `std::ecs::world` (entities, components, queries from lambda parameters, `each_table`, `par_each`, resources, events, change detection, hierarchy, systems and stages), `std::ecs::entity`, `filter`, `commands`; `@std::ecs::resource`, `@std::ecs::tracked` | [Entity component system](ecs/ecs.md) |
 | Time | `std::time::duration`, `instant`, `wall_time`, `civil_time`, `zone` | [Time](time/time.md) |
 | Dynamic libraries | `std::plugin<I>`, `std::c_library` | [Dynamic libraries and plugins](system/dynamic-libraries.md) |
 | Files and environment | `std::file`, `std::io_error`, `std::filesystem::path`, `std::env` | [Files, filesystem and environment](io/io.md) |
 | Command-line arguments | `std::args::parse<T>`, `std::args::error`, `std::args::help<T>`; `@std::args::positional`, `option`, `flag`, `range`, `subcommand`, `command`, `flatten`, `skip`, `program` | [Command-line arguments](io/args.md) |
 | Windows | `std::windowing::system`, `window`, `gl_window`, `vulkan_window`, events, `input_state`, `bindings<A>`, `opengl::share_group`, `opengl::frame`, `vulkan::loader` | [Windowing](windowing/windowing.md) |
 | Graphics APIs | `std::graphics::api`, `api_name`, `function_source`; `std::graphics::opengl` and `std::graphics::vulkan` (made from the Khronos registries) | [Graphics APIs](graphics/graphics.md) |
-| Math | `std::math::vec2`, `vec3`, `vec4`, `rect`, `color`, `oklch`, `lerp`, `smoothstep` | [Math](math/math.md) |
+| Math | `std::math`: `vec2/3/4`, `mat2/3/4`, `quat`, `transform` (all generic, `f32` by default), typed angles (`radians`, `deg(45.0)`), projections, `aabb`, `sphere`, `plane`, `ray`, `frustum`, `cull`, curves, `rect`, `color`, `oklch`; `std::math::ease` (easing curves), `std::math::noise` (Perlin, simplex, Worley, fbm) | [Math](math/math.md) |
 | Images | `std::image::rgba8`, `decode_png`, `decode_qoi`, `encode_png`, `encode_qoi`, `inflate_zlib` | [Images](image/image.md) |
 | Fonts | `std::text::font`, `distance_field`, `line_metrics`, `outline` | [Fonts](text/fonts.md) |
 | User interfaces | `std::ui::theme`, `palette`, `controls_style`, `skin`, `painter`, `paint::*`, `text_style`, `fonts`, `draw_list`, `texture`; `std::ui::opengl::renderer<A>` | [User interface core](ui/core.md) |

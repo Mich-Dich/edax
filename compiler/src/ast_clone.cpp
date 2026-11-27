@@ -1,4 +1,5 @@
 #include "edax/ast_clone.hpp"
+#include "edax/symbols.hpp"
 
 namespace edax::ast {
 
@@ -254,6 +255,14 @@ ExprPtr Cloner::expr(const Expr& e) {
         const auto& p   = e.as<PathExpr>();
         auto        out = std::make_unique<PathExpr>(p.span, path(p.path));
         out->symbol     = ref(p.symbol);
+        // An alternative the checker settled to an instance of a generic enum (`std::none` as
+        // `std::option<C&>::none` in a template's generic check) is the template's again: the copy
+        // is settled on its own.
+        const sema::Symbol* alt = out->symbol;
+        if (alt && alt->kind == sema::SymbolKind::alternative && alt->parent && alt->parent->template_of) {
+            auto it = alt->parent->template_of->members.find(alt->name);
+            if (it != alt->parent->template_of->members.end() && !it->second.empty()) out->symbol = it->second.front();
+        }
         return out;
     }
     case ExprKind::unary: {
@@ -411,6 +420,9 @@ ExprPtr Cloner::expr(const Expr& e) {
                 value.span = f.iterable->span;
                 value.segments.push_back(PathSegment{pack_value_ + "$" + std::to_string(i), f.iterable->span, false, {}});
                 var->init = std::make_unique<PathExpr>(f.iterable->span, std::move(value));
+                if (!pack_type_.empty() && f.type && f.type->kind != TypeKind::reference) {   // `for compile_time (A v : values)`: takes each value
+                    var->init = std::make_unique<UnaryExpr>(f.iterable->span, UnaryOp::move, std::move(var->init));
+                }
                 one->statements.push_back(std::move(var));
                 if (f.body) one->statements.push_back(std::make_unique<ExprStmt>(f.body->span, block(*f.body)));
                 rename_ = std::move(saved);
@@ -420,6 +432,7 @@ ExprPtr Cloner::expr(const Expr& e) {
         }
         auto        out      = std::make_unique<ForExpr>(f.span);
         out->is_compile_time = f.is_compile_time;
+        out->generates_arguments = f.generates_arguments;
         out->is_mut          = f.is_mut;
         out->type            = opt(f.type);
         out->name            = f.name;

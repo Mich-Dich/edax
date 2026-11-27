@@ -1382,7 +1382,7 @@ namespace std::ui::dock {
         }
         // A dragged tab.
         if (!ws.dragging.is_empty()) {
-            if (!ws.drag_started && (this.ctx.in.cursor - ws.press_at).length() > 6.0 && this.ctx.in.mouse_down) {
+            if (!ws.drag_started && std::math::length(this.ctx.in.cursor - ws.press_at) > 6.0 && this.ctx.in.mouse_down) {
                 ws.drag_started = true;
             }
             if (ws.drag_started) {

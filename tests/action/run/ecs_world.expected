@@ -1,0 +1,13 @@
+exit: 0
+--- stdout
+alive true true count 2 has velocity true false
+a name false, b name b, b velocity 1.0
+found velocity 2.0
+after destroy: alive false count 1 with position 1
+slot reused: true new generation true stale alive false
+entity(0v0) entity(null) null true
+moved 10 entities, sum 15.0
+enemies not dead: 3
+table total 15.0
+parallel sum 20025.0
+--- stderr

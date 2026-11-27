@@ -27,8 +27,9 @@ sema::Symbol* resolve_instance(sema::Program& program, DiagnosticEngine& diags, 
 
 // Resolves an instance of the function template `templ` (spec 14): `decl` is a fresh copy of the
 // template's function, signature and body included. Same contract as resolve_instance.
+// For a method template, `self` is its class: the copy is resolved as a method.
 sema::Symbol* resolve_function_instance(sema::Program& program, DiagnosticEngine& diags, const sema::Symbol* templ,
-                                        ast::FunctionDecl& decl, std::vector<sema::Symbol*>& params);
+                                        ast::FunctionDecl& decl, std::vector<sema::Symbol*>& params, sema::Symbol* self = nullptr);
 
 // `edaxc symbols`: the merged module interface, members in layout order.
 void print_symbols(std::ostream& out, const sema::Module& module, const SourceManager& sources);

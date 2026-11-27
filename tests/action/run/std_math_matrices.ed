@@ -1,0 +1,123 @@
+// RUN: edaxc run %s
+// std::math: matrices, projections, quaternions and transforms. The numbers are the ones GLM
+// gives for the same calls (compared to 2e-5 when the library was written), printed with four
+// decimals.
+import std;
+namespace m = std::math;
+
+f32 rounded(f32 v) { return (v * 10000.0).round() / 10000.0 + 0.0; }
+
+void out4(std::str name, m::mat4 m) {
+    mut std::string s = std::format(f"{name}");
+    for (f32 v : m.as_span()) { s.push_str(std::format(f" {rounded(v)}")); }
+    std::println(s);
+}
+
+void out3(std::str name, m::mat3 m) {
+    mut std::string s = std::format(f"{name}");
+    for (f32 v : m.as_span()) { s.push_str(std::format(f" {rounded(v)}")); }
+    std::println(s);
+}
+
+void outq(std::str name, m::quat q) { std::println(f"{name} {rounded(q.x)} {rounded(q.y)} {rounded(q.z)} {rounded(q.w)}"); }
+void outv(std::str name, m::vec3 v) { std::println(f"{name} {rounded(v.x)} {rounded(v.y)} {rounded(v.z)}"); }
+void outv4(std::str name, m::vec4 v) { std::println(f"{name} {rounded(v.x)} {rounded(v.y)} {rounded(v.z)} {rounded(v.w)}"); }
+
+i32 main() {
+    m::vec3 axis = m::normalize(m::vec3::make(1.0, 2.0, -0.5));
+    m::vec3 p = m::vec3::make(0.3, -1.2, 2.5);
+    m::mat4 t = m::mat4::translation(m::vec3::make(1.0, 2.0, 3.0));
+    m::mat4 r = m::mat4::rotation(m::deg(37.0), axis);
+    m::mat4 s = m::mat4::scaling(m::vec3::make(2.0, 0.5, 1.5));
+    m::mat4 model = t * r * s;
+    out4("translation", t);
+    out4("rotation", r);
+    out4("scaling", s);
+    out4("trs_product", model);
+    out4("rotation_x", m::mat4::rotation_x(m::rad(0.7)));
+    out4("rotation_y", m::mat4::rotation_y(m::rad(0.7)));
+    out4("rotation_z", m::mat4::rotation_z(m::rad(0.7)));
+    out4("transpose", m::transpose(model));
+    out4("inverse", m::inverse(model));
+    out4("affine_inverse", m::affine_inverse(model));
+    std::println(f"determinant {rounded(m::determinant(model))}");
+    out3("normal_matrix", m::normal_matrix(model));
+    out4("translate", m::translate(model, m::vec3::make(0.5, -1.0, 2.0)));
+    out4("rotate", m::rotate(model, m::deg(-50.0), axis));
+    out4("scale", m::scale(model, m::vec3::make(3.0, 2.0, 0.25)));
+    outv("transform_point", m::transform_point(model, p));
+    outv("transform_vector", m::transform_vector(model, p));
+    outv4("mul_vec4", model * m::vec4::make(0.3, -1.2, 2.5, 0.7));
+    m::mat4 proj = m::perspective(m::deg(60.0), 1.5, 0.1, 100.0);
+    out4("perspective_rh_zo", proj);
+    out4("perspective_rh_no", m::perspective_rh_no(m::deg(60.0), 1.5, 0.1, 100.0));
+    out4("perspective_lh_zo", m::perspective_lh_zo(m::deg(60.0), 1.5, 0.1, 100.0));
+    out4("perspective_lh_no", m::perspective_lh_no(m::deg(60.0), 1.5, 0.1, 100.0));
+    out4("perspective_infinite", m::perspective_infinite(m::deg(60.0), 1.5, 0.1));
+    out4("perspective_off_center", m::perspective_off_center(-0.2, 0.3, -0.1, 0.15, 0.1, 50.0));
+    out4("ortho_rh_zo", m::ortho(-2.0, 3.0, -1.0, 4.0, 0.5, 20.0));
+    out4("ortho_rh_no", m::ortho_rh_no(-2.0, 3.0, -1.0, 4.0, 0.5, 20.0));
+    out4("ortho_lh_zo", m::ortho_lh_zo(-2.0, 3.0, -1.0, 4.0, 0.5, 20.0));
+    out4("ortho_lh_no", m::ortho_lh_no(-2.0, 3.0, -1.0, 4.0, 0.5, 20.0));
+    out4("ortho_2d", m::ortho_2d(0.0, 800.0, 600.0, 0.0));
+    m::mat4 view = m::look_at(m::vec3::make(3.0, 4.0, 5.0), m::vec3::make(0.0, 1.0, 0.0), m::vec3::unit_y());
+    out4("look_at_rh", view);
+    out4("look_at_lh", m::look_at_lh(m::vec3::make(3.0, 4.0, 5.0), m::vec3::make(0.0, 1.0, 0.0), m::vec3::unit_y()));
+    outv("project_point", m::project_point(proj * view, p));
+    out4("inverse_view_projection", m::inverse(proj * view));
+
+    m::quat q = m::quat::from_axis_angle(axis, m::deg(37.0));
+    m::quat q2 = m::quat::from_axis_angle(m::normalize(m::vec3::make(-1.0, 0.3, 0.8)), m::deg(140.0));
+    outq("from_axis_angle", q);
+    outq("quat_mul", q * q2);
+    outv("quat_rotate", q * p);
+    out4("from_quat", m::mat4::from_quat(q2));
+    outq("from_mat3", m::quat::from_mat3(m::mat3::from_mat4(r)));
+    outq("from_mat3_b", m::quat::from_mat3(m::mat3::from_quat(q2)));
+    outq("slerp", m::slerp(q, q2, 0.3));
+    outq("nlerp", m::nlerp(q, q2, 0.3));
+    outq("conjugate", m::conjugate(q));
+    outq("inverse_q", m::inverse(q * 2.0));
+    outq("from_euler", m::quat::from_euler(m::rad(0.4), m::rad(-1.1), m::rad(0.25)));
+    m::euler_angles e = m::quat::from_euler(m::rad(0.4), m::rad(-1.1), m::rad(0.25)).to_euler();
+    std::println(f"to_euler {rounded(cast<f32>(e.pitch))} {rounded(cast<f32>(e.yaw))} {rounded(cast<f32>(e.roll))}");
+    outq("rotation_between", m::rotation_between(axis, m::normalize(m::vec3::make(0.2, -0.4, 0.9))));
+    outq("look_rotation", m::quat::look_rotation(m::vec3::make(-3.0, -3.0, -5.0), m::vec3::unit_y()));
+    std::println(f"quat_angle {rounded(cast<f32>(q.angle()))}");
+    outv("quat_axis", q.axis());
+    out4("trs", m::mat4::trs(m::vec3::make(1.0, 2.0, 3.0), q, m::vec3::make(2.0, 0.5, 1.5)));
+    m::transform tr = m::transform::from_mat4(model);
+    outv("decompose_t", tr.translation);
+    outq("decompose_r", tr.rotation);
+    outv("decompose_s", tr.scale);
+    out3("mat3_inverse", m::inverse(m::mat3::from_mat4(model)));
+    std::println(f"mat3_determinant {rounded(m::determinant(m::mat3::from_mat4(model)))}");
+    // Identities, the other number types, compile time.
+    m::mat4 id = m::mat4::identity();
+    std::println(f"{m::approx_equal(model * m::inverse(model), id, 0.00001)} {m::approx_equal(m::affine_inverse(model) * model, id, 0.00001)} {m::approx_equal(m::transpose(m::transpose(model)), model, 0.0)} {id == m::mat4{}} {model == model} {model == id}");
+    std::println(f"{m::approx_equal(m::mat4::from_quat(q) * m::mat4::from_quat(m::conjugate(q)), id, 0.00001)} {m::approx_equal(tr.to_mat4(), model, 0.0001)} {m::approx_equal(m::transform_point(tr, p), m::transform_point(model, p), 0.0001)} {m::approx_equal(m::transform_point(m::inverse(m::transform::make(p, q, m::vec3::splat(2.0))), m::transform_point(m::transform::make(p, q, m::vec3::splat(2.0)), axis)), axis, 0.0001)}");
+    m::transform parent = m::transform::make(m::vec3::make(1.0, 0.0, 0.0), m::quat::rotation_y(m::deg(90.0)), m::vec3::splat(2.0));
+    m::transform child = m::transform::from_translation(m::vec3::make(0.0, 0.0, -1.0));
+    outv("child_in_world", (parent * child).translation);
+    outv("forward", parent.forward());
+    outv("lerp_transform", m::lerp(parent, child, 0.5).translation);
+    m::mat2 turn = m::mat2::rotation(m::deg(90.0));
+    m::vec2 turned = turn * m::vec2::unit_x();
+    std::println(f"mat2 {rounded(turned.x)} {rounded(turned.y)} {rounded(m::determinant(turn))} {m::approx_equal(turn * m::inverse(turn), m::mat2::identity(), 0.00001)} {m::mat2::scaling(m::vec2::make(2.0, 3.0))}");
+    m::mat3 sprite = m::mat3::translation_2d(m::vec2::make(10.0, 5.0)) * m::mat3::rotation_2d(m::deg(90.0)) * m::mat3::scaling_2d(m::vec2::splat(2.0));
+    m::vec2 corner = m::transform_point(sprite, m::vec2::make(1.0, 0.0));
+    m::vec2 along = m::transform_vector(sprite, m::vec2::make(1.0, 0.0));
+    std::println(f"mat3_2d {rounded(corner.x)} {rounded(corner.y)} {rounded(along.x)} {rounded(along.y)}");
+    std::println(f"{id.row(3)} {id[1]} {m::mat3::from_diagonal(m::vec3::make(1.0, 2.0, 3.0))} {id.as_span().length()} {(id * 2.0 - id)[2].z} {(-id).c0.x} {(2.0 * id / 4.0).c1.y}");
+    m::mat4<f64> wide = m::mat4<f64>::translation(m::vec3<f64>::make(1.0, 2.0, 3.0)) * m::mat4<f64>::rotation_z(m::deg(90.0));
+    m::vec3<f64> moved = m::transform_point(wide, m::vec3<f64>::make(1.0, 0.0, 0.0));
+    std::println(f"f64 {(moved.x * 1000000.0).round() / 1000000.0} {(moved.y * 1000000.0).round() / 1000000.0} {moved.z} {m::approx_equal(wide * m::inverse(wide), m::mat4<f64>::identity(), 0.000000000001)} {model.to<f64>().c3.x == cast<f64>(model.c3.x)} {m::quat<f64>::identity()} {m::perspective<f64>(m::deg(90.0), 1.0, 1.0, 3.0).c2}");
+    compile_time m::mat4 fixed = m::mat4::translation(m::vec3::make(1.0, 2.0, 3.0)) * m::mat4::scaling(m::vec3::splat(2.0));
+    compile_time m::vec4 at_compile_time = fixed * m::vec4::make(1.0, 1.0, 1.0, 1.0);
+    compile_time m::mat4 orthographic = m::ortho(0.0, 800.0, 0.0, 600.0, -1.0, 1.0);
+    std::println(f"{at_compile_time} {fixed * m::vec4::make(1.0, 1.0, 1.0, 1.0) == at_compile_time} {fixed.c3} {orthographic.c0.x} {m::determinant(fixed)}");
+    m::frustum planes = m::frustum::from_view_projection(proj * view);
+    std::println(f"{m::contains(planes, m::vec3::zero())} {m::contains(planes, m::vec3::make(0.0, 0.0, 100.0))}");
+    std::println(f"{m::perspective_reversed(m::deg(90.0), 1.0, 1.0, 3.0).c2} {m::perspective_reversed(m::deg(90.0), 1.0, 1.0, 3.0).c3} {m::perspective_infinite_reversed(m::deg(90.0), 1.0, 0.5).c3}");
+    return 0;
+}

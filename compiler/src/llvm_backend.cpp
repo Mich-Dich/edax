@@ -4023,6 +4023,7 @@ private:
             const Symbol* s  = pe.symbol;
             if (!s) {
                 if (std::string r = ct::raw_intrinsic(c); !r.empty()) return raw_call(c, r);
+                if (ct::builtin_name(c) == "at_compile_time") return llvm::ConstantInt::getFalse(ctx_);   // spec 15: the compiled program
                 const auto& segs = pe.path.segments;
                 if (segs.size() == 4 && segs[0].name == "std" && segs[1].name == "simd") {
                     if (const simd::Intrinsic* in = simd::find_intrinsic(segs[2].name, segs[3].name)) return simd_intrinsic(c, *in);
@@ -5076,6 +5077,8 @@ private:
         switch (e.kind) {
         case ExprKind::path: {
             const Symbol* s = e.as<PathExpr>().symbol;
+            // A compile_time local has no storage: its value is materialized where it is used.
+            if (s && s->kind == SymbolKind::local && e.constant && !locals_.count(s)) return false;
             return s && (s->kind == SymbolKind::local || s->kind == SymbolKind::global);
         }
         case ExprKind::this_:
@@ -6304,6 +6307,12 @@ private:
         if (variant == "saturate" && to->is_integer()) {
             if (from->is_float()) return saturate_float(v, to);
             if (from->is_integer()) return saturate_integer(v, from, to);
+        }
+        if (variant == "truncate" && from->is_float() && to->is_integer()) {
+            // The CPU's own conversion (one instruction), toward zero. A value that doesn't fit gives
+            // an unspecified integer: frozen, so it is some integer and not undefined behaviour.
+            llvm::Type* lt = lower_type(to);
+            return b_.CreateFreeze(to->is_signed ? b_.CreateFPToSI(v, lt) : b_.CreateFPToUI(v, lt));
         }
         // cast<T> (lossless), cast::truncate (keeps the low bits) and cast::round are conversions.
         return convert(v, from, to);
@@ -8198,6 +8207,15 @@ struct ConditionalStoreSelect : llvm::PassInfoMixin<ConditionalStoreSelect> {
     }
 };
 
+// How LLVM's pipeline is tuned, in every pipeline that optimizes. LLVM's own default leaves the
+// SLP vectorizer off (clang turns it on from -O2): it is the pass that turns the four multiplies
+// of a vec4 operation into one, which the code of std::math (and any struct of floats) relies on.
+llvm::PipelineTuningOptions pipeline_tuning() {
+    llvm::PipelineTuningOptions pto;
+    pto.SLPVectorization = true;
+    return pto;
+}
+
 // The passes Edax adds to LLVM's pipeline (in every pipeline that optimizes, so the vectorizer
 // reports match the build).
 void register_edax_passes(llvm::PassBuilder& pb) {
@@ -8275,7 +8293,7 @@ bool check_vectorized(llvm::Module& original, const sema::Program& program, cons
         llvm::FunctionAnalysisManager fam;
         llvm::CGSCCAnalysisManager    cgam;
         llvm::ModuleAnalysisManager   mam;
-        llvm::PassBuilder             pb(machine.get());
+        llvm::PassBuilder             pb(machine.get(), pipeline_tuning());
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
@@ -8341,7 +8359,7 @@ bool check_no_checks_left(llvm::Module& original, const sema::Program& program, 
         llvm::FunctionAnalysisManager fam;
         llvm::CGSCCAnalysisManager    cgam;
         llvm::ModuleAnalysisManager   mam;
-        llvm::PassBuilder             pb(machine.get());
+        llvm::PassBuilder             pb(machine.get(), pipeline_tuning());
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
@@ -8878,7 +8896,7 @@ std::vector<CheckSite> explain_checks(sema::Program& program, const SourceManage
         llvm::FunctionAnalysisManager fam;
         llvm::CGSCCAnalysisManager    cgam;
         llvm::ModuleAnalysisManager   mam;
-        llvm::PassBuilder             pb(machine.get());
+        llvm::PassBuilder             pb(machine.get(), pipeline_tuning());
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);
@@ -8949,7 +8967,7 @@ bool emit_object(llvm::Module& mod, const llvm::Target* target, const std::strin
         } else if (!profile_use.empty()) {
             pgo_options = llvm::PGOOptions(profile_use, "", "", "", llvm::vfs::getRealFileSystem(), llvm::PGOOptions::IRUse);
         }
-        llvm::PassBuilder             pb(machine.get(), llvm::PipelineTuningOptions(), pgo_options, &pic);
+        llvm::PassBuilder             pb(machine.get(), pipeline_tuning(), pgo_options, &pic);
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
         pb.registerFunctionAnalyses(fam);

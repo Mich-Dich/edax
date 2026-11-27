@@ -61,7 +61,9 @@ bool thin_prelink(const ThinLtoJob& job, const std::string& ir, const std::strin
     llvm::PassInstrumentationCallbacks pic;
     llvm::StandardInstrumentations     si(ctx, false);
     si.registerCallbacks(pic, &mam);
-    llvm::PassBuilder pb(machine.get(), llvm::PipelineTuningOptions(), std::nullopt, &pic);
+    llvm::PipelineTuningOptions tuning;
+    tuning.SLPVectorization = true;   // as in the backend's pipeline_tuning()
+    llvm::PassBuilder pb(machine.get(), tuning, std::nullopt, &pic);
     pb.registerModuleAnalyses(mam);
     pb.registerCGSCCAnalyses(cgam);
     pb.registerFunctionAnalyses(fam);
@@ -110,6 +112,7 @@ bool thin_link(const ThinLtoJob& job, const std::vector<std::string>& bitcode, s
         if (!f.empty()) conf.MAttrs.push_back(f.str());
     }
     conf.OptLevel                  = job.opt_level;
+    conf.PTO.SLPVectorization      = job.opt_level > 1;   // off by default in LLVM; clang and lld turn it on (see pipeline_tuning)
     conf.CGOptLevel                = job.opt_level == 1 ? llvm::CodeGenOptLevel::Less : llvm::CodeGenOptLevel::Aggressive;
     conf.RelocModel                = llvm::Reloc::PIC_;
     conf.DefaultTriple             = job.triple;

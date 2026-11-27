@@ -1,0 +1,94 @@
+// RUN: edaxc run %s
+// std::ecs: entities, components (spawn, add, replace, remove, get, find), queries whose
+// lambda parameters are the query (entity, resources, filters), each_table over column spans and
+// par_each on a thread pool.
+import std;
+import std::ecs;
+
+namespace ecs = std::ecs;
+
+struct position { f32 x = 0.0; f32 y = 0.0; }
+struct velocity { f32 x = 0.0; f32 y = 0.0; }
+struct name { std::string text = default; }
+struct enemy { }
+struct dead { }
+
+@ecs::tracked
+struct health { i32 value = 100; }
+
+@ecs::resource
+struct frame_time { f32 dt = 0.5; }
+
+@ecs::resource
+struct counter { u32 n = 0; }
+
+struct hit { ecs::entity target = default; i32 damage = 0; }
+
+void basics() {
+    mut ecs::world w = ecs::world::make();
+    ecs::entity a = w.spawn(position{ .x = 1.0 }, velocity{ .x = 2.0 }, name{ .text = std::string::from("a") });
+    ecs::entity b = w.create();
+    w.add(b, position{ .x = 5.0 });
+    w.add(b, name{ .text = std::string::from("b") });
+    std::println(f"alive {w.alive(a)} {w.alive(b)} count {w.count()} has velocity {w.has<velocity>(a)} {w.has<velocity>(b)}");
+    w.add(b, velocity{ .y = 1.0 });
+    w.remove<name>(a);
+    std::println(f"a name {w.has<name>(a)}, b name {w.get<name>(b).text}, b velocity {w.get<velocity>(b).y}");
+    w.get_mut<position>(a).y = 7.0;
+    match (w.find<velocity>(a)) {
+        std::some(v) => std::println(f"found velocity {v.x}"),
+        std::none => std::println("no velocity"),
+    }
+    w.destroy(a);
+    std::println(f"after destroy: alive {w.alive(a)} count {w.count()} with position {w.count_with<position>()}");
+    ecs::entity c = w.create();
+    std::println(f"slot reused: {c.index == a.index} new generation {c.generation != a.generation} stale alive {w.alive(a)}");
+    std::println(f"{a} {ecs::entity::null()} null {ecs::entity::null().is_null()}");
+}
+
+void queries() {
+    mut ecs::world w = ecs::world::make();
+    w.set_resource(frame_time{ .dt = 0.5 });
+    for (u32 i : 0..10) {
+        ecs::entity e = w.spawn(position{}, velocity{ .x = 1.0, .y = 2.0 });
+        if (i % 2 == 0) { w.add(e, enemy{}); }
+        if (i % 3 == 0) { w.add(e, dead{}); }
+    }
+    w.each([](mut position& p, velocity& v, frame_time& t) {
+        p.x += v.x * t.dt;
+        p.y += v.y * t.dt;
+    });
+    mut f32 sum = 0.0;
+    mut u32 seen = 0;
+    w.each([mut &sum, mut &seen](ecs::entity e, position& p) {
+        sum += p.x + p.y;
+        seen += 1;
+    });
+    std::println(f"moved {seen} entities, sum {sum}");
+    mut u32 alive_enemies = 0;
+    ecs::filter f = ecs::filter::make().with<enemy>().without<dead>();
+    w.each(f, [mut &alive_enemies](position& p) { alive_enemies += 1; });
+    std::println(f"enemies not dead: {alive_enemies}");
+    mut f32 total = 0.0;
+    w.each_table([mut &total](std::span<mut position> ps, std::span<velocity> vs, std::span<ecs::entity> es) {
+        for (usize i : 0..ps.length()) {
+            ps[i].x += vs[i].x;
+            total += ps[i].x;
+        }
+    });
+    std::println(f"table total {total}");
+    std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });
+    for (u32 i : 0..20000) {
+        _ = w.spawn(position{}, velocity{ .x = 1.0 });
+    }
+    w.par_each(pool, [](mut position& p, velocity& v) { p.x += v.x; });
+    mut f64 big = 0.0;
+    w.each([mut &big](position& p) { big += cast<f64>(p.x); });
+    std::println(f"parallel sum {big}");
+}
+
+i32 main() {
+    basics();
+    queries();
+    return 0;
+}

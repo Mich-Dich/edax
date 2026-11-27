@@ -14,13 +14,13 @@ namespace scene {
 
     // A face from its corners, turned to face away from `inside` (the solid's middle).
     private face oriented(std::span<vec3> corners, vec3 inside, ui::color tint, bool glass) {
-        vec3 n = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+        vec3 n = std::math::cross(corners[1] - corners[0], corners[2] - corners[0]);
         mut vec3 middle = default;
         for (vec3 c : corners) {
             middle = middle + c;
         }
         middle = middle / cast::round<f32>(corners.length());
-        bool flip = n.dot(middle - inside) < 0.0;
+        bool flip = std::math::dot(n, middle - inside) < 0.0;
         mut std::darray<vec3> ordered = std::darray<vec3>::with_capacity(corners.length());
         for (usize i : 0..corners.length()) {
             ordered.push(corners[if (flip) { corners.length() - 1 - i } else { i }]);
@@ -116,22 +116,22 @@ namespace scene {
 
     struct projection {
         f32 depth(vec3 p) {
-            return (p - this.eye).dot(this.forward);
+            return std::math::dot(p - this.eye, this.forward);
         }
 
         ui::vec2 at(vec3 p) {
             vec3 d = p - this.eye;
-            f32 z = d.dot(this.forward).max(0.0001);
-            return ui::vec2{ .x = this.center.x + d.dot(this.right) / z * this.focal, .y = this.center.y - d.dot(this.up) / z * this.focal };
+            f32 z = std::math::dot(d, this.forward).max(0.0001);
+            return ui::vec2{ .x = this.center.x + std::math::dot(d, this.right) / z * this.focal, .y = this.center.y - std::math::dot(d, this.up) / z * this.focal };
         }
     }
 
     projection project(orbit_camera& camera, ui::rect area) {
         vec3 offset = v3(camera.pitch.cos() * camera.yaw.sin(), camera.pitch.sin(), camera.pitch.cos() * camera.yaw.cos()) * camera.distance;
         vec3 eye = camera.target + offset;
-        vec3 forward = (camera.target - eye).normalized();
-        vec3 right = forward.cross(v3(0.0, 1.0, 0.0)).normalized();
-        vec3 up = right.cross(forward);
+        vec3 forward = std::math::normalize_or_zero(camera.target - eye);
+        vec3 right = std::math::normalize_or_zero(std::math::cross(forward, v3(0.0, 1.0, 0.0)));
+        vec3 up = std::math::cross(right, forward);
         f32 focal = area.height * 0.5 / (camera.fov * 0.5).tan();
         return projection{ .eye = eye, .right = right, .up = up, .forward = forward, .center = area.center(), .focal = focal };
     }
@@ -168,7 +168,7 @@ namespace scene {
                     vec3 from = if (dir == 0) { v3(a, 0.0, k) } else { v3(k, 0.0, a) };
                     vec3 to = if (dir == 0) { v3(b, 0.0, k) } else { v3(k, 0.0, b) };
                     vec3 mid = (from + to) * 0.5;
-                    f32 far = ((mid - v3(target.x, 0.0, target.z)).length() / span).min(1.0);
+                    f32 far = (std::math::length(mid - v3(target.x, 0.0, target.z)) / span).min(1.0);
                     f32 fade = (1.0 - far) * (1.0 - far);
                     if (fade <= 0.01) {
                         continue;
@@ -201,7 +201,7 @@ namespace scene {
                     ui::vec2 base = view.at(origin + axes[k] * (size * 0.78));
                     p.list.line(o, base, 2.5, c);
                     ui::vec2 d = tip - base;
-                    f32 l = d.length().max(0.001);
+                    f32 l = std::math::length(d).max(0.001);
                     ui::vec2 n = ui::vec2{ .x = -d.y / l * 6.0, .y = d.x / l * 6.0 };
                     std::array<ui::vec2, 3> head = [tip, base + n, base - n];
                     p.list.fill_polygon(head.as_span(), c);
@@ -244,7 +244,7 @@ namespace scene {
         // Back to front: the axis pointing away from the camera first.
         for (usize i : 0..3) {
             for (usize j : (i + 1)..3) {
-                if (axes[order[j]].dot(view.forward) > axes[order[i]].dot(view.forward)) {
+                if (std::math::dot(axes[order[j]], view.forward) > std::math::dot(axes[order[i]], view.forward)) {
                     usize swapped = order[i];
                     order[i] = order[j];
                     order[j] = swapped;
@@ -252,7 +252,7 @@ namespace scene {
             }
         }
         for (usize k : order) {
-            ui::vec2 d = ui::vec2{ .x = axes[k].dot(view.right) * 27.0, .y = -axes[k].dot(view.up) * 27.0 };
+            ui::vec2 d = ui::vec2{ .x = std::math::dot(axes[k], view.right) * 27.0, .y = -std::math::dot(axes[k], view.up) * 27.0 };
             ui::color c = ui::color::hex(colors[k]);
             p.list.circle(at - d, 4.0, c.with_alpha(0.35));
             p.list.line(at, at + d, 2.0, c);
@@ -306,11 +306,11 @@ namespace scene {
             p.list.fill_polygon(blob.as_span(), ui::color::black().with_alpha(0.42));
         }
         // The faces that look at the camera, far ones first, lit from above and the front.
-        vec3 light = v3(0.45, 0.85, 0.35).normalized();
+        vec3 light = std::math::normalize_or_zero(v3(0.45, 0.85, 0.35));
         mut std::darray<lit_face> shown = std::darray<lit_face>::with_capacity(model.length());
         for (usize i : 0..model.length()) {
             face& f = model[i];
-            vec3 n = (f.corners[1] - f.corners[0]).cross(f.corners[2] - f.corners[0]).normalized();
+            vec3 n = std::math::normalize_or_zero(std::math::cross(f.corners[1] - f.corners[0], f.corners[2] - f.corners[0]));
             mut vec3 c = default;
             mut bool behind = false;
             for (vec3 q : f.corners) {
@@ -318,10 +318,10 @@ namespace scene {
                 behind = behind || view.depth(q) < near_plane;
             }
             c = c / cast::round<f32>(f.corners.length());
-            if (behind || n.dot(view.eye - c) <= 0.0) {
+            if (behind || std::math::dot(n, view.eye - c) <= 0.0) {
                 continue;
             }
-            shown.push(lit_face{ .index = i, .depth = view.depth(c), .shade = n.dot(light).max(0.0) });
+            shown.push(lit_face{ .index = i, .depth = view.depth(c), .shade = std::math::dot(n, light).max(0.0) });
             triangles += f.corners.length() - 2;
         }
         shown.sort_by([](lit_face& a, lit_face& b) { return a.depth > b.depth; });

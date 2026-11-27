@@ -13,7 +13,7 @@ void log(std::str message) { std::println(message); }
 - The return type is always written. `deduce` is only allowed in templates (see [Compile-Time Evaluation](../compile-time/compile-time.md)).
 - No default arguments and no named arguments. Write an overload or pass a struct instead.
 - A parameter may be marked **`compile_time`** (its argument is a compile-time value, below) or **`implicit`** (the compiler supplies it from the call's location, below).
-- **Overloading** by parameter types is allowed. A call that matches more than one overload is an error (for example `f(5)` with both `f(u32)` and `f(u64)`; write `f(5u32)`). Overloading on return type alone is not allowed.
+- **Overloading** by parameter types is allowed. A call that matches more than one overload is an error (for example `f(5)` with both `f(u32)` and `f(u64)`; write `f(5u32)`). Overloading on return type alone is not allowed. Among templates the most specific overload wins (see [Templates](../compile-time/templates.md)).
 - There are no nested functions; use lambdas (see [Lambdas](lambdas.md)).
 
 ### Parameter passing

@@ -40,7 +40,7 @@ All functions are `compile_time` and take the type as a template argument, like 
 | `std::meta::alternatives<T>()` | `std::span<std::meta::alternative>`: the alternatives of an enum, in declaration order |
 | `std::meta::is_struct<T>()`, `is_class<T>()`, `is_enum<T>()` | `bool` |
 | `std::meta::result_of<F>()` | `type`: what calling the lambda or callable type `F` returns (`std::thread::spawn` uses it to name `handle<R>`) |
-| `std::meta::parameters_of<F>()` | `std::span<std::meta::parameter>`: the parameters of the lambda or callable type `F`, with `name`, `type` (without the reference), `passing` and `index`. An ECS reads a system's components and whether it writes them from `[](mut position& p, velocity& v) { ... }` |
+| `std::meta::parameters_of<F>()` | `std::span<std::meta::parameter>`: the parameters of the lambda or callable type `F`, with `name`, `type` (without the reference), `passing` and `index`. An ECS reads a system's components and whether it writes them from `[](mut position& p, velocity& v) { ... }`, and calls it with an argument generator (below) |
 | `std::returns<F, R>()` | `bool`: whether calling `F` gives an `R`. For entry checks of functions taking callables (`darray::sort_by` uses it), where `std::meta::result_of<F>()` can't be written as a template argument |
 | `std::meta::is_view<T>()` | `bool`: whether `T` borrows (a reference, a view, a lambda with reference captures, see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)) |
 | `std::meta::methods<T>()` | `std::span<std::meta::function>`: the methods of a type (visible ones, see privacy below), including generated ones (see [Annotations](annotations.md)) |
@@ -157,6 +157,26 @@ ps.position.push(p0);                             // `position` is declared in `
 - **Planned:** written prefixes and suffixes (`f.name ~ "_dirty"`, open question 9), `@f.annotations` to copy the field's annotations, "go to definition" landing on the source field, and generated fields in `edaxc expand`.
 - This is how SoA containers, ECS tables, GPU mirrors of CPU structs (`gpu_mirror<T>` inserting std140 padding) and replication deltas are written as library code.
 
+### Arguments from a list
+A call may take one argument per element of a compile-time list, written as an **argument generator**:
+```edax
+template<type F>
+void call_with_columns(mut F fn, std::array<std::raw_ptr<mut u8>, 4>& cols, usize i) {
+    unsafe {
+        fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+            compile_time type t = p.type;
+            p.pass(*cast::reinterpret<std::raw_ptr<mut t>>(cols[p.index]).offset(i))
+        });
+    }
+}
+
+call_with_columns([](mut position& p, velocity& v) { ... }, cols, i);   // fn(mut *pos_i, *vel_i)
+```
+- `for compile_time (decl : list) { ...; argument }` in an argument list is copied once per element, like the loop statement, and each copy adds its last expression (without `;`) as an argument, in order. Other arguments may come before and after it.
+- Before the argument, a generator may only declare compile-time values (`compile_time type t = p.type;`): it runs nothing at run time.
+- **`p.pass(x)`** passes `x` the way the reflected parameter `p` is declared: `mut x` for a `mut T&` parameter, `x` otherwise. The call-site `mut` is still there, decided by the declaration of the parameter it is for.
+- This is how a library calls a callable whose parameter list it learns by reflection: `std::ecs` hands a query's lambda one reference per component it asks for.
+
 ### Embedding files
 `std::embed("shaders/blit.spv")` is the file's bytes as a `std::span<u8>` in static memory; `std::embed_text("help.txt")` is a `std::static_str`. The path is relative to the source file and is a recorded input of the build, so changing the file rebuilds what embeds it.
 
@@ -260,6 +280,7 @@ The command table is built from the methods themselves: adding a command is addi
 - **Type values are used through names:** a declaration `f.type x = ...;` or `counter_type(N) x = ...;` would make every type position also an expression position, which makes C++-like syntax ambiguous. Naming the type first keeps the grammar simple and the code readable.
 - **`f.get(value)` instead of a splice operator:** no new symbol. It reads as what it does, and `mut` marks a mutable access the same way as everywhere else.
 - **`for compile_time` mirrors `if compile_time`:** the same word says "decided by the compiler", and both type-check each copy or branch on its own.
+- **Argument generators mirror field generators:** a list a library only knows through reflection becomes fields, or arguments, with the same `for compile_time` and the same rule that every copy is checked on its own. `p.pass(x)` keeps the call-site `mut` (it is decided by the parameter's own declaration) instead of dropping it or making a generic call spell out every combination.
 - **Template-argument form for `std::meta`:** consistent with the traits of 15 (`std::is_integer<T>()`).
 - **Privacy:** reflection that could read private fields would make `private` advisory. Listing only visible fields keeps 06 and 09 true.
 - **Only methods are generated, and only through annotations:** most real uses (printing, comparing, hashing, serializing, enum names) only need to *read* types, plus derive-style methods on a type its author marked (see [Annotations](annotations.md)). Not generating whole types or free functions means every name has a declaration a reader can find. Code generation beyond that is a build step (see [Edax as a Build System](../../build/build-system.md)).

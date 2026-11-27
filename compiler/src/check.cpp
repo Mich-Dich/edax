@@ -2924,6 +2924,15 @@ private:
                           b->is_integer() ? "integers have min, max and bits" : "floats have min, max, bits, infinity, nan and epsilon");
                     return set(pe, tc_.error());
                 }
+                // `T::infinity`, `T::max` in an instance of a template: the limit of the number type
+                // `T` stands for.
+                for (const auto& [param, arg] : subst_) {
+                    if (param->name != pe.path.segments[0].name || !arg || !arg->is_numeric()) continue;
+                    if (auto v = number_limit(arg, pe.path.segments[1].name)) {
+                        pe.constant = std::make_shared<const ct::Value>(*v);
+                        return set(pe, v->type);
+                    }
+                }
             }
             return set(pe, tc_.error());
         }
@@ -3078,12 +3087,56 @@ private:
         return search_operator(op, l, r, try_fn);
     }
 
-    const Type* match_operator(const Symbol* s, bool is_method, std::string_view op, const Type* l, const Type* r) {
+    // A free operator template (`template<type T> vec3<T> operator*(T k, vec3<T> v)`): its
+    // parameters are deduced from the operand types and `s` becomes the instance. Null when the
+    // operands don't fit; the template itself stays when an operand depends on the parameters of
+    // the template being checked.
+    const Type* match_operator_template(Symbol*& s, const FunctionDecl& f, const Type* l, const Type* r) {
+        std::map<const Symbol*, const Type*> subst;
+        const Type* operands[2] = {l, r};
+        bool        generic     = false;
+        for (std::size_t i = 0; i < f.params.size(); ++i) {
+            const Type* at = types::strip_ref(operands[i]);
+            if (deep_unknown(at)) generic = true;
+            if (at->is_untyped() || at->is_unknown()) continue;
+            if (const Symbol* tp = param_template_symbol(*f.params[i].type)) {
+                auto [it, fresh] = subst.emplace(tp, at);
+                if (!fresh && it->second != at) return nullptr;   // `T` and `T` of different types
+                continue;
+            }
+            if (!shape_fits(*f.params[i].type, at)) return nullptr;
+            unify(*f.params[i].type, at, subst);
+        }
+        std::vector<const Symbol*> syms = template_symbols(f);
+        std::vector<const Type*>   args;
+        for (const Symbol* p : syms) {
+            auto it = p ? subst.find(p) : subst.end();
+            if (it == subst.end()) {
+                if (generic) return tc_.error();
+                return nullptr;
+            }
+            args.push_back(it->second);
+        }
+        for (std::size_t i = 0; i < f.params.size(); ++i) {
+            if (!operand_fits(operands[i], lower(*f.params[i].type, &subst))) return nullptr;
+        }
+        const Type* result = f.result ? lower(*f.result, &subst) : tc_.void_();
+        for (const Type* a : args) {
+            if (a->is_unknown()) return result;
+        }
+        Symbol* inst = instantiate_function(s, args);
+        if (!inst) return nullptr;
+        s = inst;
+        return result;
+    }
+
+    const Type* match_operator(Symbol*& s, bool is_method, std::string_view op, const Type* l, const Type* r) {
         {
             const FunctionDecl* f = s->function();
             if (!f || !f->is_operator || f->name != op) return nullptr;
             std::size_t want = (r ? 2u : 1u) - (is_method ? 1u : 0u);   // r is null for unary operators
             if (f->params.size() != want) return nullptr;
+            if (!is_method && f->is_template) return match_operator_template(s, *f, l, r);
             const Type* first = is_method ? l : lower_owned(s, *f->params[0].type);
             const Type* second = r ? lower_owned(s, *f->params[want - 1].type) : nullptr;
             if (!is_method && !operand_fits(l, first)) return nullptr;
@@ -3604,6 +3657,13 @@ private:
         if (name == "embed" || name == "embed_text") return infer_embed(c, name);
         if (name.starts_with("compile_")) return infer_diagnostic(c, name);
         if (name == "is_compile_time" || name == "location_of" || name == "literal_text") return infer_parameter_query(c, name);
+        if (name == "at_compile_time") {   // spec 15: true in the evaluator, false in the compiled program, so not a constant here
+            if (!c.args.empty() || !c.callee->as<PathExpr>().path.segments.back().template_args.empty()) {
+                error(DiagCode::E4030, c.span, "'std::at_compile_time' takes no arguments", "wrong arguments");
+                return set(c, tc_.error());
+            }
+            return set(c, tc_.bool_());
+        }
         if (name == "meta::function_annotation" || name == "meta::type_annotation" || name == "meta::file_annotation") {
             auto&         s  = c.callee->as<PathExpr>().path.segments.back();
             const Symbol* cs = std_item("call_site");
@@ -4183,12 +4243,14 @@ private:
     // Whether `at` can be an instance of what the parameter pattern names: `std::span<T>` never
     // accepts a `std::span<mut f32>`, so such a template overload is not viable.
     static bool shape_fits(const TypeExpr& pattern, const Type* at) {
-        if (!at || at->is_unknown() || at->is_untyped()) return true;
+        bool number = at && (at->is(Kind::untyped_int) || at->is(Kind::untyped_float));   // a literal is never a `vec3<T>`
+        if (!at || at->is_unknown() || (at->is_untyped() && !number)) return true;
         if (pattern.kind == TypeKind::reference) return shape_fits(*pattern.as<ReferenceType>().inner, types::strip_ref(at));
         if (pattern.kind != TypeKind::named) return true;
         const auto&   nt  = pattern.as<NamedType>();
         const Symbol* sym = nt.symbol;
         if (!sym || !sym->decl || !sym->decl->is_template || nt.path.segments.empty()) return true;
+        if (number) return false;
         const auto& ta = nt.path.segments.back().template_args;
         if (sym->name == "span" && sym->module && sym->module->name == "std" && ta.size() == 1 && ta[0].is_mut && ta[0].type &&
             ta[0].type->kind != TypeKind::reference) {
@@ -4578,6 +4640,16 @@ private:
                 }
             }
             if (c.undeducible && c.subst.count(syms.empty() ? nullptr : syms[0])) c.undeducible = false;
+            // A parameter the arguments don't decide takes its default: `template<type T = f32>` with
+            // only literals written (`perspective(fov, 1.5, 0.1, 100.0)`).
+            for (std::size_t i = 0; i < syms.size() && i < f.template_params.size(); ++i) {
+                if (!syms[i] || c.subst.count(syms[i]) || !f.template_params[i].default_type) continue;
+                bool generic = false;   // an argument that depends on the checked template's parameters decides later
+                for (const Expr* a : args) generic = generic || (a->type && deep_unknown(types::strip_ref(a->type)));
+                if (generic) continue;
+                c.subst[syms[i]] = lower(*f.template_params[i].default_type, &c.subst);
+                if (c.undeduced_name == syms[i]->name) c.undeducible = false;
+            }
         }
         // A member of a template instance uses its parameters (spec 14); a function template's are deduced.
         const std::map<const Symbol*, const Type*>* owner = f.is_template ? nullptr : substitution_of(s);
@@ -4705,6 +4777,28 @@ private:
                 if (c->cost == best) top.push_back(c);
             }
             if (top.size() > 1) {
+                // The overload that says more about its parameters wins (templates): `min(vec3<T>, vec3<T>)`
+                // before `min(T, T)`, and a function that isn't a template before both.
+                auto specific = [](const Candidate* c) {
+                    std::size_t n = 0;
+                    for (const Param& p : c->decl->params) n += param_template_symbol(*p.type) ? 0 : 1;
+                    return n + (c->decl->is_template ? 0 : 1);
+                };
+                std::size_t most = 0;
+                for (Candidate* c : top) most = std::max(most, specific(c));
+                std::erase_if(top, [&](Candidate* c) { return specific(c) != most; });
+            }
+            if (top.size() > 1) {
+                // In a template's generic check an argument of a type that depends on its parameters fits
+                // every overload (`dot(a, a)` with `a` a `vec3<T>`): the instance picks one.
+                bool depends = false;
+                for (const Expr* a : args) depends = depends || (a->type && deep_unknown(types::strip_ref(strip_marker(*a).type)));
+                if (fn_.generic && depends) {
+                    for (Expr* a : args) {
+                        if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+                    }
+                    return nullptr;
+                }
                 Diagnostic& d = error(DiagCode::E4031, span, std::format("call to '{}' is ambiguous", display),
                                       "matches several overloads");
                 for (Candidate* c : top) note(d, "candidate", c->symbol->span);
@@ -4823,6 +4917,7 @@ private:
             infer_block(*c.wrapped);
             return set(c, fn_.result ? fn_.result : tc_.void_());
         }
+        if (!expand_argument_generators(c.args)) return set(c, tc_.error());   // the generic check of a template: the arguments depend on it
         std::vector<Expr*> args;
         for (ExprPtr& a : c.args) {
             infer(*a);
@@ -4986,6 +5081,11 @@ private:
                 if (ct->is(Kind::closure) || ct->is(Kind::function) || ct->is(Kind::fn_ptr)) return infer_closure_call(c, ct, args);
                 for (Expr* a : args) {
                     if (a->type && a->type->is_untyped()) settle(*a, tc_.error());
+                }
+                if (ct->is_numeric() || ct->is(Kind::bool_) || ct->is(Kind::char_) ||
+                    (ct->is(Kind::user) && ct->symbol && ct->symbol->kind == SymbolKind::struct_)) {
+                    note(error(DiagCode::E4033, callee.span, std::format("'{}' is a variable of type {}, not a function", s->name, quoted(ct)), "not callable"),
+                         std::format("if a function is named '{}' too, the variable hides it here: give one of them another name", s->name));
                 }
                 return set(c, tc_.error());   // lambdas and function pointers
             }
@@ -5493,7 +5593,7 @@ private:
             invalid("cast<T> converts numbers, bools, chars and simple enums");
             return c.type;
         }
-        if (v == "truncate" && !(from->is_integer() && to->is_integer())) invalid("truncate converts integers to integers");
+        if (v == "truncate" && !((from->is_integer() || from->is_float()) && to->is_integer())) invalid("truncate converts integers and floats to integers");
         if (v == "saturate" && !(from->is_numeric() && to->is_integer())) invalid("saturate converts numbers to integers");
         if (v == "round" && !(from->is_numeric() && to->is_float())) invalid("round converts numbers to floats");
         if (v == "checked" && !(from->is_numeric() && to->is_numeric()) && !(from->is_integer() && to->is(Kind::char_))) {
@@ -6547,7 +6647,12 @@ private:
     Symbol* instance_member(PathExpr& pe, Symbol* s) {
         if (!s || !s->parent || !s->parent->decl || !s->parent->decl->is_template || s->parent->template_of) return nullptr;
         auto& segs = pe.path.segments;
-        if (segs.size() < 2 || !segs[segs.size() - 2].has_template_args) return nullptr;
+        if (segs.size() < 2) return nullptr;
+        if (!segs[segs.size() - 2].has_template_args) {
+            // `vec3::splat(1.0)`: the instance with every default argument (`vec3<f32>`), when all have one.
+            const auto& params = s->parent->decl->template_params;
+            if (params.empty() || !params.front().default_type) return nullptr;
+        }
         std::vector<const Type*> args;
         for (std::size_t i = 0; i < segs[segs.size() - 2].template_args.size(); ++i) {
             const TemplateArg& a = segs[segs.size() - 2].template_args[i];
@@ -6574,6 +6679,7 @@ private:
                 for (std::size_t j = 0; j < i && j < syms.size(); ++j) inner[syms[j]] = args[j];
                 args.push_back(tc_.lower(*params[i].default_type, &inner));
             }
+            if (!segs[segs.size() - 2].has_template_args && args.size() != params.size()) return nullptr;
         }
         const Type* inst = tc_.instance(s->parent, args);
         if (!inst->is(Kind::user)) return nullptr;
@@ -7096,6 +7202,120 @@ private:
         note(d, "a 'for' loop needs 'length()' and 'operator[]' (a container), or 'next()' returning a std::option (a stream)");
     }
 
+    // Argument generators (spec 26): `f(a, for compile_time (P p : list) { decls; tail }, b)` becomes
+    // `f(a, tail₀, tail₁, ..., b)`, each tail checked with its copy of the loop variable. A tail
+    // `p.pass(x)` is `x`, or `mut x` when `p` is a `mut` reference parameter. False when a list
+    // depends on a template parameter (the generic check); the arguments are then left as written.
+    bool expand_argument_generators(std::vector<ExprPtr>& args) {
+        bool any = false;
+        for (const ExprPtr& a : args) any = any || (a->kind == ExprKind::for_ && a->as<ForExpr>().generates_arguments);
+        if (!any) return true;
+        std::vector<std::optional<std::vector<ct::Value>>> lists;
+        for (ExprPtr& a : args) {
+            if (a->kind != ExprKind::for_ || !a->as<ForExpr>().generates_arguments) {
+                lists.emplace_back();
+                continue;
+            }
+            auto&       f      = a->as<ForExpr>();
+            std::size_t errors = diags_.error_count();
+            const Type* it     = infer(*f.iterable);
+            if (diags_.error_count() != errors) return false;
+            if (f.iterable->kind == ExprKind::range) {   // `for compile_time (usize k : 0..3)`: the bounds take the variable's type
+                const Type* var = lower(*f.type);
+                auto&       r   = f.iterable->as<RangeExpr>();
+                if (r.lo->type && r.lo->type->is_untyped()) settle(*r.lo, var);
+                if (r.hi->type && r.hi->type->is_untyped()) settle(*r.hi, var);
+                f.iterable->type = tc_.range(types::strip_ref(var));
+            } else if (types::strip_ref(it)->is_unknown()) {
+                return false;
+            }
+            std::optional<std::vector<ct::Value>> items = evaluator().elements(*f.iterable);
+            if (!items) return false;   // unknown (generic) or reported
+            lists.push_back(std::move(items));
+        }
+        std::vector<ExprPtr> out;
+        for (std::size_t k = 0; k < args.size(); ++k) {
+            if (!lists[k]) {
+                out.push_back(std::move(args[k]));
+                continue;
+            }
+            auto&       f   = args[k]->as<ForExpr>();
+            const Type* var = lower(*f.type);
+            if (!f.body || !f.body->tail) continue;   // reported by the parser
+            for (const ct::Value& item : *lists[k]) {
+                if (item.type && !var->is_unknown() && types::strip_ref(item.type) != types::strip_ref(var)) {
+                    mismatch(f.type->span, var, item.type, " (the generator's elements)");
+                    break;
+                }
+                auto [copy, loop_var] = loop_copy(f, item, var);
+                for (StmtPtr& st : copy->statements) {
+                    if (st->kind != StmtKind::variable || st->as<VariableStmt>().storage != Storage::compile_time) {
+                        error(DiagCode::E4201, st->span, "an argument generator declares only compile-time values before its argument",
+                              "runs at run time");
+                    }
+                    check_stmt(*st);
+                }
+                ExprPtr arg = std::move(copy->tail);
+                if (arg->kind == ExprKind::call) {   // `p.pass(x)`
+                    auto& c = arg->as<CallExpr>();
+                    if (c.callee->kind == ExprKind::member && c.args.size() == 1) {
+                        auto& m = c.callee->as<MemberExpr>();
+                        bool on_var = m.object->kind == ExprKind::path && m.object->as<PathExpr>().symbol == loop_var;
+                        if (on_var && m.name.segments.size() == 1 && m.name.segments[0].name == "pass") {
+                            if (item.kind != ct::Value::Kind::parameter) {
+                                error(DiagCode::E4201, m.span, "'.pass(x)' is for a std::meta::parameter", "not a parameter");
+                            }
+                            bool by_mut = item.kind == ct::Value::Kind::parameter && parameter_is_mut_reference(item);
+                            ExprPtr x   = std::move(c.args[0]);
+                            Span    sp  = arg->span;
+                            arg         = by_mut ? std::make_unique<UnaryExpr>(sp, UnaryOp::mut_marker, std::move(x)) : std::move(x);
+                        }
+                    }
+                }
+                out.push_back(std::move(arg));
+            }
+        }
+        args = std::move(out);
+        return true;
+    }
+
+    // Whether the reflected parameter `p` (std::meta::parameter) is a `mut T&`.
+    bool parameter_is_mut_reference(const ct::Value& p) {
+        const Type* pt = nullptr;
+        if (p.symbol) {
+            const FunctionDecl* fd = p.symbol->function();
+            if (fd && p.index < fd->params.size() && fd->params[p.index].type) pt = lower_owned(p.symbol, *fd->params[p.index].type);
+        } else if (p.type_value && p.index < p.type_value->args.size()) {
+            pt = p.type_value->args[p.index];
+        }
+        return pt && pt->is(Kind::reference) && pt->is_mut;
+    }
+
+    // A copy of a `for compile_time` body with its own loop variable, a compile-time constant
+    // holding `item`.
+    std::pair<BlockPtr, Symbol*> loop_copy(ForExpr& f, const ct::Value& item, const Type* var) {
+        Module* home = module_;
+        Cloner cloner([home](const Symbol& original) {
+            Symbol* copy = home->make(original.kind, original.name, original.span);
+            Module* owner = copy->module;
+            *copy         = original;
+            copy->module  = owner;
+            copy->ct_value.reset();
+            copy->type = nullptr;
+            return copy;
+        });
+        Symbol* loop_var = home->make(SymbolKind::local, f.name, f.name_span);
+        if (f.symbol) {
+            Module* owner = loop_var->module;
+            *loop_var     = *f.symbol;
+            loop_var->module = owner;
+            cloner.map(f.symbol, loop_var);
+        }
+        loop_var->ct_value = std::make_shared<const ct::Value>(item);
+        set_local(loop_var, var);
+        return {cloner.block(*f.body), loop_var};
+    }
+
     // `for compile_time` (spec 26): the body is copied once per element and each copy is
     // checked with the loop variable as a compile-time constant. False when the elements depend
     // on a template parameter (the generic check): then the body is checked once as usual.
@@ -7127,28 +7347,10 @@ private:
                 return true;
             }
         }
-        Module* home = module_;
-        f.unrolled   = true;
+        f.unrolled = true;
         for (const ct::Value& item : *items) {
-            Cloner cloner([home](const Symbol& original) {
-                Symbol* copy = home->make(original.kind, original.name, original.span);
-                Module* owner = copy->module;
-                *copy         = original;
-                copy->module  = owner;
-                copy->ct_value.reset();
-                copy->type = nullptr;
-                return copy;
-            });
-            Symbol* loop_var = home->make(SymbolKind::local, f.name, f.name_span);
-            if (f.symbol) {
-                Module* owner = loop_var->module;
-                *loop_var     = *f.symbol;
-                loop_var->module = owner;
-                cloner.map(f.symbol, loop_var);
-            }
-            loop_var->ct_value = std::make_shared<const ct::Value>(item);
-            set_local(loop_var, var);
-            f.copies.push_back(cloner.block(*f.body));
+            auto [copy, loop_var] = loop_copy(f, item, var);
+            f.copies.push_back(std::move(copy));
             f.copy_symbols.push_back(loop_var);
             infer_block(*f.copies.back());
         }
@@ -7684,7 +7886,8 @@ public:
         if (!copy || copy->kind != DeclKind::function) return nullptr;
         expand_pack(copy->as<FunctionDecl>(), n);
         std::vector<Symbol*> params;
-        Symbol* variant      = resolve_function_instance(program_, diags_, templ, copy->as<FunctionDecl>(), params);
+        Symbol* self         = templ->kind == SymbolKind::method ? const_cast<Symbol*>(templ->parent) : nullptr;
+        Symbol* variant      = resolve_function_instance(program_, diags_, templ, copy->as<FunctionDecl>(), params, self);
         variant->pack_origin = templ;
         variant->pack_count  = n;
         variant->parent      = templ->parent;

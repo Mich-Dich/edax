@@ -1,0 +1,89 @@
+// RUN: edaxc run %s
+// std::math: boxes, spheres, planes, rays and frustums; curves and motion.
+import std;
+namespace m = std::math;
+
+void show(std::str name, std::option<f32> hit) {
+    match (hit) {
+        std::some(t) => std::println(f"{name} hit {t}"),
+        std::none => std::println(f"{name} miss"),
+    }
+}
+
+f32 rounded(f32 v) { return (v * 10000.0).round() / 10000.0 + 0.0; }
+m::vec3 rounded(m::vec3 v) { return m::vec3::make(rounded(v.x), rounded(v.y), rounded(v.z)); }
+
+i32 main() {
+    m::aabb box = m::aabb::from_center_extents(m::vec3::make(1.0, 2.0, 3.0), m::vec3::make(1.0, 1.0, 2.0));
+    std::println(f"{box.min} {box.max} {box.center()} {box.extents()} {box.size()} {box.is_empty()} {m::aabb::empty().is_empty()}");
+    mut std::darray<m::vec3> pts = default;
+    pts.push(m::vec3::make(1.0, 5.0, -2.0));
+    pts.push(m::vec3::make(-3.0, 0.0, 4.0));
+    pts.push(m::vec3::make(2.0, 1.0, 1.0));
+    m::aabb around = m::aabb::from_points(pts.as_span());
+    std::println(f"{around.min} {around.max} {m::merge(box, around).min} {m::merge(box, m::vec3::make(9.0, 0.0, 0.0)).max}");
+    std::println(f"{m::contains(box, m::vec3::make(1.5, 2.5, 4.0))} {m::contains(box, m::vec3::make(2.5, 2.5, 4.0))} {m::contains(around, box)} {m::contains(m::merge(box, around), box)}");
+    m::sphere s = m::sphere::make(m::vec3::make(0.0, 0.0, 0.0), 2.0);
+    std::println(f"{m::contains(s, m::vec3::make(1.0, 1.0, 1.0))} {m::contains(s, m::vec3::make(2.0, 1.0, 0.0))} {m::intersects(box, s)} {m::intersects(s, m::sphere::make(m::vec3::make(3.0, 0.0, 0.0), 1.0))} {m::intersects(s, m::sphere::make(m::vec3::make(3.5, 0.0, 0.0), 1.0))}");
+    std::println(f"{m::intersects(box, m::aabb::from_center_extents(m::vec3::make(3.0, 2.0, 3.0), m::vec3::one()))} {m::intersects(box, m::aabb::from_center_extents(m::vec3::make(3.5, 2.0, 3.0), m::vec3::one()))}");
+    std::println(f"{m::closest_point(box, m::vec3::make(5.0, 2.0, 0.0))} {m::closest_point(s, m::vec3::make(4.0, 0.0, 0.0))} {rounded(m::bounding_sphere(box).radius)}");
+    m::plane ground = m::plane::from_point_normal(m::vec3::make(0.0, 1.0, 0.0), m::vec3::unit_y());
+    m::plane tri = m::plane::from_points(m::vec3::make(0.0, 0.0, 0.0), m::vec3::make(1.0, 0.0, 0.0), m::vec3::make(0.0, 1.0, 0.0));
+    std::println(f"{m::signed_distance(ground, m::vec3::make(3.0, 4.0, 5.0))} {m::closest_point(ground, m::vec3::make(3.0, 4.0, 5.0))} {tri.normal} {tri.d} {m::normalize(m::plane{ .normal = m::vec3::make(0.0, 2.0, 0.0), .d = -4.0 }).d}");
+    m::ray down = m::ray::make(m::vec3::make(1.0, 10.0, 3.0), m::vec3::make(0.0, -1.0, 0.0));
+    show("ray-plane", m::intersect(down, ground));
+    show("ray-plane-away", m::intersect(m::ray::make(m::vec3::make(1.0, 10.0, 3.0), m::vec3::unit_y()), ground));
+    show("ray-box", m::intersect(down, box));
+    show("ray-box-miss", m::intersect(m::ray::make(m::vec3::make(5.0, 10.0, 3.0), m::vec3::make(0.0, -1.0, 0.0)), box));
+    show("ray-box-inside", m::intersect(m::ray::make(m::vec3::make(1.0, 2.0, 3.0), m::vec3::unit_x()), box));
+    show("ray-sphere", m::intersect(m::ray::make(m::vec3::make(0.0, 0.0, 10.0), m::vec3::make(0.0, 0.0, -1.0)), s));
+    show("ray-sphere-miss", m::intersect(m::ray::make(m::vec3::make(3.0, 0.0, 10.0), m::vec3::make(0.0, 0.0, -1.0)), s));
+    show("ray-triangle", m::intersect_triangle(m::ray::make(m::vec3::make(0.25, 0.25, 5.0), m::vec3::make(0.0, 0.0, -1.0)), m::vec3::zero(), m::vec3::unit_x(), m::vec3::unit_y()));
+    show("ray-triangle-miss", m::intersect_triangle(m::ray::make(m::vec3::make(0.75, 0.75, 5.0), m::vec3::make(0.0, 0.0, -1.0)), m::vec3::zero(), m::vec3::unit_x(), m::vec3::unit_y()));
+    std::println(f"{down.at(2.5)} {m::closest_point(down, m::vec3::make(4.0, 7.0, 3.0))}");
+
+    m::mat4 view = m::look_at(m::vec3::make(0.0, 0.0, 10.0), m::vec3::zero(), m::vec3::unit_y());
+    m::mat4 proj = m::perspective(m::deg(90.0), 1.0, 1.0, 100.0);
+    m::frustum f = m::frustum::from_view_projection(proj * view);
+    m::frustum fno = m::frustum::from_view_projection_no(m::perspective_rh_no(m::deg(90.0), 1.0, 1.0, 100.0) * view);
+    std::println(f"{rounded(f.near.normal)} {rounded(f.near.d)} {rounded(f.far.normal)} {rounded(f.far.d)} {rounded(f.left.normal)} {rounded(fno.near.d)} {rounded(fno.far.d)}");
+    std::println(f"{m::contains(f, m::vec3::zero())} {m::contains(f, m::vec3::make(0.0, 0.0, 9.5))} {m::contains(f, m::vec3::make(20.0, 0.0, 0.0))} {m::contains(f, m::vec3::make(0.0, 0.0, -95.0))}");
+    std::println(f"{m::intersects(f, s)} {m::intersects(f, m::sphere::make(m::vec3::make(13.0, 0.0, 0.0), 2.0))} {m::intersects(f, m::sphere::make(m::vec3::make(11.0, 0.0, 0.0), 2.0))} {m::intersects(f, box)} {m::intersects(f, m::aabb::from_center_extents(m::vec3::make(0.0, 30.0, 0.0), m::vec3::one()))}");
+    mut std::darray<m::aabb> boxes = default;
+    mut std::darray<m::sphere> spheres = default;
+    mut std::darray<bool> visible = default;
+    for (i32 i : 0..10) {
+        f32 x = cast::round<f32>(i) * 4.0 - 18.0;
+        boxes.push(m::aabb::from_center_extents(m::vec3::make(x, 0.0, 0.0), m::vec3::one()));
+        spheres.push(m::sphere::make(m::vec3::make(x, 0.0, 0.0), 1.0));
+        visible.push(false);
+    }
+    usize n = m::cull(f, boxes.as_span(), visible.as_mut_span());
+    mut std::string bits = std::string::from("");
+    for (bool v : visible) { bits.push(if (v) { '1' } else { '0' }); }
+    std::println(f"{n} {bits}");
+    usize in_view = m::cull(f, spheres.as_span(), visible.as_mut_span());
+    bits.clear();
+    for (bool v : visible) { bits.push(if (v) { '1' } else { '0' }); }
+    std::println(f"{in_view} {bits}");
+    m::aabb moved = m::transform_aabb(m::mat4::translation(m::vec3::make(10.0, 0.0, 0.0)) * m::mat4::rotation_z(m::deg(90.0)), box);
+    std::println(f"{rounded(moved.min)} {rounded(moved.max)}");
+    m::aabb<f64> big = m::aabb<f64>::from_center_extents(m::vec3<f64>::make(1.0, 2.0, 3.0), m::vec3<f64>::one());
+    std::println(f"{m::contains(big, m::vec3<f64>::make(1.5, 2.5, 3.5))} {big.size()}");
+
+    // curves
+    m::vec2 a = m::vec2::make(0.0, 0.0);
+    m::vec2 b = m::vec2::make(1.0, 2.0);
+    m::vec2 c = m::vec2::make(3.0, 2.0);
+    m::vec2 d = m::vec2::make(4.0, 0.0);
+    std::println(f"{m::bezier(a, b, c, 0.5)} {m::bezier(a, b, c, d, 0.5)} {m::bezier_tangent(a, b, c, d, 0.0)} {m::hermite(a, b, d, b, 0.5)} {m::catmull_rom(a, b, c, d, 0.0)} {m::catmull_rom(a, b, c, d, 1.0)} {m::catmull_rom(a, b, c, d, 0.5)}");
+    std::println(f"{m::bezier(0.0, 1.0, 0.0, 0.5)} {rounded(m::damp(0.0, 10.0, 1.0, 1.0))} {m::move_towards(0.0, 10.0, 3.0)} {m::move_towards(9.0, 10.0, 3.0)} {m::move_towards(a, d, 1.0)} {m::move_towards(a, d, 9.0)} {m::wrap(370.0, 0.0, 360.0)} {m::wrap(-10.0, 0.0, 360.0)} {m::ping_pong(2.5, 2.0)} {m::ping_pong(5.0, 2.0)}");
+    mut f32 velocity = 0.0;
+    mut f32 x = 0.0;
+    for (i32 i : 0..60) { x = m::smooth_damp(x, 10.0, mut velocity, 0.3, 1.0 / 60.0); }
+    mut m::vec3 v3 = m::vec3::zero();
+    mut m::vec3 p3 = m::vec3::zero();
+    for (i32 i : 0..60) { p3 = m::smooth_damp(p3, m::vec3::make(10.0, 0.0, -10.0), mut v3, 0.3, 1.0 / 60.0); }
+    std::println(f"{rounded(x)} {rounded(velocity)} {rounded(p3)}");
+    return 0;
+}

@@ -1,0 +1,59 @@
+// The Edax standard library: module std::math::ease (math.md), easing curves for animation.
+//
+//     namespace ease = std::math::ease;
+//     f32 x = std::math::lerp(from, to, ease::out_cubic(t));
+//
+// Every function takes the progress `t` from 0 to 1 and returns the eased progress, 0 at 0 and 1
+// at 1 (the `back` and `elastic` curves leave [0, 1] on the way). `in_` curves start slowly,
+// `out_` curves end slowly, `in_out_` curves do both. They work on f32 and f64 (f32 when only
+// literals are written). The names and shapes are the usual ones (Robert Penner's; easings.net
+// draws them).
+//
+// Loaded when a program names `std::math`.
+
+namespace std::math::ease {
+
+    // Powers of `t`: the higher the power, the sharper the curve.
+    template<type T = f32> compile_time run_time T in_quad(T t);
+    template<type T = f32> compile_time run_time T out_quad(T t);
+    template<type T = f32> compile_time run_time T in_out_quad(T t);
+    template<type T = f32> compile_time run_time T in_cubic(T t);
+    template<type T = f32> compile_time run_time T out_cubic(T t);
+    template<type T = f32> compile_time run_time T in_out_cubic(T t);
+    template<type T = f32> compile_time run_time T in_quart(T t);
+    template<type T = f32> compile_time run_time T out_quart(T t);
+    template<type T = f32> compile_time run_time T in_out_quart(T t);
+    template<type T = f32> compile_time run_time T in_quint(T t);
+    template<type T = f32> compile_time run_time T out_quint(T t);
+    template<type T = f32> compile_time run_time T in_out_quint(T t);
+
+    // A quarter of a sine wave: the gentlest curve.
+    template<type T = f32> compile_time run_time T in_sine(T t);
+    template<type T = f32> compile_time run_time T out_sine(T t);
+    template<type T = f32> compile_time run_time T in_out_sine(T t);
+
+    // Exponential: nearly still, then very fast.
+    template<type T = f32> compile_time run_time T in_expo(T t);
+    template<type T = f32> compile_time run_time T out_expo(T t);
+    template<type T = f32> compile_time run_time T in_out_expo(T t);
+
+    // A quarter circle.
+    template<type T = f32> compile_time run_time T in_circ(T t);
+    template<type T = f32> compile_time run_time T out_circ(T t);
+    template<type T = f32> compile_time run_time T in_out_circ(T t);
+
+    // Pulls back a little before moving (`in`) or overshoots the end and comes back (`out`).
+    template<type T = f32> compile_time run_time T in_back(T t);
+    template<type T = f32> compile_time run_time T out_back(T t);
+    template<type T = f32> compile_time run_time T in_out_back(T t);
+
+    // Swings around the start or the end like a spring.
+    template<type T = f32> compile_time run_time T in_elastic(T t);
+    template<type T = f32> compile_time run_time T out_elastic(T t);
+    template<type T = f32> compile_time run_time T in_out_elastic(T t);
+
+    // Bounces like a ball that is dropped on the end (`out`) or thrown from the start (`in`).
+    template<type T = f32> compile_time run_time T in_bounce(T t);
+    template<type T = f32> compile_time run_time T out_bounce(T t);
+    template<type T = f32> compile_time run_time T in_out_bounce(T t);
+}

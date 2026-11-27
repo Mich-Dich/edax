@@ -1,0 +1,13 @@
+// RUN: edaxc check %s
+// std::math keeps angles and numbers apart, and vectors of different number types.
+import std;
+namespace m = std::math;
+
+i32 main() {
+    f32 a = m::sin(45.0);                                        // a number is not an angle
+    m::mat4 turn = m::mat4::rotation(90.0, m::vec3::unit_y());   // nor here
+    m::vec3 v = m::vec3::make(1.0, 2.0, 3.0);
+    m::vec3<f64> w = v;                                          // convert with v.to<f64>()
+    m::radians r = m::deg(90.0) * m::deg(2.0);                   // an angle times an angle is not an angle
+    return 0;
+}

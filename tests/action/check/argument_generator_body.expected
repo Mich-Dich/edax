@@ -1,0 +1,10 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4201]: an argument generator declares only compile-time values before its argument
+ --> tests/action/check/argument_generator_body.ed:8:53
+  |
+8 |     u32 n = add(for compile_time (usize k : 0..2) { u32 x = 1; x });
+  |                                                     ^^^^^^^^^^ runs at run time
+
+1 error, 0 warnings

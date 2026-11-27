@@ -13,12 +13,15 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 
 
-INSTALL_HINT = {"absl": "libabsl-dev", "boost": "libboost-dev"}
+INSTALL_HINT = {"absl": "libabsl-dev", "boost": "libboost-dev", "entt": "libentt-dev (or set EDAX_BENCH_INCLUDE to a folder with entt/entt.hpp)",
+                "glm": "libglm-dev (or set EDAX_BENCH_INCLUDE to a folder with glm/glm.hpp)"}
 
 
 def cxx_flags(source: pathlib.Path) -> list[str] | None:
     """The compiler flags for one C++ benchmark; None when a library it needs isn't installed."""
     flags = ["-O2", "-std=c++20", "-DNDEBUG"]
+    for folder in filter(None, os.environ.get("EDAX_BENCH_INCLUDE", "").split(os.pathsep)):   # e.g. where entt/entt.hpp is
+        flags.append(f"-I{folder}")
     text = source.read_text()
     if "absl/" in text:
         mods = []

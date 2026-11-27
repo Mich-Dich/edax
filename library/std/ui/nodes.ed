@@ -168,14 +168,14 @@ namespace std::ui::nodes {
         mut usize n = 0;
         for (usize i : 0..points.length()) {
             std::ui::vec2 q = points[i];
-            if (n > 0 && (q - points[n - 1]).length() < 0.5) {
+            if (n > 0 && std::math::length(q - points[n - 1]) < 0.5) {
                 continue;
             }
             if (n >= 2) {
                 std::ui::vec2 d1 = points[n - 1] - points[n - 2];
                 std::ui::vec2 d2 = q - points[n - 1];
                 f32 cross = d1.x * d2.y - d1.y * d2.x;
-                if (cross.abs() <= 0.001 * d1.length() * d2.length() && d1.dot(d2) > 0.0) {
+                if (cross.abs() <= 0.001 * std::math::length(d1) * std::math::length(d2) && std::math::dot(d1, d2) > 0.0) {
                     points[n - 1] = q;
                     continue;
                 }
@@ -199,15 +199,15 @@ namespace std::ui::nodes {
                 std::ui::vec2 u = corners[i - 1];
                 std::ui::vec2 v = corners[i];
                 std::ui::vec2 w = corners[i + 1];
-                f32 l1 = (v - u).length();
-                f32 l2 = (w - v).length();
+                f32 l1 = std::math::length(v - u);
+                f32 l2 = std::math::length(w - v);
                 if (l1 < 0.001 || l2 < 0.001) {
                     out.push(v);
                     continue;
                 }
                 std::ui::vec2 e1 = (v - u) * (1.0 / l1);
                 std::ui::vec2 e2 = (w - v) * (1.0 / l2);
-                f32 c = e1.dot(e2).clamp(-0.999, 1.0);
+                f32 c = std::math::dot(e1, e2).clamp(-0.999, 1.0);
                 // The arc meets each run tan(turn / 2) × radius before the corner.
                 f32 tangent = ((1.0 - c) / (1.0 + c)).sqrt();
                 f32 room1 = if (i == 1) { l1 } else { l1 * 0.5 };
@@ -233,7 +233,7 @@ namespace std::ui::nodes {
         match (look.shape) {
             link_shape::curve => {
                 (std::ui::vec2 c1, std::ui::vec2 c2) = bends(a, b, zoom, pin_a, pin_b);
-                f32 reach = (c1 - a).length() + (c2 - c1).length() + (b - c2).length();
+                f32 reach = std::math::length(c1 - a) + std::math::length(c2 - c1) + std::math::length(b - c2);
                 u32 steps = cast::saturate<u32>((reach / 8.0).ceil()).max(12).min(64);
                 for (u32 i : 0..(steps + 1)) {
                     f32 t = cast::round<f32>(i) / cast::round<f32>(steps);
@@ -266,18 +266,18 @@ namespace std::ui::nodes {
 
     private f32 segment_distance(std::ui::vec2 p, std::ui::vec2 a, std::ui::vec2 b) {
         std::ui::vec2 d = b - a;
-        f32 along = d.length_squared();
+        f32 along = std::math::length_squared(d);
         if (along < 0.000001) {
-            return (p - a).length();
+            return std::math::length(p - a);
         }
-        f32 t = ((p - a).dot(d) / along).clamp(0.0, 1.0);
-        return (p - (a + d * t)).length();
+        f32 t = (std::math::dot(p - a, d) / along).clamp(0.0, 1.0);
+        return std::math::length(p - (a + d * t));
     }
 
     private f32 path_distance(std::ui::vec2 p, std::span<std::ui::vec2> points) {
         mut f32 best = 1000000.0;
         if (points.length() == 1) {
-            return (p - points[0]).length();
+            return std::math::length(p - points[0]);
         }
         for (usize i : 1..points.length()) {
             best = best.min(segment_distance(p, points[i - 1], points[i]));
@@ -644,7 +644,7 @@ namespace std::ui::nodes {
             mut bool on_pin = false;
             if (pressed && r.contains(cursor)) {
                 for (pin_place& pp : this.state.pins) {
-                    if ((pp.at - cursor).length() <= pin_reach) {
+                    if (std::math::length(pp.at - cursor) <= pin_reach) {
                         on_pin = true;
                     }
                 }
@@ -733,7 +733,7 @@ namespace std::ui::nodes {
             // A press on a pin starts a link.
             if (on_pin) {
                 for (pin_place& pp : this.state.pins) {
-                    if ((pp.at - cursor).length() <= pin_reach) {
+                    if (std::math::length(pp.at - cursor) <= pin_reach) {
                         this.state.drag = drag_kind::link;
                         this.state.link_from = pp.id;
                         this.state.link_from_output = pp.output;
@@ -747,7 +747,7 @@ namespace std::ui::nodes {
                 for (pin_place& pp : this.state.pins) {
                     if (pp.id == this.state.link_from && pp.output == this.state.link_from_output) {
                         start = std::some(pp);
-                    } else if (pp.output != this.state.link_from_output && (pp.at - cursor).length() <= 14.0 * z.max(0.8)) {
+                    } else if (pp.output != this.state.link_from_output && std::math::length(pp.at - cursor) <= 14.0 * z.max(0.8)) {
                         target = std::some(pp);
                     }
                 }
@@ -880,7 +880,7 @@ namespace std::ui::nodes {
             }
             // The pins, over the nodes' edges.
             for (pin_place& pp : this.state.pins) {
-                bool hovered = (pp.at - cursor).length() <= pin_reach;
+                bool hovered = std::math::length(pp.at - cursor) <= pin_reach;
                 pin_part part = pin_part{
                     .at = pp.at,
                     .style = pp.style,
@@ -1807,14 +1807,24 @@ namespace std::ui::nodes {
         return std::string::from("?");
     }
 
+    // A type's own name, for labels: `std::math::vec2<f32>` is `vec2` (the `<f32>` every std::math
+    // type has by default is left out), `app::tint<u8>` is `tint<u8>`.
     private std::string last_segment(std::str path) {
         mut usize start = 0;
+        mut usize end = path.length();
         for (usize i : 0..path.length()) {
+            if (path.byte(i) == 60) {   // '<': the template arguments start
+                end = i;
+                break;
+            }
             if (path.byte(i) == 58) {
                 start = i + 1;
             }
         }
-        return std::string::from(path.slice(start, path.length()));
+        if (path.slice(end, path.length()) != "<f32>") {
+            end = path.length();
+        }
+        return std::string::from(path.slice(start, end));
     }
 
     private template<type K>

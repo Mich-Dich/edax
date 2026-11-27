@@ -51,12 +51,23 @@ void print_all(A&... values) {
 print_all(1u32, "two", 3.0);                    // A = u32, std::static_str, f64
 ```
 - A pack can only be used in two ways: walked with `for compile_time` (see [Compile-Time Evaluation](compile-time.md)), where the loop variable's type `A` is the current element's type, and passed on whole as `values...` to another pack parameter.
+- A loop variable taken by value, `for compile_time (A v : values)` over by-value pack parameters, takes each value: it is moved out of its parameter (the way `world.spawn(position{}, velocity{})` moves each component into its table).
+- Methods may have packs too; their body uses `this` like any method.
 - `values.length()` is the number of elements, a `compile_time usize`.
 - The std callables are written with packs: `std::function<R(A...)>`, `std::fn_ptr<R(A...)>`.
 - A pack is the last template parameter.
 
 ### Default template arguments
 `template<type T, type A = std::global_allocator> class darray` can be used as `std::darray<u32>`: arguments with defaults may be left out from the end. A default may name earlier parameters.
+- **All defaults:** when every parameter has a default, the name alone is the type: with `template<type T = f32> struct vec3`, `vec3` is `vec3<f32>`, as a type (`vec3 v = ...;`), in a literal (`vec3{ .x = 1.0 }`) and in front of a static function (`vec3::make(1.0, 2.0, 3.0)`).
+- **In deduction:** a function template's default decides a parameter the call's arguments leave open. With `template<type T = f32> T lerp(T a, T b, T t)`, `lerp(x, y, 0.5)` takes `T` from `x`, and `lerp(0.0, 10.0, 0.5)`, where every argument is an untyped literal, is `lerp<f32>`. Without a default that call is the error above.
+
+### Overloads of templates
+Function templates overload like functions (see [Functions](../functions/functions.md)): `T min(T a, T b)` and `vec3<T> min(vec3<T> a, vec3<T> b)` can share a name.
+- **The most specific overload wins.** When a call fits several, the one whose parameters say more is taken: a parameter written as a type (`vec3<T>`, `u32`) is more specific than a bare template parameter (`T`), and a function that isn't a template is more specific than one that is. `min(v, w)` with two `vec3`s fits both templates above and calls the second. Overloads that are equally specific are ambiguous, as for plain functions.
+- An untyped number literal never deduces a struct template: `abs(-2.5)` is the scalar `abs`, not `abs(vec2<T>)`.
+- **Operators can be free templates:** `template<type T> vec3<T> operator*(T k, vec3<T> v)` makes `2.0 * v` work for every `vec3<T>`. The rule for free operators holds (same namespace and module as an operand type, see [Operators](../basics/operators.md)).
+- **Number limits of a parameter:** `T::max`, `T::min`, `T::bits`, and for floats `T::infinity`, `T::nan`, `T::epsilon`, are the limits of the number type `T` stands for.
 
 ### Method templates
 A method can have its own template parameters, also in a class template. They are deduced from

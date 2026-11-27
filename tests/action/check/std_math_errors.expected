@@ -1,0 +1,29 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4010]: expected 'std::math::radians', found a float literal
+ --> tests/action/check/std_math_errors.ed:7:20
+  |
+7 |     f32 a = m::sin(45.0);                                        // a number is not an angle
+  |                    ^^^^ this is a float literal
+
+error[E4010]: expected 'std::math::radians', found a float literal
+ --> tests/action/check/std_math_errors.ed:8:38
+  |
+8 |     m::mat4 turn = m::mat4::rotation(90.0, m::vec3::unit_y());   // nor here
+  |                                      ^^^^ this is a float literal
+
+error[E4010]: expected 'std::math::vec3<f64>', found 'std::math::vec3<f32>'
+  --> tests/action/check/std_math_errors.ed:10:22
+   |
+10 |     m::vec3<f64> w = v;                                          // convert with v.to<f64>()
+   |                      ^ this is 'std::math::vec3<f32>'
+
+error[E4013]: operator '*' is not defined for 'std::math::radians' and 'std::math::radians'
+  --> tests/action/check/std_math_errors.ed:11:20
+   |
+11 |     m::radians r = m::deg(90.0) * m::deg(2.0);                   // an angle times an angle is not an angle
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ no such operator
+   = note: a distinct type is scaled by its underlying type: 'std::math::radians' * 'f32'
+
+4 errors, 0 warnings

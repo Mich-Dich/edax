@@ -514,7 +514,7 @@ namespace std::ui {
 
         void dashed_line(vec2 from, vec2 to, f32 width, f32 dash, f32 gap, color c) mut {
             vec2 d = to - from;
-            f32 length = d.length();
+            f32 length = std::math::length(d);
             if (length <= 0.0 || dash <= 0.0) {
                 return;
             }
@@ -528,7 +528,7 @@ namespace std::ui {
         }
 
         void bezier(vec2 a, vec2 b, vec2 c, vec2 d, f32 width, color tint) mut {
-            f32 reach = (b - a).length() + (c - b).length() + (d - c).length();
+            f32 reach = std::math::length(b - a) + std::math::length(c - b) + std::math::length(d - c);
             u32 steps = cast::saturate<u32>((reach / 6.0).ceil()).max(8).min(96);
             mut vec2 last = a;
             for (u32 i : 1..(steps + 1)) {
@@ -563,13 +563,13 @@ namespace std::ui {
 
         void line(vec2 from, vec2 to, f32 width, color c) mut {
             vec2 d = to - from;
-            f32 length = d.length();
+            f32 length = std::math::length(d);
             if (length <= 0.0) {
                 this.circle(from, width * 0.5, c);
                 return;
             }
             vec2 along = d / length;
-            vec2 across = along.perpendicular();
+            vec2 across = std::math::perpendicular(along);
             vec2 center = (from + to) * 0.5;
             f32 hx = length * 0.5 + width * 0.5;
             f32 hy = width * 0.5;
@@ -633,8 +633,8 @@ namespace std::ui {
                 vec2 before = edge_normal(points[(i + n - 1) % n], p, outward);
                 vec2 after = edge_normal(p, points[(i + 1) % n], outward);
                 vec2 sum = before + after;
-                vec2 m = if (sum.length() < 0.000001) { after } else { sum.normalized() };
-                f32 reach = 0.5 / m.dot(after).max(0.25);
+                vec2 m = if (std::math::length(sum) < 0.000001) { after } else { std::math::normalize_or_zero(sum) };
+                f32 reach = 0.5 / std::math::dot(m, after).max(0.25);
                 this.vertices.push(solid_vertex(p - m * reach, inside));
                 this.vertices.push(solid_vertex(p + m * reach, outside));
             }
@@ -695,7 +695,7 @@ namespace std::ui {
             // Drop points on top of the one before: they have no direction.
             mut std::darray<vec2> path = std::darray<vec2>::with_capacity(points.length());
             for (vec2 p : points) {
-                if (path.is_empty() || (p - path[path.length() - 1]).length() > 0.01) {
+                if (path.is_empty() || std::math::length(p - path[path.length() - 1]) > 0.01) {
                     path.push(p);
                 }
             }
@@ -713,14 +713,14 @@ namespace std::ui {
             u32 base = cast::truncate<u32>(this.vertices.length());
             for (usize i : 0..n) {
                 vec2 p = path[i];
-                vec2 before = if (i == 0) { (path[1] - path[0]).normalized() } else { (p - path[i - 1]).normalized() };
-                vec2 after = if (i == n - 1) { before } else { (path[i + 1] - p).normalized() };
+                vec2 before = if (i == 0) { std::math::normalize_or_zero(path[1] - path[0]) } else { std::math::normalize_or_zero(p - path[i - 1]) };
+                vec2 after = if (i == n - 1) { before } else { std::math::normalize_or_zero(path[i + 1] - p) };
                 vec2 left_before = vec2{ .x = -before.y, .y = before.x };
                 vec2 left_after = vec2{ .x = -after.y, .y = after.x };
                 vec2 sum = left_before + left_after;
-                vec2 m = if (sum.length() < 0.000001) { left_after } else { sum.normalized() };
+                vec2 m = if (std::math::length(sum) < 0.000001) { left_after } else { std::math::normalize_or_zero(sum) };
                 // The miter, at most twice as long as the line is wide (sharp turns are cut short).
-                f32 reach = (1.0 / m.dot(left_after).max(0.5));
+                f32 reach = (1.0 / std::math::dot(m, left_after).max(0.5));
                 // Square ends half a width past the first and last point.
                 vec2 q = if (i == 0) { p - before * (width * 0.5) } else if (i == n - 1) { p + after * (width * 0.5) } else { p };
                 this.vertices.push(solid_vertex(q + m * (edge * reach), outside));
@@ -1226,7 +1226,7 @@ namespace std::ui {
     // The unit normal of the edge from `p` to `q`, pointing out of a polygon of orientation `outward`.
     private vec2 edge_normal(vec2 p, vec2 q, f32 outward) {
         vec2 d = q - p;
-        f32 length = d.length();
+        f32 length = std::math::length(d);
         if (length <= 0.0) {
             return vec2{};
         }

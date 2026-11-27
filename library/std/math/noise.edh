@@ -1,0 +1,64 @@
+// The Edax standard library: module std::math::noise (math.md), coherent noise for procedural
+// content: terrain, clouds, textures, camera shake.
+//
+//     namespace noise = std::math::noise;
+//     f32 height = noise::fbm(std::math::vec2::make(x, z) * 0.01, 5);
+//
+// Every function is a pure function of the position (and a seed): the same input gives the same
+// value on every machine, in any order and on any thread, so worlds can be generated in pieces.
+// The noise repeats nowhere near (the lattice is hashed, not looked up in a table), and has one
+// feature per unit of the position: scale the position to choose the size of the features.
+// `value`, `perlin`, `simplex` and `fbm` return values from about -1 to 1; `worley` returns a
+// distance. They work on f32 and f64 positions. The seed is 0 when none is given.
+//
+// Loaded when a program names `std::math`.
+
+namespace std::math::noise {
+
+    // A well-mixed 32-bit hash of a number, and of a point on the integer lattice with a seed:
+    // every bit of the result depends on every bit of the input. The building block of the noise
+    // functions, and a random number per tile, per entity or per frame without any state.
+    compile_time run_time u32 hash(u32 x);
+    compile_time run_time u32 hash(i32 x, i32 y, u32 seed);
+    compile_time run_time u32 hash(i32 x, i32 y, i32 z, u32 seed);
+
+    // A hash as a number from 0 (included) to 1 (not included): `noise::unit(noise::hash(tile_x, tile_y, seed))`.
+    template<type T = f32> compile_time run_time T unit(u32 h);
+
+    // Value noise: a random value at every lattice point, smoothly interpolated. The cheapest
+    // noise, and the blockiest.
+    template<type T = f32> compile_time run_time T value(std::math::vec2<T> p);
+    template<type T = f32> compile_time run_time T value(std::math::vec2<T> p, u32 seed);
+    template<type T = f32> compile_time run_time T value(std::math::vec3<T> p);
+    template<type T = f32> compile_time run_time T value(std::math::vec3<T> p, u32 seed);
+
+    // Perlin's gradient noise (the "improved" one, with the quintic fade): the classic of
+    // terrain and clouds. 0 at every lattice point.
+    template<type T = f32> compile_time run_time T perlin(std::math::vec2<T> p);
+    template<type T = f32> compile_time run_time T perlin(std::math::vec2<T> p, u32 seed);
+    template<type T = f32> compile_time run_time T perlin(std::math::vec3<T> p);
+    template<type T = f32> compile_time run_time T perlin(std::math::vec3<T> p, u32 seed);
+
+    // Simplex noise (Perlin's later design, after Gustavson's implementation): a lattice of
+    // triangles (tetrahedra in 3D) instead of squares, so fewer corners per sample (4 instead of 8 in
+    // 3D) and no preference for the axes.
+    template<type T = f32> compile_time run_time T simplex(std::math::vec2<T> p);
+    template<type T = f32> compile_time run_time T simplex(std::math::vec2<T> p, u32 seed);
+    template<type T = f32> compile_time run_time T simplex(std::math::vec3<T> p);
+    template<type T = f32> compile_time run_time T simplex(std::math::vec3<T> p, u32 seed);
+
+    // Worley (cellular) noise: the distance to the nearest of the feature points scattered one
+    // per lattice cell, from 0 (on a point) to about 1: cells, cracks, scales, caustics.
+    template<type T = f32> compile_time run_time T worley(std::math::vec2<T> p);
+    template<type T = f32> compile_time run_time T worley(std::math::vec2<T> p, u32 seed);
+    template<type T = f32> compile_time run_time T worley(std::math::vec3<T> p);
+    template<type T = f32> compile_time run_time T worley(std::math::vec3<T> p, u32 seed);
+
+    // Fractal noise (fractional Brownian motion): `octaves` layers of Perlin noise, each
+    // `lacunarity` times finer and `gain` times weaker than the one before (2 and 0.5 when not given),
+    // scaled back to about -1 to 1: the rough-and-smooth look of terrain and clouds.
+    template<type T = f32> compile_time run_time T fbm(std::math::vec2<T> p, u32 octaves);
+    template<type T = f32> compile_time run_time T fbm(std::math::vec2<T> p, u32 octaves, T lacunarity, T gain, u32 seed);
+    template<type T = f32> compile_time run_time T fbm(std::math::vec3<T> p, u32 octaves);
+    template<type T = f32> compile_time run_time T fbm(std::math::vec3<T> p, u32 octaves, T lacunarity, T gain, u32 seed);
+}

@@ -1,0 +1,11 @@
+exit: 0
+--- stdout
+order: root a a1 b 
+a children 0, b children 1
+a1 orphaned: true root children 1
+after destroy_recursive: 0 entities
+stage: movement regen 
+stage: count reap 
+positions 20000.0, counted 20000, entities 10000
+after the third run: 0 entities
+--- stderr

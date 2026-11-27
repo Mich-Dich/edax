@@ -255,7 +255,7 @@ std::string builtin_name(const CallExpr& c) {
         const std::string& n = segs[1].name;
         if (n == "is_integer" || n == "is_float" || n == "is_same" || n == "implements" || n == "size_of" || n == "align_of" || n == "type_name" ||
             n == "compile_error" || n == "compile_warning" || n == "compile_note" || n == "is_compile_time" || n == "location_of" ||
-            n == "literal_text" || n == "embed" || n == "embed_text") {
+            n == "literal_text" || n == "embed" || n == "embed_text" || n == "at_compile_time") {
             return n;
         }
     }
@@ -966,7 +966,8 @@ struct Evaluator::Impl {
             if (converted) out.elements.push_back(*converted);
             return out;
         }
-        if (c.variant == "saturate" && to->is_integer()) {
+        // A float that doesn't fit gives an unspecified integer with cast::truncate; here the clamped one.
+        if ((c.variant == "saturate" || (c.variant == "truncate" && v.kind == Value::Kind::floating)) && to->is_integer()) {
             if (v.kind == Value::Kind::floating) {
                 double f = v.floating;
                 if (std::isnan(f)) return integer(0, to);
@@ -1692,6 +1693,7 @@ struct Evaluator::Impl {
             std::optional<std::string> text = p && frames.size() == 1 && parameter_text ? parameter_text(p) : std::nullopt;
             return string_value(text ? *text : std::string());
         }
+        if (name == "at_compile_time") return Value::of_bool(true, tc.bool_());   // the evaluator runs the call (spec 15)
         if (name == "is_compile_time" || name == "location_of") {   // about a parameter's argument (spec 23)
             const Symbol* p = c.args.size() == 1 && c.args[0]->kind == ExprKind::path ? c.args[0]->as<PathExpr>().symbol : nullptr;
             if (name == "is_compile_time") {

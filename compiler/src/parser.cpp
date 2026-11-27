@@ -2676,7 +2676,19 @@ private:
                         if (at(TokenKind::r_paren)) {
                             break;
                         }
-                        call->args.push_back(parse_expr());
+                        call->args.push_back(at(TokenKind::kw_for) ? parse_for() : parse_expr());
+                        if (call->args.back()->kind == ExprKind::for_) {   // an argument generator (spec 26)
+                            auto& gen = call->args.back()->as<ForExpr>();
+                            if (!gen.is_compile_time) {
+                                report(DiagCode::E2001, gen.span, "a loop in an argument list is an argument generator: write 'for compile_time'",
+                                       "not compile_time");
+                            }
+                            gen.generates_arguments = true;
+                            if (!gen.body || !gen.body->tail) {
+                                report(DiagCode::E2001, gen.span, "an argument generator ends with the argument it passes, without ';'",
+                                       "no argument");
+                            }
+                        }
                         if (at(TokenKind::ellipsis)) {   // `values...`: a pack passed on whole
                             Span    dots = advance().span;
                             ExprPtr arg  = std::move(call->args.back());

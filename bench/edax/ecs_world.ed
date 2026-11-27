@@ -1,0 +1,97 @@
+// std::ecs against EnTT (bench/cpp/ecs_world.entt.cpp): 1M entities spawned with a position and a
+// velocity, half of them with health and a third with a tag; 100 frames of a movement system over
+// all of them and a regeneration system over position+health; 1M lookups in a shuffled order;
+// 100k entities given and then taken a component; everything destroyed. Each phase's time goes to
+// stderr (EDAX_BENCH_PHASES=1), the checksum to stdout.
+import std;
+import std::ecs;
+
+namespace ecs = std::ecs;
+
+struct position { f32 x = 0.0; f32 y = 0.0; f32 z = 0.0; }
+struct velocity { f32 x = 0.0; f32 y = 0.0; f32 z = 0.0; }
+struct health { f32 value = 0.0; }
+struct tag { u32 id = 0; }
+struct marker { u32 id = 0; }
+
+void phase(std::str name, std::time::instant start) {
+    if (std::env::variable("EDAX_BENCH_PHASES").is_some()) {
+        std::eprintln(f"  {name}: {start.elapsed().as_seconds_f64() * 1000.0} ms");
+    }
+}
+
+i32 main() {
+    usize n = 1000000;
+    mut ecs::world w = ecs::world::make();
+    mut std::darray<ecs::entity> all = std::darray<ecs::entity>::with_capacity(n);
+    mut u32 seed = 12345;
+
+    std::time::instant t0 = std::time::instant::now();
+    for (usize i : 0..n) {
+        seed = seed *% 1664525 +% 1013904223;
+        f32 r = cast::round<f32>(seed >> 8) / 16777216.0;
+        all.push(w.spawn(position{ .x = r * 100.0, .y = r * 50.0, .z = r }, velocity{ .x = r - 0.5, .y = 1.0, .z = 0.5 - r }));
+    }
+    phase("spawn 1M (2 components)", t0);
+
+    std::time::instant t1 = std::time::instant::now();
+    for (usize i : 0..n) {
+        if (i % 2 == 0) { w.add(all[i], health{ .value = 1.0 }); }
+        if (i % 3 == 0) { w.add(all[i], tag{ .id = cast::truncate<u32>(i) }); }
+    }
+    phase("add health/tag to 833k", t1);
+
+    f32 dt = 0.01;
+    std::time::instant t2 = std::time::instant::now();
+    for (u32 frame : 0..100) {
+        w.each([dt](mut position& p, velocity& v) {
+            p.x += v.x * dt;
+            p.y += v.y * dt;
+            p.z += v.z * dt;
+        });
+    }
+    phase("100 x movement over 1M", t2);
+
+    std::time::instant t3 = std::time::instant::now();
+    for (u32 frame : 0..100) {
+        w.each([dt](position& p, mut health& h) { h.value += p.y * dt * 0.001; });
+    }
+    phase("100 x regen over 500k", t3);
+
+    std::time::instant t4 = std::time::instant::now();
+    mut usize k = n;
+    while (k > 1) {   // a shuffled order
+        k -= 1;
+        seed = seed *% 1664525 +% 1013904223;
+        usize j = cast<usize>(seed) % (k + 1);
+        ecs::entity tmp = all[k];
+        all[k] = all[j];
+        all[j] = tmp;
+    }
+    mut f64 looked = 0.0;
+    for (ecs::entity e : all) {
+        looked += cast<f64>(w.get<position>(e).x);
+    }
+    phase("1M get<position> (shuffled)", t4);
+
+    std::time::instant t5 = std::time::instant::now();
+    for (usize i : 0..100000) {
+        w.add(all[i], marker{ .id = 1 });
+    }
+    for (usize i : 0..100000) {
+        w.remove<marker>(all[i]);
+    }
+    phase("add+remove marker on 100k", t5);
+
+    mut f64 sum = 0.0;
+    w.each([mut &sum](position& p, velocity& v) { sum += cast<f64>(p.x + p.y + p.z + v.x); });
+    w.each([mut &sum](health& h) { sum += cast<f64>(h.value); });
+
+    std::time::instant t6 = std::time::instant::now();
+    for (ecs::entity e : all) {
+        w.destroy(e);
+    }
+    phase("destroy 1M", t6);
+    std::println(f"{cast::saturate<i64>(sum)} {cast::saturate<i64>(looked)} {w.count()}");
+    return 0;
+}

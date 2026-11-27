@@ -34,6 +34,13 @@ The aliasing rule (see [Ownership](../memory/ownership-and-references.md)) is a 
 ### 2b. Branches that only choose a value are removed
 - In a loop, `if (c) { a[i] = x; b[i] = y; }` after `a[i]` and `b[i]` were already written in the same iteration becomes `a[i] = c ? x : a[i]; b[i] = c ? y : b[i];`. The earlier stores show the addresses are valid and written by this thread, so the stores can't fault or race. The loop then has no branch and vectorizes on every CPU level, without masked stores.
 
+### 2c. Structs of numbers become SIMD code
+Arithmetic on small structs of the same number type is turned into vector instructions: the four multiplies and adds of `a * k + b` on a `vec4` become one multiply and one add on a register (LLVM's SLP vectorizer, which is on in every optimized build mode).
+- This is what makes `std::math` and any user type of the same shape (a colour, a complex number, a 2D point) fast without SIMD code in the source: a `mat4` product through a tree of matrices is 16 vector multiplies, as with hand-written intrinsics.
+- Loops over plain numbers are vectorized across iterations, as before (the loop vectorizer runs first).
+- Where the choice between the two matters and the compiler takes the worse one, the library says what it means with `std::simd` (see [SIMD](../simd/simd.md)): `mat4 * vec4` does, because a loop over matrices was otherwise vectorized four iterations at a time with every element fetched by a shuffle, at a third of the speed.
+- `edaxc simd-report` shows what a function became.
+
 ### 3. Every value can be moved by copying its bytes
 > **Status:** true of the code edaxc generates today; it becomes a guarantee the optimizer is told about with the mid-level IR (planned).
 

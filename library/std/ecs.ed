@@ -1,0 +1,1748 @@
+// The Edax standard library: module std::ecs (ecs.md).
+import std;
+
+namespace std::ecs {
+    // ---- entities --------------------------------------------------------------------------------
+
+    private compile_time u32 no_index = 4294967295;
+    // The index bit of an entity `commands::create` made: it exists once the commands are applied.
+    private compile_time u32 provisional_bit = 2147483648;
+    // Rows per work item when a query is split across threads.
+    private compile_time usize chunk_rows = 4096;
+    private compile_time usize max_tick_filters = 8;
+
+    struct entity {
+        static entity null() { return entity{}; }
+
+        bool is_null() { return this.index == no_index; }
+
+        u64 hash() { return std::hash_combine(std::hash(this.index), std::hash(this.generation)); }
+
+        void format(mut std::formatter& out) {
+            if (this.index == no_index) {
+                out.write("entity(null)");
+            } else {
+                out.write(std::format(f"entity({this.index}v{this.generation})"));
+            }
+        }
+    }
+
+    // Where an entity's components are: its table and row, or `no_index` for a free slot.
+    private struct record {
+        u32 table = 4294967295;
+        u32 row = 0;
+        u32 generation = 0;
+    }
+
+    // ---- memory ----------------------------------------------------------------------------------
+
+    // Memory aligned to the cache line: `data` is what is used, `base` what was allocated.
+    private struct block {
+        std::raw_ptr<mut u8> base = nullptr;
+        std::raw_ptr<mut u8> data = nullptr;
+    }
+
+    private unsafe block allocate_block(usize bytes, usize align) {
+        usize a = if (align > std::cache_line_size) { align } else { std::cache_line_size };
+        std::raw_ptr<mut u8> base = std::raw::allocate<u8>(bytes + a);
+        usize at = cast::reinterpret<usize>(base);
+        usize pad = (a - at % a) % a;
+        return block{ .base = base, .data = base.offset(pad) };
+    }
+
+    // Copies one value of `size` bytes; the common small sizes without a call to memcpy.
+    private unsafe void move_value(std::raw_ptr<mut u8> to, std::raw_ptr<mut u8> from, usize size) {
+        if (size == 4) {
+            *cast::reinterpret<std::raw_ptr<mut u32>>(to) = *cast::reinterpret<std::raw_ptr<u32>>(from);
+        } else if (size == 8) {
+            *cast::reinterpret<std::raw_ptr<mut u64>>(to) = *cast::reinterpret<std::raw_ptr<u64>>(from);
+        } else if (size == 12) {
+            *cast::reinterpret<std::raw_ptr<mut u64>>(to) = *cast::reinterpret<std::raw_ptr<u64>>(from);
+            *cast::reinterpret<std::raw_ptr<mut u32>>(to.offset(8)) = *cast::reinterpret<std::raw_ptr<u32>>(from.offset(8));
+        } else if (size == 16) {
+            *cast::reinterpret<std::raw_ptr<mut u64>>(to) = *cast::reinterpret<std::raw_ptr<u64>>(from);
+            *cast::reinterpret<std::raw_ptr<mut u64>>(to.offset(8)) = *cast::reinterpret<std::raw_ptr<u64>>(from.offset(8));
+        } else if (size > 0) {
+            std::raw::copy(to, from, size);
+        }
+    }
+
+    private unsafe void free_block(block b) {
+        if (b.base) { std::raw::free(b.base); }
+    }
+
+    // What the world knows about a component (or resource, or event) type without its type.
+    private struct component_info {
+        u64 id = 0;
+        usize size = 0;
+        usize align = 1;
+        bool tracked = false;
+        std::static_str name = "";
+        // Drops `n` values at the address.
+        std::fn_ptr<void(std::raw_ptr<mut u8>, usize)> drop;
+        // Events only: sends the value at the second address to the world at the first.
+        std::option<std::fn_ptr<void(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)>> emit = std::none;
+    }
+
+    private template<type C>
+    component_info info_of() {
+        return component_info{
+            .id = std::meta::type_id<C>(),
+            .size = std::size_of<C>(),
+            .align = std::align_of<C>(),
+            .tracked = std::meta::has_annotation<std::ecs::tracked, C>(),
+            .name = std::type_name<C>(),
+            .drop = [](std::raw_ptr<mut u8> at, usize n) -> void {
+                unsafe {
+                    std::raw_ptr<mut C> p = cast::reinterpret<std::raw_ptr<mut C>>(at);
+                    for (usize i : 0..n) {
+                        std::raw::drop(p.offset(i));
+                    }
+                }
+            },
+        };
+    }
+
+    // ---- tables ----------------------------------------------------------------------------------
+
+    // One component's values in a table, a row each, and for tracked components the tick each was
+    // added and last changed.
+    private struct column {
+        u32 component = 0;
+        usize size = 0;
+        usize align = 1;
+        bool tracked = false;
+        std::fn_ptr<void(std::raw_ptr<mut u8>, usize)> drop;
+        block values = default;
+        block added = default;
+        block changed = default;
+    }
+
+    // An archetype: the entities with exactly these components.
+    private struct table {
+        // Component indices, ascending; `columns` in the same order.
+        std::darray<u32> components = default;
+        std::darray<column> columns = default;
+        // Component index -> column + 1 (0: the table doesn't have it).
+        std::darray<u32> column_of = default;
+        std::darray<std::ecs::entity> entities = default;
+        usize capacity = 0;
+        // Component index -> the table with that component more / less, + 1 (0: not looked up yet).
+        std::darray<u32> add_edges = default;
+        std::darray<u32> remove_edges = default;
+    }
+
+    private u32 edge(std::darray<u32>& edges, u32 c) {
+        if (cast<usize>(c) >= edges.length()) { return no_index; }
+        u32 to = edges[cast<usize>(c)];
+        return if (to == 0) { no_index } else { to - 1 };
+    }
+
+    private void set_edge(mut std::darray<u32>& edges, u32 c, u32 to) {
+        if (cast<usize>(c) >= edges.length()) { edges.resize(cast<usize>(c) + 1, 0); }
+        edges[cast<usize>(c)] = to + 1;
+    }
+
+    private u32 column_index(table& t, u32 component) {
+        if (cast<usize>(component) >= t.column_of.length()) { return no_index; }
+        u32 c = t.column_of[cast<usize>(component)];
+        return if (c == 0) { no_index } else { c - 1 };
+    }
+
+    // ---- queries ---------------------------------------------------------------------------------
+
+    private struct query {
+        // Type ids the entities must have: the components handed out first, in parameter order,
+        // then the filter's.
+        std::darray<u64> with = default;
+        std::darray<u64> without = default;
+        // Terms of `with` compared with a tick, and whether the tick is the one added (else changed).
+        std::darray<u32> tick_terms = default;
+        std::darray<bool> tick_added = default;
+        // The matching tables, and per matching table the column of each `with` term.
+        std::darray<u32> matched = default;
+        std::darray<u32> columns = default;
+        usize seen = 0;
+        std::option<u32> since = std::none;
+    }
+
+    // A resource or the events of one type, on the heap.
+    private struct box {
+        component_info info;
+        block memory = default;
+        // Events only: drops the events older than one frame.
+        std::option<std::fn_ptr<void(std::raw_ptr<mut u8>)>> frame = std::none;
+    }
+
+    // The events of one type: the older part was sent before the last `update()`.
+    private template<type E>
+    struct event_list {
+        std::darray<E> items = default;
+        usize older = 0;
+    }
+
+    // ---- filters ---------------------------------------------------------------------------------
+
+    struct filter {
+        static filter make() { return filter{}; }
+
+        template<type C>
+        filter with() move {
+            this.with_ids.push(std::meta::type_id<C>());
+            return this;
+        }
+
+        template<type C>
+        filter without() move {
+            this.without_ids.push(std::meta::type_id<C>());
+            return this;
+        }
+
+        template<type C>
+        filter added() move {
+            compile_time check (std::meta::has_annotation<std::ecs::tracked, C>())
+                else f"added<{std::type_name<C>()}>() needs a component marked @std::ecs::tracked";
+            this.added_ids.push(std::meta::type_id<C>());
+            run_time check (this.added_ids.length() + this.changed_ids.length() <= max_tick_filters) else "at most 8 added/changed filters";
+            return this;
+        }
+
+        template<type C>
+        filter changed() move {
+            compile_time check (std::meta::has_annotation<std::ecs::tracked, C>())
+                else f"changed<{std::type_name<C>()}>() needs a component marked @std::ecs::tracked";
+            this.changed_ids.push(std::meta::type_id<C>());
+            run_time check (this.added_ids.length() + this.changed_ids.length() <= max_tick_filters) else "at most 8 added/changed filters";
+            return this;
+        }
+
+        filter since(u32 tick) move {
+            this.since_tick = std::some(tick);
+            return this;
+        }
+    }
+
+    // ---- commands --------------------------------------------------------------------------------
+
+    private enum command_kind : u8 {
+        create,
+        destroy,
+        destroy_recursive,
+        add,
+        remove,
+        set_parent,
+        send,
+    }
+
+    private struct command {
+        command_kind kind = command_kind::create;
+        std::ecs::entity target = default;
+        std::ecs::entity other = default;
+        // add, send: the payload's type in `infos` and its place in the buffer; remove: the type.
+        usize info = 0;
+        usize offset = 0;
+    }
+
+    private bool is_provisional(std::ecs::entity e) {
+        return e.generation == no_index && (e.index & provisional_bit) != 0 && e.index != no_index;
+    }
+
+    class commands {
+    public:
+        static commands make() { return commands{}; }
+
+        std::ecs::entity create() mut {
+            std::ecs::entity e = std::ecs::entity{ .index = provisional_bit | this.created, .generation = no_index };
+            this.created += 1;
+            this.list.push(command{ .kind = command_kind::create, .target = e });
+            return e;
+        }
+
+        template<type... C>
+        std::ecs::entity spawn(C... components) mut {
+            std::ecs::entity e = this.create();
+            for compile_time (C c : components) {
+                this.add(e, move c);
+            }
+            return e;
+        }
+
+        void destroy(std::ecs::entity e) mut {
+            this.list.push(command{ .kind = command_kind::destroy, .target = e });
+        }
+
+        void destroy_recursive(std::ecs::entity e) mut {
+            this.list.push(command{ .kind = command_kind::destroy_recursive, .target = e });
+        }
+
+        template<type C>
+        void add(std::ecs::entity e, C component) mut {
+            usize at = this.reserve_bytes(std::size_of<C>(), std::align_of<C>());
+            unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut C>>(this.memory.data.offset(at)), move component); }
+            this.infos.push(info_of<C>());
+            this.list.push(command{ .kind = command_kind::add, .target = e, .info = this.infos.length() - 1, .offset = at });
+        }
+
+        template<type C>
+        void remove(std::ecs::entity e) mut {
+            this.infos.push(info_of<C>());
+            this.list.push(command{ .kind = command_kind::remove, .target = e, .info = this.infos.length() - 1 });
+        }
+
+        void set_parent(std::ecs::entity child, std::ecs::entity parent) mut {
+            this.list.push(command{ .kind = command_kind::set_parent, .target = child, .other = parent });
+        }
+
+        template<type E>
+        void send(E event) mut {
+            usize at = this.reserve_bytes(std::size_of<E>(), std::align_of<E>());
+            unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut E>>(this.memory.data.offset(at)), move event); }
+            mut component_info info = info_of<E>();
+            std::fn_ptr<void(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>)> emit = [](std::raw_ptr<mut u8> w, std::raw_ptr<mut u8> value) -> void {
+                unsafe {
+                    mut std::ecs::world& target = *cast::reinterpret<std::raw_ptr<mut std::ecs::world>>(w);
+                    target.send(std::raw::read(cast::reinterpret<std::raw_ptr<mut E>>(value)));
+                }
+            };
+            info.emit = std::some(emit);
+            this.infos.push(info);
+            this.list.push(command{ .kind = command_kind::send, .info = this.infos.length() - 1, .offset = at });
+        }
+
+        usize length() { return this.list.length(); }
+
+        bool is_empty() { return this.list.is_empty(); }
+
+        ~commands() {
+            this.drop_payloads();
+            unsafe { free_block(this.memory); }
+        }
+
+    private:
+        std::darray<command> list = default;
+        std::darray<component_info> infos = default;
+        block memory = default;
+        usize used = 0;
+        usize room = 0;
+        u32 created = 0;
+
+        // Room for `size` bytes aligned to `align` at the end of the buffer; their offset.
+        usize reserve_bytes(usize size, usize align) mut {
+            usize a = if (align == 0) { 1 } else { align };
+            usize at = (this.used + a - 1) / a * a;
+            if (at + size > this.room) {
+                mut usize grown = if (this.room == 0) { 256 } else { this.room * 2 };
+                while (grown < at + size) {
+                    grown *= 2;
+                }
+                unsafe {
+                    block fresh = allocate_block(grown, 64);
+                    if (this.used > 0) { std::raw::copy(fresh.data, this.memory.data, this.used); }
+                    free_block(this.memory);
+                    this.memory = fresh;
+                }
+                this.room = grown;
+            }
+            this.used = at + size;
+            return at;
+        }
+
+        // Drops the payloads of commands not applied.
+        void drop_payloads() mut {
+            for (command& c : this.list) {
+                if (c.kind == command_kind::add || c.kind == command_kind::send) {
+                    component_info& info = this.infos[c.info];
+                    unsafe { info.drop(this.memory.data.offset(c.offset), 1); }
+                }
+            }
+        }
+
+        // Forgets every command; their payloads were moved out.
+        void reset() mut {
+            this.list.clear();
+            this.infos.clear();
+            this.used = 0;
+            this.created = 0;
+        }
+    }
+
+    // ---- systems ---------------------------------------------------------------------------------
+
+    private struct system_record {
+        std::static_str schedule = "";
+        std::static_str name = "";
+        // The system's callable, on the heap, and how to drop it.
+        std::raw_ptr<mut u8> body = nullptr;
+        std::fn_ptr<void(std::raw_ptr<mut u8>)> drop_body;
+        // Finds (or makes) the system's query in a world; its index.
+        std::fn_ptr<u32(std::raw_ptr<mut u8>, std::raw_ptr<std::ecs::filter>)> prepare;
+        // Runs the system over rows `from..to` of one matched table (`match == no_index`: every
+        // matched table, all rows).
+        std::fn_ptr<void(std::raw_ptr<mut u8>, std::raw_ptr<mut u8>, u32, u32, usize, usize, std::raw_ptr<mut std::ecs::commands>, u32)> run;
+        std::ecs::filter filter = default;
+        // Type ids of the components and resources it reads and writes.
+        std::darray<u64> reads = default;
+        std::darray<u64> writes = default;
+        // Runs on one thread: it changes a resource or records commands.
+        bool sequential = false;
+        u32 query = 0;
+        u32 last_run = 0;
+        std::unique_ptr<std::ecs::commands> commands;
+    }
+
+    // One piece of a stage's work: rows of one matched table of one system.
+    private struct work_item {
+        u32 system = 0;
+        u32 match = 0;
+        usize from = 0;
+        usize to = 0;
+    }
+
+    // What the pool's threads share while a stage runs; they only use it through `run_item`.
+    private struct stage_context : unsafe std::sendable, unsafe std::shareable {
+        std::raw_ptr<mut std::ecs::world> world = nullptr;
+        std::raw_ptr<work_item> items = nullptr;
+        // par_each: the callable, its query and the tick it compares with.
+        std::raw_ptr<u8> body = nullptr;
+        u32 query = 0;
+        u32 since = 0;
+    }
+
+    private bool overlaps(std::darray<u64>& a, std::darray<u64>& b) {
+        for (u64 x : a) {
+            if (b.contains(x)) { return true; }
+        }
+        return false;
+    }
+
+    private bool conflict(system_record& a, system_record& b) {
+        return overlaps(a.writes, b.writes) || overlaps(a.writes, b.reads) || overlaps(a.reads, b.writes);
+    }
+
+    // ---- the world -------------------------------------------------------------------------------
+
+    class world {
+    public:
+        static world make() {
+            mut world w = world{};
+            w.tables.push(table{});   // the table of entities without components
+            return w;
+        }
+
+        // ---- entities ----
+
+        std::ecs::entity create() mut {
+            std::ecs::entity e = this.new_entity();
+            this.place(e, 0);
+            return e;
+        }
+
+        template<type... C>
+        std::ecs::entity spawn(C... values) mut {
+            mut u32 t = 0;
+            for compile_time (C& c : values) {
+                t = this.table_with(t, this.component<C>());
+            }
+            std::ecs::entity e = this.new_entity();
+            usize row = this.place(e, t);
+            for compile_time (C c : values) {
+                u32 col = column_index(this.tables[cast<usize>(t)], this.component<C>());
+                unsafe {
+                    std::raw_ptr<mut u8> at = this.cell(t, col, row);
+                    std::raw::write(cast::reinterpret<std::raw_ptr<mut C>>(at), move c);
+                }
+                this.stamp(t, col, row, true);
+            }
+            return e;
+        }
+
+        void destroy(std::ecs::entity e) mut {
+            if (!this.alive(e)) { return; }
+            this.detach(e);
+            match (this.find<std::ecs::children>(e)) {
+                std::some(kids) => {
+                    std::darray<std::ecs::entity> list = kids.list.clone();
+                    for (std::ecs::entity k : list) {
+                        this.remove<std::ecs::parent>(k);
+                    }
+                },
+                std::none => {},
+            }
+            this.erase(e);
+        }
+
+        void destroy_recursive(std::ecs::entity e) mut {
+            if (!this.alive(e)) { return; }
+            mut std::darray<std::ecs::entity> all = default;
+            this.each_descendant(e, [mut &all](std::ecs::entity d) { all.push(d); });
+            this.detach(e);
+            for (std::ecs::entity d : all) {
+                this.erase(d);
+            }
+        }
+
+        bool alive(std::ecs::entity e) {
+            if (cast<usize>(e.index) >= this.records.length()) { return false; }
+            record& r = this.records[cast<usize>(e.index)];
+            return r.generation == e.generation && r.table != no_index;
+        }
+
+        usize count() { return this.live; }
+
+        template<type C>
+        usize count_with() {
+            match (this.lookup_option(std::meta::type_id<C>())) {
+                std::some(c) => {
+                    mut usize n = 0;
+                    for (table& t : this.tables) {
+                        if (column_index(t, c) != no_index) { n += t.entities.length(); }
+                    }
+                    return n;
+                },
+                std::none => { return 0; },
+            }
+        }
+
+        // ---- components ----
+
+        template<type C>
+        void add(std::ecs::entity e, C value) mut {
+            this.expect_alive(e);
+            u32 c = this.component<C>();
+            record r = this.records[cast<usize>(e.index)];
+            u32 col = column_index(this.tables[cast<usize>(r.table)], c);
+            if (col != no_index) {   // replaces it
+                unsafe {
+                    std::raw_ptr<mut C> at = cast::reinterpret<std::raw_ptr<mut C>>(this.cell(r.table, col, cast<usize>(r.row)));
+                    std::raw::drop(at);
+                    std::raw::write(at, move value);
+                }
+                this.stamp(r.table, col, cast<usize>(r.row), false);
+                return;
+            }
+            u32 to = this.table_with(r.table, c);
+            usize row = this.move_to(e, to, no_index);
+            u32 at_col = column_index(this.tables[cast<usize>(to)], c);
+            unsafe { std::raw::write(cast::reinterpret<std::raw_ptr<mut C>>(this.cell(to, at_col, row)), move value); }
+            this.stamp(to, at_col, row, true);
+        }
+
+        template<type C>
+        void remove(std::ecs::entity e) mut {
+            this.remove_id(e, std::meta::type_id<C>());
+        }
+
+        template<type C>
+        bool has(std::ecs::entity e) {
+            if (!this.alive(e)) { return false; }
+            match (this.lookup_option(std::meta::type_id<C>())) {
+                std::some(c) => {
+                    record& r = this.records[cast<usize>(e.index)];
+                    return column_index(this.tables[cast<usize>(r.table)], c) != no_index;
+                },
+                std::none => { return false; },
+            }
+        }
+
+        template<type C>
+        C& get(std::ecs::entity e) {
+            std::raw_ptr<mut u8> at = this.address(e, std::meta::type_id<C>());
+            run_time check (at != nullptr) else f"the entity has no {std::type_name<C>()}";
+            unsafe { return *cast::reinterpret<std::raw_ptr<C>>(at); }
+        }
+
+        template<type C>
+        mut C& get_mut(std::ecs::entity e) mut {
+            std::raw_ptr<mut u8> at = this.address(e, std::meta::type_id<C>());
+            run_time check (at != nullptr) else f"the entity has no {std::type_name<C>()}";
+            this.mark_changed(e, std::meta::type_id<C>());
+            unsafe { return *cast::reinterpret<std::raw_ptr<mut C>>(at); }
+        }
+
+        template<type C>
+        std::option<C&> find(std::ecs::entity e) {
+            std::raw_ptr<mut u8> at = this.address(e, std::meta::type_id<C>());
+            if (!at) { return std::none; }
+            unsafe { return std::some(*cast::reinterpret<std::raw_ptr<C>>(at)); }
+        }
+
+        template<type C>
+        std::option<mut C&> find_mut(std::ecs::entity e) mut {
+            std::raw_ptr<mut u8> at = this.address(e, std::meta::type_id<C>());
+            if (!at) { return std::none; }
+            this.mark_changed(e, std::meta::type_id<C>());
+            unsafe { return std::some(*cast::reinterpret<std::raw_ptr<mut C>>(at)); }
+        }
+
+        // ---- queries ----
+
+        template<type F>
+        void each(mut F fn) mut {
+            std::ecs::filter none = std::ecs::filter{};
+            this.each(none, move fn);
+        }
+
+        template<type F>
+        void each(std::ecs::filter& f, mut F fn) mut {
+            check_parameters<F>(false, false);
+            u32 q = this.query_of<F>(f);
+            u32 since = this.since_of(q);
+            usize matched = this.queries[cast<usize>(q)].matched.length();
+            for (usize m : 0..matched) {
+                usize rows = this.tables[cast<usize>(this.queries[cast<usize>(q)].matched[m])].entities.length();
+                if (rows > 0) { this.run_rows<F>(mut fn, q, cast::truncate<u32>(m), 0, rows, nullptr, since); }
+            }
+        }
+
+        template<type F>
+        void each_table(mut F fn) mut {
+            std::ecs::filter none = std::ecs::filter{};
+            this.each_table(none, move fn);
+        }
+
+        template<type F>
+        void each_table(std::ecs::filter& f, mut F fn) mut {
+            check_parameters<F>(true, false);
+            u32 q = this.query_of<F>(f);
+            run_time check (this.queries[cast<usize>(q)].tick_terms.is_empty()) else "each_table takes no added/changed filters: the rows differ";
+            usize matched = this.queries[cast<usize>(q)].matched.length();
+            for (usize m : 0..matched) {
+                this.run_table<F>(mut fn, q, cast::truncate<u32>(m));
+            }
+        }
+
+        template<type F : std::shareable>
+        void par_each(std::thread_pool& pool, F fn) mut {
+            std::ecs::filter none = std::ecs::filter{};
+            this.par_each(pool, none, move fn);
+        }
+
+        template<type F : std::shareable>
+        void par_each(std::thread_pool& pool, std::ecs::filter& f, F fn) mut {
+            check_parameters<F>(false, false);
+            probe_shared_call<F>(fn);
+            u32 q = this.query_of<F>(f);
+            u32 since = this.since_of(q);
+            mut std::darray<work_item> items = default;
+            this.split(mut items, 0, q, chunk_rows);
+            if (items.is_empty()) { return; }
+            if (items.length() == 1) {
+                unsafe { this.run_rows<F>(mut *cast::reinterpret<std::raw_ptr<mut F>>(&fn), q, items[0].match, items[0].from, items[0].to, nullptr, since); }
+                return;
+            }
+            std::raw_ptr<u8> body = unsafe { cast::reinterpret<std::raw_ptr<u8>>(&fn) };
+            stage_context ctx = stage_context{ .world = mut &this, .items = items.as_span().as_ptr(), .body = body, .query = q, .since = since };
+            pool.for_index_chunks(items.length(), 1, [&ctx](usize from, usize to) {
+                unsafe {
+                    for (usize i : from..to) {
+                        work_item it = *ctx.items.offset(i);
+                        (*ctx.world).run_rows<F>(mut *cast::reinterpret<std::raw_ptr<mut F>>(ctx.body), ctx.query, it.match, it.from, it.to, nullptr, ctx.since);
+                    }
+                }
+            });
+        }
+
+        // ---- resources ----
+
+        template<type R>
+        void set_resource(R value) mut {
+            compile_time check (std::meta::has_annotation<std::ecs::resource, R>())
+                else f"{std::type_name<R>()} is not marked @std::ecs::resource";
+            u64 id = std::meta::type_id<R>();
+            match (this.resources.get_mut(id)) {
+                std::some(b) => {
+                    unsafe {
+                        std::raw_ptr<mut R> at = cast::reinterpret<std::raw_ptr<mut R>>(b.memory.data);
+                        std::raw::drop(at);
+                        std::raw::write(at, move value);
+                    }
+                    return;
+                },
+                std::none => {},
+            }
+            component_info info = info_of<R>();
+            unsafe {
+                block memory = allocate_block(info.size, info.align);
+                std::raw::write(cast::reinterpret<std::raw_ptr<mut R>>(memory.data), move value);
+                this.resources.insert(id, box{ .info = info, .memory = memory });
+            }
+        }
+
+        template<type R>
+        bool has_resource() { return this.resources.contains(std::meta::type_id<R>()); }
+
+        template<type R>
+        R& resource() {
+            std::raw_ptr<mut u8> at = this.resource_memory(std::meta::type_id<R>(), std::type_name<R>());
+            unsafe { return *cast::reinterpret<std::raw_ptr<R>>(at); }
+        }
+
+        template<type R>
+        mut R& resource_mut() mut {
+            std::raw_ptr<mut u8> at = this.resource_memory(std::meta::type_id<R>(), std::type_name<R>());
+            unsafe { return *cast::reinterpret<std::raw_ptr<mut R>>(at); }
+        }
+
+        template<type R>
+        std::option<R> take_resource() mut {
+            match (this.resources.remove(std::meta::type_id<R>())) {
+                std::some(b) => {
+                    unsafe {
+                        R value = std::raw::read(cast::reinterpret<std::raw_ptr<mut R>>(b.memory.data));
+                        free_block(b.memory);
+                        return std::some(move value);
+                    }
+                },
+                std::none => { return std::none; },
+            }
+        }
+
+        // ---- events ----
+
+        template<type E>
+        void send(E event) mut {
+            u64 id = std::meta::type_id<E>();
+            if (!this.events_by_type.contains(id)) {
+                unsafe {
+                    block memory = allocate_block(std::size_of<event_list<E>>(), std::align_of<event_list<E>>());
+                    std::raw::write(cast::reinterpret<std::raw_ptr<mut event_list<E>>>(memory.data), event_list<E>{});
+                    mut component_info info = info_of<event_list<E>>();
+                    std::fn_ptr<void(std::raw_ptr<mut u8>)> frame = [](std::raw_ptr<mut u8> at) -> void {
+                        unsafe {
+                            mut event_list<E>& l = *cast::reinterpret<std::raw_ptr<mut event_list<E>>>(at);
+                            usize older = l.older;
+                            mut usize seen = 0;
+                            l.items.retain([mut &seen, older](E& x) {
+                                seen += 1;
+                                return seen > older;
+                            });
+                            l.older = l.items.length();
+                        }
+                    };
+                    this.events_by_type.insert(id, box{ .info = info, .memory = memory, .frame = std::some(frame) });
+                }
+            }
+            match (this.events_by_type.get_mut(id)) {
+                std::some(b) => {
+                    unsafe { (*cast::reinterpret<std::raw_ptr<mut event_list<E>>>(b.memory.data)).items.push(move event); }
+                },
+                std::none => {},
+            }
+        }
+
+        template<type E>
+        std::span<E> events() {
+            match (this.events_by_type.get(std::meta::type_id<E>())) {
+                std::some(b) => {
+                    unsafe {
+                        std::raw_ptr<event_list<E>> l = cast::reinterpret<std::raw_ptr<event_list<E>>>(b.memory.data);
+                        return std::span<E>::from_raw((*l).items.as_span().as_ptr(), (*l).items.length());
+                    }
+                },
+                std::none => {
+                    unsafe { return std::span<E>::from_raw(nullptr, 0); }
+                },
+            }
+        }
+
+        // ---- change detection ----
+
+        u32 tick() { return this.now; }
+
+        template<type C>
+        std::span<std::ecs::entity> removed() {
+            compile_time check (std::meta::has_annotation<std::ecs::tracked, C>())
+                else f"removed<{std::type_name<C>()}>() needs a component marked @std::ecs::tracked";
+            match (this.lookup_option(std::meta::type_id<C>())) {
+                std::some(c) => {
+                    if (cast<usize>(c) < this.removed_lists.length()) { return this.removed_lists[cast<usize>(c)].as_span(); }
+                },
+                std::none => {},
+            }
+            unsafe { return std::span<std::ecs::entity>::from_raw(nullptr, 0); }
+        }
+
+        void update() mut {
+            this.last_update = this.now;
+            this.now += 1;
+            for (mut std::darray<std::ecs::entity>& l : this.removed_lists) {
+                l.clear();
+            }
+            for (std::map_entry<u64, box> b : this.events_by_type.entries()) {
+                match (b.value.frame) {
+                    std::some(f) => { f(b.value.memory.data); },
+                    std::none => {},
+                }
+            }
+        }
+
+        // ---- commands ----
+
+        void apply(mut std::ecs::commands& c) mut {
+            mut std::darray<std::ecs::entity> made = default;
+            for (usize i : 0..c.list.length()) {
+                command k = c.list[i];
+                std::ecs::entity target = resolve(made, k.target);
+                match (k.kind) {
+                    command_kind::create => { made.push(this.create()); },
+                    command_kind::destroy => { this.destroy(target); },
+                    command_kind::destroy_recursive => { this.destroy_recursive(target); },
+                    command_kind::add => {
+                        component_info info = c.infos[k.info];
+                        unsafe { this.add_raw(target, info, c.memory.data.offset(k.offset)); }
+                    },
+                    command_kind::remove => { this.remove_id(target, c.infos[k.info].id); },
+                    command_kind::set_parent => { this.set_parent(target, resolve(made, k.other)); },
+                    command_kind::send => {
+                        component_info info = c.infos[k.info];
+                        match (info.emit) {
+                            std::some(emit) => {
+                                unsafe { emit(cast::reinterpret<std::raw_ptr<mut u8>>(mut &this), c.memory.data.offset(k.offset)); }
+                            },
+                            std::none => {},
+                        }
+                    },
+                }
+            }
+            c.reset();
+        }
+
+        // ---- hierarchy ----
+
+        void set_parent(std::ecs::entity child, std::ecs::entity parent) mut {
+            this.expect_alive(child);
+            this.expect_alive(parent);
+            mut std::ecs::entity up = parent;
+            while (!up.is_null()) {
+                run_time check (up != child) else f"{child} can't become a descendant of itself";
+                up = this.parent_of(up).value_or(std::ecs::entity::null());
+            }
+            this.detach(child);
+            this.add(child, std::ecs::parent{ .value = parent });
+            match (this.find_mut<std::ecs::children>(parent)) {
+                std::some(kids) => {
+                    kids.list.push(child);
+                    return;
+                },
+                std::none => {},
+            }
+            mut std::ecs::children kids = std::ecs::children{};
+            kids.list.push(child);
+            this.add(parent, move kids);
+        }
+
+        void remove_parent(std::ecs::entity child) mut {
+            if (!this.alive(child)) { return; }
+            this.detach(child);
+            this.remove<std::ecs::parent>(child);
+        }
+
+        std::option<std::ecs::entity> parent_of(std::ecs::entity e) {
+            match (this.find<std::ecs::parent>(e)) {
+                std::some(p) => { return std::some(p.value); },
+                std::none => { return std::none; },
+            }
+        }
+
+        std::span<std::ecs::entity> children_of(std::ecs::entity e) {
+            match (this.find<std::ecs::children>(e)) {
+                std::some(kids) => { return kids.list.as_span(); },
+                std::none => {
+                    unsafe { return std::span<std::ecs::entity>::from_raw(nullptr, 0); }
+                },
+            }
+        }
+
+        template<type F>
+        void each_descendant(std::ecs::entity root, mut F fn) {
+            if (!this.alive(root)) { return; }
+            mut std::darray<std::ecs::entity> stack = default;
+            stack.push(root);
+            while (!stack.is_empty()) {
+                std::ecs::entity e = stack.pop().expect("not empty");
+                fn(e);
+                std::span<std::ecs::entity> kids = this.children_of(e);
+                mut usize i = kids.length();
+                while (i > 0) {
+                    i -= 1;
+                    stack.push(kids[i]);
+                }
+            }
+        }
+
+        // ---- systems ----
+
+        template<type F : std::shareable>
+        void add_system(std::static_str schedule, std::static_str name, F system) mut {
+            this.add_system(schedule, name, std::ecs::filter{}, move system);
+        }
+
+        template<type F : std::shareable>
+        void add_system(std::static_str schedule, std::static_str name, std::ecs::filter f, F system) mut {
+            check_parameters<F>(false, true);
+            probe_shared_call<F>(system);
+            mut system_record s = system_record{
+                .schedule = schedule,
+                .name = name,
+                .drop_body = [](std::raw_ptr<mut u8> body) -> void {
+                    unsafe {
+                        std::raw::drop(cast::reinterpret<std::raw_ptr<mut F>>(body));
+                        std::raw::free(body);
+                    }
+                },
+                .prepare = [](std::raw_ptr<mut u8> w, std::raw_ptr<std::ecs::filter> flt) -> u32 {
+                    unsafe { return (*cast::reinterpret<std::raw_ptr<mut std::ecs::world>>(w)).query_of<F>(*flt); }
+                },
+                .run = [](std::raw_ptr<mut u8> body, std::raw_ptr<mut u8> w, u32 q, u32 m, usize from, usize to,
+                          std::raw_ptr<mut std::ecs::commands> cmds, u32 since) -> void {
+                    unsafe {
+                        std::ecs::world& target = *cast::reinterpret<std::raw_ptr<std::ecs::world>>(w);
+                        mut F& fn = *cast::reinterpret<std::raw_ptr<mut F>>(body);
+                        if (m != no_index) {
+                            target.run_rows<F>(mut fn, q, m, from, to, cmds, since);
+                            return;
+                        }
+                        usize matched = target.queries[cast<usize>(q)].matched.length();
+                        for (usize k : 0..matched) {
+                            usize rows = target.tables[cast<usize>(target.queries[cast<usize>(q)].matched[k])].entities.length();
+                            if (rows > 0) { target.run_rows<F>(mut fn, q, cast::truncate<u32>(k), 0, rows, cmds, since); }
+                        }
+                    }
+                },
+                .filter = move f,
+                .commands = std::unique_ptr<std::ecs::commands>::make(std::ecs::commands{}),
+            };
+            unsafe {
+                std::raw_ptr<mut F> body = std::raw::allocate<F>(1);
+                std::raw::write(body, move system);
+                s.body = cast::reinterpret<std::raw_ptr<mut u8>>(body);
+            }
+            for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                compile_time type t = p.type;
+                if compile_time (!std::is_same<t, std::ecs::entity>() && !std::is_same<t, std::ecs::commands>()) {
+                    if compile_time (p.passing == std::meta::passing::by_mut_reference) {
+                        s.writes.push(std::meta::type_id<t>());
+                        if compile_time (std::meta::has_annotation<std::ecs::resource, t>()) { s.sequential = true; }
+                    } else {
+                        s.reads.push(std::meta::type_id<t>());
+                    }
+                }
+                if compile_time (std::is_same<t, std::ecs::commands>()) { s.sequential = true; }
+            }
+            this.systems.push(move s);
+        }
+
+        void run(std::static_str schedule, std::thread_pool& pool) mut {
+            this.run_schedule(schedule, std::some(&pool));
+        }
+
+        void run(std::static_str schedule) mut {
+            this.run_schedule(schedule, std::none);
+        }
+
+        std::darray<std::ecs::stage_info> stages(std::static_str schedule) mut {
+            mut std::darray<std::ecs::stage_info> out = default;
+            for (std::darray<u32>& stage : this.stage_list(schedule)) {
+                mut std::ecs::stage_info info = std::ecs::stage_info{};
+                for (u32 s : stage) {
+                    info.systems.push(this.systems[cast<usize>(s)].name);
+                }
+                out.push(move info);
+            }
+            return out;
+        }
+
+        ~world() {
+            unsafe {
+                for (mut table& t : this.tables) {
+                    usize rows = t.entities.length();
+                    for (column& c : t.columns) {
+                        c.drop(c.values.data, rows);
+                        free_block(c.values);
+                        free_block(c.added);
+                        free_block(c.changed);
+                    }
+                }
+                for (std::map_entry<u64, box> b : this.resources.entries()) {
+                    b.value.info.drop(b.value.memory.data, 1);
+                    free_block(b.value.memory);
+                }
+                for (std::map_entry<u64, box> b : this.events_by_type.entries()) {
+                    b.value.info.drop(b.value.memory.data, 1);
+                    free_block(b.value.memory);
+                }
+                for (system_record& s : this.systems) {
+                    s.drop_body(s.body);
+                }
+            }
+        }
+
+    private:
+        std::darray<record> records = default;
+        std::darray<u32> free_slots = default;
+        usize live = 0;
+        std::darray<component_info> components = default;
+        std::hash_map<u64, u32> component_ids = default;
+        // A direct-mapped cache in front of component_ids, filled when a component is registered.
+        std::array<u64, 64> cached_ids = default;
+        std::array<u32, 64> cached_components = default;
+        std::darray<table> tables = default;
+        std::hash_map<u64, u32> table_ids = default;
+        std::darray<query> queries = default;
+        std::hash_map<u64, u32> query_ids = default;
+        std::hash_map<u64, box> resources = default;
+        std::hash_map<u64, box> events_by_type = default;
+        std::darray<std::darray<std::ecs::entity>> removed_lists = default;
+        std::darray<system_record> systems = default;
+        u32 now = 1;
+        u32 last_update = 0;
+
+        // ---- entities ----
+
+        std::ecs::entity new_entity() mut {
+            this.live += 1;
+            match (this.free_slots.pop()) {
+                std::some(i) => {
+                    return std::ecs::entity{ .index = i, .generation = this.records[cast<usize>(i)].generation };
+                },
+                std::none => {
+                    this.records.push(record{});
+                    return std::ecs::entity{ .index = cast::truncate<u32>(this.records.length() - 1), .generation = 0 };
+                },
+            }
+        }
+
+        void expect_alive(std::ecs::entity e) {
+            run_time check (this.alive(e)) else f"{e} is not an entity of this world (destroyed, or null)";
+        }
+
+        // Destroys the entity's components and frees its slot.
+        void erase(std::ecs::entity e) mut {
+            if (!this.alive(e)) { return; }
+            record r = this.records[cast<usize>(e.index)];
+            usize row = cast<usize>(r.row);
+            usize ncols = this.tables[cast<usize>(r.table)].columns.length();
+            for (usize k : 0..ncols) {
+                column c = this.tables[cast<usize>(r.table)].columns[k];
+                if (c.tracked) { this.note_removed(c.component, e); }
+                unsafe { c.drop(c.values.data.offset(row * c.size), 1); }
+            }
+            this.unplace(r.table, row);
+            mut record& slot = this.records[cast<usize>(e.index)];
+            slot.table = no_index;
+            slot.generation += 1;
+            this.free_slots.push(e.index);
+            this.live -= 1;
+        }
+
+        // Takes the entity out of its parent's children.
+        void detach(std::ecs::entity e) mut {
+            match (this.parent_of(e)) {
+                std::some(p) => {
+                    if (this.alive(p)) {
+                        match (this.find_mut<std::ecs::children>(p)) {
+                            std::some(kids) => { kids.list.retain([e](std::ecs::entity k) { return k != e; }); },
+                            std::none => {},
+                        }
+                    }
+                },
+                std::none => {},
+            }
+        }
+
+        // ---- components ----
+
+        // The index of component C, registered on first use.
+        template<type C>
+        u32 component() mut {
+            u32 c = this.lookup(std::meta::type_id<C>());
+            if (c != no_index) { return c; }
+            return this.register(info_of<C>());
+        }
+
+        std::option<u32> lookup_option(u64 id) {
+            u32 c = this.lookup(id);
+            if (c == no_index) { return std::none; }
+            return std::some(c);
+        }
+
+        // The index of the component with type id `id`, or no_index.
+        u32 lookup(u64 id) {
+            usize slot = cache_slot(id);
+            if (this.cached_ids[slot] == id) { return this.cached_components[slot]; }
+            match (this.component_ids.get(id)) {
+                std::some(c) => { return c; },
+                std::none => { return no_index; },
+            }
+        }
+
+        u32 register(component_info info) mut {
+            u32 known = this.lookup(info.id);
+            if (known != no_index) { return known; }
+            u32 c = cast::truncate<u32>(this.components.length());
+            this.components.push(info);
+            this.component_ids.insert(info.id, c);
+            usize slot = cache_slot(info.id);
+            this.cached_ids[slot] = info.id;
+            this.cached_components[slot] = c;
+            this.removed_lists.push(std::darray<std::ecs::entity>{});
+            return c;
+        }
+
+        void note_removed(u32 comp, std::ecs::entity e) mut {
+            this.removed_lists[cast<usize>(comp)].push(e);
+        }
+
+        // The address of the entity's component with type id `id`, or null.
+        std::raw_ptr<mut u8> address(std::ecs::entity e, u64 id) {
+            if (!this.alive(e)) { return nullptr; }
+            match (this.lookup_option(id)) {
+                std::some(c) => {
+                    record& r = this.records[cast<usize>(e.index)];
+                    table& t = this.tables[cast<usize>(r.table)];
+                    u32 col = column_index(t, c);
+                    if (col == no_index) { return nullptr; }
+                    column& k = t.columns[cast<usize>(col)];
+                    unsafe { return k.values.data.offset(cast<usize>(r.row) * k.size); }
+                },
+                std::none => { return nullptr; },
+            }
+        }
+
+        void mark_changed(std::ecs::entity e, u64 id) mut {
+            match (this.lookup_option(id)) {
+                std::some(c) => {
+                    record r = this.records[cast<usize>(e.index)];
+                    u32 col = column_index(this.tables[cast<usize>(r.table)], c);
+                    if (col != no_index) { this.stamp(r.table, col, cast<usize>(r.row), false); }
+                },
+                std::none => {},
+            }
+        }
+
+        unsafe std::raw_ptr<mut u8> cell(u32 t, u32 col, usize row) {
+            column& c = this.tables[cast<usize>(t)].columns[cast<usize>(col)];
+            return c.values.data.offset(row * c.size);
+        }
+
+        // Records that the value at `row` was changed now (and added, when `added`).
+        void stamp(u32 t, u32 col, usize row, bool added) {
+            column& c = this.tables[cast<usize>(t)].columns[cast<usize>(col)];
+            if (!c.tracked) { return; }
+            unsafe {
+                *cast::reinterpret<std::raw_ptr<mut u32>>(c.changed.data).offset(row) = this.now;
+                if (added) { *cast::reinterpret<std::raw_ptr<mut u32>>(c.added.data).offset(row) = this.now; }
+            }
+        }
+
+        void remove_id(std::ecs::entity e, u64 id) mut {
+            if (!this.alive(e)) { return; }
+            match (this.lookup_option(id)) {
+                std::some(c) => {
+                    record r = this.records[cast<usize>(e.index)];
+                    u32 col = column_index(this.tables[cast<usize>(r.table)], c);
+                    if (col == no_index) { return; }
+                    column info = this.tables[cast<usize>(r.table)].columns[cast<usize>(col)];
+                    if (info.tracked) { this.note_removed(c, e); }
+                    unsafe { info.drop(this.cell(r.table, col, cast<usize>(r.row)), 1); }
+                    u32 to = this.table_without(r.table, c);
+                    _ = this.move_to(e, to, c);
+                },
+                std::none => {},
+            }
+        }
+
+        // Adds (or replaces) a component given by its info and an address it is moved from.
+        unsafe void add_raw(std::ecs::entity e, component_info info, std::raw_ptr<mut u8> from) mut {
+            if (!this.alive(e)) {
+                info.drop(from, 1);
+                return;
+            }
+            u32 c = this.register(info);
+            record r = this.records[cast<usize>(e.index)];
+            u32 col = column_index(this.tables[cast<usize>(r.table)], c);
+            if (col != no_index) {
+                std::raw_ptr<mut u8> at = this.cell(r.table, col, cast<usize>(r.row));
+                info.drop(at, 1);
+                std::raw::copy(at, from, info.size);
+                this.stamp(r.table, col, cast<usize>(r.row), false);
+                return;
+            }
+            u32 to = this.table_with(r.table, c);
+            usize row = this.move_to(e, to, no_index);
+            u32 at_col = column_index(this.tables[cast<usize>(to)], c);
+            std::raw::copy(this.cell(to, at_col, row), from, info.size);
+            this.stamp(to, at_col, row, true);
+        }
+
+        // ---- tables ----
+
+        // The table with the components of table `t` and component `c`.
+        u32 table_with(u32 t, u32 c) mut {
+            u32 known = edge(this.tables[cast<usize>(t)].add_edges, c);
+            if (known != no_index) { return known; }
+            mut std::darray<u32> comps = this.tables[cast<usize>(t)].components.clone();
+            if (!comps.contains(c)) {
+                comps.push(c);
+                comps.sort();
+            }
+            u32 to = this.table_of(move comps);
+            set_edge(mut this.tables[cast<usize>(t)].add_edges, c, to);
+            set_edge(mut this.tables[cast<usize>(to)].remove_edges, c, t);
+            return to;
+        }
+
+        u32 table_without(u32 t, u32 c) mut {
+            u32 known = edge(this.tables[cast<usize>(t)].remove_edges, c);
+            if (known != no_index) { return known; }
+            mut std::darray<u32> comps = this.tables[cast<usize>(t)].components.clone();
+            comps.retain([c](u32 x) { return x != c; });
+            u32 to = this.table_of(move comps);
+            set_edge(mut this.tables[cast<usize>(t)].remove_edges, c, to);
+            set_edge(mut this.tables[cast<usize>(to)].add_edges, c, t);
+            return to;
+        }
+
+        // The table with exactly these (sorted) components, made when there is none.
+        u32 table_of(std::darray<u32> comps) mut {
+            mut u64 h = std::hash_seed();
+            for (u32 c : comps) {
+                h = std::hash_combine(h, std::hash(c));
+            }
+            match (this.table_ids.get(h)) {
+                std::some(t) => {
+                    if (same_components(this.tables[cast<usize>(t)].components, comps)) { return t; }
+                    for (usize i : 0..this.tables.length()) {   // a hash collision: look at every table
+                        if (same_components(this.tables[i].components, comps)) { return cast::truncate<u32>(i); }
+                    }
+                },
+                std::none => {},
+            }
+            mut table t = table{};
+            mut u32 most = 0;
+            for (u32 c : comps) {
+                if (c + 1 > most) { most = c + 1; }
+            }
+            t.column_of.resize(cast<usize>(most), 0);
+            for (usize k : 0..comps.length()) {
+                component_info info = this.components[cast<usize>(comps[k])];
+                t.columns.push(column{ .component = comps[k], .size = info.size, .align = info.align, .tracked = info.tracked, .drop = info.drop });
+                t.column_of[cast<usize>(comps[k])] = cast::truncate<u32>(k) + 1;
+            }
+            t.components = move comps;
+            u32 index = cast::truncate<u32>(this.tables.length());
+            this.tables.push(move t);
+            if (!this.table_ids.contains(h)) { this.table_ids.insert(h, index); }
+            return index;
+        }
+
+        // Adds the entity at the end of table `t` (no values written yet); its row.
+        usize place(std::ecs::entity e, u32 t) mut {
+            mut table& tb = this.tables[cast<usize>(t)];
+            usize row = tb.entities.length();
+            if (row == tb.capacity) {
+                usize grown = if (tb.capacity == 0) { 16 } else { tb.capacity * 2 };
+                for (mut column& c : tb.columns) {
+                    unsafe {
+                        block values = allocate_block(grown * c.size, c.align);
+                        if (row > 0) { std::raw::copy(values.data, c.values.data, row * c.size); }
+                        free_block(c.values);
+                        c.values = values;
+                        if (c.tracked) {
+                            block added = allocate_block(grown * 4, 4);
+                            block changed = allocate_block(grown * 4, 4);
+                            if (row > 0) {
+                                std::raw::copy(added.data, c.added.data, row * 4);
+                                std::raw::copy(changed.data, c.changed.data, row * 4);
+                            }
+                            free_block(c.added);
+                            free_block(c.changed);
+                            c.added = added;
+                            c.changed = changed;
+                        }
+                    }
+                }
+                tb.capacity = grown;
+            }
+            tb.entities.push(e);
+            mut record& r = this.records[cast<usize>(e.index)];
+            r.table = t;
+            r.row = cast::truncate<u32>(row);
+            return row;
+        }
+
+        // Takes row `row` out of table `t` (its values were moved or dropped): the last row moves
+        // into its place.
+        void unplace(u32 t, usize row) mut {
+            mut table& tb = this.tables[cast<usize>(t)];
+            usize last = tb.entities.length() - 1;
+            if (row != last) {
+                for (column& c : tb.columns) {
+                    unsafe {
+                        move_value(c.values.data.offset(row * c.size), c.values.data.offset(last * c.size), c.size);
+                        if (c.tracked) {
+                            move_value(c.added.data.offset(row * 4), c.added.data.offset(last * 4), 4);
+                            move_value(c.changed.data.offset(row * 4), c.changed.data.offset(last * 4), 4);
+                        }
+                    }
+                }
+                std::ecs::entity moved = tb.entities[last];
+                tb.entities[row] = moved;
+                this.records[cast<usize>(moved.index)].row = cast::truncate<u32>(row);
+            }
+            _ = this.tables[cast<usize>(t)].entities.pop();
+        }
+
+        // Moves the entity's values to table `to`; the value of component `dropped` was dropped
+        // already (no_index: none). Its new row.
+        usize move_to(std::ecs::entity e, u32 to, u32 dropped) mut {
+            record r = this.records[cast<usize>(e.index)];
+            usize from_row = cast<usize>(r.row);
+            usize row = this.place(e, to);
+            usize ncols = this.tables[cast<usize>(r.table)].columns.length();
+            for (usize k : 0..ncols) {
+                column c = this.tables[cast<usize>(r.table)].columns[k];
+                if (c.component == dropped) { continue; }
+                u32 dst = column_index(this.tables[cast<usize>(to)], c.component);
+                if (dst == no_index) { continue; }
+                column d = this.tables[cast<usize>(to)].columns[cast<usize>(dst)];
+                unsafe {
+                    move_value(d.values.data.offset(row * c.size), c.values.data.offset(from_row * c.size), c.size);
+                    if (c.tracked) {
+                        move_value(d.added.data.offset(row * 4), c.added.data.offset(from_row * 4), 4);
+                        move_value(d.changed.data.offset(row * 4), c.changed.data.offset(from_row * 4), 4);
+                    }
+                }
+            }
+            this.unplace(r.table, from_row);
+            return row;
+        }
+
+        // ---- queries ----
+
+        // The query of a callable's components and a filter, made (and cached) on first use, with
+        // the tables made since its last use matched.
+        template<type F>
+        u32 query_of(std::ecs::filter& f) mut {
+            mut u64 h = std::hash_seed();
+            for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                compile_time type pt = p.type;
+                if compile_time (is_span_type<pt>()) {
+                    compile_time type t = std::meta::template_args<pt>()[0];
+                    if compile_time (is_component<t>()) {
+                        _ = this.component<t>();
+                        h = std::hash_combine(h, std::meta::type_id<t>());
+                    }
+                } else if compile_time (is_component<pt>()) {
+                    _ = this.component<pt>();
+                    h = std::hash_combine(h, std::meta::type_id<pt>());
+                }
+            }
+            h = std::hash_combine(h, 1);
+            for (u64 id : f.with_ids) { h = std::hash_combine(h, id); }
+            h = std::hash_combine(h, 2);
+            for (u64 id : f.without_ids) { h = std::hash_combine(h, id); }
+            h = std::hash_combine(h, 3);
+            for (u64 id : f.added_ids) { h = std::hash_combine(h, id); }
+            h = std::hash_combine(h, 4);
+            for (u64 id : f.changed_ids) { h = std::hash_combine(h, id); }
+            mut u32 q = 0;
+            match (this.query_ids.get(h)) {
+                std::some(found) => { q = found; },
+                std::none => {
+                    mut query made = query{};
+                    for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                        compile_time type pt = p.type;
+                        if compile_time (is_span_type<pt>()) {
+                            compile_time type t = std::meta::template_args<pt>()[0];
+                            if compile_time (is_component<t>()) { made.with.push(std::meta::type_id<t>()); }
+                        } else if compile_time (is_component<pt>()) {
+                            made.with.push(std::meta::type_id<pt>());
+                        }
+                    }
+                    for (u64 id : f.with_ids) { made.with.push(id); }
+                    for (u64 id : f.added_ids) {
+                        made.tick_terms.push(cast::truncate<u32>(made.with.length()));
+                        made.tick_added.push(true);
+                        made.with.push(id);
+                    }
+                    for (u64 id : f.changed_ids) {
+                        made.tick_terms.push(cast::truncate<u32>(made.with.length()));
+                        made.tick_added.push(false);
+                        made.with.push(id);
+                    }
+                    for (u64 id : f.without_ids) { made.without.push(id); }
+                    q = cast::truncate<u32>(this.queries.length());
+                    this.queries.push(move made);
+                    this.query_ids.insert(h, q);
+                },
+            }
+            this.queries[cast<usize>(q)].since = f.since_tick;
+            this.match_tables(q);
+            return q;
+        }
+
+        u32 since_of(u32 q) {
+            return this.queries[cast<usize>(q)].since.value_or(this.last_update);
+        }
+
+        // Matches the tables made since the query last looked.
+        void match_tables(u32 q) mut {
+            usize total = this.tables.length();
+            while (this.queries[cast<usize>(q)].seen < total) {
+                usize t = this.queries[cast<usize>(q)].seen;
+                this.queries[cast<usize>(q)].seen += 1;
+                if (this.tables[t].components.is_empty() && !this.queries[cast<usize>(q)].with.is_empty()) { continue; }
+                mut bool ok = true;
+                for (u64 id : this.queries[cast<usize>(q)].without) {
+                    match (this.lookup_option(id)) {
+                        std::some(c) => { if (column_index(this.tables[t], c) != no_index) { ok = false; } },
+                        std::none => {},
+                    }
+                }
+                if (!ok) { continue; }
+                mut usize first = this.queries[cast<usize>(q)].columns.length();
+                for (usize k : 0..this.queries[cast<usize>(q)].with.length()) {
+                    u64 id = this.queries[cast<usize>(q)].with[k];
+                    mut u32 col = no_index;
+                    match (this.lookup_option(id)) {
+                        std::some(c) => { col = column_index(this.tables[t], c); },
+                        std::none => {},
+                    }
+                    if (col == no_index) {
+                        ok = false;
+                        break;
+                    }
+                    this.queries[cast<usize>(q)].columns.push(col);
+                }
+                if (!ok) {
+                    this.queries[cast<usize>(q)].columns.truncate(first);
+                    continue;
+                }
+                this.queries[cast<usize>(q)].matched.push(cast::truncate<u32>(t));
+            }
+        }
+
+        // The memory of the resource with type id `id`; panics when it isn't set.
+        std::raw_ptr<mut u8> resource_memory(u64 id, std::static_str name) {
+            match (this.resources.get(id)) {
+                std::some(b) => { return b.memory.data; },
+                std::none => { std::panic(std::format(f"the resource {name} is not set (world.set_resource)")); },
+            }
+        }
+
+        // Adds work items covering the matched tables of query `q`, `size` rows each.
+        void split(mut std::darray<work_item>& items, u32 system, u32 q, usize size) {
+            query& qu = this.queries[cast<usize>(q)];
+            for (usize m : 0..qu.matched.length()) {
+                usize rows = this.tables[cast<usize>(qu.matched[m])].entities.length();
+                mut usize from = 0;
+                while (from < rows) {
+                    usize to = if (from + size < rows) { from + size } else { rows };
+                    items.push(work_item{ .system = system, .match = cast::truncate<u32>(m), .from = from, .to = to });
+                    from = to;
+                }
+            }
+        }
+
+        // Calls `fn` for rows `from..to` of the query's matched table `m`. It only reads the world;
+        // components are changed through the column pointers, so threads may run disjoint rows.
+        template<type F>
+        void run_rows(mut F& fn, u32 q, u32 m, usize from, usize to, std::raw_ptr<mut std::ecs::commands> cmds, u32 since) {
+                        query& qu = this.queries[cast<usize>(q)];
+            table& tb = this.tables[cast<usize>(qu.matched[cast<usize>(m)])];
+            usize terms = qu.with.length();
+            usize base = cast<usize>(m) * terms;
+            mut std::array<std::raw_ptr<mut u8>, std::meta::parameters_of<F>().length() + 1> cols = default;
+            mut std::array<std::raw_ptr<mut u32>, std::meta::parameters_of<F>().length() + 1> marks = default;
+            mut usize term = 0;
+            unsafe {
+                for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                    compile_time type t = p.type;
+                    if compile_time (std::is_same<t, std::ecs::entity>()) {
+                        cols[p.index] = cast::reinterpret<std::raw_ptr<mut u8>>(tb.entities.as_span().as_ptr());
+                    } else if compile_time (std::is_same<t, std::ecs::commands>()) {
+                        cols[p.index] = cast::reinterpret<std::raw_ptr<mut u8>>(cmds);
+                    } else if compile_time (std::meta::has_annotation<std::ecs::resource, t>()) {
+                        cols[p.index] = this.resource_memory(std::meta::type_id<t>(), std::type_name<t>());
+                    } else {
+                        column& c = tb.columns[cast<usize>(qu.columns[base + term])];
+                        cols[p.index] = c.values.data;
+                        if compile_time (p.passing == std::meta::passing::by_mut_reference) {
+                            if (c.tracked) { marks[p.index] = cast::reinterpret<std::raw_ptr<mut u32>>(c.changed.data); }
+                        }
+                        term += 1;
+                    }
+                }
+                u32 tick_now = this.now;
+                usize nticks = qu.tick_terms.length();
+                if (nticks == 0) {
+                    for (usize i : from..to) {
+                        fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                            compile_time type t = p.type;
+                            compile_time usize step = row_step<t>();
+                            p.pass(*cast::reinterpret<std::raw_ptr<mut t>>(cols[p.index]).offset(i * step))
+                        });
+                    }
+                    for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                        if compile_time (p.passing == std::meta::passing::by_mut_reference) {
+                            std::raw_ptr<mut u32> mk = marks[p.index];
+                            if (mk) {
+                                for (usize i : from..to) {
+                                    *mk.offset(i) = tick_now;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                mut std::array<std::raw_ptr<u32>, 8> ticks = default;
+                for (usize k : 0..nticks) {
+                    column& c = tb.columns[cast<usize>(qu.columns[base + cast<usize>(qu.tick_terms[k])])];
+                    ticks[k] = cast::reinterpret<std::raw_ptr<u32>>(if (qu.tick_added[k]) { c.added.data } else { c.changed.data });
+                }
+                for (usize i : from..to) {
+                    mut bool pass = true;
+                    for (usize k : 0..nticks) {
+                        if (*ticks[k].offset(i) <= since) { pass = false; }
+                    }
+                    if (!pass) { continue; }
+                    fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                        compile_time type t = p.type;
+                        compile_time usize step = row_step<t>();
+                        p.pass(*cast::reinterpret<std::raw_ptr<mut t>>(cols[p.index]).offset(i * step))
+                    });
+                    for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                        if compile_time (p.passing == std::meta::passing::by_mut_reference) {
+                            if (marks[p.index]) { *marks[p.index].offset(i) = tick_now; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Calls `fn` with spans of table `m`'s columns.
+        template<type F>
+        void run_table(mut F& fn, u32 q, u32 m) {
+            query& qu = this.queries[cast<usize>(q)];
+            table& tb = this.tables[cast<usize>(qu.matched[cast<usize>(m)])];
+            usize rows = tb.entities.length();
+            if (rows == 0) { return; }
+            usize base = cast<usize>(m) * qu.with.length();
+                        mut std::array<std::raw_ptr<mut u8>, std::meta::parameters_of<F>().length() + 1> cols = default;
+            mut usize term = 0;
+            u32 tick_now = this.now;
+            unsafe {
+                for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                    compile_time type t = p.type;
+                    if compile_time (std::is_same<t, std::span<std::ecs::entity>>()) {
+                        cols[p.index] = cast::reinterpret<std::raw_ptr<mut u8>>(tb.entities.as_span().as_ptr());
+                    } else if compile_time (std::meta::has_annotation<std::ecs::resource, t>()) {
+                        cols[p.index] = this.resource_memory(std::meta::type_id<t>(), std::type_name<t>());
+                    } else {
+                        column& c = tb.columns[cast<usize>(qu.columns[base + term])];
+                        cols[p.index] = c.values.data;
+                        if compile_time (is_mut_span<t>()) {
+                            if (c.tracked) {
+                                std::raw_ptr<mut u32> mk = cast::reinterpret<std::raw_ptr<mut u32>>(c.changed.data);
+                                for (usize i : 0..rows) {
+                                    *mk.offset(i) = tick_now;
+                                }
+                            }
+                        }
+                        term += 1;
+                    }
+                }
+                fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                    compile_time type t = p.type;
+                    p.pass(table_argument<t>(cols[p.index], rows))
+                });
+            }
+        }
+
+        // ---- systems ----
+
+        // The stages of a schedule: runs of systems (in the order they were added) of which none
+        // conflicts with another.
+        std::darray<std::darray<u32>> stage_list(std::static_str schedule) {
+            mut std::darray<std::darray<u32>> out = default;
+            mut std::darray<u32> current = default;
+            for (usize i : 0..this.systems.length()) {
+                system_record& s = this.systems[i];
+                if (s.schedule != schedule) { continue; }
+                mut bool clash = false;
+                for (u32 other : current) {
+                    if (conflict(this.systems[cast<usize>(other)], s)) { clash = true; }
+                }
+                if (clash) {
+                    out.push(move current);
+                    current = std::darray<u32>{};
+                }
+                current.push(cast::truncate<u32>(i));
+            }
+            if (!current.is_empty()) { out.push(move current); }
+            return out;
+        }
+
+        void run_schedule(std::static_str schedule, std::option<std::raw_ptr<std::thread_pool>> pool) mut {
+            std::darray<std::darray<u32>> list = this.stage_list(schedule);
+            for (std::darray<u32>& stage : list) {
+                mut std::darray<work_item> items = default;
+                for (u32 s : stage) {
+                    unsafe {
+                        system_record& rec = this.systems[cast<usize>(s)];
+                        u32 q = rec.prepare(cast::reinterpret<std::raw_ptr<mut u8>>(mut &this), &rec.filter);
+                        this.systems[cast<usize>(s)].query = q;
+                    }
+                    if (this.systems[cast<usize>(s)].sequential) {
+                        items.push(work_item{ .system = s, .match = no_index });
+                    } else {
+                        this.split(mut items, s, this.systems[cast<usize>(s)].query, chunk_rows);
+                    }
+                }
+                stage_context ctx = stage_context{ .world = mut &this, .items = items.as_span().as_ptr() };
+                match (pool) {
+                    std::some(p) => {
+                        if (items.length() > 1) {
+                            unsafe {
+                                (*p).for_index_chunks(items.length(), 1, [&ctx](usize from, usize to) {
+                                    for (usize i : from..to) {
+                                        unsafe { (*ctx.world).run_item(*ctx.items.offset(i)); }
+                                    }
+                                });
+                            }
+                        } else {
+                            for (work_item it : items) { unsafe { this.run_item(it); } }
+                        }
+                    },
+                    std::none => {
+                        for (work_item it : items) { unsafe { this.run_item(it); } }
+                    },
+                }
+                for (u32 s : stage) {
+                    unsafe {
+                        std::raw_ptr<mut std::ecs::commands> cmds = cast::reinterpret<std::raw_ptr<mut std::ecs::commands>>(&*this.systems[cast<usize>(s)].commands);
+                        this.apply(mut *cmds);
+                    }
+                    this.systems[cast<usize>(s)].last_run = this.now;
+                }
+                this.now += 1;
+            }
+        }
+
+        unsafe void run_item(work_item it) {
+            system_record& s = this.systems[cast<usize>(it.system)];
+            u32 since = s.last_run;
+            s.run(s.body, cast::reinterpret<std::raw_ptr<mut u8>>(&this), s.query, it.match, it.from, it.to, cast::reinterpret<std::raw_ptr<mut std::ecs::commands>>(&*s.commands), since);
+        }
+    }
+
+    private std::ecs::entity resolve(std::darray<std::ecs::entity>& made, std::ecs::entity e) {
+        if (is_provisional(e)) {
+            usize k = cast<usize>(e.index & ~provisional_bit);
+            if (k < made.length()) { return made[k]; }
+            return std::ecs::entity::null();
+        }
+        return e;
+    }
+
+    private usize cache_slot(u64 id) {
+        return cast::truncate<usize>((id ^ (id >> 29)) & 63);
+    }
+
+    private bool same_components(std::darray<u32>& a, std::darray<u32>& b) {
+        if (a.length() != b.length()) { return false; }
+        for (usize i : 0..a.length()) {
+            if (a[i] != b[i]) { return false; }
+        }
+        return true;
+    }
+
+    // ---- parameters --------------------------------------------------------------------------
+
+    // Whether a parameter type is `std::span<T>` or `std::span<mut T>`.
+    private template<type T>
+    compile_time bool is_span_type() {
+        std::static_str name = std::type_name<T>();
+        return name.starts_with("std::span<") || name.starts_with("std::span_mut<");
+    }
+
+    // Whether a parameter type (not a span) is a component.
+    private template<type T>
+    compile_time bool is_component() {
+        return !std::is_same<T, std::ecs::entity>() && !std::is_same<T, std::ecs::commands>() &&
+               !std::meta::has_annotation<std::ecs::resource, T>();
+    }
+
+    private template<type T>
+    compile_time bool is_mut_span() {
+        std::static_str name = std::type_name<T>();
+        return name.starts_with("std::span<mut ") || name.starts_with("std::span_mut<");
+    }
+
+    // How far a parameter's pointer moves per row: 1 for a column, 0 for a resource or commands.
+    private template<type T>
+    compile_time usize row_step() {
+        if (std::is_same<T, std::ecs::commands>() || std::meta::has_annotation<std::ecs::resource, T>()) { return 0; }
+        return 1;
+    }
+
+    // What `each_table` passes for a parameter of type `T`: a span of the column, or the resource.
+    private template<type T>
+    unsafe T table_argument(std::raw_ptr<mut u8> at, usize rows) {
+        if compile_time (is_mut_span<T>()) {
+            compile_time type c = std::meta::template_args<T>()[0];
+            return std::span_mut<c>::from_raw(cast::reinterpret<std::raw_ptr<mut c>>(at), rows);
+        } else if compile_time (is_span_type<T>()) {
+            compile_time type c = std::meta::template_args<T>()[0];
+            return std::span<c>::from_raw(cast::reinterpret<std::raw_ptr<c>>(at), rows);
+        } else {
+            return *cast::reinterpret<std::raw_ptr<T>>(at);
+        }
+    }
+
+    // Compile errors for parameters `each`, `each_table` and systems can't hand out.
+    private template<type F>
+    void check_parameters(compile_time bool spans, compile_time bool system) {
+        for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+            compile_time type t = p.type;
+            if compile_time (std::is_same<t, std::ecs::commands>()) {
+                if compile_time (!system) {
+                    std::compile_error("only systems take std::ecs::commands; capture one in the lambda passed to each");
+                }
+                if compile_time (p.passing != std::meta::passing::by_mut_reference) {
+                    std::compile_error("write 'mut std::ecs::commands& name'");
+                }
+            } else if compile_time (std::is_same<t, std::ecs::entity>()) {
+                if compile_time (p.passing != std::meta::passing::by_value) {
+                    std::compile_error("write 'std::ecs::entity name' (a copy)");
+                }
+            } else if compile_time (std::meta::has_annotation<std::ecs::resource, t>()) {
+                if compile_time (p.passing == std::meta::passing::by_value) {
+                    std::compile_error(f"a resource is passed by reference: write '{std::type_name<t>()}&'");
+                }
+            } else if compile_time (spans) {
+                if compile_time (p.passing != std::meta::passing::by_value || !is_span_type<t>()) {
+                    std::compile_error(f"each_table takes std::span<T>, std::span<mut T> or a resource, not {std::type_name<t>()}");
+                }
+            } else if compile_time (p.passing == std::meta::passing::by_value) {
+                std::compile_error(f"a component is passed by reference: write '{std::type_name<t>()}&' or 'mut {std::type_name<t>()}&'");
+            }
+        }
+    }
+
+    // Never runs: makes calling `fn` through an immutable reference a compile error for lambdas
+    // that change their captures (they can't be called from several threads).
+    private template<type F>
+    void probe_shared_call(F& fn) {
+        if (false) {
+            unsafe {
+                std::raw_ptr<mut u8> nothing = nullptr;
+                fn(for compile_time (std::meta::parameter p : std::meta::parameters_of<F>()) {
+                    compile_time type t = p.type;
+                    p.pass(*cast::reinterpret<std::raw_ptr<mut t>>(nothing))
+                });
+            }
+        }
+    }
+}

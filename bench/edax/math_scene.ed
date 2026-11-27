@@ -1,0 +1,54 @@
+// A scene update with std::math: 20k nodes in a tree, 300 frames. Per frame every node's local
+// matrix is built from a position, an interpolated rotation and a scale, the world matrices are
+// multiplied down the tree, every node's box is moved to world space and culled against the
+// camera's frustum. The checksum is the number of visible boxes and the sum of the positions.
+import std;
+namespace m = std::math;
+
+i32 main() {
+    usize n = 20000;
+    mut std::darray<m::vec3> positions = default;
+    mut std::darray<m::vec3> scales = default;
+    mut std::darray<m::quat> from = default;
+    mut std::darray<m::quat> to = default;
+    mut std::darray<m::mat4> world = default;
+    mut std::darray<m::aabb> bounds = default;
+    mut std::darray<bool> visible = default;
+    mut u32 seed = 12345;
+    mut std::darray<f32> random = default;
+    for (usize i : 0..n * 14) {
+        seed = seed *% 1664525 +% 1013904223;
+        random.push(cast::round<f32>(seed >> 8) / 16777216.0 - 0.5);
+    }
+    for (usize i : 0..n) {
+        usize k = i * 14;
+        positions.push(m::vec3::make(random[k], random[k + 1], random[k + 2]) * 6.0);
+        scales.push(m::vec3::make(random[k + 3] * 0.2 + 1.0, random[k + 4] * 0.2 + 1.0, random[k + 5] * 0.2 + 1.0));
+        from.push(m::normalize(m::quat::make(random[k + 6], random[k + 7], random[k + 8], random[k + 9])));
+        to.push(m::normalize(m::quat::make(random[k + 10], random[k + 11], random[k + 12], random[k + 13])));
+        world.push(m::mat4::identity());
+        bounds.push(m::aabb::empty());
+        visible.push(false);
+    }
+    m::mat4 view_projection = m::perspective(m::deg(70.0), 1.6, 0.5, 80.0) * m::look_at(m::vec3::make(0.0, 5.0, 30.0), m::vec3::zero(), m::vec3::unit_y());
+    m::frustum camera = m::frustum::from_view_projection(view_projection);
+    m::aabb unit = m::aabb::from_center_extents(m::vec3::zero(), m::vec3::splat(0.5));
+    mut usize seen = 0;
+    mut f64 sum = 0.0;
+    for (u32 frame : 0..300) {
+        f32 t = cast::round<f32>(frame) / 300.0;
+        world[0] = m::mat4::trs(positions[0], m::nlerp(from[0], to[0], t), scales[0]);
+        for (usize i : 1..n) {
+            world[i] = world[(i - 1) / 4] * m::mat4::trs(positions[i], m::nlerp(from[i], to[i], t), scales[i]);
+        }
+        for (usize i : 0..n) {
+            bounds[i] = m::transform_aabb(world[i], unit);
+        }
+        seen += m::cull(camera, bounds.as_span(), visible.as_mut_span());
+        for (usize i : 0..n) {
+            sum += cast<f64>(world[i].c3.x + world[i].c3.y + world[i].c3.z);
+        }
+    }
+    std::println(f"{seen / 1000} {cast::saturate<i64>(sum / 1000.0)}");
+    return 0;
+}

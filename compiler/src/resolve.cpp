@@ -20,7 +20,7 @@ const std::set<std::string>& compiler_std_names() {
         "print", "println", "eprint", "eprintln", "format",
         // compile-time functions
         "is_integer", "is_float", "is_same", "implements", "size_of", "align_of", "type_name", "compile_error",
-        "compile_warning", "compile_note", "is_compile_time", "location_of", "literal_text", "embed", "embed_text",
+        "compile_warning", "compile_note", "is_compile_time", "at_compile_time", "location_of", "literal_text", "embed", "embed_text",
         // arithmetic and bits
         "checked_add", "checked_sub", "checked_mul", "saturating_add", "saturating_sub", "saturating_mul",
         "trailing_zeros", "leading_zeros", "count_ones", "rotate_left", "rotate_right", "bit_cast",
@@ -296,15 +296,15 @@ public:
 
     // Makes the symbol of a function template instance: the copy's signature and body are resolved
     // in the template's module, with its parameters declared (see build_instance).
-    Symbol* build_function_instance(Module& m, bool from_header, FunctionDecl& d, std::vector<Symbol*>& params) {
+    Symbol* build_function_instance(Module& m, bool from_header, FunctionDecl& d, std::vector<Symbol*>& params, Symbol* self) {
         FileScope fs(*this, &m, from_header);
-        Symbol*   sym  = m.make(SymbolKind::function, d.name, d.name_span);
+        Symbol*   sym  = m.make(self ? SymbolKind::method : SymbolKind::function, d.name, d.name_span);
         sym->decl      = &d;
         sym->in_header = false;
         sym->ns        = ns_;
         TemplateScope ts(*this, d);
         params = template_params_.back();
-        resolve_function(d, nullptr);
+        resolve_function(d, self);
         if (!d.annotations.empty()) {   // the wraps of a function template apply to its instances
             instance_      = true;
             symbol_of_[&d] = sym;
@@ -3632,11 +3632,11 @@ Symbol* resolve_instance(Program& program, DiagnosticEngine& diags, const Symbol
 }
 
 Symbol* resolve_function_instance(Program& program, DiagnosticEngine& diags, const Symbol* templ,
-                                  FunctionDecl& decl, std::vector<Symbol*>& params) {
+                                  FunctionDecl& decl, std::vector<Symbol*>& params, Symbol* self) {
     bool     from_header = !templ->definition && templ->in_header;
     Resolver r(program, diags);
     r.set_namespace(templ->ns);
-    return r.build_function_instance(*templ->module, from_header, decl, params);
+    return r.build_function_instance(*templ->module, from_header, decl, params, self);
 }
 
 namespace {

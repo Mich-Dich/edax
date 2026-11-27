@@ -33,7 +33,7 @@ i32 main() {
             g->push(i);
         }
     }
-    std::println(f"pushed {shared.lock()->len()}");
+    std::println(f"pushed {shared.lock()->length()}");
     std::println(f"cpus {std::thread::available_parallelism() > 0}");
     return 0;
 }

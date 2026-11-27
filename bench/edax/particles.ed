@@ -6,10 +6,10 @@ import std;
 
 @std::no_checks_left
 void step(mut std::darray<f32>& px, mut std::darray<f32>& py, mut std::darray<f32>& vx, mut std::darray<f32>& vy, f32 dt) {
-    usize n = px.len();
-    std::assume(py.len() == n);
-    std::assume(vx.len() == n);
-    std::assume(vy.len() == n);
+    usize n = px.length();
+    std::assume(py.length() == n);
+    std::assume(vx.length() == n);
+    std::assume(vy.length() == n);
     for (usize i : 0..n) {
         vy[i] -= 9.81 * dt;
         vx[i] *= 0.999;

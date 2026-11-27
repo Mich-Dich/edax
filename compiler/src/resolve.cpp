@@ -14,6 +14,27 @@
 
 namespace edax {
 
+const std::set<std::string>& compiler_std_names() {
+    static const std::set<std::string> names{
+        // printing and formatting
+        "print", "println", "eprint", "eprintln", "format",
+        // compile-time functions
+        "is_integer", "is_float", "is_same", "implements", "size_of", "align_of", "type_name", "compile_error",
+        "compile_warning", "compile_note", "is_compile_time", "location_of", "literal_text", "embed", "embed_text",
+        // arithmetic and bits
+        "checked_add", "checked_sub", "checked_mul", "saturating_add", "saturating_sub", "saturating_mul",
+        "trailing_zeros", "leading_zeros", "count_ones", "rotate_left", "rotate_right", "bit_cast",
+        // types and interfaces the compiler knows
+        "function", "fn_ptr", "inline_function", "str", "static_str", "format_args", "ordering", "sendable", "shareable",
+        "cloneable", "comparable", "equatable", "formattable", "raw", "simd", "meta", "c_library", "raw_ptr", "panic",
+        "addable", "subtractable", "multipliable", "dividable", "negatable", "never_zero", "cache_line_size",
+        "exit_code", "diagnostic_frame", "check_result", "plugin_entry",
+        // annotations
+        "allow", "deprecated", "must_use", "optimize", "layout", "float_mode", "build",
+    };
+    return names;
+}
+
 using namespace ast;
 using sema::Module;
 using sema::Program;
@@ -376,7 +397,7 @@ private:
             if (d->kind == DeclKind::struct_ || d->kind == DeclKind::class_) {
                 const auto& t = d->as<TypeDecl>();
                 for (const DeclPtr& mem : t.members) {
-                    if (mem->kind == DeclKind::function && mem->as<FunctionDecl>().body) {
+                    if (mem->kind == DeclKind::function && mem->as<FunctionDecl>().body && !mem->name.starts_with("$")) {
                         note(error(DiagCode::E3011, mem->as<FunctionDecl>().body->span,
                                    std::format("method '{}::{}' has a body in a header", d->name, mem->name), "body"),
                              "method bodies are defined only inside the type's block in the .ed");
@@ -2904,7 +2925,9 @@ private:
             if (segs.size() == 2) {
                 if (Symbol* alt = std_export(segs[1].name)) return check_want(alt, want, span, "std::" + segs[1].name);
             }
-            return nullptr;   // names the compiler provides itself (`std::println`, `std::meta::fields`)
+            // Names the compiler provides itself (`std::println`, `std::meta::fields`) have no
+            // declaration; any other name the library doesn't declare is reported like elsewhere.
+            if (compiler_provided(ns, segs[k].name)) return nullptr;
         }
         const std::string& missing = segs[k].name;
         Found f = find_items(join_ns(ns, missing));
@@ -2915,10 +2938,24 @@ private:
         } else {
             Diagnostic& e = error(DiagCode::E3020, segs[k].span, std::format("cannot find '{}' in namespace '{}'", missing, ns),
                                   "not found");
-            suggest(e, missing, names_in(ns));
+            std::vector<std::string> candidates = names_in(ns);
+            if (ns == "std") candidates.insert(candidates.end(), compiler_std_names().begin(), compiler_std_names().end());
+            suggest(e, missing, std::move(candidates));
         }
         return nullptr;
     }
+
+    // Whether `ns::name` is one of the standard library's names that the compiler implements
+    // itself, without a declaration in library/std.
+    static bool compiler_provided(const std::string& ns, const std::string& name) {
+        // Namespaces whose names are all the compiler's.
+        if (ns == "std::meta" || ns.starts_with("std::meta::") || ns == "std::raw" || ns.starts_with("std::raw::") || ns == "std::simd" ||
+            ns.starts_with("std::simd::") || ns == "std::c_library" || ns.starts_with("std::c_library::")) {
+            return true;
+        }
+        return ns == "std" && compiler_std_names().contains(name);
+    }
+
 
     // --- types ----------------------------------------------------------------------------
 

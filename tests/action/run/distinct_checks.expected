@@ -1,0 +1,10 @@
+exit: 134
+--- stdout
+show: a name long enough to live on the heap
+38 a name long enough to live on the heap
+equal: true
+a name long enough to live on the heap
+8080 8080 80
+--- stderr
+tests/action/run/distinct_checks.ed:30:27: panic in main: a port is never 0
+note: the check `value != 0` is at tests/action/run/distinct_checks.ed:7:33

@@ -968,6 +968,8 @@ private:
             return -1;
         }
         if (f->is(Kind::user) && t->is(Kind::user) && to_ref && is_ancestor(f->symbol, t->symbol)) return 1;
+        // A distinct type with a check, read as its underlying type: `absolute_path` → `path&` or `path`.
+        if (f->is(Kind::user) && distinct_check_of(f) && distinct_underlying(f) == t && !(to_ref && to->is_mut)) return 1;
         if (smart_upcast(f, t)) return 1;
         if (lambda_fits(f, t) && !to_ref) return 0;
         return -1;
@@ -1084,6 +1086,15 @@ private:
             note(e, "integers convert to bool only in conditions; write 'x != 0'");
         } else if (f->is(Kind::user) && t->is(Kind::user) && is_ancestor(f->symbol, t->symbol)) {
             note(e, "copying a derived object into a base value would slice it; use a reference");
+        } else if (distinct_check_of(f) && distinct_underlying(f) == t) {
+            if (expected->is(Kind::reference) && expected->is_mut) {
+                note(e, std::format("a {} is lent as a read-only {} only: a change could break its check", quoted(f), "'" + types::to_string(t) + "&'"));
+            } else {
+                note(e, std::format("take the value out with 'cast<{}>(move ...)', or pass it where a {} is expected", types::to_string(t),
+                                    "'" + types::to_string(t) + "&'"));
+            }
+        } else if (distinct_check_of(t) && distinct_underlying(t) == f) {
+            note(e, std::format("'cast<{}>(...)' makes one and runs its check", types::to_string(t)));
         } else if ((is_std_instance(f, "array") || is_std_instance(f, "darray")) &&
                    (is_std_instance(t, "span") || is_std_instance(t, "span_mut"))) {
             note(e, is_std_instance(t, "span") ? "a container doesn't turn into a span by itself; pass '.as_span()'"
@@ -1129,10 +1140,10 @@ private:
     // Whether `t` (references removed) is an instance of the std template `name`: `std::option<u32>`.
     static bool is_std_instance(const Type* t, std::string_view name) { return types::is_std_instance(t, name); }
 
-    // The Edax name of a method a C++ programmer reaches for out of habit ("" when there is none).
+    // The Edax name of a method a C++ (or Rust, Go) programmer reaches for out of habit ("" when there is none).
     static std::string_view cpp_method_name(std::string_view name) {
         static constexpr std::pair<std::string_view, std::string_view> names[] = {
-            {"size", "len"},       {"length", "len"},  {"empty", "is_empty"}, {"push_back", "push"},
+            {"size", "length"},    {"len", "length"},  {"empty", "is_empty"}, {"push_back", "push"},
             {"emplace_back", "push"}, {"pop_back", "pop"}, {"at", "get"},       {"append", "push_str"},
         };
         for (const auto& [cpp, edax] : names) {
@@ -1500,6 +1511,10 @@ private:
         }
         if (smart_upcast(types::strip_ref(e.type), t) && !target->is(Kind::reference)) {
             e.conversion   = Expr::Conversion::pointer_upcast;
+            e.converted_to = t;
+        }
+        if (const Type* f = types::strip_ref(e.type); f != t && distinct_check_of(f) && distinct_underlying(f) == t && !target->is(Kind::reference)) {
+            e.conversion   = Expr::Conversion::distinct_value;   // the value inside: `path p = executable_dir();`
             e.converted_to = t;
         }
         if (is_std_text(types::strip_ref(e.type)) && t->is(Kind::external) && t->name == "std::str" &&
@@ -2245,7 +2260,8 @@ private:
             }
             Diagnostic& e = error(DiagCode::E4210, c.span, m && m->kind == ct::Value::Kind::string ? m->string : "check failed",
                                   "this call fails the check");
-            note(e, std::format("the check of '{}' is here", callee->name), k.condition->span);
+            std::string whose = callee->name == "$check" && callee->parent ? callee->parent->name : callee->name;   // a distinct type's
+            note(e, std::format("the check of '{}' is here", whose), k.condition->span);
         }
     }
 
@@ -3085,7 +3101,7 @@ private:
         case Kind::untyped_int: return t->is_unknown() || t->is_numeric();
         case Kind::untyped_float: return t->is_unknown() || t->is_float();
         case Kind::untyped_default: return true;
-        default: return assign_cost(from, to) >= 0;
+        default: return exact_operands_ ? assign_cost(from, to) == 0 : assign_cost(from, to) >= 0;
         }
     }
 
@@ -3100,23 +3116,54 @@ private:
         }
     }
 
+    // Operators whose operands fit exactly win over ones reached by a conversion (an
+    // `absolute_path` takes `operator/(absolute_path&, ...)` before `operator/(path&, ...)`).
+    bool exact_operands_ = false;
+
     template <typename F>
     const Type* search_operator(std::string_view op, const Type* l, const Type* r, F&& try_fn) {
+        bool saved      = exact_operands_;
+        exact_operands_ = true;
+        const Type* exact = search_operator_pass(op, l, r, try_fn);
+        exact_operands_ = saved;
+        return exact ? exact : search_operator_pass(op, l, r, try_fn);
+    }
+
+    template <typename F>
+    const Type* search_operator_pass(std::string_view op, const Type* l, const Type* r, F&& try_fn) {
         if (l->is(Kind::user)) {
             if (auto it = l->symbol->members.find(std::string(op)); it != l->symbol->members.end()) {
                 for (Symbol* m : it->second) {
                     if (const Type* t = try_fn(m, true)) return t;
                 }
             }
+            // A distinct type with a check lends its underlying type's operators that only read.
+            if (const Type* u = distinct_check_of(l) ? distinct_underlying(l) : nullptr; u && u->is(Kind::user)) {
+                if (auto it = u->symbol->members.find(std::string(op)); it != u->symbol->members.end()) {
+                    for (Symbol* m : it->second) {
+                        const FunctionDecl* f = m->function();
+                        if (f && !f->is_mut && !f->is_move) {
+                            if (const Type* t = try_fn(m, true)) return t;
+                        }
+                    }
+                }
+            }
         }
         // Free operators live with one of their operand types: in that type's namespace and
-        // module (spec 16, 30). Nothing else is searched, so no other module can add one.
-        const Symbol* homes[2] = {nullptr, nullptr};
+        // module (spec 16, 30). Nothing else is searched, so no other module can add one. A
+        // distinct type with a check adds its underlying type's home.
+        const Symbol* homes[4] = {nullptr, nullptr, nullptr, nullptr};
         if (const Type* lt = types::strip_ref(l); lt && lt->is(Kind::user)) homes[0] = lt->symbol;
         if (const Type* rt = r ? types::strip_ref(r) : nullptr; rt && rt->is(Kind::user)) homes[1] = rt->symbol;
         for (int i = 0; i < 2; ++i) {
+            const Type* u = homes[i] ? distinct_underlying(tc_.user(homes[i])) : nullptr;
+            if (u && distinct_check_of(tc_.user(homes[i])) && u->is(Kind::user)) homes[2 + i] = u->symbol;
+        }
+        for (int i = 0; i < 4; ++i) {
             const Symbol* home = homes[i];
-            if (!home || (i == 1 && homes[0] && homes[0]->module == home->module && homes[0]->ns == home->ns)) continue;
+            bool seen = false;
+            for (int j = 0; j < i; ++j) seen = seen || (homes[j] && home && homes[j]->module == home->module && homes[j]->ns == home->ns);
+            if (!home || seen) continue;
             const Symbol* type = home->template_of ? home->template_of : home;
             std::string   key  = type->ns.empty() ? std::string(op) : type->ns + "::" + std::string(op);
             if (auto it = type->module->items.find(key); it != type->module->items.end()) {
@@ -4733,6 +4780,7 @@ private:
         if (!fn_.is_compile_time || !callee) return;
         const FunctionDecl* f = callee->function();
         if (!f || f->is_compile_time) return;
+        if (callee->name == "$check") return;   // a distinct type's check: an entry check, folded with its cast
         // The settings of a build mode are read at compile time (spec 24).
         if (callee->parent && callee->parent->module && callee->parent->module->name == "std::build::mode") return;
         for (const Symbol* c = callee->parent; c && c->kind == SymbolKind::class_; c = c->base_class()) {
@@ -4950,6 +4998,16 @@ private:
             const Type* objt = infer(*me.object);
             const Type* t    = types::strip_ref(objt);
             std::string name = me.name.segments.back().name;
+            // A distinct type with a check lends the methods of its underlying type that only read
+            // (`p.file_name()` on a `std::filesystem::absolute_path`).
+            const Type* through_distinct = nullptr;
+            if (!me.arrow && distinct_check_of(t) && name != "clone") {   // a clone stays a D (spec 05: structs clone themselves)
+                const Type* u = distinct_underlying(t);
+                if (u && u->is(Kind::user) && find_methods(t->symbol, name).empty() && !find_methods(u->symbol, name).empty()) {
+                    through_distinct = t;
+                    t                = u;
+                }
+            }
             if (t->is(Kind::pending)) {
                 no_context(*me.object, std::format("before '.{}'", name));
                 for (Expr* a : args) {
@@ -5034,18 +5092,24 @@ private:
                     return set(c, t);
                 }
                 if (args.empty() && (t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str"))) {
-                    if (name == "len") return set(c, tc_.builtin("usize"));
+                    if (name == "length") return set(c, tc_.builtin("usize"));
                     if (name == "is_empty") return set(c, tc_.bool_());
                     if (name == "as_ptr") return set(c, tc_.pointer(tc_.builtin("u8"), false));   // spec 13: for C
                 }
-                // Lists of compile-time data (`std::meta::fields<T>().len()`).
+                // Lists of compile-time data (`std::meta::fields<T>().length()`).
                 if (args.empty() && t->is(Kind::external) && t->external_base() == "std::span" && compile_time_only(t)) {
-                    const Type* r = name == "len" ? tc_.builtin("usize") : name == "is_empty" ? tc_.bool_() : nullptr;
+                    const Type* r = name == "length" ? tc_.builtin("usize") : name == "is_empty" ? tc_.bool_() : nullptr;
                     if (r) {
                         set(c, r);
                         if (me.object->constant) c.constant = evaluate(c, "");
                         return r;
                     }
+                }
+                if (t->is(Kind::static_str) || (t->is(Kind::external) && t->name == "std::str")) {
+                    Diagnostic& d = error(DiagCode::E4070, me.name.span, std::format("{} has no method '{}'", quoted(t), name), "unknown method");
+                    if (name == "len") note(d, "Edax writes names out: it is 'length'");
+                    if (name == "size") note(d, "'size' is the C++ name; in Edax it is 'length'");
+                    return set(c, tc_.error());
                 }
                 if (t->is_integer() || t->is_float() || t->is(Kind::bool_) || t->is(Kind::char_)) {
                     Diagnostic& d = error(DiagCode::E4070, me.name.span, std::format("{} has no method '{}'", quoted(t), name), "unknown method");
@@ -5088,7 +5152,8 @@ private:
                     if (name == "clone" && t->is_user(SymbolKind::class_)) {
                         note(d, "classes implement 'clone()' themselves (interface std::cloneable); structs get it automatically");
                     } else if (std::string_view edax = cpp_method_name(name); !edax.empty() && !find_methods(t->symbol, std::string(edax)).empty()) {
-                        note(d, std::format("'{}' is the C++ name; in Edax it is '{}'", name, edax));
+                        note(d, name == "len" ? std::string("Edax writes names out: it is 'length'")
+                                              : std::format("'{}' is the C++ name; in Edax it is '{}'", name, edax));
                     }
                 }
                 return set(c, tc_.error());
@@ -5100,6 +5165,15 @@ private:
             adopt_implicit(c, *chosen);
             me.symbol = chosen->symbol;
             use_method(chosen->symbol, me.name.span);
+            if (through_distinct && chosen->decl->kind == DeclKind::function &&
+                (chosen->decl->as<FunctionDecl>().is_mut || chosen->decl->as<FunctionDecl>().is_move)) {
+                note(error(DiagCode::E4020, me.name.span,
+                           std::format("'{}' would change the {} inside a {}", name, quoted(t), quoted(through_distinct)),
+                           "changes the value"),
+                     std::format("its check could stop holding; take the value out with 'cast<{}>(move ...)', change it, and cast it back",
+                                 types::to_string(t)));
+                return set(c, tc_.error());
+            }
             if (chosen->decl->is_template) {   // a method template (spec 14): its instance
                 Symbol* target = call_target(*chosen, c.span, t->symbol->name + "::" + name);
                 if (!target) return set(c, tc_.error());
@@ -5246,10 +5320,56 @@ private:
         return fail(std::format("@std::derive::arithmetic gives + - * / % and comparisons"));
     }
 
+    // The check of a distinct type declared with `check (...) else ...` (its `$check`), or null.
+    static Symbol* distinct_check_of(const Type* t) {
+        if (!t || !t->is(Kind::user) || !t->symbol || !t->symbol->decl || t->symbol->kind != SymbolKind::struct_) return nullptr;
+        if (!t->symbol->decl->as<TypeDecl>().is_distinct) return nullptr;
+        auto it = t->symbol->members.find("$check");
+        return it == t->symbol->members.end() || it->second.empty() ? nullptr : it->second.front();
+    }
+
+    // Whether `e` is a call of `f` (already wrapped).
+    static bool calls(const Expr& e, const Symbol* f) {
+        return e.kind == ExprKind::call && e.as<CallExpr>().callee->kind == ExprKind::path &&
+               e.as<CallExpr>().callee->as<PathExpr>().symbol == f;
+    }
+
     const Type* infer_cast(CastExpr& c) {
-        const Type* to   = lower(*c.target);
+        const Type* to = lower(*c.target);
+        if (Symbol* check = c.variant.empty() ? distinct_check_of(to) : nullptr; check && !calls(*c.operand, check)) {
+            // `cast<D>(x)` of a distinct type with a check: `cast<D>(D::$check(x))`.
+            Path p;
+            p.span = c.operand->span;
+            for (const char* part : {"", "$check"}) {
+                PathSegment seg;
+                seg.name = *part ? std::string(part) : to->symbol->name;
+                seg.span = c.operand->span;
+                p.segments.push_back(std::move(seg));
+            }
+            auto callee    = std::make_unique<PathExpr>(c.operand->span, std::move(p));
+            callee->symbol = check;
+            auto call = std::make_unique<CallExpr>(c.operand->span, std::move(callee));
+            call->args.push_back(std::move(c.operand));
+            c.operand = std::move(call);
+        }
         const Type* from = types::strip_ref(infer(*c.operand));
         set(c, to);
+        if (Symbol* check = c.variant.empty() ? distinct_check_of(to) : nullptr; check && calls(*c.operand, check)) {
+            // A value known at compile time whose check also runs there: the cast is known too.
+            const auto& call = c.operand->as<CallExpr>();
+            if (call.args.size() == 1 && !to->is_unknown() && !call.args[0]->type->is_unknown()) {
+                ct::Evaluator::Context quiet;
+                quiet.quiet = true;
+                if (std::shared_ptr<const ct::Value> known = evaluator().evaluate_in(*c.operand, "", quiet)) {   // runs the check
+                    ct::Value v;
+                    v.kind = ct::Value::Kind::aggregate;
+                    v.type = to;
+                    v.elements.push_back(*known);
+                    c.constant = std::make_shared<const ct::Value>(std::move(v));
+                }
+            }
+            return to;
+        }
         const std::string& v = c.variant;
         // `cast<meters>(x)` and `cast<f32>(m)`: a distinct type and its underlying type (spec 34).
         if (v.empty() && (distinct_underlying(to) || distinct_underlying(from))) {
@@ -5536,6 +5656,7 @@ private:
 
     // `(T1 a, T2 b) = expr;` / `auto (a, b) = expr;`: the tuple is consumed into new variables.
     void check_destructure(DestructureStmt& d) {
+        if (d.loop_element) return check_loop_names(d);
         const Type* t = infer(*d.init);
         if (t->is_untyped() && d.init->kind == ExprKind::tuple) {
             auto& te = d.init->as<TupleExpr>();
@@ -5575,6 +5696,47 @@ private:
             const Type*         bt = b.type ? lower(*b.type) : el;
             if (b.type && !el->is_unknown() && !bt->is_unknown() && assign_cost(el, bt) != 0) {
                 error(DiagCode::E4010, b.span, std::format("element {} is {}, not {}", i, quoted(el), quoted(bt)), "wrong type");
+            }
+            if (b.symbol) set_local(b.symbol, bt);
+        }
+    }
+
+    // `for (auto (a, b) : list)` (spec 10): the names of the hidden loop variable's parts. A stream's
+    // element is a value whose parts move into the names; a container's element stays where it is
+    // and the names refer into it (`auto` and `T&` names; a `T` name reads a copy type's value).
+    void check_loop_names(DestructureStmt& d) {
+        Expr*         operand = d.init->kind == ExprKind::unary ? d.init->as<UnaryExpr>().operand.get() : d.init.get();
+        const Symbol* element = operand->kind == ExprKind::path ? operand->as<PathExpr>().symbol : nullptr;
+        if (element && element->type && element->type->is(Kind::reference)) {
+            d.by_reference = true;
+            ExprPtr inner  = std::move(d.init->as<UnaryExpr>().operand);   // not moved: referred to
+            d.init         = std::move(inner);
+        }
+        const Type* t = types::strip_ref(infer(*d.init));
+        if (!t->is(Kind::tuple) && !t->is_unknown()) {
+            error(DiagCode::E4010, d.span, std::format("only a tuple's parts can be named, but the loop gives {}", quoted(t)),
+                  "not a tuple");
+            t = tc_.error();
+        } else if (t->is(Kind::tuple) && t->args.size() != d.bindings.size()) {
+            error(DiagCode::E4010, d.span, std::format("the loop's tuples have {} elements, but {} names are given", t->args.size(), d.bindings.size()),
+                  "wrong number of names");
+            t = tc_.error();
+        }
+        bool mut_element = element && element->type && element->type->is(Kind::reference) && element->type->is_mut;
+        for (std::size_t i = 0; i < d.bindings.size(); ++i) {
+            DestructureBinding& b  = d.bindings[i];
+            const Type*         el = t->is(Kind::tuple) ? t->args[i] : tc_.error();
+            const Type*         bt = b.type ? lower(*b.type) : (d.by_reference ? tc_.reference(el, b.is_mut) : el);
+            if (b.type && !el->is_unknown() && !bt->is_unknown() && types::strip_ref(bt) != el) {
+                error(DiagCode::E4010, b.span, std::format("element {} is {}, not {}", i, quoted(el), quoted(types::strip_ref(bt))), "wrong type");
+            }
+            if (bt->is(Kind::reference) && !d.by_reference && !bt->is_unknown()) {
+                error(DiagCode::E4010, b.span, "a stream's elements are values: their parts can't be referred to",
+                      std::format("write '{}'", types::to_string(types::strip_ref(bt))));
+            }
+            if (d.by_reference && bt->is(Kind::reference) && bt->is_mut && !mut_element) {
+                error(DiagCode::E4022, b.span, std::format("'{}' would change the container's element, but the loop doesn't", b.name),
+                      "not mutable");
             }
             if (b.symbol) set_local(b.symbol, bt);
         }
@@ -6240,12 +6402,16 @@ private:
             if (infer_for_compile_time(f)) return set(f, tc_.void_());
         }
         const Type* it   = infer(*f.iterable);
-        const Type* var  = lower(*f.type);
+        bool        deduce = f.type->kind == TypeKind::auto_;   // `for (auto x : ...)`: what the loop hands out
+        const Type* var  = deduce ? nullptr : lower(*f.type);
         const Type* sit  = types::strip_ref(it);
+        if (deduce) var = deduced_loop_variable(f, sit);
         if (f.symbol) set_local(f.symbol, var);
         if (sit->is(Kind::range)) {
             const Type* el = sit->inner;
-            if (el->is_untyped()) {
+            if (el->is_untyped() && deduce) {
+                no_context(*f.iterable, "('auto' takes the type of the range; give one bound a type, like '0u32..n')");
+            } else if (el->is_untyped()) {
                 auto& r = f.iterable->as<RangeExpr>();
                 settle(*r.lo, var);
                 settle(*r.hi, var);
@@ -6854,12 +7020,36 @@ private:
         return nullptr;
     }
 
-    // `for (T& x : c)` over a user type (spec 10): a container has `len()` and `operator[]`
+    // `for (T& x : c)` over a user type (spec 10): a container has `length()` and `operator[]`
     // (the loop visits every index); a stream has `next() mut` returning a `std::option` (the
     // loop runs until `none`).
+    // The type of `auto` in `for (auto x : it)`: a range's and a stream's values, and references
+    // to a container's elements (`mut auto`: mutable ones).
+    const Type* deduced_loop_variable(ForExpr& f, const Type* it) {
+        if (it->is_unknown()) return tc_.error();
+        if (it->is(Kind::range)) return it->inner->is_untyped() ? tc_.error() : it->inner;
+        if (!it->is(Kind::user)) return tc_.error();   // reported by the loop
+        if (Symbol* len = nullary_method(it, "length")) {
+            (void)len;
+            if (Symbol* at = index_operator(it, f.is_mut)) {
+                const FunctionDecl* af = &at->function_decl();
+                const Type* el = af->result ? types::strip_ref(lower_owned(at, *af->result)) : tc_.error();
+                return tc_.reference(el, f.is_mut);
+            }
+        }
+        if (Symbol* next = nullary_method(it, "next")) {
+            const FunctionDecl* nf = next->function();
+            const Type* produced = nf && nf->result ? types::strip_ref(lower_owned(next, *nf->result)) : nullptr;
+            if (produced && is_std_instance(produced, "option") && !produced->symbol->template_args.empty()) {
+                return produced->symbol->template_args[0];
+            }
+        }
+        return tc_.error();
+    }
+
     void infer_for_over(ForExpr& f, const Type* t, const Type* var) {
         bool want_mut = var->is(Kind::reference) && var->is_mut;
-        Symbol* len   = nullary_method(t, "len");
+        Symbol* len   = nullary_method(t, "length");
         Symbol* at    = index_operator(t, want_mut);
         if (len && at) {
             f.len_symbol   = len;
@@ -6903,7 +7093,7 @@ private:
             return;
         }
         Diagnostic& d = error(DiagCode::E4013, f.iterable->span, std::format("cannot iterate over {}", quoted(t)), "not iterable");
-        note(d, "a 'for' loop needs 'len()' and 'operator[]' (a container), or 'next()' returning a std::option (a stream)");
+        note(d, "a 'for' loop needs 'length()' and 'operator[]' (a container), or 'next()' returning a std::option (a stream)");
     }
 
     // `for compile_time` (spec 26): the body is copied once per element and each copy is
@@ -7574,7 +7764,7 @@ public:
     }
 
     // A type template's value pack `usize... N` as `N$0, ..., N$n-1` (spec 34); its members walk
-    // `N` with `for compile_time`, pass it on as `f<N...>` and count it with `N.len()`.
+    // `N` with `for compile_time`, pass it on as `f<N...>` and count it with `N.length()`.
     // The field generators of an instance's copy (spec 26) become fields: for each public field of the
     // source type argument, in order, one field per field written in the block, named after it. A
     // `f.type` in a written type becomes a hidden type parameter `$fieldN` (appended to `params` and

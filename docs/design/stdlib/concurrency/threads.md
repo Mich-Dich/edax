@@ -124,9 +124,9 @@ std::thread::scoped_handle<f64> half = std::thread::spawn([left]() { return sum(
 ### Splitting work over borrowed data
 ```edax
 f64 parallel_sum(std::span<f64> values) {
-    usize half = values.len() / 2;
+    usize half = values.length() / 2;
     std::span<f64> left  = values.slice(0, half);
-    std::span<f64> right = values.slice(half, values.len());
+    std::span<f64> right = values.slice(half, values.length());
 
     std::thread::scoped_handle<f64> other = std::thread::spawn([left]() { return sum(left); });
     f64 mine = sum(right);                        // this thread works too
@@ -141,7 +141,7 @@ void scale_all(mut std::darray<f32>& samples, f32 factor) {
     if (samples.is_empty()) {
         return;
     }
-    usize part_size = samples.len() / std::thread::available_parallelism() + 1;
+    usize part_size = samples.length() / std::thread::available_parallelism() + 1;
     mut std::darray<std::thread::scoped_handle<void>> running = default;
 
     for (std::span<mut f32> part : samples.as_mut_span().chunks(part_size)) {

@@ -12,7 +12,7 @@ exit: 0
       (return : never
         (>= : bool
           (.pos : usize (this : cursor&))
-          (call : usize (.len : {unknown} (.text : std::str (this : cursor&))))))))
+          (call : usize (.length : {unknown} (.text : std::str (this : cursor&))))))))
   (fn advance -> void mut
     (param by : usize)
     (block (assign += (.pos : usize (this : mut cursor&)) (path by : usize)))))
@@ -93,7 +93,7 @@ exit: 0
         (arm _ (string "other" : std::static_str))))
     (return : never
       (if : u32
-        (> : bool (call : usize (.len : {unknown} (path label : std::str))) (int 2 : usize))
+        (> : bool (call : usize (.length : {unknown} (path label : std::str))) (int 2 : usize))
         (block (value (int 1 : u32)))
         (else (block : u32 (value (int 0 : u32))))))))
 (fn bits -> void

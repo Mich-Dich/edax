@@ -53,14 +53,6 @@ namespace std::time {
     // A loaded zone is the transitions of its TZif file (RFC 8536) and, for the times after the
     // last one, the POSIX TZ rule of the file's footer ("CET-1CEST,M3.5.0,M10.5.0/3").
 
-    private extern(std::build::language::c) {
-        i32 open(std::raw_ptr<u8> name, i32 flags);
-        isize read(i32 fd, std::raw_ptr<mut u8> buffer, usize count);
-        i32 close(i32 fd);
-        std::raw_ptr<u8> getenv(std::raw_ptr<u8> name);
-        isize readlink(std::raw_ptr<u8> path, std::raw_ptr<mut u8> buffer, usize size);
-        usize strlen(std::raw_ptr<u8> text);
-    }
 
     // A day of a POSIX TZ rule: `Jn` (1..=365, never Feb 29), `n` (0..=365) or `Mm.w.d`.
     private struct rule_day {
@@ -153,7 +145,7 @@ namespace std::time {
         bool failed = false;
     }
 
-    private bool tz_done(tz_reader& r) { return r.at >= r.text.len(); }
+    private bool tz_done(tz_reader& r) { return r.at >= r.text.length(); }
 
     private u8 tz_peek(tz_reader& r) {
         if (tz_done(r)) { return 0; }
@@ -266,35 +258,6 @@ namespace std::time {
         return rule;
     }
 
-    // Reads the file at `path` into `bytes`: false when it can't be read.
-    private bool read_file(std::str path, mut std::darray<u8>& bytes) {
-        mut std::raw::array<u8, 1024> name = default;
-        if (path.len() >= 1024) { return false; }
-        unsafe {
-            std::raw_ptr<mut u8> c_name = cast::reinterpret<std::raw_ptr<mut u8>>(mut &name);
-            mut usize i = 0;
-            while (i < path.len()) {
-                std::raw::write(c_name.offset(i), *path.as_ptr().offset(i));
-                i += 1;
-            }
-            i32 fd = open(c_name, 0);
-            if (fd < 0) { return false; }
-            mut std::raw::array<u8, 4096> chunk = default;
-            std::raw_ptr<mut u8> buffer = cast::reinterpret<std::raw_ptr<mut u8>>(mut &chunk);
-            while (true) {
-                isize n = read(fd, buffer, 4096);
-                if (n <= 0) { break; }
-                mut usize k = 0;
-                while (k < cast::saturate<usize>(n)) {
-                    bytes.push(*buffer.offset(k));
-                    k += 1;
-                }
-            }
-            _ = close(fd);
-        }
-        return true;
-    }
-
     private i64 big_endian(std::darray<u8>& b, usize at, usize size) {
         mut u64 v = 0;
         mut usize i = 0;
@@ -304,11 +267,6 @@ namespace std::time {
         }
         if (size == 4) { return cast<i64>(cast::truncate<i32>(v)); }   // the low bits, two's complement
         return cast::truncate<i64>(v);
-    }
-
-    // The text of a C string.
-    private std::string c_text(std::raw_ptr<u8> text) {
-        unsafe { return std::string::from(std::raw::str_from(text, strlen(text))); }
     }
 
     private compile_time u8 source_utc = 0;
@@ -321,23 +279,20 @@ namespace std::time {
 
         static zone local() {
             mut std::string name = std::string::from("localtime");
-            unsafe {
-                std::raw_ptr<u8> tz = getenv(c"TZ");
-                if (tz && *tz != 0) {
-                    std::string text = c_text(tz);
-                    std::str value = text.as_str();
-                    name = std::string::from(if (value.starts_with(":")) { value.slice(1, value.len()) } else { value });
-                } else {
-                    mut std::raw::array<u8, 1024> link = default;
-                    std::raw_ptr<mut u8> buffer = cast::reinterpret<std::raw_ptr<mut u8>>(mut &link);
-                    isize n = readlink(c"/etc/localtime", buffer, 1023);
-                    if (n > 0) {
-                        std::str target = std::raw::str_from(buffer, cast::saturate<usize>(n));
+            std::string text = std::env::variable("TZ").value_or(std::string{});
+            if (!text.is_empty()) {
+                std::str value = text.as_str();
+                name = std::string::from(if (value.starts_with(":")) { value.slice(1, value.length()) } else { value });
+            } else {
+                match (std::filesystem::read_link(std::filesystem::path::from("/etc/localtime"))) {
+                    std::ok(link) => {
+                        std::str target = link.as_str();
                         match (target.find("zoneinfo/")) {
-                            std::some(at) => { name = std::string::from(target.slice(at + 9, target.len())); },
+                            std::some(at) => { name = std::string::from(target.slice(at + 9, target.length())); },
                             std::none => { },
                         }
-                    }
+                    },
+                    std::error(_) => { },
                 }
             }
             return zone{ .zone_name = move name, .source = source_local };
@@ -348,17 +303,13 @@ namespace std::time {
                 else "std::time::zone::load reads the time-zone database: it needs a target with files (utc() and local() work everywhere)";
             if (name == "UTC" || name == "Etc/UTC") { return std::ok(zone::utc()); }
             if (name.is_empty() || name.starts_with("/") || name.contains("..")) { return std::error(zone_error::not_found); }
-            mut std::string path = std::string::from("/usr/share/zoneinfo/");
-            unsafe {
-                std::raw_ptr<u8> dir = getenv(c"TZDIR");
-                if (dir && *dir != 0) {
-                    path = c_text(dir);
-                    path.push('/');
-                }
-            }
-            path.push_str(name);
-            mut std::darray<u8> bytes = default;
-            if (!read_file(path.as_str(), mut bytes)) { return std::error(zone_error::not_found); }
+            // The operating system's time-zone database (an absolute path: no mount table sees it).
+            std::string dir = std::env::variable("TZDIR").value_or(std::string::from("/usr/share/zoneinfo"));
+            std::filesystem::path file = std::filesystem::path::from(if (dir.is_empty()) { "/usr/share/zoneinfo" } else { dir.as_str() }) / name;
+            std::darray<u8> bytes = match (std::filesystem::read_bytes(file)) {
+                std::ok(b) => move b,
+                std::error(_) => { return std::error(zone_error::not_found); },
+            };
             mut zone z = zone{ .zone_name = std::string::from(name), .source = source_data };
             if (!z.parse(bytes)) { return std::error(zone_error::invalid_data); }
             return std::ok(move z);
@@ -381,7 +332,7 @@ namespace std::time {
                 return c.dst > 0;
             }
             usize i = this.transition_at(t.seconds);
-            if (i < this.times.len()) { return (this.kind_info[cast<usize>(this.kinds[i])] & 1) != 0; }
+            if (i < this.times.length()) { return (this.kind_info[cast<usize>(this.kinds[i])] & 1) != 0; }
             if (this.times.is_empty() || t.seconds < this.times[0]) { return false; }
             return rule_is_dst(this.rule, t.seconds);
         }
@@ -410,7 +361,7 @@ namespace std::time {
         // The index of the last transition at or before `t`, while the transitions cover `t`;
         // else the number of transitions.
         usize transition_at(i64 t) {
-            usize n = this.times.len();
+            usize n = this.times.length();
             if (n == 0 || t < this.times[0]) { return n; }
             if (t >= this.times[n - 1] && this.rule.present) { return n; }
             mut usize lo = 0;
@@ -424,7 +375,7 @@ namespace std::time {
 
         i32 data_offset(i64 t) {
             usize i = this.transition_at(t);
-            if (i < this.times.len()) { return cast::truncate<i32>(this.kind_info[cast<usize>(this.kinds[i])] >> 1); }
+            if (i < this.times.length()) { return cast::truncate<i32>(this.kind_info[cast<usize>(this.kinds[i])] >> 1); }
             if (this.times.is_empty() && !this.rule.present) { return this.first_offset; }
             if (!this.times.is_empty() && t < this.times[0]) { return this.first_offset; }
             if (rule_is_dst(this.rule, t)) { return this.rule.dst_offset; }
@@ -434,17 +385,17 @@ namespace std::time {
         // Reads a TZif file (versions 1 to 4): the 64-bit data block when there is one, and the
         // POSIX TZ footer.
         bool parse(std::darray<u8>& b) mut {
-            if (b.len() < 44 || b[0] != 84 || b[1] != 90 || b[2] != 105 || b[3] != 102) { return false; }   // "TZif"
+            if (b.length() < 44 || b[0] != 84 || b[1] != 90 || b[2] != 105 || b[3] != 102) { return false; }   // "TZif"
             u8 version = b[4];
             mut usize at = 0;
             mut usize time_size = 4;
             if (version >= 50) {   // '2' and later: skip the 32-bit block, read the 64-bit one
                 usize skip = self_block_size(b, 0, 4);
-                if (skip == 0 || 44 + skip + 44 > b.len()) { return false; }
+                if (skip == 0 || 44 + skip + 44 > b.length()) { return false; }
                 at = 44 + skip;
                 time_size = 8;
             }
-            if (b.len() < at + 44) { return false; }
+            if (b.length() < at + 44) { return false; }
             usize isutcnt = cast::saturate<usize>(big_endian(b, at + 20, 4));
             usize isstdcnt = cast::saturate<usize>(big_endian(b, at + 24, 4));
             usize leapcnt = cast::saturate<usize>(big_endian(b, at + 28, 4));
@@ -453,7 +404,7 @@ namespace std::time {
             usize charcnt = cast::saturate<usize>(big_endian(b, at + 40, 4));
             if (typecnt == 0) { return false; }
             usize size = self_block_size(b, at, time_size);
-            if (at + 44 + size > b.len()) { return false; }
+            if (at + 44 + size > b.length()) { return false; }
             mut usize p = at + 44;
             mut usize i = 0;
             while (i < timecnt) {
@@ -482,11 +433,11 @@ namespace std::time {
             }
             if (!first_set) { this.first_offset = cast::truncate<i32>(this.kind_info[0] >> 1); }
             p += typecnt * 6 + charcnt + leapcnt * (time_size + 4) + isstdcnt + isutcnt;
-            if (time_size == 8 && p < b.len() && b[p] == 10) {   // the footer: "\n" TZ "\n"
+            if (time_size == 8 && p < b.length() && b[p] == 10) {   // the footer: "\n" TZ "\n"
                 usize begin = p + 1;
                 mut usize end = begin;
-                while (end < b.len() && b[end] != 10) { end += 1; }
-                if (end < b.len() && end > begin) {
+                while (end < b.length() && b[end] != 10) { end += 1; }
+                if (end < b.length() && end > begin) {
                     mut std::string text = std::string::with_capacity(end - begin);
                     mut usize k = begin;
                     while (k < end) {
@@ -507,7 +458,7 @@ namespace std::time {
 
     // The size of a TZif data block after its 44-byte header at `at`.
     private usize self_block_size(std::darray<u8>& b, usize at, usize time_size) {
-        if (at + 44 > b.len()) { return 0; }
+        if (at + 44 > b.length()) { return 0; }
         usize isutcnt = cast::saturate<usize>(big_endian(b, at + 20, 4));
         usize isstdcnt = cast::saturate<usize>(big_endian(b, at + 24, 4));
         usize leapcnt = cast::saturate<usize>(big_endian(b, at + 28, 4));

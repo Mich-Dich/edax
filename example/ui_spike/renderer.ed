@@ -18,7 +18,7 @@ namespace ui {
         unsafe {
             u32 shader = f.glCreateShader(kind);
             std::raw_ptr<u8> text = source.as_ptr();
-            i32 length = cast::saturate<i32>(source.len());
+            i32 length = cast::saturate<i32>(source.length());
             f.glShaderSource(shader, 1, &text, &length);
             f.glCompileShader(shader);
             mut i32 ok = 0;
@@ -89,12 +89,12 @@ namespace ui {
                 fns.glBindTexture(gl::GL_TEXTURE_2D, this.font);
                 fns.glBindVertexArray(this.vao);
                 fns.glBindBuffer(gl::GL_ARRAY_BUFFER, this.vbo);
-                fns.glBufferData(gl::GL_ARRAY_BUFFER, cast::saturate<isize>(list.vertices.len() * std::size_of<vertex>()),
+                fns.glBufferData(gl::GL_ARRAY_BUFFER, cast::saturate<isize>(list.vertices.length() * std::size_of<vertex>()),
                                cast::reinterpret<std::raw_ptr<u8>>(&list.vertices[0]), gl::GL_STREAM_DRAW);
                 fns.glBindBuffer(gl::GL_ELEMENT_ARRAY_BUFFER, this.ebo);
-                fns.glBufferData(gl::GL_ELEMENT_ARRAY_BUFFER, cast::saturate<isize>(list.indices.len() * 4),
+                fns.glBufferData(gl::GL_ELEMENT_ARRAY_BUFFER, cast::saturate<isize>(list.indices.length() * 4),
                                cast::reinterpret<std::raw_ptr<u8>>(&list.indices[0]), gl::GL_STREAM_DRAW);
-                fns.glDrawElements(gl::GL_TRIANGLES, cast::saturate<i32>(list.indices.len()), gl::GL_UNSIGNED_INT, nullptr);
+                fns.glDrawElements(gl::GL_TRIANGLES, cast::saturate<i32>(list.indices.length()), gl::GL_UNSIGNED_INT, nullptr);
                 fns.glBindVertexArray(0);
                 fns.glDisable(gl::GL_BLEND);
             }
@@ -110,7 +110,7 @@ namespace ui {
                 this.f.glReadPixels(0, 0, cast::saturate<i32>(fb.width), cast::saturate<i32>(fb.height), gl::GL_RGBA, gl::GL_UNSIGNED_BYTE,
                                     cast::reinterpret<std::raw_ptr<mut u8>>(mut &bottom_up[0]));
             }
-            mut std::darray<u8> top_down = std::darray<u8>::with_capacity(bottom_up.len());
+            mut std::darray<u8> top_down = std::darray<u8>::with_capacity(bottom_up.length());
             for (usize y : 0..cast<usize>(fb.height)) {
                 usize from = (cast<usize>(fb.height) - 1 - y) * row;
                 for (usize i : 0..row) {

@@ -6,7 +6,7 @@ i32 main() {
     std::str line = "  Ada Lovelace,36,1234.5  ";
     std::str t = line.trim();
     std::darray<std::str> parts = t.split(',');
-    std::println(f"[{t}] {parts.len()} [{parts[0]}] [{parts[1]}] [{parts[2]}]");
+    std::println(f"[{t}] {parts.length()} [{parts[0]}] [{parts[1]}] [{parts[2]}]");
     u32 age = parts[1].parse<u32>().value_or(0);
     f64 salary = parts[2].parse<f64>().value_or(0.0);
     bool ada = parts[0].starts_with("Ada");

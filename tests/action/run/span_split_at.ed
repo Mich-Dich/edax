@@ -7,6 +7,6 @@ std::exit_code main() {
     left[0] = 50;
     right[0] = 40;
     auto (a, b) = items.as_span().split_at(3);
-    std::println(f"{items.len()} {a.len()} {b.len()} {items[0]} {items[2]} {b[0]}");
+    std::println(f"{items.length()} {a.length()} {b.length()} {items[0]} {items[2]} {b[0]}");
     return std::exit_code::success;
 }

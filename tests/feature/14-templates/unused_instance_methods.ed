@@ -3,7 +3,7 @@ import std;
 struct item { u32 n = 0; }
 
 void f(std::darray<std::unique_ptr<item>> list, item plain) {
-    u32 count = cast::truncate<u32>(list.len());     // fine: len() compiles for any T
+    u32 count = cast::truncate<u32>(list.length());     // fine: length() compiles for any T
     auto copy = list.clone();                         //~ error[E4214]: 'std::darray<std::unique_ptr<item>>::clone' does not compile
     u32 bad = plain->n;                               //~ error[E4074]: '->' needs a pointer
 }

@@ -3,9 +3,9 @@ import std;
 
 @std::no_checks_left
 void add_into(mut std::darray<f32>& out, std::darray<f32>& a, std::darray<f32>& b) {
-    usize n = out.len();
-    std::assume(a.len() == n);            // checked once per call, then known
-    std::assume(b.len() == n);
+    usize n = out.length();
+    std::assume(a.length() == n);            // checked once per call, then known
+    std::assume(b.length() == n);
     for (usize i : 0..n) { out[i] = a[i] + b[i]; }
 }
 

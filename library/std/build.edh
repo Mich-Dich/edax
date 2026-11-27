@@ -149,6 +149,21 @@ namespace std::build {
         std::build::program program = std::build::program{};
     }
 
+    // `g.add_archive`: a folder of the project packed into one archive that
+    // std::filesystem::archive reads, as `edaxc pack` writes it (filesystem.md, "Archives").
+    view struct archive_spec {
+        // The archive's file name: "game.pak".
+        std::static_str name = "";
+        // The folder packed, relative to the project: "assets".
+        std::static_str from = "";
+        // Files left out, relative to `from`: `*` within a name, `**` across folders; a pattern
+        // without `/` matches a name in any folder ("*.psd").
+        std::span<std::static_str> exclude = [];
+        // Where the archive goes: a pattern like `g.output_dir`'s; "" for the project's output
+        // folder, next to its programs.
+        std::static_str output_dir = "";
+    }
+
     // A library installed on the system: linked as `-l<name>`, from `<root>/lib` when given.
     struct system_library {
         std::static_str name = "";
@@ -406,6 +421,9 @@ namespace std::build {
         compile_time std::build::path output_path(std::build::path file);
         // A step: `program` run with the arguments added to it.
         compile_time std::build::step add_step(std::build::step_spec spec) mut;
+        // A step that packs a folder into an archive; it runs again when a file of the folder
+        // changes. `g.depends_on(game, pak)` makes it part of building `game`.
+        compile_time std::build::step add_archive(std::build::archive_spec spec) mut;
         compile_time void add_argument(std::build::step s, std::static_str argument) mut;
         compile_time void add_argument(std::build::step s, std::build::path argument) mut;
         // A file the step reads: the step runs again when it changes.

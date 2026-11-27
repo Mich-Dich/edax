@@ -64,7 +64,7 @@ seen frame_of(mut im::context& ctx, mut player& p, ui::input in, bool with_form)
         }
         f.finish();
     }
-    out.drawn = ctx.draw_data().vertices.len();
+    out.drawn = ctx.draw_data().vertices.length();
     return out;
 }
 

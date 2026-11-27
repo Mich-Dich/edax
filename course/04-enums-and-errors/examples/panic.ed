@@ -10,7 +10,7 @@ i32 main() {
     noisy n = noisy{};
     std::array<u32, 3> xs = [1, 2, 3];
     std::println(f"{xs.get(7).is_some()}");   // get(i) asks: an std::option
-    usize i = xs.len() + 4;
+    usize i = xs.length() + 4;
     std::println(f"{xs[i]}");                 // [i] out of bounds: a panic
     return 0;
 }

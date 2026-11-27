@@ -1,0 +1,68 @@
+exit: 0
+--- stdout
+abstract	keyword		
+auto	keyword		
+bit	keyword		
+bool	keyword		
+break	keyword		
+c	local	shapes::circle c	
+cast	keyword		
+char	keyword		
+class	keyword		
+compile_time	keyword		
+continue	keyword		
+deduce	keyword		
+default	keyword		
+else	keyword		
+enum	keyword		
+extern	keyword		
+f128	keyword		
+f16	keyword		
+f32	keyword		
+f64	keyword		
+false	keyword		
+for	keyword		
+i128	keyword		
+i16	keyword		
+i32	keyword		
+i64	keyword		
+i8	keyword		
+if	keyword		
+import	keyword		
+interface	keyword		
+isize	keyword		
+main	function	void main()	
+match	keyword		
+move	keyword		
+mut	keyword		
+namespace	keyword		
+never	keyword		
+nullptr	keyword		
+override	keyword		
+private	keyword		
+protected	keyword		
+public	keyword		
+r	local	f32 r	
+return	keyword		
+run_time	keyword		
+shapes	namespace	namespace shapes	
+static	keyword		
+std	namespace	namespace std	
+struct	keyword		
+template	keyword		
+this	keyword		
+thread_local	keyword		
+total	local	u32 total	
+true	keyword		
+type	keyword		
+u128	keyword		
+u16	keyword		
+u32	keyword		
+u64	keyword		
+u8	keyword		
+unsafe	keyword		
+usize	keyword		
+virtual	keyword		
+void	keyword		
+while	keyword		
+--- stderr

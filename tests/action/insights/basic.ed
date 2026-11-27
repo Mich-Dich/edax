@@ -15,7 +15,7 @@ std::exit_code main() {
     std::string other = move name;
     big b = big{ .a = 1.0 };
     f64 t = sum(b);
-    u32 count = cast::truncate<u32>(list.len());
+    u32 count = cast::truncate<u32>(list.length());
     if (count) {
         std::string tmp = greet(other);
     }

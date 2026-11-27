@@ -83,7 +83,7 @@ std::exit_code main(std::span<std::str> args) {
     for (employee& e : list) {
         std::println(f"{e.name:<20} {e.age:>3} {{literal}} {std::size_of<u32>()}");
     }
-    for (usize i : 0..list.len()) { }
+    for (usize i : 0..list.length()) { }
 
     auto inc = [mut &flags]() { flags += 1; };
     std::str label = match (flags) {

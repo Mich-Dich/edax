@@ -77,6 +77,6 @@ i32 main() {
     for (u32 i : 0..10) { data.push(cast::truncate<u8>(i * 10)); }
     std::thread_pool::task<std::darray<u8>> t = start_compress(pool, move data);
     std::darray<u8> done = t.join();
-    std::println(f"compressed {done.len()} {done[9]} threads {pool.thread_count()}");
+    std::println(f"compressed {done.length()} {done[9]} threads {pool.thread_count()}");
     return 0;
 }

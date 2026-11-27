@@ -16,9 +16,9 @@ i32 main() {
     u32 parts = 2;
     std::println(f"{total / parts} {cast<f64>(total) / cast<f64>(parts)}");
 
-    // Lengths and indices are usize, and the method is len(), not size().
+    // Lengths and indices are usize, and the method is length(), not size().
     std::array<u32, 3> xs = [10, 20, 30];
-    usize n = xs.len();
+    usize n = xs.length();
     std::println(f"{n} items, the last is {xs[n - 1]}");
     return 0;
 }

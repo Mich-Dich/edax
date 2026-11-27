@@ -16,7 +16,7 @@ Every method of `std::str` works on `std::string` and literals too (they convert
 
 | Method | Gives |
 |---|---|
-| `len()`, `is_empty()` | length in **bytes** |
+| `length()`, `is_empty()` | length in **bytes** |
 | `trim()` | a `std::str` without the surrounding whitespace |
 | `starts_with(s)`, `ends_with(s)`, `contains(s)` | `bool` |
 | `find(s)` | `std::option<usize>`: the byte offset of the first match |

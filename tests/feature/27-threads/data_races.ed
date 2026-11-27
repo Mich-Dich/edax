@@ -9,8 +9,8 @@ void counters() {
 }
 
 void readers(mut std::darray<u32>& list) {
-    std::thread::scoped_handle<usize> a = std::thread::spawn([&list]() { return list.len(); });
-    std::thread::scoped_handle<usize> b = std::thread::spawn([&list]() { return list.len(); });   // shared borrows may overlap
+    std::thread::scoped_handle<usize> a = std::thread::spawn([&list]() { return list.length(); });
+    std::thread::scoped_handle<usize> b = std::thread::spawn([&list]() { return list.length(); });   // shared borrows may overlap
     list.push(1);                               //~ error[E5022]: cannot call mut method 'push' on 'list' while 'a' borrows it
     usize n = a.join() + b.join();
     list.push(2);                               // joined: no longer borrowed

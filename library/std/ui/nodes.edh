@@ -598,11 +598,9 @@ namespace std::ui::nodes {
         static graph<K> make();
         // A graph from the text of to_text(); the error names what couldn't be read.
         static std::result<graph<K>, std::string> from_text(std::str text);
-        static std::result<graph<K>, std::string> load(std::str path);
         // The graph as text: one line per node (its kind, place and every field but the outputs),
         // link and frame.
         std::string to_text();
-        std::result<void, std::string> save(std::str path);
 
         // Adds a node at `at` (canvas units); returns its id.
         u64 add(K value, std::ui::vec2 at) mut;

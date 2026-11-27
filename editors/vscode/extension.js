@@ -40,6 +40,7 @@ function activate(context) {
         }),
     );
     context.subscriptions.push(vscode.languages.registerDefinitionProvider(EDAX_SELECTOR, new EdaxDefinitionProvider()));
+    context.subscriptions.push(vscode.languages.registerCompletionItemProvider(EDAX_SELECTOR, new EdaxCompletionProvider(), ":", "."));
     new InsightsController(context, { compilerPath, output });
 }
 
@@ -62,6 +63,49 @@ class EdaxDefinitionProvider {
         if (!match) return undefined;
         const target = path.resolve(path.dirname(file), match[1]);   // edaxc ran in the file's folder
         return new vscode.Location(vscode.Uri.file(target), new vscode.Position(Number(match[2]) - 1, Number(match[3]) - 1));
+    }
+}
+
+// --- suggestions ---------------------------------------------------------------------------------
+
+/**
+ * Suggestions while typing (after `::` and `.`, and on Ctrl+Space): `edaxc complete <file>
+ * <line>:<column> --stdin` gets the editor's text, so unsaved changes count, and prints one name
+ * per line: name, kind, declaration and doc separated by tabs.
+ */
+class EdaxCompletionProvider {
+    async provideCompletionItems(document, position, token, context) {
+        if (context && context.triggerCharacter === ":") {   // only after `::`, not a single `:`
+            const before = document.lineAt(position.line).text.slice(0, position.character);
+            if (!before.endsWith("::")) return undefined;
+        }
+        const file = document.uri.fsPath;
+        const folder = folderOf(file);
+        const args = ["complete", `--root=${projectRootOf(file)}`, file, `${position.line + 1}:${position.character + 1}`, "--stdin"];
+        const result = await run(compilerPath(folder), args, path.dirname(file), document.getText());
+        if (result.code !== 0 || token.isCancellationRequested) return undefined;
+        const unescape = (t) => t.replace(/\\(n|\\)/g, (_, c) => (c === "n" ? "\n" : "\\"));
+        const kinds = {
+            function: vscode.CompletionItemKind.Function, method: vscode.CompletionItemKind.Method,
+            field: vscode.CompletionItemKind.Field, local: vscode.CompletionItemKind.Variable,
+            parameter: vscode.CompletionItemKind.Variable, variable: vscode.CompletionItemKind.Variable,
+            global: vscode.CompletionItemKind.Variable, struct: vscode.CompletionItemKind.Struct,
+            class: vscode.CompletionItemKind.Class, interface: vscode.CompletionItemKind.Interface,
+            enum: vscode.CompletionItemKind.Enum, alternative: vscode.CompletionItemKind.EnumMember,
+            namespace: vscode.CompletionItemKind.Module, alias: vscode.CompletionItemKind.Module,
+            keyword: vscode.CompletionItemKind.Keyword, builtin: vscode.CompletionItemKind.Function,
+            type: vscode.CompletionItemKind.TypeParameter, annotation: vscode.CompletionItemKind.Property,
+        };
+        const items = [];
+        for (const line of result.stdout.split(/\r?\n/)) {
+            if (!line) continue;
+            const [name, kind, detail, doc] = line.split("\t");
+            const item = new vscode.CompletionItem(unescape(name), kinds[kind] ?? vscode.CompletionItemKind.Text);
+            if (detail) item.detail = unescape(detail);
+            if (doc) item.documentation = new vscode.MarkdownString(unescape(doc));
+            items.push(item);
+        }
+        return items;
     }
 }
 
@@ -280,12 +324,13 @@ async function buildProgram(config, folder) {
     return exe;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, input) {
     return new Promise((resolve) => {
-        cp.execFile(command, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+        const child = cp.execFile(command, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
             const code = error && typeof error.code === "number" ? error.code : error ? -1 : 0;
             resolve({ code, stdout: stdout || "", stderr: stderr || "", error: error && error.code === "ENOENT" ? error : undefined });
         });
+        if (input !== undefined && child.stdin) child.stdin.end(input);
     });
 }
 

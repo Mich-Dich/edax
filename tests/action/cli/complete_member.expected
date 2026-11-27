@@ -1,0 +1,5 @@
+exit: 0
+--- stdout
+area	method	f32 area()	The area inside it.
+radius	field	f32 radius	
+--- stderr

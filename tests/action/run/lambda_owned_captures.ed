@@ -3,7 +3,7 @@
 // std::function and a darray of them (spec 18).
 import std;
 std::function<usize(usize)> make_adder(std::string prefix) {
-    return [p = move prefix](usize n) { return p.len() + n; };
+    return [p = move prefix](usize n) { return p.length() + n; };
 }
 i32 main() {
     std::string name = std::string::from("hello");
@@ -14,6 +14,6 @@ i32 main() {
     mut std::darray<std::function<usize(usize)>> fs = default;
     fs.push(move add);
     fs.push(make_adder(std::string::from("xy")));
-    std::println(f"{fs.len()}");
+    std::println(f"{fs.length()}");
     return 0;
 }

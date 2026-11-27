@@ -1,0 +1,31 @@
+// RUN: edaxc run %s
+// A for loop with `auto` and with names for the parts of a tuple element: over a container
+// (references into it), a stream (values), a range, nested and with `mut`.
+import std;
+
+struct counter {
+    u32 i = 0;
+    std::option<(u32, std::string)> next() mut {
+        if (this.i >= 3) { return std::none; }
+        this.i += 1;
+        return std::some((this.i, std::format(f"item {this.i} with enough text to live on the heap")));
+    }
+}
+
+i32 main() {
+    mut std::darray<(std::string, u32)> pairs = default;
+    pairs.push((std::string::from("one, long enough to be on the heap"), 1));
+    pairs.push((std::string::from("two, long enough to be on the heap"), 2));
+    for (auto (name, n) : pairs) { std::println(f"{name} = {n}"); }
+    for ((std::string& name, u32 n) : pairs) { std::println(f"{name.length()} {n}"); }
+    for (mut auto (_, n) : pairs) { n += 10; }
+    for (auto (_, n) : pairs) { std::println(f"after mut: {n}"); }
+    for (auto p : pairs) { std::println(f"{p.1}"); }
+    for (auto (n, text) : counter{}) { std::println(f"{n}: {text}"); }
+    for ((u32 n, std::string text) : counter{}) { std::println(f"{n}: {text.length()}"); }
+    for (auto x : 0u32..3) { std::println(f"{x}"); }
+    for (auto (a, b) : pairs) {
+        for (auto (c, d) : pairs) { std::println(f"{b}{d}"); }
+    }
+    return 0;
+}

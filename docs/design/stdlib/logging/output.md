@@ -132,26 +132,19 @@ The standard library provides:
 | Sink | Writes to | Options and behaviour |
 |---|---|---|
 | `std::log::console::make()`, `make_with(colors)` | stdout; `error` and `fatal` to stderr | `std::log::colors::automatic` (colors when stdout and stderr are terminals), `always`, `off`. Skips panic records, which the runtime prints itself. `flush()` flushes the C streams |
-| `std::log::file::create(file_options&)` | A file, kept open; missing directories above it are created | `.path`, `.mode = truncate / append`, `.flush_at` (default `warn`: those records are flushed at once), `.buffer_size` (default 64 KiB: flushed when that much is pending), `.rotation` (below), `.format = text / json_lines` (`json_lines`: one JSON object per record, with the time, level, location, message and each field as a key). Writes "log started" / "log stopped" records with the date and time |
+| `std::log::writer_sink::make(writer, writer_options)` | Any `std::writer`: a `std::file`, a `std::filesystem::rotating_file`, ... The program opens it, so where the records go is the file system's business (mount tables, missing folders, rotation) | `.flush_at` (default `warn`: those records are flushed at once), `.format = text / json_lines` (`json_lines`: one JSON object per record, with the time, level, location, message and each field as a key), `.banners` (default `true`: "log started" / "log stopped" lines with the date and time; text only) |
 | `std::log::memory::make(history&)` | A `std::log::history` | `history::make(capacity)` keeps the last lines; `snapshot()` copies them from any thread (an in-game console) |
 
 Any other destination (network, GUI, an engine plugin) is a type implementing `std::log::sink`.
 
-**Rotation** of a file sink is set with `.rotation`:
+**Rotation** belongs to the file, not the sink: a `std::filesystem::rotating_file` moves on to a new file by size or by day (see [Files](../io/filesystem.md)), and a writer sink writes records to it:
 ```edax
-namespace std::log {
-    struct size_rotation {
-        u64 max_bytes;          // start a new file when the current one would grow past this
-        u32 keep = 5;           // older files to keep: app.1.log (newest) ... app.5.log
-    }
-    enum rotation : u8 {
-        none,                   // the default: one file
-        by_size(std::log::size_rotation),
-        daily(u32),             // a new file at local midnight; the payload is how many old files to keep
-    }
-}
+std::filesystem::rotating_file out = std::filesystem::rotating_file::open(log_dir / "app.log", std::filesystem::rotating_options{
+    .rotation = std::filesystem::rotation::by_size(std::filesystem::size_rotation{ .max_bytes = 10 * 1024 * 1024, .keep = 5 }),
+})?;
+_ = logs.add(std::log::writer_sink::make(move out, std::log::writer_options{}), std::log::sink_options{ .pattern = file_pattern });
 ```
-Rotation happens on the log thread between two records, so a record is never split across files.
+The sink writes one record per call, so rotation happens between two records and a record is never split across files.
 
 ### The session
 ```edax
@@ -175,11 +168,11 @@ std::log::sink_id console = logs.add(std::log::console::make(), std::log::sink_o
 Lines at the bottom of the console that are **rewritten in place** while records keep scrolling above them: a progress line, a checklist (edaxc's build output works this way, see [Build output](../../build/build-output.md)).
 ```edax
 mut std::log::status progress = logs.status();
-for (usize i : 0..assets.len()) {
-    progress.set(f"importing [{i + 1}/{assets.len()}] {assets[i].name}");
+for (usize i : 0..assets.length()) {
+    progress.set(f"importing [{i + 1}/{assets.length()}] {assets[i].name}");
     import(assets[i]);                                   // std::log::info(...) inside prints above the line
 }
-progress.finish(f"imported {assets.len()} assets");     // the live line becomes one ordinary record
+progress.finish(f"imported {assets.length()} assets");     // the live line becomes one ordinary record
 ```
 ```edax
 namespace std::log {
@@ -229,18 +222,16 @@ private compile_time std::log::pattern file_pattern = std::log::pattern::from(
 
 std::exit_code main(std::span<std::str> args) {
     std::thread::set_current_name("main");
-    std::log::info(f"starting with {args.len()} arguments");                 // kept until a sink exists
+    std::log::info(f"starting with {args.length()} arguments");                 // kept until a sink exists
 
     mut std::log::session logs = std::log::start(std::log::options{ .queue_capacity = 16 * 1024 });
     _ = logs.add(std::log::console::make(), std::log::sink_options{
         .min_level = std::log::level::info,
         .pattern   = console_pattern,
     });
-    std::log::file_options file_options = std::log::file_options{
-        .path     = std::filesystem::executable_dir() / "logs" / "gluttony.log",
-        .flush_at = std::log::level::warn,
-    };
-    _ = logs.add(std::log::file::create(file_options).expect("can't open the log file"),
+    std::filesystem::rotating_file log_file = std::filesystem::rotating_file::open(
+        std::filesystem::executable_dir() / "logs" / "gluttony.log", std::filesystem::rotating_options{}).expect("can't open the log file");
+    _ = logs.add(std::log::writer_sink::make(move log_file, std::log::writer_options{ .flush_at = std::log::level::warn }),
                  std::log::sink_options{ .pattern = file_pattern });
 
     mut engine::application app = engine::application::make(args);

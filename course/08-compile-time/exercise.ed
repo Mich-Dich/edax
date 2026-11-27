@@ -57,7 +57,7 @@ i32 main() {
     std::static_str mode = "?";
     std::println(f"built as {mode}");
 
-    u32 user_value = cast::truncate<u32>(message.len()) * 20;   // a run-time value: 180
+    u32 user_value = cast::truncate<u32>(message.length()) * 20;   // a run-time value: 180
     std::println(f"{percent_to_byte(user_value)}");     // the run-time half of the check fires
     return 0;
 }

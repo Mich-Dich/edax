@@ -2,7 +2,7 @@
 import std;
 
 void copy_into(std::span<mut u32> to, std::span<u32> from) {
-    for (usize i : 0..to.len()) { to[i] = from[i]; }
+    for (usize i : 0..to.length()) { to[i] = from[i]; }
 }
 
 i32 main() {

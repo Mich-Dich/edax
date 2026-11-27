@@ -19,6 +19,7 @@ u32 low = both.0;                                   // elements by position
 - **Destructuring assignment:** `(r.lo, r.hi) = split(x);` assigns a tuple's elements to places that exist already, left to right; the elements are moved in, and `_` skips one. `(a, b) = (b, a);` swaps.
 - **Destructuring declaration:** `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`. Each name may be `mut`: `(mut u32 lo, u32 hi) = ...`. Destructuring **consumes** the tuple, so its elements are moved into the new variables; this is how a function hands back two owned or two mutable things at once.
 - `_` skips an element: `(u32 lo, _) = min_max(values);`.
+- **In a `for` loop:** `for (auto (name, age) : people)` names the parts of each element; over a container the names refer into the element instead of consuming it (see [Control Flow](control-flow.md)).
 - A tuple is a **copy type** if all its elements are, and a **view** if any element is (see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)).
 - `==` and `<=>` compare element by element, when every element supports them.
 - **Patterns:** `match (pair) { (0, _) => ..., (x, y) if x == y => ..., _ => ..., }`.

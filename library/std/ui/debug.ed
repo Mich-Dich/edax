@@ -4,8 +4,8 @@ namespace std::ui::debug {
     struct frame_stats {
         void record(std::ui::immediate::context& ctx) mut {
             this.record_seconds(ctx.dt);
-            this.vertices = ctx.output.vertices.len();
-            this.draw_calls = ctx.output.commands.len();
+            this.vertices = ctx.output.vertices.length();
+            this.draw_calls = ctx.output.commands.length();
         }
 
         void record_seconds(f32 seconds) mut {
@@ -41,7 +41,7 @@ namespace std::ui::debug {
         std::darray<log_line> snapshot() {
             mut std::darray<log_line> out = default;
             std::mutex_guard<log_lines> g = this.shared->lock();
-            usize n = g->lines.len();
+            usize n = g->lines.length();
             for (usize i : 0..n) {
                 log_line& l = g->lines[(g->next + i) % n];
                 if (l.number > g->cleared_below) {
@@ -84,7 +84,7 @@ namespace std::ui::debug {
             g->total += 1;
             g->per_level[level_index(r.level)] += 1;
             log_line entry = log_line{ .level = r.level, .text = std::string::from(line), .number = g->total };
-            if (g->lines.len() < g->capacity) {
+            if (g->lines.length() < g->capacity) {
                 g->lines.push(move entry);
             } else {
                 usize at = g->next;
@@ -151,12 +151,12 @@ namespace std::ui::debug {
         if (part.is_empty()) {
             return true;
         }
-        if (part.len() > text.len()) {
+        if (part.length() > text.length()) {
             return false;
         }
-        for (usize i : 0..text.len() - part.len() + 1) {
+        for (usize i : 0..text.length() - part.length() + 1) {
             mut bool same = true;
-            for (usize k : 0..part.len()) {
+            for (usize k : 0..part.length()) {
                 if (fold(text.byte(i + k)) != fold(part.byte(k))) {
                     same = false;
                     break;
@@ -191,7 +191,7 @@ namespace std::ui::debug {
         mut std::string search = default;
         {
             mut std::ui::immediate::widget_storage& st = s.storage(panel);
-            if (st.numbers.len() < slot_count) {
+            if (st.numbers.length() < slot_count) {
                 st.numbers.resize(slot_count, 0.0);
                 st.numbers[slot_level] = 2.0;
             }
@@ -228,8 +228,8 @@ namespace std::ui::debug {
         std::darray<log_line> all = feed.snapshot();
         std::string filter = s.storage(panel).text.clone();
         std::log::level floor = level_of(min_level);
-        mut std::darray<usize> shown = std::darray<usize>::with_capacity(all.len());
-        for (usize i : 0..all.len()) {
+        mut std::darray<usize> shown = std::darray<usize>::with_capacity(all.length());
+        for (usize i : 0..all.length()) {
             if (level_index(all[i].level) >= level_index(floor) && contains_folded(all[i].text.as_str(), filter.as_str())) {
                 shown.push(i);
             }
@@ -238,7 +238,7 @@ namespace std::ui::debug {
         f32 row = (code.size * code.line_height).round();
         f32 wanted = if (height > 0.0) { height * t.density } else { s.available_height().max(60.0) };
         std::ui::rect r = s.allocate(std::ui::vec2{ .x = s.available_width(), .y = wanted });
-        f32 content = row * cast::round<f32>(shown.len());
+        f32 content = row * cast::round<f32>(shown.length());
         f32 most = (content - r.height + 8.0).max(0.0);
         // Scrolled up from the bottom: 0 stays at the newest line.
         mut f32 up = 0.0;
@@ -260,7 +260,7 @@ namespace std::ui::debug {
         g.list.push_clip(r);
         f32 top = r.bottom() - 4.0 - content + up;
         f32 pad = t.space.s;
-        for (usize k : 0..shown.len()) {
+        for (usize k : 0..shown.length()) {
             f32 y = top + row * cast::round<f32>(k);
             if (y + row < r.y || y > r.bottom()) {
                 continue;

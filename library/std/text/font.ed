@@ -79,11 +79,11 @@ namespace std::text {
     class font {
     public:
         static std::result<font, font_error> parse(std::span<u8> data) {
-            mut std::darray<u8> bytes = std::darray<u8>::with_capacity(data.len());
+            mut std::darray<u8> bytes = std::darray<u8>::with_capacity(data.length());
             for (u8 b : data) {
                 bytes.push(b);
             }
-            if (bytes.len() < 12) {
+            if (bytes.length() < 12) {
                 return std::error(font_error::not_truetype);
             }
             u32 version = be32(bytes, 0);
@@ -91,7 +91,7 @@ namespace std::text {
                 return std::error(font_error::not_truetype);
             }
             usize tables = cast<usize>(be16(bytes, 4));
-            if (12 + tables * 16 > bytes.len()) {
+            if (12 + tables * 16 > bytes.length()) {
                 return std::error(font_error::damaged);
             }
             mut font f = font{};
@@ -100,7 +100,7 @@ namespace std::text {
                 u32 tag = be32(bytes, record);
                 usize offset = cast<usize>(be32(bytes, record + 8));
                 usize length = cast<usize>(be32(bytes, record + 12));
-                if (offset + length > bytes.len()) {
+                if (offset + length > bytes.length()) {
                     return std::error(font_error::damaged);
                 }
                 if (tag == tag_head) { f.head = offset; }
@@ -131,7 +131,7 @@ namespace std::text {
                 u16 encoding = be16(bytes, record + 2);
                 usize at = f.cmap + cast<usize>(be32(bytes, record + 4));
                 bool unicode = platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10));
-                if (!unicode || at + 4 > bytes.len()) {
+                if (!unicode || at + 4 > bytes.length()) {
                     continue;
                 }
                 u16 format = be16(bytes, at);
@@ -306,7 +306,7 @@ namespace std::text {
                 return field;
             }
             // The outline in pixels, y up.
-            mut std::darray<outline_point> p = std::darray<outline_point>::with_capacity(o.points.len());
+            mut std::darray<outline_point> p = std::darray<outline_point>::with_capacity(o.points.length());
             for (outline_point q : o.points) {
                 p.push(outline_point{ .x = q.x * pixel_size, .y = q.y * pixel_size });
             }
@@ -375,7 +375,7 @@ namespace std::text {
         // Appends the contours of `glyph`, transformed, to `out`; composite glyphs recurse.
         void read_glyph(u16 glyph, component_transform t, u32 depth, mut raw_glyph& out) {
             (usize at, usize length) = this.glyph_range(glyph);
-            if (length < 10 || depth > 8 || at + length > this.data.len()) {
+            if (length < 10 || depth > 8 || at + length > this.data.length()) {
                 return;
             }
             std::darray<u8>& d = this.data;
@@ -447,7 +447,7 @@ namespace std::text {
             usize instructions = cast<usize>(be16(d, ends + contours * 2));
             mut usize p = ends + contours * 2 + 2 + instructions;
             mut std::darray<u8> flags = std::darray<u8>::with_capacity(count);
-            while (flags.len() < count) {
+            while (flags.length() < count) {
                 u8 f = d[p];
                 p += 1;
                 flags.push(f);
@@ -455,7 +455,7 @@ namespace std::text {
                     usize repeats = cast<usize>(d[p]);
                     p += 1;
                     for (usize r : 0..repeats) {
-                        if (flags.len() < count) {
+                        if (flags.length() < count) {
                             flags.push(f);
                         }
                     }
@@ -475,7 +475,7 @@ namespace std::text {
                 xs.push(x);
             }
             mut i32 y = 0;
-            usize first = out.points.len();
+            usize first = out.points.length();
             for (usize i : 0..count) {
                 u8 f = flags[i];
                 if ((f & 4) != 0) {
@@ -534,7 +534,7 @@ namespace std::text {
                 seq.push(raw_point{ .x = (p.x + q.x) * 0.5, .y = (p.y + q.y) * 0.5, .on_curve = true });
             }
         }
-        usize m = seq.len();
+        usize m = seq.length();
         mut usize s = 0;
         while (s < m && !seq[s].on_curve) {
             s += 1;
@@ -543,7 +543,7 @@ namespace std::text {
             return;
         }
         f32 inv = 1.0 / units_per_em;
-        usize first_point = out.points.len();
+        usize first_point = out.points.length();
         mut raw_point current = seq[s];
         out.points.push(outline_point{ .x = current.x * inv, .y = current.y * inv });
         mut usize j = 1;
@@ -561,11 +561,11 @@ namespace std::text {
             }
         }
         // The walk ends on the first point again: the contour is closed implicitly.
-        if (out.points.len() > first_point + 1) {
+        if (out.points.length() > first_point + 1) {
             _ = out.points.pop();
         }
-        if (out.points.len() >= first_point + 3) {
-            out.contour_ends.push(cast::truncate<u32>(out.points.len()));
+        if (out.points.length() >= first_point + 3) {
+            out.contour_ends.push(cast::truncate<u32>(out.points.length()));
         } else {
             out.points.truncate(first_point);
         }

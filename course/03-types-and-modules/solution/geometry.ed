@@ -17,20 +17,20 @@ namespace geo {
 
         void add(vec2 p) mut { points.push(p); }
 
-        usize corners() { return points.len(); }
+        usize corners() { return points.length(); }
 
         f32 area() {
             mut f32 twice = 0.0;
-            for (usize i : 0..points.len()) {
-                twice += points[i].cross(points[next(i, points.len())]);
+            for (usize i : 0..points.length()) {
+                twice += points[i].cross(points[next(i, points.length())]);
             }
             return twice.abs() / 2.0;
         }
 
         f32 perimeter() {
             mut f32 sum = 0.0;
-            for (usize i : 0..points.len()) {
-                sum += (points[next(i, points.len())] - points[i]).length();
+            for (usize i : 0..points.length()) {
+                sum += (points[next(i, points.length())] - points[i]).length();
             }
             return sum;
         }

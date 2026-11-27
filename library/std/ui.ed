@@ -238,7 +238,7 @@ namespace std::ui {
             return (cast::checked<char>(cast<u32>(b0)).value_or('?'), 1);
         }
         usize n = if ((b0 >> 5) == 6) { 2 } else if ((b0 >> 4) == 14) { 3 } else if ((b0 >> 3) == 30) { 4 } else { 0 };
-        if (n == 0 || at + n > text.len()) {
+        if (n == 0 || at + n > text.length()) {
             return ('\u{fffd}', 1);
         }
         mut u32 code = cast<u32>(b0) & (if (n == 2) { 0x1fu32 } else if (n == 3) { 0x0fu32 } else { 0x07u32 });
@@ -276,7 +276,7 @@ namespace std::ui {
             mut f32 x = 0.0;
             mut char previous = '\0';
             mut usize at = 0;
-            while (at < text.len()) {
+            while (at < text.length()) {
                 (char c, usize n) = char_at(text, at);
                 x += this.advance(style.face, previous, c, style.size) + style.tracking * style.size;
                 previous = c;
@@ -308,7 +308,7 @@ namespace std::ui {
             mut usize break_at = 0;
             mut f32 break_width = 0.0;
             mut bool has_break = false;
-            while (at < text.len()) {
+            while (at < text.length()) {
                 (char c, usize n) = char_at(text, at);
                 if (c == '\n') {
                     lines.push(text_line{ .start = start, .end = at, .width = x });
@@ -337,7 +337,7 @@ namespace std::ui {
                 previous = c;
                 at += n;
             }
-            lines.push(text_line{ .start = start, .end = text.len(), .width = x });
+            lines.push(text_line{ .start = start, .end = text.length(), .width = x });
             return lines;
         }
 
@@ -468,7 +468,7 @@ namespace std::ui {
             if (this.clip_stack.is_empty()) {
                 return this.screen;
             }
-            return this.clip_stack[this.clip_stack.len() - 1];
+            return this.clip_stack[this.clip_stack.length() - 1];
         }
 
         void fill(rect r, color c, f32 radius) mut {
@@ -488,12 +488,12 @@ namespace std::ui {
         }
 
         void fill_between_gradient(std::span<vec2> upper, std::span<vec2> lower, color top, color bottom) mut {
-            usize n = upper.len().min(lower.len());
+            usize n = upper.length().min(lower.length());
             if (n < 2) {
                 return;
             }
             use_command(mut this, texture{}, false);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             u32 high = top.packed();
             u32 low = bottom.packed();
             for (usize i : 0..n) {
@@ -576,7 +576,7 @@ namespace std::ui {
             f32 ex = hx + 1.0;
             f32 ey = hy + 1.0;
             use_command(mut this, texture{}, false);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             u32 packed = c.packed();
             f32 kind = cast<f32>(cast<u8>(shape_kind::box));
             std::array<f32, 4> sx = [-1.0, 1.0, 1.0, -1.0];
@@ -596,7 +596,7 @@ namespace std::ui {
         void image(texture picture, rect r, rect uv, color tint, f32 radius) mut {
             shape_kind kind = if (radius > 0.0) { shape_kind::textured_box } else { shape_kind::textured };
             use_command(mut this, picture, true);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             vec2 center = r.center();
             vec2 half = r.size() * 0.5;
             u32 packed = tint.packed();
@@ -609,7 +609,7 @@ namespace std::ui {
         }
 
         void fill_polygon(std::span<vec2> points, color c) mut {
-            usize n = points.len();
+            usize n = points.length();
             if (n < 3) {
                 return;
             }
@@ -624,7 +624,7 @@ namespace std::ui {
             centroid = centroid / cast::round<f32>(n);
             f32 outward = if (doubled_area >= 0.0) { 1.0 } else { -1.0 };
             use_command(mut this, texture{}, false);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             u32 inside = c.packed();
             u32 outside = c.with_alpha(0.0).packed();
             this.vertices.push(solid_vertex(centroid, inside));
@@ -655,12 +655,12 @@ namespace std::ui {
         }
 
         void fill_between(std::span<vec2> upper, std::span<vec2> lower, color c) mut {
-            usize n = upper.len().min(lower.len());
+            usize n = upper.length().min(lower.length());
             if (n < 2) {
                 return;
             }
             use_command(mut this, texture{}, false);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             u32 packed = c.packed();
             for (usize i : 0..n) {
                 this.vertices.push(solid_vertex(upper[i], packed));
@@ -679,7 +679,7 @@ namespace std::ui {
         }
 
         void stroke_polygon(std::span<vec2> points, bool closed, f32 width, color c) mut {
-            usize n = points.len();
+            usize n = points.length();
             if (n < 2) {
                 return;
             }
@@ -693,13 +693,13 @@ namespace std::ui {
 
         void polyline(std::span<vec2> points, f32 width, color c) mut {
             // Drop points on top of the one before: they have no direction.
-            mut std::darray<vec2> path = std::darray<vec2>::with_capacity(points.len());
+            mut std::darray<vec2> path = std::darray<vec2>::with_capacity(points.length());
             for (vec2 p : points) {
-                if (path.is_empty() || (p - path[path.len() - 1]).length() > 0.01) {
+                if (path.is_empty() || (p - path[path.length() - 1]).length() > 0.01) {
                     path.push(p);
                 }
             }
-            usize n = path.len();
+            usize n = path.length();
             if (n < 2) {
                 return;
             }
@@ -710,7 +710,7 @@ namespace std::ui {
             u32 inside = tone.packed();
             u32 outside = tone.with_alpha(0.0).packed();
             use_command(mut this, texture{}, false);
-            u32 base = cast::truncate<u32>(this.vertices.len());
+            u32 base = cast::truncate<u32>(this.vertices.length());
             for (usize i : 0..n) {
                 vec2 p = path[i];
                 vec2 before = if (i == 0) { (path[1] - path[0]).normalized() } else { (p - path[i - 1]).normalized() };
@@ -1078,9 +1078,9 @@ namespace std::ui {
         }
 
         void insert(u32 at, draw_list& other) mut {
-            u32 shift = cast::truncate<u32>(this.vertices.len());
-            u32 added = cast::truncate<u32>(other.indices.len());
-            u32 total = cast::truncate<u32>(this.indices.len());
+            u32 shift = cast::truncate<u32>(this.vertices.length());
+            u32 added = cast::truncate<u32>(other.indices.length());
+            u32 total = cast::truncate<u32>(this.indices.length());
             if (added == 0) {
                 return;
             }
@@ -1091,7 +1091,7 @@ namespace std::ui {
             for (vertex v : other.vertices) {
                 this.vertices.push(v);
             }
-            mut std::darray<u32> merged = std::darray<u32>::with_capacity(this.indices.len() + other.indices.len());
+            mut std::darray<u32> merged = std::darray<u32>::with_capacity(this.indices.length() + other.indices.length());
             for (u32 i : 0..at) {
                 merged.push(this.indices[cast<usize>(i)]);
             }
@@ -1131,8 +1131,8 @@ namespace std::ui {
         }
 
         void append(draw_list& other) mut {
-            u32 shift = cast::truncate<u32>(this.vertices.len());
-            u32 index_shift = cast::truncate<u32>(this.indices.len());
+            u32 shift = cast::truncate<u32>(this.vertices.length());
+            u32 index_shift = cast::truncate<u32>(this.indices.length());
             for (vertex v : other.vertices) {
                 this.vertices.push(v);
             }
@@ -1155,13 +1155,13 @@ namespace std::ui {
             mut f32 x = at.x;
             mut char previous = '\0';
             mut usize index = 0;
-            while (index < content.len()) {
+            while (index < content.length()) {
                 (char c, usize n) = char_at(content, index);
                 x += f.advance(style.face, previous, c, style.size) - f.advance(style.face, '\0', c, style.size);
                 atlas_glyph g = f.glyph(style.face, c);
                 if (g.width > 0.0) {
                     use_command(mut this, texture::font_atlas(), true);
-                    u32 base = cast::truncate<u32>(this.vertices.len());
+                    u32 base = cast::truncate<u32>(this.vertices.length());
                     f32 x0 = x + g.left * k;
                     f32 y0 = baseline + g.top * k;
                     f32 x1 = x0 + g.width * k;
@@ -1199,7 +1199,7 @@ namespace std::ui {
     private void use_command(mut draw_list& list, texture picture, bool textured) {
         rect clip = list.current_clip();
         if (!list.commands.is_empty()) {
-            usize last = list.commands.len() - 1;
+            usize last = list.commands.length() - 1;
             draw_command cmd = list.commands[last];
             bool same_clip = cmd.clip == clip;
             if (same_clip && (!textured || !list.texture_in_use || cmd.image == picture)) {
@@ -1213,7 +1213,7 @@ namespace std::ui {
         list.commands.push(draw_command{
             .clip = clip,
             .image = if (textured) { picture } else { texture{} },
-            .first_index = cast::truncate<u32>(list.indices.len()),
+            .first_index = cast::truncate<u32>(list.indices.length()),
         });
         list.texture_in_use = textured;
     }
@@ -1261,8 +1261,8 @@ namespace std::ui {
 
     // A polyline through the grid points x0, y0, x1, y1, ...
     private void icon_path(mut draw_list& l, rect q, std::span<f32> xy, bool closed, f32 w, color c) {
-        mut std::darray<vec2> points = std::darray<vec2>::with_capacity(xy.len() / 2);
-        for (usize i : 0..(xy.len() / 2)) {
+        mut std::darray<vec2> points = std::darray<vec2>::with_capacity(xy.length() / 2);
+        for (usize i : 0..(xy.length() / 2)) {
             points.push(grid(q, xy[2 * i], xy[2 * i + 1]));
         }
         l.stroke_polygon(points.as_span(), closed, w, c);
@@ -1290,7 +1290,7 @@ namespace std::ui {
 
     // `count` more indices in the last command.
     private void count_indices(mut draw_list& list, u32 count) {
-        usize last = list.commands.len() - 1;
+        usize last = list.commands.length() - 1;
         list.commands[last].index_count += count;
     }
 
@@ -1302,7 +1302,7 @@ namespace std::ui {
         list.indices.push(base);
         list.indices.push(base + 2);
         list.indices.push(base + 3);
-        usize last = list.commands.len() - 1;
+        usize last = list.commands.length() - 1;
         list.commands[last].index_count += 6;
     }
 
@@ -1313,7 +1313,7 @@ namespace std::ui {
             return;
         }
         use_command(mut list, texture{}, false);
-        u32 base = cast::truncate<u32>(list.vertices.len());
+        u32 base = cast::truncate<u32>(list.vertices.length());
         vec2 center = r.center();
         vec2 half = r.size() * 0.5;
         f32 rr = radius.min(half.x.min(half.y)).max(0.0);
@@ -1329,9 +1329,9 @@ namespace std::ui {
 
     std::string upper(std::str text) {
         std::str capitals = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        mut std::string out = std::string::with_capacity(text.len());
+        mut std::string out = std::string::with_capacity(text.length());
         mut usize i = 0;
-        while (i < text.len()) {
+        while (i < text.length()) {
             (_, usize n) = char_at(text, i);
             u8 b = text.byte(i);
             if (n == 1 && b >= 97 && b <= 122) {
@@ -1350,7 +1350,7 @@ namespace std::ui {
             return;
         }
         use_command(mut list, texture{}, false);
-        u32 base = cast::truncate<u32>(list.vertices.len());
+        u32 base = cast::truncate<u32>(list.vertices.length());
         vec2 center = r.center();
         vec2 half = r.size() * 0.5;
         f32 rr = radius.min(half.x.min(half.y)).max(0.0);
@@ -2314,11 +2314,11 @@ namespace std::ui {
 
     // The start of the character after the one at byte `at`.
     private usize next_boundary(std::str text, usize at) {
-        if (at >= text.len()) {
-            return text.len();
+        if (at >= text.length()) {
+            return text.length();
         }
         mut usize i = at + 1;
-        while (i < text.len() && (text.byte(i) & 0xc0) == 0x80) {
+        while (i < text.length() && (text.byte(i) & 0xc0) == 0x80) {
             i += 1;
         }
         return i;
@@ -2344,10 +2344,10 @@ namespace std::ui {
     // The end of the word after `at` (spaces before it skipped).
     private usize next_word(std::str text, usize at) {
         mut usize i = at;
-        while (i < text.len() && is_space_at(text, i)) {
+        while (i < text.length() && is_space_at(text, i)) {
             i = next_boundary(text, i);
         }
-        while (i < text.len() && !is_space_at(text, i)) {
+        while (i < text.length() && !is_space_at(text, i)) {
             i = next_boundary(text, i);
         }
         return i;
@@ -2355,10 +2355,10 @@ namespace std::ui {
 
     // `text` with the bytes from..to replaced by `with`.
     private std::string spliced(std::str text, usize from, usize to, std::str with) {
-        mut std::string out = std::string::with_capacity(text.len() - (to - from) + with.len());
+        mut std::string out = std::string::with_capacity(text.length() - (to - from) + with.length());
         out.push_str(text.slice(0, from));
         out.push_str(with);
-        out.push_str(text.slice(to, text.len()));
+        out.push_str(text.slice(to, text.length()));
         return out;
     }
 
@@ -2366,7 +2366,7 @@ namespace std::ui {
     private std::string printable(std::str typed) {
         mut std::string out = default;
         mut usize i = 0;
-        while (i < typed.len()) {
+        while (i < typed.length()) {
             (char c, usize n) = char_at(typed, i);
             if (cast<u32>(c) >= 32 && cast<u32>(c) != 127) {
                 out.push(c);
@@ -2387,19 +2387,19 @@ namespace std::ui {
 
         void select_all(std::str text) mut {
             this.anchor = 0;
-            this.cursor = text.len();
+            this.cursor = text.length();
         }
 
         void place(std::str text, usize at, bool extend) mut {
-            this.cursor = at.min(text.len());
+            this.cursor = at.min(text.length());
             if (!extend) {
                 this.anchor = this.cursor;
             }
         }
 
         bool apply(mut std::string& text, input& in, mut std::string& clipboard) mut {
-            this.cursor = this.cursor.min(text.len());
-            this.anchor = this.anchor.min(text.len());
+            this.cursor = this.cursor.min(text.length());
+            this.anchor = this.anchor.min(text.length());
             mut bool changed = false;
             for (key_press k : in.keys) {
                 (usize from, usize to) = this.selection();
@@ -2425,7 +2425,7 @@ namespace std::ui {
                         std::some(before) => {
                             this.redo_steps.push(text.clone());
                             text = before;
-                            this.cursor = text.len();
+                            this.cursor = text.length();
                             this.anchor = this.cursor;
                             changed = true;
                         },
@@ -2436,7 +2436,7 @@ namespace std::ui {
                         std::some(after) => {
                             this.undo_steps.push(text.clone());
                             text = after;
-                            this.cursor = text.len();
+                            this.cursor = text.length();
                             this.anchor = this.cursor;
                             changed = true;
                         },
@@ -2455,7 +2455,7 @@ namespace std::ui {
                         this.anchor = this.cursor;
                     }
                 } else if (k.key == key::home || k.key == key::end) {
-                    this.cursor = if (k.key == key::home) { 0 } else { text.len() };
+                    this.cursor = if (k.key == key::home) { 0 } else { text.length() };
                     if (!k.shift) {
                         this.anchor = this.cursor;
                     }
@@ -2490,13 +2490,13 @@ namespace std::ui {
     private void replace_selection(mut text_edit& edit, mut std::string& text, std::str with) {
         (usize from, usize to) = edit.selection();
         edit.undo_steps.push(text.clone());
-        if (edit.undo_steps.len() > 100) {
+        if (edit.undo_steps.length() > 100) {
             _ = edit.undo_steps.remove(0);
         }
         edit.redo_steps.clear();
         std::string next = spliced(text.as_str(), from, to, with);
         text = next;
-        edit.cursor = from + with.len();
+        edit.cursor = from + with.length();
         edit.anchor = edit.cursor;
     }
 
@@ -2579,14 +2579,14 @@ namespace std::ui {
     // The first part of a path and the rest after its '.'.
     private compile_time (std::str, std::str) split_path(std::str path) {
         return match (path.find(".")) {
-            std::some(i) => (path.slice(0, i), path.slice(i + 1, path.len())),
+            std::some(i) => (path.slice(0, i), path.slice(i + 1, path.length())),
             std::none    => (path, ""),
         };
     }
 
     template<type T>
     compile_time bool is_list() {
-        if compile_time (std::meta::template_args<T>().len() >= 1) {
+        if compile_time (std::meta::template_args<T>().length() >= 1) {
             compile_time type e = std::meta::template_args<T>()[0];
             return std::is_same<T, std::darray<e>>();
         } else {
@@ -2596,7 +2596,7 @@ namespace std::ui {
 
     template<type T>
     compile_time bool is_optional() {
-        if compile_time (std::meta::template_args<T>().len() >= 1) {
+        if compile_time (std::meta::template_args<T>().length() >= 1) {
             compile_time type e = std::meta::template_args<T>()[0];
             return std::is_same<T, std::option<e>>();
         } else {
@@ -2626,7 +2626,7 @@ namespace std::ui {
     compile_time path_class class_of_path(std::str path) {
         (std::str whole, std::str rest) = split_path(path);
         bool elements = whole.ends_with("[]");
-        std::str head = if (elements) { whole.slice(0, whole.len() - 2) } else { whole };
+        std::str head = if (elements) { whole.slice(0, whole.length() - 2) } else { whole };
         for compile_time (std::meta::field f : std::meta::fields<T>()) {
             if (f.name == head) {
                 compile_time type ft = f.type;
@@ -2648,29 +2648,29 @@ namespace std::ui {
 
     // The edit distance of two names (at most 64 bytes; longer ones are far from everything).
     private compile_time usize name_distance(std::str a, std::str b) {
-        if (a.len() > 64 || b.len() > 64) {
+        if (a.length() > 64 || b.length() > 64) {
             return 99;
         }
         mut std::array<usize, 65> previous = default;
         mut std::array<usize, 65> current = default;
-        for (usize j : 0..=b.len()) {
+        for (usize j : 0..=b.length()) {
             previous[j] = j;
         }
-        for (usize i : 1..=a.len()) {
+        for (usize i : 1..=a.length()) {
             current[0] = i;
-            for (usize j : 1..=b.len()) {
+            for (usize j : 1..=b.length()) {
                 usize cost = if (a.slice(i - 1, i) == b.slice(j - 1, j)) { 0 } else { 1 };
                 current[j] = (previous[j] + 1).min(current[j - 1] + 1).min(previous[j - 1] + cost);
             }
             previous = current;
         }
-        return previous[b.len()];
+        return previous[b.length()];
     }
 
     template<type T>
     compile_time std::static_str nearest_field(std::str path) {
         (std::str whole, std::str rest) = split_path(path);
-        std::str head = if (whole.ends_with("[]")) { whole.slice(0, whole.len() - 2) } else { whole };
+        std::str head = if (whole.ends_with("[]")) { whole.slice(0, whole.length() - 2) } else { whole };
         for compile_time (std::meta::field f : std::meta::fields<T>()) {
             if (f.name == head) {
                 compile_time type ft = f.type;
@@ -2735,9 +2735,9 @@ namespace std::ui {
     }
 
     std::string label_of(std::str name) {
-        mut std::string out = std::string::with_capacity(name.len());
+        mut std::string out = std::string::with_capacity(name.length());
         mut usize i = 0;
-        while (i < name.len()) {
+        while (i < name.length()) {
             (char c, usize n) = char_at(name, i);
             if (c == '_') {
                 out.push(' ');
@@ -2756,7 +2756,7 @@ namespace std::ui {
     // The number of characters (not bytes) of `text`.
     private usize char_count(std::str text) {
         mut usize n = 0;
-        for (usize i : 0..text.len()) {
+        for (usize i : 0..text.length()) {
             if ((text.byte(i) & 0xc0) != 0x80) {
                 n += 1;
             }
@@ -2787,8 +2787,8 @@ namespace std::ui {
             return [](std::str t) {
                 bool spaces = t.contains(" ");
                 bool shaped = match (t.find("@")) {
-                    std::some(at) => at > 0 && match (t.slice(at + 1, t.len()).find(".")) {
-                        std::some(dot) => dot > 0 && at + 1 + dot + 1 < t.len(),
+                    std::some(at) => at > 0 && match (t.slice(at + 1, t.length()).find(".")) {
+                        std::some(dot) => dot > 0 && at + 1 + dot + 1 < t.length(),
                         std::none      => false,
                     },
                     std::none => false,
@@ -2942,7 +2942,7 @@ namespace std::ui {
         }
 
         std::option<field_override&> find(std::str path) {
-            for (usize i : 0..this.overrides.len()) {
+            for (usize i : 0..this.overrides.length()) {
                 if (this.overrides[i].path.as_str() == path) {
                     return std::some(this.overrides[i]);
                 }
@@ -2971,13 +2971,13 @@ namespace std::ui {
         }
 
         mut field_override& entry(std::str path) mut {
-            for (usize i : 0..this.overrides.len()) {
+            for (usize i : 0..this.overrides.length()) {
                 if (this.overrides[i].path.as_str() == path) {
                     return this.overrides[i];
                 }
             }
             this.overrides.push(field_override{ .path = std::string::from(path) });
-            usize last = this.overrides.len() - 1;
+            usize last = this.overrides.length() - 1;
             return this.overrides[last];
         }
     }
@@ -3032,7 +3032,7 @@ namespace std::ui {
                 std::some(before) => this.back.push(move before),
                 std::none => {},
             }
-            if (this.back.len() > this.limit) {
+            if (this.back.length() > this.limit) {
                 _ = this.back.remove(0);
             }
             this.forward.clear();
@@ -3077,8 +3077,8 @@ namespace std::ui {
             return !this.forward.is_empty();
         }
 
-        usize len() {
-            return this.back.len();
+        usize length() {
+            return this.back.length();
         }
     }
 
@@ -3115,8 +3115,8 @@ namespace std::ui {
             for (field_override& o : overrides) {
                 if (!o.hidden.value_or(true)) {
                     std::str p = o.path.as_str();
-                    bool below = p.len() > path.len() && p.starts_with(path) && p.byte(path.len()) == 46;
-                    bool above = path.len() > p.len() && path.starts_with(p) && path.byte(p.len()) == 46;
+                    bool below = p.length() > path.length() && p.starts_with(path) && p.byte(path.length()) == 46;
+                    bool above = path.length() > p.length() && path.starts_with(p) && path.byte(p.length()) == 46;
                     if (p == path || below || above) {
                         shown = true;
                     }

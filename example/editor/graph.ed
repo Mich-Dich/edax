@@ -27,7 +27,7 @@ namespace graph {
         mat.paint.add_frame("Base color", ui::rect{ .x = 240.0, .y = 0.0, .width = 240.0, .height = 400.0 }, 0xe5484d);
         // Time isn't used yet: collapsed. The noise goes into the mix through a reroute point.
         _ = mat.paint.view.collapsed.insert(time, true);
-        for (usize k : 0..mat.paint.links.len()) {
+        for (usize k : 0..mat.paint.links.length()) {
             if (mat.paint.links[k].id == noisy) {
                 mat.paint.links[k].via.push(ui::vec2{ .x = 465.0, .y = 330.0 });
             }

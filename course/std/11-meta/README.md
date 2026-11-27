@@ -29,7 +29,7 @@ std::string describe(T& value) {
 - **`for compile_time`** copies the body once per field. In each copy `f` is a compile-time constant, so `f.get(value)` has that field's own type (a `std::string` in one copy, a `u32` in the next) and each copy is type-checked on its own. A normal `for` couldn't do that, because one body would need one type.
 - `f.get(value)` is a reference to that field; `f.get(mut value)` a mutable one, which you can assign to.
 - **Privacy is respected**: you see the fields visible where the code is written. There's no reflective way around `private`.
-- Reflection runs at compile time. To use a result at run time, put it in a `compile_time` constant: `compile_time usize field_count = std::meta::fields<player>().len();`.
+- Reflection runs at compile time. To use a result at run time, put it in a `compile_time` constant: `compile_time usize field_count = std::meta::fields<player>().length();`.
 
 Example: [`fields.ed`](examples/fields.ed).
 

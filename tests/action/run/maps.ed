@@ -8,13 +8,13 @@ i32 main() {
     std::option<u32> old = ages.insert(std::string::from("ada"), 37);
     std::string ada = std::string::from("ada");
     std::string bob = std::string::from("bob");
-    std::println(f"{ages.len()} {ages[ada]} {old.value_or(0)} {ages.contains(bob)}");
+    std::println(f"{ages.length()} {ages[ada]} {old.value_or(0)} {ages.contains(bob)}");
     ages[ada] += 1;
     std::println(f"{ages.get(ada).value_or(0u32)}");
     mut std::hash_map<u32, u32> squares = default;
     for (u32 i : 0..100) { squares.insert(i, i * i); }
     std::option<u32> gone = squares.remove(50);
-    std::println(f"{squares.len()} {squares[99]} {gone.value_or(0)} {squares.contains(50)}");
+    std::println(f"{squares.length()} {squares[99]} {gone.value_or(0)} {squares.contains(50)}");
     mut std::tree_map<i32, std::string> order = default;
     order.insert(5, std::string::from("five"));
     order.insert(-1, std::string::from("minus one"));
@@ -24,12 +24,12 @@ i32 main() {
     std::option<std::string> r = order.remove(5);
     std::string fallback = std::string::from("x");
     std::string removed = (move r).value_or(move fallback);
-    std::println(f"{order.len()} {removed}");
+    std::println(f"{order.length()} {removed}");
     mut std::darray<u32> d = default;
     d.push(1); d.push(3);
     d.insert(1, 2);
     d.insert(3, 4);
     u32 first = d.remove(0);
-    std::println(f"{first} {d[0]} {d[1]} {d[2]} {d.len()}");
+    std::println(f"{first} {d[0]} {d[1]} {d[2]} {d.length()}");
     return 0;
 }

@@ -9,7 +9,7 @@ enum shape : u8 {
 }
 
 std::option<u32> find(std::darray<u32>& xs, u32 wanted) {
-    for (usize i : 0..xs.len()) {
+    for (usize i : 0..xs.length()) {
         if (xs[i] == wanted) { return std::some(cast::truncate<u32>(i)); }
     }
     return std::none;

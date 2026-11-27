@@ -55,12 +55,12 @@ i32 main() {
     }
 
     for (std::map_entry<std::str, std::darray<std::str>> e : by_category.entries()) {
-        std::println(f"{e.key}: {e.value.len()} items");
+        std::println(f"{e.key}: {e.value.length()} items");
     }
 
     std::println(f"at 1/2: {shelves.get(location{ .aisle = 1, .shelf = 2 }).value_or("nothing")}");
     std::println(f"at 9/9: {shelves.get(location{ .aisle = 9, .shelf = 9 }).value_or("nothing")}");
     u32 sold = totals.remove("glue").value_or(0);
-    std::println(f"sold all {sold} glue, {totals.len()} items left");
+    std::println(f"sold all {sold} glue, {totals.length()} items left");
     return 0;
 }

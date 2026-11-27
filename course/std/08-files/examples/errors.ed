@@ -5,7 +5,7 @@ namespace fs = std::filesystem;
 std::result<usize, std::io_error> count_bytes(fs::path& p) {
     mut std::file f = std::file::open(p)?;
     std::string all = f.read_all()?;
-    return std::ok(all.len());
+    return std::ok(all.length());
 }
 
 i32 main() {

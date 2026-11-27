@@ -1,0 +1,2 @@
+// RUN: edaxc build --root=%S/archive_project --out-dir=%t
+// g.add_archive packs a folder next to the program, leaving out the excluded files.

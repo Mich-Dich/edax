@@ -288,7 +288,7 @@ private compile_time std::log::pattern file_pattern = std::log::pattern::from(
 
 std::exit_code main(std::span<std::str> args) {
     std::thread::set_current_name("main");
-    std::log::info(f"starting with {args.len()} arguments");                 // buffered until start()
+    std::log::info(f"starting with {args.length()} arguments");                 // buffered until start()
 
     std::log::session logs = std::log::start(std::log::options{ .queue_capacity = 16 * 1024 });
     _ = logs.add(std::log::console::make(), std::log::sink_options{
@@ -313,7 +313,7 @@ Compared with the C++ version: no `install_logger_functions`, no `register_label
 // renderer/vulkan/pipeline.ed
 namespace gfx::vulkan {
     std::result<pipeline, vk::result> create_pipeline(device& dev, pipeline_desc& desc) {
-        std::log::trace(f"creating '{desc.name}' with {desc.stages.len()} stages");   // gone unless this file's level is trace
+        std::log::trace(f"creating '{desc.name}' with {desc.stages.length()} stages");   // gone unless this file's level is trace
         vk::result r = dev.create_graphics_pipeline(desc);
         if (r != vk::result::success) {
             std::log::error(f"failed to create the '{desc.name}' pipeline: {r}");

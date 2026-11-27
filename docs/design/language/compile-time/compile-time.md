@@ -44,7 +44,7 @@ compile_time u32 area = square(16);
 A function parameter marked `compile_time` takes a compile-time value and is a compile-time constant in the body; the function is instantiated once per distinct set of such arguments (see [Functions](../functions/functions.md)).
 
 ### Strings at compile time
-Compile-time code can use `len`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice(from, to)` and `find(needle)` (a `std::option<usize>`) on strings.
+Compile-time code can use `length`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice(from, to)` and `find(needle)` (a `std::option<usize>`) on strings.
 
 ### `if compile_time`
 ```edax

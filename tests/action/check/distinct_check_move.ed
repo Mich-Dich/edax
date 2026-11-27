@@ -1,0 +1,12 @@
+// RUN: edaxc check %s
+// A distinct type with a check moves into its underlying type; from a place that takes `move`.
+import std;
+
+distinct type name = std::string check (!value.is_empty()) else "a name is not empty";
+
+i32 main() {
+    name n = cast<name>(std::string::from("x"));
+    std::string copy = n;
+    std::string text = cast<std::string>(n);
+    return 0;
+}

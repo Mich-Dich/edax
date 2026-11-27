@@ -21,12 +21,12 @@ namespace std::args {
                 std::compile_error(f"@std::args::flag works on bool fields (set) and integer fields (counted); '{annotated.name}' is a {std::type_name<t>()}");
             }
         }
-        compile_time check (annotation.short_name.len() <= 1)
+        compile_time check (annotation.short_name.length() <= 1)
             else f"@std::args::flag: short_name is one letter, not '{annotation.short_name}'";
     }
 
     struct option {
-        compile_time check (annotation.short_name.len() <= 1)
+        compile_time check (annotation.short_name.length() <= 1)
             else f"@std::args::option: short_name is one letter, not '{annotation.short_name}'";
         compile_time check {
             compile_time type t = annotated.type;
@@ -78,7 +78,7 @@ namespace std::args {
 
     private template<type T>
     compile_time bool is_list() {
-        if compile_time (std::meta::template_args<T>().len() >= 1) {
+        if compile_time (std::meta::template_args<T>().length() >= 1) {
             compile_time type e = std::meta::template_args<T>()[0];
             return std::is_same<T, std::darray<e>>();
         } else {
@@ -88,7 +88,7 @@ namespace std::args {
 
     private template<type T>
     compile_time bool is_optional() {
-        if compile_time (std::meta::template_args<T>().len() >= 1) {
+        if compile_time (std::meta::template_args<T>().length() >= 1) {
             compile_time type e = std::meta::template_args<T>()[0];
             return std::is_same<T, std::option<e>>();
         } else {
@@ -148,8 +148,8 @@ namespace std::args {
 
     // `text` with `-` for `_`: a field's or alternative's name on the command line.
     private std::string dashed(std::str text) {
-        mut std::string out = std::string::with_capacity(text.len());
-        for (usize i : 0..text.len()) {
+        mut std::string out = std::string::with_capacity(text.length());
+        for (usize i : 0..text.length()) {
             std::str one = text.slice(i, i + 1);
             if (one == "_") {
                 out.push('-');
@@ -162,8 +162,8 @@ namespace std::args {
 
     // `text` with `_` for `-`: an enum value as written back to an alternative's name.
     private std::string underscored(std::str text) {
-        mut std::string out = std::string::with_capacity(text.len());
-        for (usize i : 0..text.len()) {
+        mut std::string out = std::string::with_capacity(text.length());
+        for (usize i : 0..text.length()) {
             std::str one = text.slice(i, i + 1);
             if (one == "-") {
                 out.push('_');
@@ -185,13 +185,13 @@ namespace std::args {
     // The number of single-byte edits between `a` and `b` (for "did you mean").
     private usize distance(std::str a, std::str b) {
         mut std::darray<usize> row = default;
-        for (usize j : 0..b.len() + 1) {
+        for (usize j : 0..b.length() + 1) {
             row.push(j);
         }
-        for (usize i : 1..a.len() + 1) {
+        for (usize i : 1..a.length() + 1) {
             mut usize diagonal = row[0];
             row[0] = i;
-            for (usize j : 1..b.len() + 1) {
+            for (usize j : 1..b.length() + 1) {
                 usize above = row[j];
                 usize cost = if (a.byte(i - 1) == b.byte(j - 1)) { 0 } else { 1 };
                 mut usize best = diagonal + cost;
@@ -205,21 +205,21 @@ namespace std::args {
                 diagonal = above;
             }
         }
-        return row[b.len()];
+        return row[b.length()];
     }
 
     // " (did you mean '--x'?)" for the closest of `known` to `wrong`, when it is close; else "".
     private std::string suggestion(std::str wrong, std::span<std::string> known, std::str prefix) {
         mut usize best = 1000;
         mut usize at = 0;
-        for (usize i : 0..known.len()) {
+        for (usize i : 0..known.length()) {
             usize d = distance(wrong, known[i].as_str());
             if (d < best) {
                 best = d;
                 at = i;
             }
         }
-        usize allowed = if (wrong.len() <= 4) { 1 } else { 2 };
+        usize allowed = if (wrong.length() <= 4) { 1 } else { 2 };
         if (known.is_empty() || best > allowed) {
             return std::string::from("");
         }
@@ -247,7 +247,7 @@ namespace std::args {
         }
         for compile_time (std::meta::alternative a : std::meta::alternatives<E>()) {
             if (!out.is_empty()) {
-                out.push_str(if (a.index + 1 == std::meta::alternatives<E>().len()) { " or " } else { ", " });
+                out.push_str(if (a.index + 1 == std::meta::alternatives<E>().length()) { " or " } else { ", " });
             }
             std::string shown = alternative_name(a.name, a.annotation<std::args::command>());
             out.push_str(shown.as_str());
@@ -482,7 +482,7 @@ namespace std::args {
                     std::str text = match (inline_value) {
                         std::some(v) => v,
                         std::none => {
-                            if (at.next >= tokens.len()) {
+                            if (at.next >= tokens.length()) {
                                 at.problem = std::format(f"--{full} needs a value");
                                 return found::missing_value;
                             }
@@ -598,8 +598,8 @@ namespace std::args {
                         matched = true;
                         note_given(mut at, "<command>");
                         std::string inner_program = std::format(f"{program} {shown}");
-                        std::span<std::str> rest = tokens.slice(at.next, tokens.len());
-                        at.next = tokens.len();
+                        std::span<std::str> rest = tokens.slice(at.next, tokens.length());
+                        at.next = tokens.length();
                         if compile_time (a.has_payload) {
                             compile_time type p = a.payload;
                             mut p inner = default;
@@ -662,7 +662,7 @@ namespace std::args {
     std::option<std::args::error> fill(mut T& value, std::span<std::str> tokens, std::str program) {
         mut cursor at = default;
         mut bool only_positional = false;
-        while (at.next < tokens.len()) {
+        while (at.next < tokens.length()) {
             std::str token = tokens[at.next];
             at.next += 1;
             if (!only_positional && token == "--") {
@@ -673,13 +673,13 @@ namespace std::args {
                 std::string line = std::format(f"{program} {program_info<T>().version}\n");
                 return std::some(std::args::error{ .kind = stop::version, .text = move line });
             } else if (!only_positional && token.starts_with("--")) {
-                std::str body = token.slice(2, token.len());
+                std::str body = token.slice(2, token.length());
                 std::str name = match (body.find("=")) {
                     std::some(eq) => body.slice(0, eq),
                     std::none => body,
                 };
                 std::option<std::str> inline_value = match (body.find("=")) {
-                    std::some(eq) => std::some(body.slice(eq + 1, body.len())),
+                    std::some(eq) => std::some(body.slice(eq + 1, body.length())),
                     std::none => std::none,
                 };
                 found result = take_named<T>(mut value, name, false, inline_value, tokens, mut at);
@@ -689,14 +689,14 @@ namespace std::args {
                     std::string hint = suggestion(name, known.as_span(), "--");
                     return std::some(invalid<T>(std::format(f"unknown option '--{name}'{hint}"), program));
                 }
-            } else if (!only_positional && token.starts_with("-") && token.len() > 1 && !is_number(token)) {
+            } else if (!only_positional && token.starts_with("-") && token.length() > 1 && !is_number(token)) {
                 mut usize i = 1;
-                while (i < token.len()) {
+                while (i < token.length()) {
                     std::str letter = token.slice(i, i + 1);
                     i += 1;
                     bool switch_only = short_is_flag<T>(letter);
-                    std::option<std::str> attached = if (!switch_only && i < token.len()) {
-                        std::some(token.slice(i, token.len()))
+                    std::option<std::str> attached = if (!switch_only && i < token.length()) {
+                        std::some(token.slice(i, token.length()))
                     } else {
                         std::none
                     };
@@ -705,10 +705,10 @@ namespace std::args {
                         return std::some(invalid<T>(std::format(f"unknown option '-{letter}'"), program));
                     }
                     if (!switch_only) {
-                        i = token.len();
+                        i = token.length();
                     }
                     if (!at.problem.is_empty()) {
-                        i = token.len();
+                        i = token.length();
                     }
                 }
             } else {
@@ -844,7 +844,7 @@ namespace std::args {
             else f"std::args::parse<{std::type_name<T>()}>: the field '{unreadable_field<T>()}' can't hold an argument; mark it @std::args::skip (not an argument) or @std::args::flatten (a struct of more arguments)";
         std::string program = program_name<T>(args);
         mut T value = default;
-        std::span<std::str> tokens = if (args.is_empty()) { args } else { args.slice(1, args.len()) };
+        std::span<std::str> tokens = if (args.is_empty()) { args } else { args.slice(1, args.length()) };
         match (fill<T>(mut value, tokens, program.as_str())) {
             std::some(e) => { return std::error(move e); },
             std::none => {},
@@ -863,13 +863,13 @@ namespace std::args {
         }
         std::str first = args[0];
         mut usize start = 0;
-        for (usize i : 0..first.len()) {
+        for (usize i : 0..first.length()) {
             std::str one = first.slice(i, i + 1);
             if (one == "/" || one == "\\") {
                 start = i + 1;
             }
         }
-        return std::string::from(first.slice(start, first.len()));
+        return std::string::from(first.slice(start, first.length()));
     }
 
     // ---- Help -------------------------------------------------------------------------------------------
@@ -995,8 +995,8 @@ namespace std::args {
         }
         mut usize width = 0;
         for (row& r : rows) {
-            if (r.left.len() > width) {
-                width = r.left.len();
+            if (r.left.length() > width) {
+                width = r.left.length();
             }
         }
         out.push_str(std::format(f"\n{title}:\n"));
@@ -1004,7 +1004,7 @@ namespace std::args {
             out.push_str("  ");
             out.push_str(r.left.as_str());
             if (!r.right.is_empty()) {
-                for (usize i : r.left.len()..width + 3) {
+                for (usize i : r.left.length()..width + 3) {
                     out.push(' ');
                 }
                 out.push_str(r.right.as_str());

@@ -51,7 +51,7 @@ void print_all(A&... values) {
 print_all(1u32, "two", 3.0);                    // A = u32, std::static_str, f64
 ```
 - A pack can only be used in two ways: walked with `for compile_time` (see [Compile-Time Evaluation](compile-time.md)), where the loop variable's type `A` is the current element's type, and passed on whole as `values...` to another pack parameter.
-- `values.len()` is the number of elements, a `compile_time usize`.
+- `values.length()` is the number of elements, a `compile_time usize`.
 - The std callables are written with packs: `std::function<R(A...)>`, `std::fn_ptr<R(A...)>`.
 - A pack is the last template parameter.
 
@@ -134,7 +134,7 @@ implement geometry::point for math::vec3 {
 - `R` may name the template's parameters: in `template<type V : std::addable<V>>` it is the argument given for `V`.
 
 ### Value packs and text arguments
-- `template<usize... N>` takes any number of values: `tensor<f32, 4, 4>`. It is walked with `for compile_time` like a type pack. `N.len()` counts it and `product<N...>()` passes it on to another value pack. In a type template, the members are checked once per argument count, in the instances.
+- `template<usize... N>` takes any number of values: `tensor<f32, 4, 4>`. It is walked with `for compile_time` like a type pack. `N.length()` counts it and `product<N...>()` passes it on to another value pack. In a type template, the members are checked once per argument count, in the instances.
 - `template<std::static_str S>` takes a text: `std::name<"player">`, `units::quantity<f32, "m/s">`. Two instances are the same when the texts are equal.
 
 ### Distinct types
@@ -164,6 +164,29 @@ meters area  = lap * lap;                    // ERROR: meters * meters isn't met
 
 - The operations are the underlying type's own, with its overflow checks; there is no call and no cost.
 - A distinct type can be written in a header and used as a field, parameter or template argument like any struct.
+
+#### Distinct types with a check
+A distinct type can say what its values are: `check (condition) else message` after the underlying type, with the value named `value`.
+```edax
+distinct type port = u16 check (value != 0) else "a port is never 0";
+distinct type absolute_path = path check (value.is_absolute())
+    else f"'{value.as_str()}' is not an absolute path";
+
+compile_time port http = cast<port>(80);    // checked at compile time
+port none = cast<port>(0);                   // ERROR: a port is never 0
+port p    = cast<port>(read_port());         // checked when the program runs: a panic when it fails
+
+void install(path& dir);
+install(std::filesystem::executable_dir());  // an absolute_path is lent as a path&
+path any = std::filesystem::executable_dir();  // and moves into a path
+```
+- **Making one:** `cast<D>(x)` runs the check. It is an entry check (see [Checks](../errors/checks.md)): when `x` is known at compile time, a failing check is a compile error, otherwise it is a panic at run time. The cast is a compile-time value when `x` is one and the check can run at compile time.
+- **Using one as its underlying type `U`:** this is the one implicit conversion a distinct type has (see [Built-in Types and Conversions](../basics/types.md)).
+  - A `D` is lent as a read-only `U&`: any function taking `U&` takes it.
+  - A `D` value moves (a copy type copies) into a `U`: `path any = executable_dir();`. A place moves only with `move`, as always. The value then gives up its guarantee; nothing can break it.
+  - `mut D&` doesn't become `mut U&`: a change could break the check. `cast<U>(move d)`, change it, and `cast<D>` it back.
+- **Methods and operators:** a `D` has the methods and operators of `U` that only read (`p.file_name()`, `a == b`); calling one that changes the value (`mut` or `move`) is an error. Operators written for `D` itself win over the lent ones (`absolute_path / "x"` is an `absolute_path`).
+- A distinct type without a check stays as above: no implicit conversion at all.
 
 ### Library error frames
 An error in an instance shows the **instantiation chain**: a note for each instance that led to it, innermost first, each pointing at the place that asked for it (at most eight). `@std::diagnostic_frame{ .hide = true }` on a template of a library drops its instances from that chain, and an error in its own code is reported at the call that reached it, with one note pointing into the library. A user sees the call in their code and what failed, not the library's internals.

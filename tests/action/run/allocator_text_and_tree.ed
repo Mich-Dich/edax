@@ -9,10 +9,10 @@ void main() {
     s.push('w');
     s.push_str("orld ✓");
     std::str text = s;
-    std::println(f"{text} {s} {s.len()}");
+    std::println(f"{text} {s} {s.length()}");
     mut std::tree_map<u32, u32, std::arena_allocator> m = std::tree_map<u32, u32, std::arena_allocator>::with_allocator(frame.allocator());
     for (u32 i : 0..100u32) { _ = m.insert(i, i * i); }
-    std::println(f"{m.len()} {m[7]} {m.first().value_or(std::map_entry<u32, u32>{ .key = 0, .value = 0 }).key}");
+    std::println(f"{m.length()} {m[7]} {m.first().value_or(std::map_entry<u32, u32>{ .key = 0, .value = 0 }).key}");
     std::string_with<> g = std::string_with<>::from("global");
     std::println(f"{g.as_str()} {g == g.clone()}");
 }

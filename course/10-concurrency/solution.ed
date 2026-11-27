@@ -76,7 +76,7 @@ i32 main() {
     }
     mut std::mutex_guard<std::darray<u32>> entries = log.lock();
     entries->sort();
-    std::println(f"logged {entries->len()} values, sum {sum_of(*entries)}");
+    std::println(f"logged {entries->length()} values, sum {sum_of(*entries)}");
 
     // 3. A thread pool: data-parallel work with a deterministic result.
     std::thread_pool pool = std::thread_pool::make(std::thread_pool::options{ .threads = 4 });

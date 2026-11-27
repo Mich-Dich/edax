@@ -120,7 +120,7 @@ namespace std::windowing {
         std::darray<chord> chords(A action);
 
         // The number of chords bound.
-        usize len();
+        usize length();
 
         // The bindings as text, e.g. for a settings file:
         // `jump = space; quit = escape, control+q; fire = mouse_left` (allocates).

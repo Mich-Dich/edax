@@ -113,7 +113,7 @@ The branch that isn't taken is not compiled for that instance, like C++17's `if 
 template<type... A>
 void print_all(A&... values) {
     for compile_time (A& v : values) { std::println(kind(v)); }   // copied once per argument
-    std::println(f"{values.len()} values");                      // a compile-time usize
+    std::println(f"{values.length()} values");                      // a compile-time usize
 }
 ```
 
@@ -174,7 +174,7 @@ Examples: [`aliases.ed`](examples/aliases.ed), [`err_distinct.ed`](examples/err_
 | specialization, `enable_if` | `if compile_time (...)` |
 | `if constexpr` | `if compile_time` |
 | `template<typename... A>` + fold | `template<type... A>` + `for compile_time` |
-| `sizeof...(A)` | `values.len()` |
+| `sizeof...(A)` | `values.length()` |
 | `static_assert` in a template | `compile_time check (...) else "...";` |
 | `using id = uint16_t;` | `compile_time type id = u16;` |
 | strong typedef wrapper | `distinct type meters = f32;` |

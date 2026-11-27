@@ -92,7 +92,7 @@ Example: [`sorting.ed`](examples/sorting.ed).
 ## 4. Fixed-size storage
 
 - **`std::array<T, N>`** keeps its `N` elements inline, no heap. It is a copy type when `T` is. `default` gives every element its default. Pass it on as `a.as_span()`.
-- **`std::bitset<N>`** is `N` bits inline (`(N + 63) / 64` words): `set(i, bool) mut`, `test(i)`, `count()`, `len()`. Use it for "which of these ids have I seen" when the ids are small numbers.
+- **`std::bitset<N>`** is `N` bits inline (`(N + 63) / 64` words): `set(i, bool) mut`, `test(i)`, `count()`, `length()`. Use it for "which of these ids have I seen" when the ids are small numbers.
 
 Example: [`bitset_array.ed`](examples/bitset_array.ed).
 
@@ -138,13 +138,13 @@ swap-removed 0:12, first is now 2:18
 <details>
 <summary>Hint 2: <code>chunk_means</code></summary>
 
-`for (std::span<i32> part : values.chunks(size))`, sum the part, and divide by `cast::truncate<i32>(part.len())`. The capacity is `(values.len() + size - 1) / size`.
+`for (std::span<i32> part : values.chunks(size))`, sum the part, and divide by `cast::truncate<i32>(part.length())`. The capacity is `(values.length() + size - 1) / size`.
 </details>
 
 <details>
 <summary>Hint 3: <code>adjust_halves</code></summary>
 
-`(std::span<mut i32> first, std::span<mut i32> second) = values.split_at(values.len() / 2);`, then find the minimum of `first`, subtract it in a `for (mut i32& v : first)` loop, and add 100 in the other half.
+`(std::span<mut i32> first, std::span<mut i32> second) = values.split_at(values.length() / 2);`, then find the minimum of `first`, subtract it in a `for (mut i32& v : first)` loop, and add 100 in the other half.
 </details>
 
 <details>
@@ -159,7 +159,7 @@ swap-removed 0:12, first is now 2:18
 
 1. In `adjust_halves`, replace `split_at` by `values.slice(0, n / 2)` and `values.slice(n / 2, n)` passed to one function that changes both.
 2. Replace `sort_by_key` by `sort_by([](reading& a, reading& b) { return a.sensor < b.sensor; })`. Is the output still the same?
-3. Call `log.remove(log.len())`.
+3. Call `log.remove(log.length())`.
 4. Print `std::darray<u32>::with_capacity(5).capacity()`, and the capacity of a `default` darray after five `push`es.
 
 <details>

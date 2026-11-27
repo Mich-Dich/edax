@@ -111,9 +111,9 @@ void main(std::span<std::str> args) {
         std::ok(_) => std::println("mix.a -> out: linked"),
         std::error(why) => std::println(f"mix.a -> out: {why}"),
     }
-    std::println(f"mix -> out.color: {g.connect(mix, "result", out, "color").is_ok()}, links {g.links.len()}");
+    std::println(f"mix -> out.color: {g.connect(mix, "result", out, "color").is_ok()}, links {g.links.length()}");
     // A second link into the same input replaces the first.
-    std::println(f"time -> out.color replaces: {g.connect(time, "seconds", out, "color").is_ok()}, links {g.links.len()}");
+    std::println(f"time -> out.color replaces: {g.connect(time, "seconds", out, "color").is_ok()}, links {g.links.length()}");
     _ = g.connect(mix, "result", out, "color");
     match (g.source_of(out, "color")) {
         std::some(src) => std::println(f"out.color from node {src.node}.{src.output}, a vec3 {src.type_id == std::meta::type_id<m::vec3>()}"),
@@ -121,7 +121,7 @@ void main(std::span<std::str> args) {
     }
     std::println(f"out.roughness linked {g.source_of(out, "roughness").is_some()}");
     match (g.topological_order()) {
-        std::ok(order) => std::println(f"order: {order.len()} nodes, output last {order[order.len() - 1] == out}"),
+        std::ok(order) => std::println(f"order: {order.length()} nodes, output last {order[order.length() - 1] == out}"),
         std::error(n) => std::println(f"cycle at {n}"),
     }
 
@@ -130,7 +130,7 @@ void main(std::span<std::str> args) {
     std::print(f"{text}");
     match (nodes::graph<material>::from_text(text.as_str())) {
         std::ok(back) => {
-            std::println(f"read back: same text {back.to_text() == text}, nodes {back.nodes.len()}, links {back.links.len()}, frames {back.frames.len()}");
+            std::println(f"read back: same text {back.to_text() == text}, nodes {back.nodes.length()}, links {back.links.length()}, frames {back.frames.length()}");
             match (back.nodes[2].value) {
                 material::mix(p) => std::println(f"mix: t {p.t}, mode {std::meta::name_of(p.mode)}"),
                 _ => std::println("not a mix"),
@@ -152,9 +152,10 @@ void main(std::span<std::str> args) {
         },
         std::error(why) => std::println(f"old file: {why}"),
     }
-    std::string path = std::format(f"{args[1]}/material.graph");
-    std::println(f"saved {g.save(path.as_str()).is_ok()}");
-    match (nodes::graph<material>::load(path.as_str())) {
+    std::filesystem::path path = std::filesystem::path::from(std::format(f"{args[1]}/material.graph").as_str());
+    std::println(f"saved {std::filesystem::write_text(path, g.to_text().as_str()).is_ok()}");
+    std::string saved = std::filesystem::read_text(path).expect("the graph file");
+    match (nodes::graph<material>::from_text(saved.as_str())) {
         std::ok(loaded) => std::println(f"loaded the same {loaded.to_text() == text}"),
         std::error(why) => std::println(f"not loaded: {why}"),
     }
@@ -165,7 +166,7 @@ void main(std::span<std::str> args) {
     ui::vec2 corner = ui::vec2{ .x = 890.0, .y = 590.0 };
     _ = frame_of(mut ctx, mut g, at(corner));
     _ = frame_of(mut ctx, mut g, at(corner));
-    std::println(f"editor: pins {g.view.pins.len()}, links drawn {g.view.links.len()}, duplicates {ctx.duplicate_ids()}");
+    std::println(f"editor: pins {g.view.pins.length()}, links drawn {g.view.links.length()}, duplicates {ctx.duplicate_ids()}");
 
     // A right click opens the add-node menu; typing filters it; Enter adds the first kind there.
     _ = frame_of(mut ctx, mut g, ui::input{ .cursor = ui::vec2{ .x = 700.0, .y = 450.0 }, .right_pressed = true, .right_down = true, .dt = 0.016 });
@@ -174,8 +175,8 @@ void main(std::span<std::str> args) {
     _ = frame_of(mut ctx, mut g, move typing);
     std::println(f"menu open {g.menu_at.is_some()}, search '{g.search}'");
     nodes::graph_edit added = frame_of(mut ctx, mut g, key(ui::key::enter, false));
-    usize last = g.nodes.len() - 1;
-    std::println(f"added a {kind_name(g.nodes[last].value)} at {g.nodes[last].at.x}, {g.nodes[last].at.y}; nodes {g.nodes.len()}, changed {added.changed}, menu closed {g.menu_at.is_none()}");
+    usize last = g.nodes.length() - 1;
+    std::println(f"added a {kind_name(g.nodes[last].value)} at {g.nodes[last].at.x}, {g.nodes[last].at.y}; nodes {g.nodes.length()}, changed {added.changed}, menu closed {g.menu_at.is_none()}");
     _ = frame_of(mut ctx, mut g, at(corner));
     _ = frame_of(mut ctx, mut g, at(corner));
 
@@ -183,41 +184,41 @@ void main(std::span<std::str> args) {
     ui::vec2 from_time = pin_at(g, time * 64);
     _ = drag(mut ctx, mut g, from_time, ui::vec2{ .x = 640.0, .y = 330.0 });
     std::println(f"dropped: menu {g.menu_at.is_some()} for a link {g.menu_drop.is_some()}");
-    usize links_before = g.links.len();
+    usize links_before = g.links.length();
     _ = frame_of(mut ctx, mut g, key(ui::key::enter, false));
-    u64 newest = g.nodes[g.nodes.len() - 1].id;
-    std::println(f"added a {kind_name(g.nodes[g.nodes.len() - 1].value)}, links {links_before} -> {g.links.len()}, its a from time {g.source_of(newest, "a").is_some()}");
+    u64 newest = g.nodes[g.nodes.length() - 1].id;
+    std::println(f"added a {kind_name(g.nodes[g.nodes.length() - 1].value)}, links {links_before} -> {g.links.length()}, its a from time {g.source_of(newest, "a").is_some()}");
     _ = frame_of(mut ctx, mut g, at(corner));
 
     // A link between pins of types that don't fit is refused, with the reason.
     nodes::graph_edit refused = drag(mut ctx, mut g, pin_at(g, uv * 64), pin_at(g, mix * 64 + 1));
-    std::println(f"refused: '{refused.problem}', links {g.links.len()}");
+    std::println(f"refused: '{refused.problem}', links {g.links.length()}");
 
     // The output can't be deleted.
     ui::vec2 out_head = ui::vec2{ .x = 540.0, .y = 92.0 };
     _ = drag(mut ctx, mut g, out_head, out_head);
     nodes::graph_edit kept = frame_of(mut ctx, mut g, key(ui::key::delete, false));
-    std::println(f"delete the output: '{kept.problem}', nodes {g.nodes.len()}");
+    std::println(f"delete the output: '{kept.problem}', nodes {g.nodes.length()}");
 
     // Copy and paste the mix; Ctrl+D duplicates the selection.
-    usize before_copy = g.nodes.len();
+    usize before_copy = g.nodes.length();
     ui::vec2 mix_head = ui::vec2{ .x = 300.0, .y = 72.0 };
     _ = drag(mut ctx, mut g, mix_head, mix_head);
     _ = frame_of(mut ctx, mut g, key(ui::key::c, true));
-    std::println(f"clipboard has the mix {ctx.clipboard_text().len() > 20}");
+    std::println(f"clipboard has the mix {ctx.clipboard_text().length() > 20}");
     _ = frame_of(mut ctx, mut g, key(ui::key::v, true));
     _ = frame_of(mut ctx, mut g, at(corner));
-    std::println(f"pasted: nodes {before_copy} -> {g.nodes.len()}, selected {g.view.selected.len()}, a mix {kind_name(g.nodes[g.nodes.len() - 1].value)}");
+    std::println(f"pasted: nodes {before_copy} -> {g.nodes.length()}, selected {g.view.selected.length()}, a mix {kind_name(g.nodes[g.nodes.length() - 1].value)}");
     _ = frame_of(mut ctx, mut g, key(ui::key::d, true));
     _ = frame_of(mut ctx, mut g, at(corner));
-    std::println(f"duplicated: nodes {g.nodes.len()}");
+    std::println(f"duplicated: nodes {g.nodes.length()}");
 
     // Undo three steps (duplicate, paste, the dropped link's node), then redo one.
-    usize steps = g.undo_steps.len();
+    usize steps = g.undo_steps.length();
     for (u32 k : 0..3) {
         _ = frame_of(mut ctx, mut g, key(ui::key::z, true));
     }
-    std::println(f"undo: {steps} steps, nodes {g.nodes.len()}, links {g.links.len()}");
+    std::println(f"undo: {steps} steps, nodes {g.nodes.length()}, links {g.links.length()}");
     _ = frame_of(mut ctx, mut g, key(ui::key::y, true));
-    std::println(f"redo: nodes {g.nodes.len()}, links {g.links.len()}");
+    std::println(f"redo: nodes {g.nodes.length()}, links {g.links.length()}");
 }

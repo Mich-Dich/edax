@@ -11,5 +11,5 @@ i32 main() {
     point p = point::make();
     i32 v = p.get();
     std::darray<i32> list = default;
-    return p.x + v + cast::truncate<i32>(list.len());
+    return p.x + v + cast::truncate<i32>(list.length());
 }

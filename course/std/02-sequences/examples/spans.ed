@@ -14,7 +14,7 @@ void double_all(std::span<mut u32> xs) {        // mutable elements, immutable s
 i32 main() {
     mut std::darray<u32> xs = std::darray<u32>::from([1, 2, 3, 4, 5, 6, 7]);
     std::println(f"all {sum(xs.as_span())}, middle {sum(xs.as_span().slice(2, 5))}");
-    for (std::span<u32> part : xs.as_span().chunks(3)) { std::println(f"chunk of {part.len()}: {sum(part)}"); }
+    for (std::span<u32> part : xs.as_span().chunks(3)) { std::println(f"chunk of {part.length()}: {sum(part)}"); }
 
     (std::span<mut u32> left, std::span<mut u32> right) = xs.as_mut_span().split_at(3);
     double_all(left);                           // both halves can change at once: they never overlap

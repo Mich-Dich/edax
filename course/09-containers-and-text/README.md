@@ -23,11 +23,11 @@ Examples are in [`examples/`](examples); `python3 course/check.py 9 --examples` 
 
 - `xs[i]` **panics** when out of bounds, in every build mode. `xs.get(i)` returns an `std::option<T&>` when you don't know.
 - **No iterators, no `begin()`/`end()`.** A `for` loop goes over:
-  - a *container*: anything with `len()` and `operator[]`;
+  - a *container*: anything with `length()` and `operator[]`;
   - a *stream*: anything with a `next()` returning an `std::option`. `map.entries()` is a stream of `std::map_entry<K, V>` views with `.key` and `.value`.
 
   With no iterator pairs, there's nothing to invalidate (lesson 2 already rejects changing a container while a loop borrows it), and no mismatched-`end()` bugs.
-- C++ names don't exist: `len()` not `size()`, `push` not `push_back`, `is_empty()` not `empty()`. The compiler's note says so when you slip.
+- C++ names don't exist: `length()` not `size()`, `push` not `push_back`, `is_empty()` not `empty()`. The compiler's note says so when you slip.
 - The algorithms are methods: `sort` (introsort), `sort_by(less)`, `sort_by_key(order, key)` (stable: merge sort, or radix sort for integer keys), `retain`, `contains`, `swap_remove`. Their complexity is part of the specification.
 - Every allocating type takes an allocator as its last template parameter (`std::darray<u32, my_arena>`), and a build target can replace the global allocator (see `docs/design/stdlib/memory/allocators.md`).
 
@@ -61,7 +61,7 @@ Example: [`containers.ed`](examples/containers.ed).
 
 `std::string` and `std::static_str` convert to `std::str` for free, so a function that only reads text takes `std::str`. A literal *to* `std::string` allocates, so it isn't silent: write `std::string::from("...")`.
 
-- `std::str` methods: `len()` (bytes), `trim()`, `split(c)` (an `std::darray<std::str>` that borrows the text), `starts_with`, `find` (an `std::option<usize>`), `slice(from, to)`, `parse<T>()` (an `std::option<T>`), `is_empty()`.
+- `std::str` methods: `length()` (bytes), `trim()`, `split(c)` (an `std::darray<std::str>` that borrows the text), `starts_with`, `find` (an `std::option<usize>`), `slice(from, to)`, `parse<T>()` (an `std::option<T>`), `is_empty()`.
 - `std::string`: `std::string::from(s)`, `push_str(s)`, `push(c)`, and `std::format(f"...")` to build one from an f-string.
 - A string literal is one line, and `+` doesn't join strings: use `std::format` or `push_str`. Raw strings `r"C:\path"` skip escape processing.
 - **Text that is really data goes in a file:** `std::embed_text("frames.log")` reads a file while compiling and gives an `std::static_str`, like C23's `#embed`.
@@ -135,7 +135,7 @@ Example: [`err_negative_is.ed`](examples/err_negative_is.ed).
 | C++ | Edax |
 |---|---|
 | `std::vector<T>` | `std::darray<T>` |
-| `v.size()`, `v.push_back(x)`, `v.empty()` | `v.len()`, `v.push(x)`, `v.is_empty()` |
+| `v.size()`, `v.push_back(x)`, `v.empty()` | `v.length()`, `v.push(x)`, `v.is_empty()` |
 | `v.at(i)` (throws) | `v.get(i)` (an `std::option<T&>`) |
 | `v[i]` (unchecked) | `v[i]` (checked, panics) |
 | `std::map` / `std::unordered_map` | `std::tree_map` / `std::hash_map` |
@@ -168,7 +168,7 @@ Keep the parsed samples as views into the log: `sample` must not copy any text.
 <details>
 <summary>Hint 1: reading the lines</summary>
 
-`for (std::str line : log.split('\n'))`, then `std::str trimmed = line.trim();` and `continue` on an empty one. `trimmed.split(' ')` gives the words; a line with `len() != 3` is skipped (count it).
+`for (std::str line : log.split('\n'))`, then `std::str trimmed = line.trim();` and `continue` on an empty one. `trimmed.split(' ')` gives the words; a line with `length() != 3` is skipped (count it).
 </details>
 
 <details>

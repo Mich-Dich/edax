@@ -14,6 +14,6 @@ private:
 void main() {
     mut world w = world::make();
     (mut std::darray<u32>& bodies, std::darray<u32>& contacts) = w.bodies_and_contacts();
-    bodies.push(cast::truncate<u32>(contacts.len()) + 5);
-    std::println(f"{bodies.len()} {bodies[0]}");
+    bodies.push(cast::truncate<u32>(contacts.length()) + 5);
+    std::println(f"{bodies.length()} {bodies[0]}");
 }

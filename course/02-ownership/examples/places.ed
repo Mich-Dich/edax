@@ -7,7 +7,7 @@ struct world {
 }
 
 void integrate(mut std::darray<f32>& pos, std::darray<f32>& vel, f32 dt) {
-    for (usize i : 0..pos.len()) { pos[i] += vel[i] * dt; }
+    for (usize i : 0..pos.length()) { pos[i] += vel[i] * dt; }
 }
 
 i32 main() {

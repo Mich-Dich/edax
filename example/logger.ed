@@ -12,7 +12,7 @@ private compile_time std::log::pattern file_pattern = std::log::pattern::from(
 std::exit_code main(std::span<std::str> args) {
 
     std::thread::set_current_name("main");
-    std::log::info(f"starting with {args.len()} arguments");                 // kept until a sink exists
+    std::log::info(f"starting with {args.length()} arguments");                 // kept until a sink exists
 
     mut std::log::session logs = std::log::start(std::log::options{ .queue_capacity = 16 * 1024 });
     _ = logs.add(std::log::console::make(), std::log::sink_options{

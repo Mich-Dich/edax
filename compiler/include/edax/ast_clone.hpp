@@ -27,7 +27,7 @@ public:
     // Expands a parameter pack while copying unresolved code (templates, "Parameter packs"):
     // `for compile_time (A& v : values) { ... }` becomes one block per element, with `A`
     // renamed to `A$i` and `v` bound to `values$i`; `values...` in a call becomes the
-    // arguments `values$0, ..., values$n-1`; `values.len()` becomes `n`.
+    // arguments `values$0, ..., values$n-1`; `values.length()` becomes `n`.
     void expand_pack(std::string type_name, std::string value_name, std::size_t count) {
         pack_type_  = std::move(type_name);
         pack_value_ = std::move(value_name);

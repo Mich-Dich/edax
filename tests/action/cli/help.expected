@@ -31,6 +31,12 @@ commands:
   package convert <name> [--compare] [--to=DIR]
                         write packages/<name>.ed from the package's CMakeLists.txt (what the
                         CMake reader can't translate becomes TODOs), or compare the one you have
+  complete <file> <line>:<column> [--stdin] [--root=DIR]
+                        the names that fit at that place, one per line: name, kind, declaration,
+                        doc, separated by tabs (editors' suggestions; --stdin: the file's text)
+  pack <folder> <archive> [--exclude=GLOB]...
+                        pack the files of a folder into one archive that std::filesystem::archive
+                        reads (build.ed: g.add_archive)
   definition <file> <line>:<column>
                         where the name at that place is declared, as <file>:<line>:<column>
                         (editors' go to definition)

@@ -15,7 +15,7 @@ public:
     }
 
     void emit(u32 value) {
-        for (usize i : 0..handlers.len()) {
+        for (usize i : 0..handlers.length()) {
             std::print(f"[{names[i]}] ");
             handlers[i](value);
         }

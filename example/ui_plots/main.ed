@@ -105,7 +105,7 @@ namespace demo {
         if (s.frames % 400 == 0) {
             std::log::error(f"shader 'water.frag' failed to compile: line {s.frames % 31}");
         }
-        u32 k = cast::truncate<u32>(s.cpu_ms.len() + cast::saturate<usize>(s.time * 60.0));
+        u32 k = cast::truncate<u32>(s.cpu_ms.length() + cast::saturate<usize>(s.time * 60.0));
         f32 base = 9.0 + (cast::round<f32>(s.time) * 0.7).sin() * 2.0;
         s.cpu_ms.push(base + noise(k) * 1.2 + if (k % 97 == 0) { 9.0 } else { 0.0 });
         s.gpu_ms.push(base * 0.8 + noise(k + 7) * 0.8);
@@ -187,7 +187,7 @@ namespace demo {
 }
 
 std::exit_code main(std::span<std::str> args) {
-    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    std::option<std::str> screenshot = if (args.length() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
 
     mut wnd::system sys = match (wnd::system::start()) {
         std::ok(s) => move s,
@@ -278,8 +278,8 @@ std::exit_code main(std::span<std::str> args) {
                         std::image::rgba8 shot = renderer.read_pixels(frame);
                         std::darray<u8> png = std::image::encode_png(shot);
                         mut std::file out = std::file::create(path).expect("the screenshot file");
-                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
-                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.length()) });
+                        std::println(f"{ctx.draw_data().vertices.length()} vertices, {ctx.draw_data().commands.length()} draw calls, duplicate ids {ctx.duplicate_ids()}");
                         finished = true;
                     }
                 },

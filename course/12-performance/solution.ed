@@ -13,10 +13,10 @@ struct particles {
 // overflow) survives optimization; std::assume states the facts that let the optimizer drop them.
 @std::no_checks_left
 void integrate(mut std::darray<f32>& x, mut std::darray<f32>& y, mut std::darray<f32>& vx, mut std::darray<f32>& vy, f32 dt) {
-    usize n = x.len();
-    std::assume(y.len() == n);
-    std::assume(vx.len() == n);
-    std::assume(vy.len() == n);
+    usize n = x.length();
+    std::assume(y.length() == n);
+    std::assume(vx.length() == n);
+    std::assume(vy.length() == n);
     for (usize i : 0..n) {
         vy[i] -= 9.81 * dt;
         x[i] += vx[i] * dt;
@@ -30,9 +30,9 @@ void integrate(mut std::darray<f32>& x, mut std::darray<f32>& y, mut std::darray
 
 // Kinetic energy (mass 1), eight lanes at a time; the last block is masked.
 f32 energy(std::span<f32> vx, std::span<f32> vy) {
-    run_time check (vx.len() == vy.len()) else "energy: the columns differ in length";
+    run_time check (vx.length() == vy.length()) else "energy: the columns differ in length";
     mut f32x8 sum = default;
-    for (std::simd::block<8> at : std::simd::blocks<8>(vx.len())) {
+    for (std::simd::block<8> at : std::simd::blocks<8>(vx.length())) {
         f32x8 a = vx.load(at);
         f32x8 b = vy.load(at);
         sum = a.mul_add(a, b.mul_add(b, sum));

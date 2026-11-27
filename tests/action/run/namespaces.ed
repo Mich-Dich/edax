@@ -56,5 +56,5 @@ void main() {
     mut std::darray<geo::vec2> list = default;
     list.push(a);
     list.push(b);
-    std::println(f"{list.len()} {list[1].x}");
+    std::println(f"{list.length()} {list[1].x}");
 }

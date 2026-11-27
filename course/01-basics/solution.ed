@@ -21,7 +21,7 @@ f64 mean_degrees(std::span<i16> values) {
     for (i16 v : values) {
         sum += cast<i64>(v);
     }
-    return cast::round<f64>(sum) / cast::round<f64>(values.len()) / 10.0;
+    return cast::round<f64>(sum) / cast::round<f64>(values.length()) / 10.0;
 }
 
 // Counts the readings at or above `threshold`, and tells the caller how many were below zero.

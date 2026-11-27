@@ -9,7 +9,7 @@ void print_one(u32 x) { }
 
 template<type... A>
 usize count(A&... values) {
-    return values.len();
+    return values.length();
 }
 
 void counts() {

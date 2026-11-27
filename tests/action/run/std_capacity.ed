@@ -15,7 +15,7 @@ u64 next(mut u64& state) {
 }
 
 bool sorted_ok(std::darray<u64>& v, bool descending) {
-    for (usize i : 1..v.len()) {
+    for (usize i : 1..v.length()) {
         if (!descending && v[i - 1] > v[i]) { return false; }
         if (descending && v[i - 1] < v[i]) { return false; }
     }
@@ -25,21 +25,21 @@ bool sorted_ok(std::darray<u64>& v, bool descending) {
 i32 main() {
     // Capacity.
     mut std::darray<u32> a = std::darray<u32>::with_capacity(100);
-    std::println(f"with_capacity: len {a.len()} capacity {a.capacity()}");
+    std::println(f"with_capacity: len {a.length()} capacity {a.capacity()}");
     for (u32 i : 0..100) { a.push(i); }
     std::println(f"after 100 pushes: capacity {a.capacity()}");
     a.reserve(10);
     std::println(f"reserve(10) keeps {a.capacity()}");
     a.truncate(3);
-    std::println(f"truncate(3): len {a.len()} capacity {a.capacity()} last {a[2]}");
+    std::println(f"truncate(3): len {a.length()} capacity {a.capacity()} last {a[2]}");
     a.shrink_to_fit();
     std::println(f"shrink_to_fit: capacity {a.capacity()}");
     a.resize(6, 9);
     std::println(f"resize(6, 9): {a[0]} {a[1]} {a[2]} {a[3]} {a[4]} {a[5]} capacity {a.capacity()}");
     a.resize(2, 0);
-    std::println(f"resize(2, 0): len {a.len()}");
+    std::println(f"resize(2, 0): len {a.length()}");
     u32 gone = a.swap_remove(0);
-    std::println(f"swap_remove(0) = {gone}, now {a[0]}, len {a.len()}");
+    std::println(f"swap_remove(0) = {gone}, now {a[0]}, len {a.length()}");
 
     // Owning elements: clones, destruction.
     mut std::darray<std::string> words = default;
@@ -48,7 +48,7 @@ i32 main() {
     std::println(f"strings: {words[0]} {words[1]} {words[2]}");
     words.truncate(1);
     words.shrink_to_fit();
-    std::println(f"strings after truncate: {words.len()} {words[0]} capacity {words.capacity()}");
+    std::println(f"strings after truncate: {words.length()} {words[0]} capacity {words.capacity()}");
     words.truncate(0);
     words.shrink_to_fit();
     std::println(f"empty: capacity {words.capacity()}");
@@ -63,13 +63,13 @@ i32 main() {
         v.sort_by_key(std::sort_order::ascending, [](u64& e) { return e; });
         bool up = sorted_ok(v, false);
         v.sort_by_key(std::sort_order::descending, [](u64& e) { return e; });
-        std::println(f"sort {n}: {up} {sorted_ok(v, true)} {v.len()}");
+        std::println(f"sort {n}: {up} {sorted_ok(v, true)} {v.length()}");
     }
     mut std::darray<item> items = default;
     for (u32 i : 0..1000) { items.push(item{ .key = cast::truncate<u32>(next(mut state) % 10), .order = i }); }
     items.sort_by_key(std::sort_order::ascending, [](item& e) { return e.key; });
     mut bool stable = true;
-    for (usize i : 1..items.len()) {
+    for (usize i : 1..items.length()) {
         if (items[i - 1].key == items[i].key && items[i - 1].order > items[i].order) { stable = false; }
         if (items[i - 1].key > items[i].key) { stable = false; }
     }
@@ -77,7 +77,7 @@ i32 main() {
 
     // Strings.
     mut std::string s = std::string::with_capacity(64);
-    std::println(f"string capacity {s.capacity()} len {s.len()}");
+    std::println(f"string capacity {s.capacity()} len {s.length()}");
     s.push_str("abc");
     s.reserve(8);
     std::println(f"reserve(8) keeps {s.capacity()}: {s}");
@@ -88,7 +88,7 @@ i32 main() {
     mut u32 total = 0;
     for (u32 i : 0..1000) { total += m[i]; }
     for (u32 i : 0..500) { m.remove(i * 2); }
-    std::println(f"map: {m.len()} {total} {m.contains(4)} {m.contains(5)} {m.get(7).value_or(0)} {m.get(8).is_none()}");
+    std::println(f"map: {m.length()} {total} {m.contains(4)} {m.contains(5)} {m.get(7).value_or(0)} {m.get(8).is_none()}");
     mut std::hash_map<std::string, u32> names = default;
     names.reserve(3);
     names.insert(std::string::from("ada"), 1);
@@ -101,9 +101,9 @@ i32 main() {
     std::println(f"bits: {bits.count()}");
     std::str csv = "a,bb,,c";
     std::darray<std::str> parts = csv.split(',');
-    std::println(f"split: {parts.len()} [{parts[0]}] [{parts[1]}] [{parts[2]}] [{parts[3]}]");
+    std::println(f"split: {parts.length()} [{parts[0]}] [{parts[1]}] [{parts[2]}] [{parts[3]}]");
     std::str greek = "a\u{3b1}b\u{3b1}c";
-    std::println(f"split multibyte: {greek.split('\u{3b1}').len()}");
+    std::println(f"split multibyte: {greek.split('\u{3b1}').length()}");
     std::str short_num = "3.25";
     std::str long_num = "1.0000000000000000000000000000000000000000000000000000000000000000000001";
     std::println(f"parse: {short_num.parse<f64>().value_or(0.0)} {long_num.parse<f64>().value_or(0.0)} {csv.parse<f64>().is_none()}");

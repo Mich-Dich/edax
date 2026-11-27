@@ -5,7 +5,7 @@ struct cmd { u32 n = 0; }
 struct holder {
     std::darray<cmd> items = default;
     void bump() mut {
-        usize last = this.items.len() - 1;
+        usize last = this.items.length() - 1;
         this.items[last].n += 3;
     }
 }

@@ -34,7 +34,7 @@ A spec the formatter doesn't know: a fill character (`{x:-<31}`) or a C/Python h
 Often a field and a method with the same name (`owner` and `owner()`): they share one scope. [Lesson 3](03-types-and-modules/README.md#members-are-named-bare-and-nothing-can-hide-them)
 
 ## E3013 declared but not defined
-Either a header declaration has no body in the `.ed`, or the `.ed` **repeats** the declaration (`usize len();`) instead of giving it a body. The `.edh` declares, the `.ed` defines. [Lesson 3](03-types-and-modules/README.md#2-modules-edh-and-ed)
+Either a header declaration has no body in the `.ed`, or the `.ed` **repeats** the declaration (`usize length();`) instead of giving it a body. The `.edh` declares, the `.ed` defines. [Lesson 3](03-types-and-modules/README.md#2-modules-edh-and-ed)
 
 ## E3015 not declared in the header
 A public method or field that only the `.ed` has. Declare it in the `.edh`, or move it under `private:`. [Lesson 3](03-types-and-modules/README.md#2-modules-edh-and-ed)
@@ -116,7 +116,7 @@ A literal argument that fits two overloads. Give it a suffix. [Lesson 1](01-basi
 A `match` must be exhaustive. Add the missing arms (better than `_`, which hides future alternatives). [Lesson 4](04-enums-and-errors/README.md#2-match)
 
 ## E4070 has no method
-Often a C++ name: the note says the Edax one (`len`, `push`, `is_empty`, `get`). [Lesson 9](09-containers-and-text/README.md#1-the-containers)
+Often a C++ name: the note says the Edax one (`length`, `push`, `is_empty`, `get`). [Lesson 9](09-containers-and-text/README.md#1-the-containers)
 
 ## E4071 private to module
 Reading a class's private field from another module. [Lesson 3](03-types-and-modules/README.md#privacy)

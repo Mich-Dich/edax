@@ -23,7 +23,7 @@ enum parse_error : u8 {
 
 std::result<employee, parse_error> parse_line(std::str& line) {
     std::darray<std::str> parts = line.split(',');          // view type: stays local
-    if (parts.len() != 3) {
+    if (parts.length() != 3) {
         return std::error(parse_error::bad_line);
     }
 

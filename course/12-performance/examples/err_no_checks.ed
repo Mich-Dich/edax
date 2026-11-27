@@ -4,7 +4,7 @@ import std;
 
 @std::no_checks_left
 void add_into(mut std::darray<f32>& out, std::darray<f32>& a, std::darray<f32>& b) {
-    for (usize i : 0..out.len()) { out[i] = a[i] + b[i]; }
+    for (usize i : 0..out.length()) { out[i] = a[i] + b[i]; }
 }
 
 i32 main() {

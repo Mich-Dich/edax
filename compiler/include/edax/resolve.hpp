@@ -7,10 +7,17 @@
 #include "edax/symbols.hpp"
 
 #include <iosfwd>
+#include <set>
+#include <string>
 
 namespace edax {
 
 void resolve_program(sema::Program& program, DiagnosticEngine& diags);
+
+// The names directly in `std` that the compiler provides itself (println, size_of, raw_ptr, ...):
+// an undeclared `std::x` is an error unless it is one of them, or in std::meta, std::raw,
+// std::simd or std::c_library. A new builtin `std::` name must be added here.
+const std::set<std::string>& compiler_std_names();
 
 // Resolves an instance of the template type `templ` (spec 14): `decl` is a fresh copy of the
 // template's declaration, which must outlive the program. Returns the instance's symbol (not

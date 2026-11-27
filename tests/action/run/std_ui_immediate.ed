@@ -56,7 +56,7 @@ void main() {
     mut settings s = default;
     (ui::rect save, ui::rect slider) = frame_of(mut ctx, mut s, idle(ui::vec2{}));
     _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
-    std::println(f"drawn: {ctx.draw_data().vertices.len() > 0}, duplicates {ctx.duplicate_ids()}, wants mouse {ctx.wants_mouse()}");
+    std::println(f"drawn: {ctx.draw_data().vertices.length() > 0}, duplicates {ctx.duplicate_ids()}, wants mouse {ctx.wants_mouse()}");
 
     // Click "Save": press and release over it.
     ui::vec2 on_save = ui::vec2{ .x = save.x + 20.0, .y = save.y + 10.0 };
@@ -88,8 +88,8 @@ void main() {
         p.list.star(k.knob_center(), 12.0, 5.0, 5, 0.0, p.tokens.colors.warning);
     };
     _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
-    usize with_stars = ctx.draw_data().vertices.len();
+    usize with_stars = ctx.draw_data().vertices.length();
     ctx.skin() = ui::skin::standard();
     _ = frame_of(mut ctx, mut s, idle(ui::vec2{}));
-    std::println(f"star knobs change the drawing: {with_stars != ctx.draw_data().vertices.len()}, duplicates {ctx.duplicate_ids()}");
+    std::println(f"star knobs change the drawing: {with_stars != ctx.draw_data().vertices.length()}, duplicates {ctx.duplicate_ids()}");
 }

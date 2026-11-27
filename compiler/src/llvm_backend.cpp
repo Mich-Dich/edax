@@ -807,6 +807,19 @@ private:
         throw Unsupported{};
     }
 
+    // A call whose name resolves to nothing: the checker let it through because it looked like
+    // one the compiler provides, but nothing here knows it either.
+    [[noreturn]] void unrecognised(Span span, const std::string& name) {
+        if (reported_.insert({span.file, span.begin, name}).second) {
+            Diagnostic& d = diags_.report(DiagCode::E3020, span, std::format("'{}' is not recognised", name), "not found");
+            if (name.starts_with("std::")) {
+                d.notes.push_back(Note{"neither the standard library compiled into this edaxc nor the compiler declares it; "
+                                       "if you changed library/std, rebuild edaxc", std::nullopt});
+            }
+        }
+        throw Unsupported{};
+    }
+
     // A private constant holding `text` (NUL-terminated); its address is a `ptr`.
     llvm::Constant* string_global(const std::string& text) {
         llvm::Constant* init = llvm::ConstantDataArray::getString(ctx_, text);
@@ -1037,6 +1050,13 @@ private:
             if (s->module) return s->module;
         }
         return nullptr;
+    }
+    // The TLS model of this module's own thread-locals: at a fixed offset from the thread pointer in
+    // a program; through the dynamic loader in a plugin or shared library, which may be loaded
+    // (dlopen) after the program's threads exist (local-exec can't be linked into a shared object).
+    llvm::GlobalValue::ThreadLocalMode own_tls_model() const {
+        return program_.is_plugin || program_.is_shared_library ? llvm::GlobalValue::LocalDynamicTLSModel
+                                                                : llvm::GlobalValue::LocalExecTLSModel;
     }
     bool from_shared_library(const Symbol* s) const {
         return !program_.shared_modules.empty() && !generic(s) && program_.shared_modules.contains(owner_module(s));
@@ -1273,14 +1293,14 @@ private:
             llvm::Argument* out = nullptr;
             if (auto* a = llvm::dyn_cast<llvm::Argument>(v)) {
                 out = a->hasNoAliasAttr() ? a : nullptr;
-            } else if (auto* slot = llvm::dyn_cast<llvm::AllocaInst>(v)) {
+            } else if (auto* span_slot = llvm::dyn_cast<llvm::AllocaInst>(v)) {
                 // A span parameter's slot (stored once from the argument): its elements and fields.
                 llvm::Argument* from = nullptr;
                 bool            ok   = true;
-                for (llvm::User* u : slot->users()) {
+                for (llvm::User* u : span_slot->users()) {
                     if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
                         auto* arg = llvm::dyn_cast<llvm::Argument>(st->getValueOperand());
-                        if (st->getPointerOperand() != slot || from || !arg) ok = false;
+                        if (st->getPointerOperand() != span_slot || from || !arg) ok = false;
                         else from = arg;
                     }
                 }
@@ -1951,8 +1971,6 @@ private:
 
     static bool is_void(const types::Type* t) { return !t || t->is(Kind::void_) || t->is(Kind::never); }
 
-    static constexpr const char* no_std = "the standard library is not written yet";
-
     // --- functions --------------------------------------------------------------------------
 
     // The body of a `@std::simd::multiversion` function: the first call asks the CPU which copy
@@ -2243,7 +2261,7 @@ private:
         if (auto* g = mod_->getNamedGlobal("edax_call_site")) return g;
         auto* g = new llvm::GlobalVariable(*mod_, ptr_type(), false, llvm::GlobalValue::InternalLinkage,
                                            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), "edax_call_site");
-        g->setThreadLocalMode(llvm::GlobalValue::LocalExecTLSModel);   // each thread has its own call site (spec 27)
+        g->setThreadLocalMode(own_tls_model());   // each thread has its own call site (spec 27)
         return g;
     }
 
@@ -2374,6 +2392,22 @@ private:
     void destructure_stmt(DestructureStmt& d) {
         const types::Type* t = types::strip_ref(d.init->type);
         if (!t || !t->is(Kind::tuple)) unsupported(d.span, "destructuring this value");
+        if (d.by_reference) {   // `for (auto (a, b) : list)`: the names refer into the element
+            llvm::Value* base = reference_to(*d.init);
+            llvm::Type*  lt   = lower_type(t);
+            for (std::size_t i = 0; i < d.bindings.size(); ++i) {
+                DestructureBinding& b = d.bindings[i];
+                if (b.wildcard || !b.symbol) continue;
+                llvm::Value*      part = b_.CreateStructGEP(lt, base, static_cast<unsigned>(i));
+                bool              ref  = b.symbol->type->is(Kind::reference);
+                llvm::AllocaInst* slot = entry_alloca(ref ? ptr_type() : lower_type(b.symbol->type), b.name);
+                locals_[b.symbol]      = slot;
+                debug_variable(slot, b.name, b.symbol->type, b.span);
+                if (inspect_) slot_info_[slot] = SlotInfo{b.name, types::to_string(b.symbol->type), "variable"};
+                b_.CreateStore(ref ? part : b_.CreateLoad(lower_type(b.symbol->type), part), slot);
+            }
+            return;
+        }
         llvm::Value* value = gen_expr(*d.init);
         moved_out(*d.init);
         for (std::size_t i = 0; i < d.bindings.size(); ++i) {
@@ -3182,6 +3216,11 @@ private:
         if (e.conversion == Expr::Conversion::to_callable) return callable_from_lambda(e, e.converted_to);
         if (e.conversion == Expr::Conversion::pointer_upcast) {   // the same pointer, seen as its base (spec 07)
             return upcast_value(gen_expr(e), types::strip_ref(e.type), e.converted_to, e.span);
+        }
+        if (e.conversion == Expr::Conversion::distinct_value) {   // the value inside a distinct type (spec 34)
+            llvm::Value* v = gen_expr(e);
+            if (e.type->is(types::Kind::reference)) v = b_.CreateLoad(lower_type(types::strip_ref(e.type)), v);
+            return b_.CreateExtractValue(v, {0});
         }
         // literal_to_string: `std::string::from(literal)`
         const types::Type* target = nullptr;
@@ -3997,7 +4036,7 @@ private:
                     std::uint64_t      v   = segs[1].name == "size_of" ? dl.getTypeAllocSize(lt).getFixedValue() : dl.getABITypeAlign(lt).value();
                     return llvm::ConstantInt::get(lower_type(c.type), v);
                 }
-                unsupported(callee.span, std::format("'{}'", to_string(pe.path)), no_std);
+                unrecognised(callee.span, to_string(pe.path));
             }
             if (s->kind == SymbolKind::alternative) {
                 if (c.args.size() == 1 && !carries(s)) gen_expr(*c.args[0]);   // a `void` payload: only its effects (spec 08)
@@ -4158,7 +4197,7 @@ private:
                 return v;
             }
             if (name == "clone" && c.args.empty() && obj && !s) return clone_value(obj, object_address(*me.object));
-            if (name == "len" && c.args.empty() && is_str(obj)) return b_.CreateExtractValue(gen_expr(*me.object), 1);
+            if (name == "length" && c.args.empty() && is_str(obj)) return b_.CreateExtractValue(gen_expr(*me.object), 1);
             if (name == "as_ptr" && c.args.empty() && is_str(obj)) return b_.CreateExtractValue(gen_expr(*me.object), 0);
             if (name == "is_empty" && c.args.empty() && is_str(obj)) {
                 return b_.CreateICmpEQ(b_.CreateExtractValue(gen_expr(*me.object), 1), llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0));
@@ -6087,7 +6126,7 @@ private:
 
     bool must_vectorize_ = false;   // the function being generated is @std::simd::must_vectorize
 
-    // `for (x : c)` over a container (`len()` and `operator[]`) or a stream (`next()`), spec 10.
+    // `for (x : c)` over a container (`length()` and `operator[]`) or a stream (`next()`), spec 10.
     // A temporary iterable lives until the loop ends.
     llvm::Value* for_each(ForExpr& f) {
         auto*              i64 = llvm::Type::getInt64Ty(ctx_);
@@ -6795,8 +6834,8 @@ private:
         parts.push_back(g->name);
         auto* gv = new llvm::GlobalVariable(*mod_, t, false, llvm::GlobalValue::InternalLinkage,
                                             llvm::Constant::getNullValue(t), "rg_" + mangle_parts(parts));
-        if (v.storage == Storage::thread_local_) {   // one copy per thread at a fixed offset from the thread pointer (spec 27)
-            gv->setThreadLocalMode(llvm::GlobalValue::LocalExecTLSModel);
+        if (v.storage == Storage::thread_local_) {   // one copy per thread (spec 27)
+            gv->setThreadLocalMode(own_tls_model());
         }
         globals_[g] = gv;
         if (from_shared_library(g) || exported_by_library(g)) {   // one copy, in the shared library
@@ -7645,7 +7684,7 @@ private:
             c.cap = next;
             return m;
         }
-        static const std::set<std::string> reading{"len", "is_empty", "capacity", "get", "contains", "as_span", "as_str", "clone",
+        static const std::set<std::string> reading{"length", "is_empty", "capacity", "get", "contains", "as_span", "as_str", "clone",
                                                    "sort", "sort_by", "sort_by_key", "get_mut"};
         if (reading.contains(method)) return "none";
         if (method == "clear") {
@@ -7845,6 +7884,11 @@ private:
             insight(e.span, "conversions", "upcast", "range",
                     std::format("{} → {} (upcast)", types::qualified_name(types::strip_ref(e.type)), types::qualified_name(e.converted_to)),
                     "Implicit (spec 07): the same address, seen as a base class or an interface (an interface adds its table).");
+            break;
+        case Expr::Conversion::distinct_value:
+            insight(e.span, "conversions", "distinct-value", "range",
+                    std::format("{} → {}", types::qualified_name(types::strip_ref(e.type)), types::qualified_name(e.converted_to)),
+                    "Implicit (spec 34): a distinct type with a check gives up its guarantee and becomes its underlying type; no code.");
             break;
         case Expr::Conversion::to_callable:
             insight(e.span, "conversions", "to-callable", "range",

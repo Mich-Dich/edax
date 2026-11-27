@@ -7,7 +7,7 @@ class bus {
 public:
     void on(std::function<void(u32)> handler) mut { handlers.push(move handler); }
     void emit(u32 v) {
-        for (usize i : 0..handlers.len()) { handlers[i](v); }    // called like a function
+        for (usize i : 0..handlers.length()) { handlers[i](v); }    // called like a function
     }
 private:
     std::darray<std::function<void(u32)>> handlers = default;

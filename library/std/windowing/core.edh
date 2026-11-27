@@ -111,7 +111,7 @@ namespace std::windowing {
     }
 
     // The number of keys (std::windowing::key's alternatives): the size of the key state.
-    compile_time usize key_count = std::meta::alternatives<key>().len();
+    compile_time usize key_count = std::meta::alternatives<key>().length();
 
     // A mouse button.
     enum mouse_button : u8 {

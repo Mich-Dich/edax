@@ -94,5 +94,5 @@ void main() {
     reset_numbers(mut c);
     std::println(f"{c.width} {c.height} {c.fullscreen}");
     std::println(f"{fact20} {fib20} {defaults.width}x{defaults.height}");
-    std::println(f"fields: {std::meta::fields<config>().len()}, size {std::size_of<config>()}");
+    std::println(f"fields: {std::meta::fields<config>().length()}, size {std::size_of<config>()}");
 }

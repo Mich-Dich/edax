@@ -1,0 +1,74 @@
+// RUN: edaxc run %s
+// std::filesystem::walk: every entry below a directory, as a stream for `for` (depth first or
+// breadth first, a depth limit, hidden names, skipping a directory), through the mount tables;
+// walk_all, is_file / is_directory / is_link, and the path helpers.
+import std;
+
+void show(std::str title, std::darray<std::filesystem::walk_entry<std::filesystem::absolute_path>>& entries, std::filesystem::absolute_path& root) {
+    std::println(f"-- {title}");
+    for (std::filesystem::walk_entry<std::filesystem::absolute_path>& e : entries) {
+        std::str full = e.path.as_str();
+        std::println(f"{e.depth} {full.slice(root.as_str().length() + 1, full.length())} {e.kind}");
+    }
+}
+
+std::exit_code main(std::span<std::str> args) {
+    std::filesystem::absolute_path root = std::filesystem::temp_dir() / "edax_action_filesystem_walk";
+    std::array<std::str, 4> dirs = ["a/b", "c", ".hidden", "empty"];
+    for (std::str dir : dirs) {
+        std::filesystem::create_directories(root / dir).expect("create");
+    }
+    std::array<std::str, 6> files = ["top.txt", "a/one.so", "a/b/two.txt", "c/three.so", ".hidden/secret", "c/.dot"];
+    for (std::str file : files) {
+        std::filesystem::write_text(root / file, file).expect("write");
+    }
+
+    show("depth first", std::filesystem::walk_all(root, std::filesystem::walk_options{}).expect("walk"), root);
+    show("breadth first, files only, hidden too", std::filesystem::walk_all(root, std::filesystem::walk_options{
+        .order = std::filesystem::walk_order::breadth_first, .include_directories = false, .include_hidden = true }).expect("walk"), root);
+    show("max_depth 0", std::filesystem::walk_all(root, std::filesystem::walk_options{ .max_depth = 0 }).expect("walk"), root);
+
+    std::println("-- skip_children on 'a', dynamic libraries marked");
+    mut std::filesystem::walker<std::filesystem::absolute_path> w = std::filesystem::walk(root).expect("walk");
+    for (std::filesystem::walk_entry<std::filesystem::absolute_path> e : w) {
+        if (e.is_directory() && e.name() == "a") { w.skip_children(); }
+        std::println(f"{e.name()} {e.path.has_extension(std::filesystem::dynamic_library_extension())}");
+    }
+    std::println(f"problems: {w.problems().length()}");
+    std::println(f"missing root: {std::filesystem::walk(root / "missing").is_error()}");
+
+    std::println("-- predicates");
+    std::println(f"{std::filesystem::is_directory(root / "a")} {std::filesystem::is_file(root / "a")} {std::filesystem::is_file(root / "top.txt")}");
+    std::println(f"{std::filesystem::is_link(root / "top.txt")} {std::filesystem::is_directory(root / "missing")}");
+    for (std::filesystem::entry& e : std::filesystem::list(root / "a").expect("list")) {
+        std::println(f"{e.name} {e.is_file()} {e.is_directory()} {e.is_link()}");
+    }
+
+    std::println("-- a memory source, walked through its mount");
+    std::filesystem::memory m = std::filesystem::memory::make();
+    m.add_text("levels/one.txt", "1");
+    m.add_text("levels/deep/two.txt", "2");
+    std::filesystem::mounted mem = std::filesystem::table::global().mount("walk_mem", m.share(), std::filesystem::mount_options{});
+    for (std::filesystem::walk_entry<std::filesystem::relative_path> e : std::filesystem::walk(std::filesystem::path::relative("walk_mem")).expect("mem")) {
+        std::println(f"{e.depth} {e.path.as_str()} {e.kind}");
+    }
+
+    std::println("-- paths");
+    std::filesystem::relative_path levels = std::filesystem::path::relative("walk_mem") / "levels";
+    std::filesystem::absolute_path joined = std::filesystem::path::absolute("/data") / levels;
+    std::filesystem::path plain = std::filesystem::path::from("logs/app.tar.gz");
+    std::println(f"{joined.as_str()} {plain.stem()} {plain.extension()} {plain.with_extension("zip").as_str()} {plain.with_extension("").as_str()}");
+    std::println(f"{plain.has_extension("gz")} {plain.to_relative().is_some()} {plain.to_absolute().is_none()} {joined.to_absolute().is_some()}");
+
+    // Clean up, the deepest first.
+    mut std::darray<std::filesystem::walk_entry<std::filesystem::absolute_path>> all =
+        std::filesystem::walk_all(root, std::filesystem::walk_options{ .include_hidden = true }).expect("walk");
+    while (true) {
+        match (all.pop()) {
+            std::some(e) => { std::filesystem::remove(e.path).expect("remove"); },
+            std::none => break,
+        }
+    }
+    std::filesystem::remove(root).expect("remove root");
+    return std::exit_code::success;
+}

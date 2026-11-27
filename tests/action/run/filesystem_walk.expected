@@ -1,0 +1,45 @@
+exit: 0
+--- stdout
+-- depth first
+0 a directory
+1 a/b directory
+2 a/b/two.txt file
+1 a/one.so file
+0 c directory
+1 c/three.so file
+0 empty directory
+0 top.txt file
+-- breadth first, files only, hidden too
+0 top.txt file
+1 .hidden/secret file
+1 a/one.so file
+1 c/.dot file
+1 c/three.so file
+2 a/b/two.txt file
+-- max_depth 0
+0 a directory
+0 c directory
+0 empty directory
+0 top.txt file
+-- skip_children on 'a', dynamic libraries marked
+a false
+c false
+three.so true
+empty false
+top.txt false
+problems: 0
+missing root: true
+-- predicates
+true false true
+false false
+b false true false
+one.so true false false
+-- a memory source, walked through its mount
+0 walk_mem/levels directory
+1 walk_mem/levels/deep directory
+2 walk_mem/levels/deep/two.txt file
+1 walk_mem/levels/one.txt file
+-- paths
+/data/walk_mem/levels app.tar gz logs/app.tar.zip logs/app.tar
+true true true true
+--- stderr

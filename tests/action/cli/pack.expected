@@ -1,0 +1,4 @@
+exit: 0
+--- stdout
+packed 2 files into %t/game.pak
+--- stderr

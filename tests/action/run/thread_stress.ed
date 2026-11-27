@@ -31,7 +31,7 @@ i32 main() {
             _ = out.send(s);
         }));
     }
-    while (producers.len() > 0) { producers.pop().expect("a producer").join(); }
+    while (producers.length() > 0) { producers.pop().expect("a producer").join(); }
     ch.close();
     std::channel_receiver<u64> results = sums.receiver();
     mut u64 total = 0;

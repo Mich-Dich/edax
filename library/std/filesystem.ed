@@ -1,11 +1,33 @@
-// The Edax standard library: module std::filesystem.
+// The Edax standard library: module std::filesystem (see filesystem.edh and filesystem.md).
 
 namespace std::filesystem {
+    // --- paths -----------------------------------------------------------------------------------
+
     class path {
     public:
         static path from(std::str text) { return path{ .text = std::string::from(text) }; }
 
-        static path relative(std::str text) { return path{ .text = std::string::from(text) }; }
+        static std::filesystem::relative_path relative(std::str text) {
+            compile_time check {
+                if (std::is_compile_time(text)) {
+                    if (text.starts_with("/")) {
+                        std::compile_error(std::location_of(text), f"\"{text}\" starts with '/': it is an absolute path; use 'path::absolute'");
+                    }
+                }
+            }
+            return cast<std::filesystem::relative_path>(path{ .text = std::string::from(text) });
+        }
+
+        static std::filesystem::absolute_path absolute(std::str text) {
+            compile_time check {
+                if (std::is_compile_time(text)) {
+                    if (!text.starts_with("/")) {
+                        std::compile_error(std::location_of(text), f"\"{text}\" doesn't start with '/': it is a relative path; use 'path::relative'");
+                    }
+                }
+            }
+            return cast<std::filesystem::absolute_path>(path{ .text = std::string::from(text) });
+        }
 
         std::str as_str() { return this.text; }
 
@@ -13,7 +35,7 @@ namespace std::filesystem {
 
         path parent() {
             std::str chars = this.text;
-            mut usize end = chars.len();
+            mut usize end = chars.length();
             while (end > 0) {
                 end -= 1;
                 if (chars.slice(end, end + 1) == "/") {
@@ -26,9 +48,9 @@ namespace std::filesystem {
 
         std::str file_name() {
             std::str chars = this.text;
-            mut usize at = chars.len();
+            mut usize at = chars.length();
             while (at > 0) {
-                if (chars.slice(at - 1, at) == "/") { return chars.slice(at, chars.len()); }
+                if (chars.slice(at - 1, at) == "/") { return chars.slice(at, chars.length()); }
                 at -= 1;
             }
             return chars;
@@ -36,83 +58,1889 @@ namespace std::filesystem {
 
         std::str extension() {
             std::str name = this.file_name();
-            mut usize at = name.len();
+            mut usize at = name.length();
             while (at > 1) {
                 at -= 1;
-                if (name.slice(at, at + 1) == ".") { return name.slice(at + 1, name.len()); }
+                if (name.slice(at, at + 1) == ".") { return name.slice(at + 1, name.length()); }
             }
             return "";
         }
+
+        std::str stem() {
+            std::str name = this.file_name();
+            std::str ext  = this.extension();
+            if (ext.is_empty()) { return name; }
+            return name.slice(0, name.length() - ext.length() - 1);
+        }
+
+        bool has_extension(std::str ext) { return this.extension() == ext; }
+
+        path with_extension(std::str ext) {
+            std::str chars = this.text;
+            std::str old   = this.extension();
+            mut usize keep = chars.length();
+            if (!old.is_empty()) { keep -= old.length() + 1; }
+            mut std::string out = std::string::from(chars.slice(0, keep));
+            if (!ext.is_empty()) {
+                out.push('.');
+                out.push_str(ext);
+            }
+            return path{ .text = move out };
+        }
+
+        bool is_absolute() { return this.text.as_str().starts_with("/"); }
+
+        std::option<std::filesystem::absolute_path> to_absolute() {
+            if (!this.is_absolute()) { return std::none; }
+            return std::some(cast<std::filesystem::absolute_path>(this.clone()));
+        }
+
+        std::option<std::filesystem::relative_path> to_relative() {
+            if (this.is_absolute()) { return std::none; }
+            return std::some(cast<std::filesystem::relative_path>(this.clone()));
+        }
+
+        path normalized() {
+            std::str chars = this.text;
+            bool absolute = chars.starts_with("/");
+            mut std::darray<std::str> parts = default;
+            mut usize i = 0;
+            while (i <= chars.length()) {
+                mut usize end = i;
+                while (end < chars.length() && chars.slice(end, end + 1) != "/") { end += 1; }
+                std::str part = chars.slice(i, end);
+                if (part == "..") {
+                    bool can_drop = !parts.is_empty() && parts[parts.length() - 1] != "..";
+                    if (can_drop) {
+                        _ = parts.pop();
+                    } else if (!absolute) {
+                        parts.push(part);
+                    }
+                } else if (!part.is_empty() && part != ".") {
+                    parts.push(part);
+                }
+                i = end + 1;
+            }
+            mut std::string out = default;
+            if (absolute) { out.push('/'); }
+            for (usize k : 0..parts.length()) {
+                if (k > 0) { out.push('/'); }
+                out.push_str(parts[k]);
+            }
+            return path{ .text = move out };
+        }
+
+        bool operator==(path& other) { return this.text.as_str() == other.text.as_str(); }
 
     private:
         std::string text = default;
     }
 
-    path operator/(path& dir, std::str name) {
+    path operator/(path& dir, std::str name) { return joined(dir, name); }
+
+    private path joined(path& dir, std::str name) {
         mut std::string text = std::string::from(dir.as_str());
         if (!text.is_empty() && !text.as_str().ends_with("/")) { text.push('/'); }
         text.push_str(name);
         return path{ .text = move text };
     }
 
+    std::filesystem::absolute_path operator/(std::filesystem::absolute_path& dir, std::str name) { return cast<std::filesystem::absolute_path>(joined(dir, name)); }
+
+    std::filesystem::absolute_path operator/(std::filesystem::absolute_path& dir, std::filesystem::relative_path& rest) { return cast<std::filesystem::absolute_path>(joined(dir, rest.as_str())); }
+
+    std::filesystem::relative_path operator/(std::filesystem::relative_path& dir, std::str name) { return cast<std::filesystem::relative_path>(joined(dir, name)); }
+
+    std::filesystem::relative_path operator/(std::filesystem::relative_path& dir, std::filesystem::relative_path& rest) { return cast<std::filesystem::relative_path>(joined(dir, rest.as_str())); }
+
+    struct file_info {
+        bool is_file() { return this.kind == kind::file; }
+        bool is_directory() { return this.kind == kind::directory; }
+        bool is_link() { return this.kind == kind::link; }
+    }
+
+    struct entry {
+        bool is_file() { return this.kind == kind::file; }
+        bool is_directory() { return this.kind == kind::directory; }
+        bool is_link() { return this.kind == kind::link; }
+    }
+
+    // --- the operating system ----------------------------------------------------------------------
+
     private extern(std::build::language::c) {
+        i32 open(std::raw_ptr<u8> name, i32 flags, u32 mode);
+        i32 close(i32 fd);
+        isize read(i32 fd, std::raw_ptr<mut u8> buffer, usize size);
+        isize pread(i32 fd, std::raw_ptr<mut u8> buffer, usize size, i64 offset);
+        isize write(i32 fd, std::raw_ptr<u8> data, usize size);
+        i32 statx(i32 dir, std::raw_ptr<u8> name, i32 flags, u32 mask, std::raw_ptr<mut u8> out);
+        i32 access(std::raw_ptr<u8> name, i32 mode);
         i32 mkdir(std::raw_ptr<u8> name, u32 mode);
+        i32 rename(std::raw_ptr<u8> from, std::raw_ptr<u8> to);
+        i32 remove(std::raw_ptr<u8> name);
+        isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
+        std::raw_ptr<mut u8> mmap(std::raw_ptr<mut u8> address, usize length, i32 protection, i32 flags, i32 fd, i64 offset);
+        i32 munmap(std::raw_ptr<mut u8> address, usize length);
+        std::raw_ptr<mut u8> opendir(std::raw_ptr<u8> name);
+        std::raw_ptr<u8> readdir(std::raw_ptr<mut u8> dir);
+        i32 closedir(std::raw_ptr<mut u8> dir);
         std::raw_ptr<mut i32> __errno_location();
     }
 
-    std::result<void, std::io_error> create_directories(path& dir) {
-        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
-        std::str text = dir.as_str();
-        mut std::string name = default;
-        mut usize i = 0;
-        while (i < text.len()) {
-            // Create each prefix that ends before a '/' (and the whole path at the end).
-            mut usize end = i + 1;
-            while (end < text.len() && text.slice(end, end + 1) != "/") { end += 1; }
-            name.clear();
-            name.push_str(text.slice(0, end));
-            name.push('\0');
-            std::str c_name = name;
-            mut i32 result = 0;
-            mut i32 code = 0;
-            unsafe {
-                result = mkdir(c_name.as_ptr(), 493u32);   // 0755
-                code = *__errno_location();
+    private compile_time i32 at_fdcwd = -100;
+    private compile_time i32 o_rdonly = 0;
+    private compile_time i32 o_wronly = 1;
+    private compile_time i32 o_creat = 0x40;
+    private compile_time i32 o_trunc = 0x200;
+    private compile_time i32 o_append = 0x400;
+    private compile_time i32 o_cloexec = 0x80000;
+    private compile_time i32 at_empty_path = 0x1000;
+    private compile_time u32 statx_basic = 0x7ff;
+
+    // `text` with a NUL after it, for C.
+    private std::string c_text(std::str text) {
+        mut std::string out = std::string::with_capacity(text.length() + 1);
+        out.push_str(text);
+        out.push('\0');
+        return out;
+    }
+
+    // Where the elements of `s` are, for C.
+    private std::raw_ptr<mut u8> address_of(std::span_mut<u8>& s) {
+        return unsafe { cast::reinterpret<std::raw_ptr<mut u8>>(s.as_span().as_ptr()) };
+    }
+
+    // The io_error for C's `errno`.
+    private std::io_error last_error() {
+        mut i32 code = 0;
+        unsafe { code = *__errno_location(); }
+        return match (code) {
+            2 => std::io_error::not_found,
+            1 => std::io_error::permission_denied,
+            13 => std::io_error::permission_denied,
+            17 => std::io_error::already_exists,
+            20 => std::io_error::not_directory,
+            21 => std::io_error::is_directory,
+            30 => std::io_error::read_only,
+            39 => std::io_error::already_exists,   // ENOTEMPTY
+            95 => std::io_error::not_supported,
+            _ => std::io_error::other,
+        };
+    }
+
+    // Little-endian numbers at `at`.
+    private u64 read_u64(std::raw_ptr<u8> at) {
+        mut u64 v = 0;
+        mut usize i = 8;
+        while (i > 0) {
+            i -= 1;
+            unsafe { v = (v << 8) | cast<u64>(*at.offset(i)); }
+        }
+        return v;
+    }
+
+    private u32 read_u32(std::raw_ptr<u8> at) {
+        mut u32 v = 0;
+        mut usize i = 4;
+        while (i > 0) {
+            i -= 1;
+            unsafe { v = (v << 8) | cast<u32>(*at.offset(i)); }
+        }
+        return v;
+    }
+
+    // What statx says about the file `name`, or about `fd` when `name` is empty.
+    private std::result<file_info, std::io_error> stat_of(i32 fd, std::str name) {
+        std::string c_name = c_text(name);
+        std::str c = c_name;
+        mut std::raw::array<u8, 256> buffer = default;
+        i32 flags = if (name.is_empty()) { at_empty_path } else { 0 };
+        mut i32 r = 0;
+        unsafe { r = statx(fd, c.as_ptr(), flags, statx_basic, cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer)); }
+        if (r != 0) { return std::error(last_error()); }
+        std::raw_ptr<u8> b = unsafe { cast::reinterpret<std::raw_ptr<u8>>(&buffer) };
+        mut u32 mode = 0;
+        unsafe { mode = cast<u32>(*b.offset(28)) | (cast<u32>(*b.offset(29)) << 8); }
+        kind k = match (mode & 0xF000) {
+            0x4000 => kind::directory,
+            0x8000 => kind::file,
+            0xA000 => kind::link,
+            _ => kind::other,
+        };
+        mut bool read_only = false;
+        if (!name.is_empty()) {
+            mut i32 w = 0;
+            unsafe { w = access(c.as_ptr(), 2); }   // W_OK
+            read_only = w != 0;
+        }
+        u64 size = read_u64(unsafe { b.offset(40) });
+        u64 seconds = read_u64(unsafe { b.offset(112) });
+        u32 nanos = read_u32(unsafe { b.offset(120) });
+        return std::ok(file_info{
+            .kind = k,
+            .size = if (k == kind::directory) { 0 } else { size },
+            .modified = std::time::wall_time{ .seconds = unsafe { cast::reinterpret<i64>(seconds) }, .nanos = nanos },
+            .read_only = read_only,
+        });
+    }
+
+    // --- native: a folder on disk ------------------------------------------------------------------
+
+    private compile_time usize write_buffer = 65536;
+
+    private class native_stream : std::filesystem::stream {
+    public:
+        std::result<usize, std::io_error> read(std::span_mut<u8> into) mut override {
+            this.drain()?;
+            mut isize n = 0;
+            unsafe { n = std::filesystem::read(this.fd, address_of(into), into.length()); }
+            if (n < 0) { return std::error(last_error()); }
+            return std::ok(cast::saturate<usize>(n));
+        }
+
+        std::result<usize, std::io_error> read_at(u64 offset, std::span_mut<u8> into) override {
+            mut isize n = 0;
+            unsafe { n = pread(this.fd, address_of(into), into.length(), cast::reinterpret<i64>(offset)); }
+            if (n < 0) { return std::error(last_error()); }
+            return std::ok(cast::saturate<usize>(n));
+        }
+
+        std::result<usize, std::io_error> write(std::span<u8> data) mut override {
+            for (u8 b : data) { this.pending.push(b); }
+            if (this.pending.length() >= write_buffer) { this.drain()?; }
+            return std::ok(data.length());
+        }
+
+        std::result<void, std::io_error> flush() mut override { return this.drain(); }
+
+        u64 size() override {
+            u64 waiting = cast<u64>(this.pending.length());
+            match (stat_of(this.fd, "")) {
+                std::ok(i) => { return i.size + waiting; },
+                std::error(_) => { return waiting; },
             }
-            if (result != 0 && code != 17) {   // EEXIST: a directory, or something in the way
-                return std::error(match (code) {
-                    2 => std::io_error::not_found,
-                    13 => std::io_error::permission_denied,
-                    20 => std::io_error::already_exists,   // ENOTDIR: a file is in the way
-                    _ => std::io_error::other,
-                });
+        }
+
+        ~native_stream() {
+            _ = this.drain();
+            unsafe { _ = close(this.fd); }
+        }
+
+    private:
+        i32 fd = -1;
+        std::darray<u8> pending = default;
+
+        // Writes what is buffered.
+        std::result<void, std::io_error> drain() mut {
+            mut usize done = 0;
+            while (done < this.pending.length()) {
+                mut isize n = 0;
+                unsafe { n = std::filesystem::write(this.fd, cast::reinterpret<std::raw_ptr<u8>>(&this.pending[0]).offset(done), this.pending.length() - done); }
+                if (n < 0) {
+                    std::io_error e = last_error();
+                    this.pending.clear();
+                    return std::error(e);
+                }
+                done += cast::saturate<usize>(n);
             }
-            i = end;
+            this.pending.clear();
+            return std::ok();
+        }
+    }
+
+    // Bytes mapped from a file.
+    private class native_region : std::filesystem::region {
+    public:
+        std::span<u8> bytes() override {
+            if (this.len == 0) { return unsafe { std::span<u8>::from_raw(nullptr, 0) }; }
+            return unsafe { std::span<u8>::from_raw(this.data, this.len) };
+        }
+
+        ~native_region() {
+            if (this.len > 0) {
+                unsafe { _ = munmap(this.data, this.len); }
+            }
+        }
+
+    private:
+        std::raw_ptr<mut u8> data = nullptr;
+        usize len = 0;
+    }
+
+    class native {
+    public:
+        static native at(path root) { return native{ .root = root.normalized() }; }
+
+        static native os() { return native{ .root = path::from("") }; }
+
+        std::result<std::unique_ptr<stream>, std::io_error> open(std::str at, open_mode mode) override {
+            std::string c_name = c_text(this.full(at).as_str());
+            std::str c = c_name;
+            i32 flags = match (mode) {
+                open_mode::read => o_rdonly | o_cloexec,
+                open_mode::write => o_wronly | o_creat | o_trunc | o_cloexec,
+                open_mode::append => o_wronly | o_creat | o_append | o_cloexec,
+            };
+            mut i32 fd = -1;
+            unsafe { fd = std::filesystem::open(c.as_ptr(), flags, 420u32); }   // 0644
+            if (fd < 0) { return std::error(last_error()); }
+            if (mode == open_mode::read) {   // a directory opens, but can't be read
+                match (stat_of(fd, "")) {
+                    std::ok(i) => {
+                        if (i.kind == kind::directory) {
+                            unsafe { _ = close(fd); }
+                            return std::error(std::io_error::is_directory);
+                        }
+                    },
+                    std::error(_) => {},
+                }
+            }
+            std::unique_ptr<stream> s = std::unique_ptr<native_stream>::make(native_stream{ .fd = fd });
+            return std::ok(move s);
+        }
+
+        std::result<file_info, std::io_error> info(std::str at) override {
+            return stat_of(at_fdcwd, this.full(at).as_str());
+        }
+
+        std::result<std::darray<entry>, std::io_error> list(std::str at) override {
+            path dir = this.full(at);
+            std::string c_name = c_text(dir.as_str());
+            std::str c = c_name;
+            mut std::raw_ptr<mut u8> d = nullptr;
+            unsafe { d = opendir(c.as_ptr()); }
+            if (d == nullptr) { return std::error(last_error()); }
+            mut std::darray<entry> out = default;
+            while (true) {
+                mut std::raw_ptr<u8> found = nullptr;
+                unsafe { found = readdir(d); }
+                if (found == nullptr) { break; }
+                // struct dirent (glibc, x86-64 and AArch64): d_ino 8, d_off 8, d_reclen 2, d_type 1, d_name
+                mut u8 d_type = 0;
+                mut std::str name = "";
+                unsafe {
+                    d_type = *found.offset(18);
+                    std::raw_ptr<u8> name_at = found.offset(19);
+                    mut usize n = 0;
+                    while (*name_at.offset(n) != 0) { n += 1; }
+                    name = std::raw::str_from(name_at, n);
+                }
+                if (name == "." || name == "..") { continue; }
+                mut kind k = match (d_type) {
+                    4 => kind::directory,
+                    8 => kind::file,
+                    10 => kind::link,
+                    _ => kind::other,
+                };
+                if (d_type == 0) {   // DT_UNKNOWN: ask
+                    path child = dir / name;
+                    match (stat_of(at_fdcwd, child.as_str())) {
+                        std::ok(i) => { k = i.kind; },
+                        std::error(_) => {},
+                    }
+                }
+                out.push(entry{ .name = std::string::from(name), .kind = k });
+            }
+            unsafe { _ = closedir(d); }
+            sort_entries(mut out);
+            return std::ok(move out);
+        }
+
+        std::result<void, std::io_error> create_directory(std::str at) override {
+            std::string c_name = c_text(this.full(at).as_str());
+            std::str c = c_name;
+            mut i32 r = 0;
+            unsafe { r = mkdir(c.as_ptr(), 493u32); }   // 0755
+            if (r != 0) {
+                std::io_error e = last_error();
+                // A writable mount whose folder doesn't exist yet: make the folder, then try again.
+                if (e != std::io_error::not_found || this.root.as_str().is_empty()) { return std::error(e); }
+                make_os_directories(this.root.as_str())?;
+                unsafe { r = mkdir(c.as_ptr(), 493u32); }
+                if (r != 0) { return std::error(last_error()); }
+            }
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> rename(std::str from, std::str to) override {
+            std::string a = c_text(this.full(from).as_str());
+            std::string b = c_text(this.full(to).as_str());
+            std::str ca = a;
+            std::str cb = b;
+            mut i32 r = 0;
+            unsafe { r = std::filesystem::rename(ca.as_ptr(), cb.as_ptr()); }
+            if (r != 0) { return std::error(last_error()); }
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> remove(std::str at) override {
+            std::string c_name = c_text(this.full(at).as_str());
+            std::str c = c_name;
+            mut i32 r = 0;
+            unsafe { r = std::filesystem::remove(c.as_ptr()); }
+            if (r != 0) { return std::error(last_error()); }
+            return std::ok();
+        }
+
+        std::result<std::unique_ptr<region>, std::io_error> map(std::str at) override {
+            std::string c_name = c_text(this.full(at).as_str());
+            std::str c = c_name;
+            mut i32 fd = -1;
+            unsafe { fd = std::filesystem::open(c.as_ptr(), o_rdonly | o_cloexec, 0u32); }
+            if (fd < 0) { return std::error(last_error()); }
+            std::result<file_info, std::io_error> got = stat_of(fd, "");
+            if (got.is_error()) {
+                unsafe { _ = close(fd); }
+                return std::error(std::io_error::other);
+            }
+            file_info i = got.expect("stat");
+            if (i.kind == kind::directory) {
+                unsafe { _ = close(fd); }
+                return std::error(std::io_error::is_directory);
+            }
+            usize len = cast::saturate<usize>(i.size);
+            mut std::raw_ptr<mut u8> data = nullptr;
+            if (len > 0) {
+                unsafe { data = mmap(nullptr, len, 1, 2, fd, 0); }   // PROT_READ, MAP_PRIVATE
+            }
+            unsafe { _ = close(fd); }
+            if (len > 0 && unsafe { cast::reinterpret<usize>(data) } == usize::max) { return std::error(std::io_error::other); }   // MAP_FAILED
+            std::unique_ptr<region> r = std::unique_ptr<native_region>::make(native_region{ .data = data, .len = len });
+            return std::ok(move r);
+        }
+
+        std::option<path> os_path(std::str at) override { return std::some(this.full(at)); }
+
+    private:
+        path root = default;
+
+        // `at` under the root.
+        path full(std::str at) {
+            if (this.root.as_str().is_empty()) { return path::from(if (at.is_empty()) { "." } else { at }); }
+            if (at.is_empty()) { return this.root.clone(); }
+            return this.root / at;
+        }
+    }
+
+    // Every missing directory of the operating-system path `text`.
+    private std::result<void, std::io_error> make_os_directories(std::str text) {
+        mut usize end = 0;
+        if (text.starts_with("/")) { end = 1; }
+        while (end < text.length()) {
+            end += 1;
+            while (end < text.length() && text.slice(end, end + 1) != "/") { end += 1; }
+            std::string c_name = c_text(text.slice(0, end));
+            std::str c = c_name;
+            mut i32 r = 0;
+            unsafe { r = mkdir(c.as_ptr(), 493u32); }
+            if (r != 0) {
+                std::io_error e = last_error();
+                if (e != std::io_error::already_exists) { return std::error(e); }
+            }
         }
         return std::ok();
     }
 
-    private extern(std::build::language::c) isize readlink(std::raw_ptr<u8> link, std::raw_ptr<mut u8> buffer, usize size);
+    // By name.
+    private void sort_entries(mut std::darray<entry>& entries) {
+        entries.sort_by([](entry& a, entry& b) { return a.name.as_str() < b.name.as_str(); });
+    }
 
-    path executable_dir() {
-        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
-        mut std::raw_ptr<mut u8> buffer = nullptr;
-        mut isize n = 0;
+    // --- memory: files in RAM ---------------------------------------------------------------------
+
+    private struct memory_file {
+        std::string                      at;
+        std::shared_ptr<std::darray<u8>> data;
+    }
+
+    private struct memory_files {
+        std::darray<memory_file> files = default;
+        std::darray<std::string> dirs = default;
+    }
+
+    // The index of the file `at`.
+    private std::option<usize> memory_find(memory_files& m, std::str at) {
+        for (usize i : 0..m.files.length()) {
+            if (m.files[i].at.as_str() == at) { return std::some(i); }
+        }
+        return std::none;
+    }
+
+    // Whether `at` is a directory: the root, one made with create_directory, or one a file is in.
+    private bool memory_is_dir(memory_files& m, std::str at) {
+        if (at.is_empty()) { return true; }
+        for (std::string& d : m.dirs) {
+            if (d.as_str() == at) { return true; }
+        }
+        for (memory_file& f : m.files) {
+            std::str name = f.at;
+            if (name.length() > at.length() && name.starts_with(at) && name.slice(at.length(), at.length() + 1) == "/") { return true; }
+        }
+        return false;
+    }
+
+    // Puts `data` at `at`, replacing what was there.
+    private void memory_store(mut memory_files& m, std::str at, std::darray<u8> data) {
+        std::shared_ptr<std::darray<u8>> shared = std::shared_ptr<std::darray<u8>>::make(move data);
+        match (memory_find(m, at)) {
+            std::some(i) => { m.files[i].data = move shared; },
+            std::none => { m.files.push(memory_file{ .at = std::string::from(at), .data = move shared }); },
+        }
+    }
+
+    // The bytes of `s` as a span.
+    private std::span<u8> span_of(std::darray<u8>& d) {
+        if (d.is_empty()) { return unsafe { std::span<u8>::from_raw(nullptr, 0) }; }
+        return unsafe { std::span<u8>::from_raw(cast::reinterpret<std::raw_ptr<u8>>(&d[0]), d.length()) };
+    }
+
+    // Copies `from` (starting at `offset`) into `into`; returns how many bytes.
+    private usize copy_out(std::span<u8> from, u64 offset, std::span_mut<u8> into) {
+        if (offset >= cast<u64>(from.length())) { return 0; }
+        usize start = cast::saturate<usize>(offset);
+        mut usize n = from.length() - start;
+        if (into.length() < n) { n = into.length(); }
+        mut usize i = 0;
+        while (i < n) {
+            into[i] = from[start + i];
+            i += 1;
+        }
+        return n;
+    }
+
+    private class memory_reader : std::filesystem::stream {
+    public:
+        std::result<usize, std::io_error> read(std::span_mut<u8> into) mut override {
+            usize n = copy_out(span_of(*this.data), this.pos, move into);
+            this.pos += cast<u64>(n);
+            return std::ok(n);
+        }
+
+        std::result<usize, std::io_error> read_at(u64 offset, std::span_mut<u8> into) override {
+            return std::ok(copy_out(span_of(*this.data), offset, move into));
+        }
+
+        std::result<usize, std::io_error> write(std::span<u8> bytes_in) mut override { return std::error(std::io_error::read_only); }
+
+        std::result<void, std::io_error> flush() mut override { return std::ok(); }
+
+        u64 size() override { return cast<u64>((*this.data).length()); }
+
+    private:
+        std::shared_ptr<std::darray<u8>> data;
+        u64 pos = 0;
+    }
+
+    // Writes collect in a buffer that replaces the file on flush (and when the stream closes).
+    private class memory_writer : std::filesystem::stream {
+    public:
+        std::result<usize, std::io_error> read(std::span_mut<u8> into) mut override { return std::error(std::io_error::not_supported); }
+
+        std::result<usize, std::io_error> read_at(u64 offset, std::span_mut<u8> into) override { return std::error(std::io_error::not_supported); }
+
+        std::result<usize, std::io_error> write(std::span<u8> data) mut override {
+            for (u8 b : data) { this.buffer.push(b); }
+            this.dirty = true;
+            return std::ok(data.length());
+        }
+
+        std::result<void, std::io_error> flush() mut override {
+            if (this.dirty) {
+                mut std::mutex_guard<memory_files> files = (*this.store).lock();
+                memory_store(mut *files, this.at, this.buffer.clone());
+                this.dirty = false;
+            }
+            return std::ok();
+        }
+
+        u64 size() override { return cast<u64>(this.buffer.length()); }
+
+        ~memory_writer() { _ = this.flush(); }
+
+    private:
+        std::shared_ptr<std::mutex<memory_files>> store;
+        std::string at;
+        std::darray<u8> buffer = default;
+        bool dirty = true;
+    }
+
+    private class memory_region : std::filesystem::region {
+    public:
+        std::span<u8> bytes() override { return span_of(*this.data); }
+
+    private:
+        std::shared_ptr<std::darray<u8>> data;
+    }
+
+    class memory {
+    public:
+        static memory make() {
+            return memory{ .store = std::shared_ptr<std::mutex<memory_files>>::make(std::mutex<memory_files>::make(memory_files{})) };
+        }
+
+        void add(std::str at, std::span<u8> bytes) {
+            path clean = path::from(at).normalized();
+            mut std::mutex_guard<memory_files> files = (*this.store).lock();
+            memory_store(mut *files, clean.as_str(), std::darray<u8>::from(bytes));
+        }
+
+        void add_text(std::str at, std::str text) {
+            this.add(at, unsafe { std::span<u8>::from_raw(text.as_ptr(), text.length()) });
+        }
+
+        memory share() { return memory{ .store = this.store.clone() }; }
+
+        std::result<std::unique_ptr<stream>, std::io_error> open(std::str at, open_mode mode) override {
+            mut std::mutex_guard<memory_files> files = (*this.store).lock();
+            std::option<usize> found = memory_find(*files, at);
+            if (mode == open_mode::read) {
+                match (found) {
+                    std::some(i) => {
+                        std::unique_ptr<stream> s = std::unique_ptr<memory_reader>::make(memory_reader{ .data = (*files).files[i].data.clone() });
+                        return std::ok(move s);
+                    },
+                    std::none => {
+                        if (memory_is_dir(*files, at)) { return std::error(std::io_error::is_directory); }
+                        return std::error(std::io_error::not_found);
+                    },
+                }
+            }
+            if (memory_is_dir(*files, at)) { return std::error(std::io_error::is_directory); }
+            mut std::darray<u8> start = default;
+            if (mode == open_mode::append) {
+                match (found) {
+                    std::some(i) => { start = (*(*files).files[i].data).clone(); },
+                    std::none => {},
+                }
+            }
+            std::unique_ptr<stream> s = std::unique_ptr<memory_writer>::make(memory_writer{
+                .store = this.store.clone(),
+                .at = std::string::from(at),
+                .buffer = move start,
+            });
+            return std::ok(move s);
+        }
+
+        std::result<file_info, std::io_error> info(std::str at) override {
+            std::mutex_guard<memory_files> files = (*this.store).lock();
+            match (memory_find(*files, at)) {
+                std::some(i) => { return std::ok(file_info{ .kind = kind::file, .size = cast<u64>((*(*files).files[i].data).length()) }); },
+                std::none => {},
+            }
+            if (memory_is_dir(*files, at)) { return std::ok(file_info{ .kind = kind::directory }); }
+            return std::error(std::io_error::not_found);
+        }
+
+        std::result<std::darray<entry>, std::io_error> list(std::str at) override {
+            std::mutex_guard<memory_files> files = (*this.store).lock();
+            if (!memory_is_dir(*files, at)) {
+                if (memory_find(*files, at).is_some()) { return std::error(std::io_error::not_directory); }
+                return std::error(std::io_error::not_found);
+            }
+            mut std::darray<entry> out = default;
+            for (memory_file& f : (*files).files) { add_child(mut out, at, f.at, kind::file); }
+            for (std::string& d : (*files).dirs) { add_child(mut out, at, d, kind::directory); }
+            sort_entries(mut out);
+            return std::ok(move out);
+        }
+
+        std::result<void, std::io_error> create_directory(std::str at) override {
+            mut std::mutex_guard<memory_files> files = (*this.store).lock();
+            if (memory_find(*files, at).is_some() || memory_is_dir(*files, at)) { return std::error(std::io_error::already_exists); }
+            (*files).dirs.push(std::string::from(at));
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> rename(std::str from, std::str to) override {
+            mut std::mutex_guard<memory_files> files = (*this.store).lock();
+            match (memory_find(*files, from)) {
+                std::some(i) => {
+                    std::shared_ptr<std::darray<u8>> data = (*files).files[i].data.clone();
+                    _ = (*files).files.swap_remove(i);
+                    match (memory_find(*files, to)) {
+                        std::some(j) => { (*files).files[j].data = move data; },
+                        std::none => { (*files).files.push(memory_file{ .at = std::string::from(to), .data = move data }); },
+                    }
+                    return std::ok();
+                },
+                std::none => { return std::error(std::io_error::not_found); },
+            }
+        }
+
+        std::result<void, std::io_error> remove(std::str at) override {
+            mut std::mutex_guard<memory_files> files = (*this.store).lock();
+            match (memory_find(*files, at)) {
+                std::some(i) => {
+                    _ = (*files).files.swap_remove(i);
+                    return std::ok();
+                },
+                std::none => {},
+            }
+            for (usize i : 0..(*files).dirs.length()) {
+                if ((*files).dirs[i].as_str() == at) {
+                    std::string prefix = std::format(f"{at}/");
+                    for (memory_file& f : (*files).files) {
+                        if (f.at.as_str().starts_with(prefix.as_str())) { return std::error(std::io_error::already_exists); }   // not empty
+                    }
+                    _ = (*files).dirs.swap_remove(i);
+                    return std::ok();
+                }
+            }
+            return std::error(std::io_error::not_found);
+        }
+
+        std::result<std::unique_ptr<region>, std::io_error> map(std::str at) override {
+            std::mutex_guard<memory_files> files = (*this.store).lock();
+            match (memory_find(*files, at)) {
+                std::some(i) => {
+                    std::unique_ptr<region> r = std::unique_ptr<memory_region>::make(memory_region{ .data = (*files).files[i].data.clone() });
+                    return std::ok(move r);
+                },
+                std::none => { return std::error(std::io_error::not_found); },
+            }
+        }
+
+    private:
+        std::shared_ptr<std::mutex<memory_files>> store;
+    }
+
+    // Adds the child of directory `dir` that `name` is in (or is) to `out`, once: a file, or a
+    // directory when more parts follow.
+    private void add_child(mut std::darray<entry>& out, std::str dir, std::str name, kind k) {
+        mut std::str rest = name;
+        if (!dir.is_empty()) {
+            if (name.length() <= dir.length() || !name.starts_with(dir) || name.slice(dir.length(), dir.length() + 1) != "/") { return; }
+            rest = name.slice(dir.length() + 1, name.length());
+        }
+        if (rest.is_empty()) { return; }
+        mut usize end = 0;
+        while (end < rest.length() && rest.slice(end, end + 1) != "/") { end += 1; }
+        std::str child = rest.slice(0, end);
+        kind child_kind = if (end < rest.length()) { kind::directory } else { k };
+        for (entry& e : out) {
+            if (e.name.as_str() == child) { return; }
+        }
+        out.push(entry{ .name = std::string::from(child), .kind = child_kind });
+    }
+
+    // --- archives -----------------------------------------------------------------------------------
+    // Layout (little-endian): a 32-byte header "EDAXPAK1", u32 version (1), u32 count, u64 index
+    // offset, u64 index size; the files' bytes, each at a multiple of 16; the index: per file u64
+    // path hash (FNV-1a 64), u64 offset, u64 size, u32 path length, u32 flags (0: stored as is),
+    // the path, padded to a multiple of 8. The index is sorted by hash, then path.
+
+    private compile_time u64 fnv_offset = 0xcbf29ce484222325u64;
+    private compile_time u64 fnv_prime = 0x100000001b3u64;
+
+    // FNV-1a, 64 bits.
+    private u64 path_hash(std::str text) {
+        mut u64 h = fnv_offset;
+        for (usize i : 0..text.length()) {
+            u8 b = unsafe { *text.as_ptr().offset(i) };
+            h = h ^ cast<u64>(b);
+            h = cast::truncate<u64>(cast<u128>(h) * cast<u128>(fnv_prime));
+        }
+        return h;
+    }
+
+    private struct archive_entry {
+        u64   hash = 0;
+        usize path_at = 0;
+        usize path_len = 0;
+        u64   offset = 0;
+        u64   size = 0;
+    }
+
+    private class archive_data : unsafe std::sendable, unsafe std::shareable {
+    public:
+        mapped                     bytes;
+        std::darray<archive_entry> index = default;
+
+        // The path of entry `e`.
+        std::str path_of(archive_entry& e) {
+            std::span<u8> all = this.bytes.bytes();
+            return unsafe { std::raw::str_from(all.as_ptr().offset(e.path_at), e.path_len) };
+        }
+
+        // The entry of the file `at`.
+        std::option<usize> find(std::str at) {
+            u64 h = path_hash(at);
+            mut usize low = 0;
+            mut usize high = this.index.length();
+            while (low < high) {
+                usize mid = low + (high - low) / 2;
+                if (this.index[mid].hash < h) { low = mid + 1; } else { high = mid; }
+            }
+            while (low < this.index.length() && this.index[low].hash == h) {
+                if (this.path_of(this.index[low]) == at) { return std::some(low); }
+                low += 1;
+            }
+            return std::none;
+        }
+
+        // Whether `at` is a directory: the root, or one a file is in.
+        bool is_dir(std::str at) {
+            if (at.is_empty()) { return true; }
+            for (archive_entry& e : this.index) {
+                std::str name = this.path_of(e);
+                if (name.length() > at.length() && name.starts_with(at) && name.slice(at.length(), at.length() + 1) == "/") { return true; }
+            }
+            return false;
+        }
+    }
+
+    private class archive_stream : std::filesystem::stream {
+    public:
+        std::result<usize, std::io_error> read(std::span_mut<u8> into) mut override {
+            usize n = copy_out(this.content(), this.pos, move into);
+            this.pos += cast<u64>(n);
+            return std::ok(n);
+        }
+
+        std::result<usize, std::io_error> read_at(u64 offset, std::span_mut<u8> into) override {
+            return std::ok(copy_out(this.content(), offset, move into));
+        }
+
+        std::result<usize, std::io_error> write(std::span<u8> bytes_in) mut override { return std::error(std::io_error::read_only); }
+
+        std::result<void, std::io_error> flush() mut override { return std::ok(); }
+
+        u64 size() override { return this.length; }
+
+    private:
+        std::shared_ptr<archive_data> data;
+        u64 start = 0;
+        u64 length = 0;
+        u64 pos = 0;
+
+        std::span<u8> content() {
+            std::span<u8> all = (*this.data).bytes.bytes();
+            return all.slice(cast::saturate<usize>(this.start), cast::saturate<usize>(this.start + this.length));
+        }
+    }
+
+    private class archive_region : std::filesystem::region {
+    public:
+        std::span<u8> bytes() override {
+            std::span<u8> all = (*this.data).bytes.bytes();
+            return all.slice(this.start, this.start + this.length);
+        }
+
+    private:
+        std::shared_ptr<archive_data> data;
+        usize start = 0;
+        usize length = 0;
+    }
+
+    class archive {
+    public:
+        static std::result<archive, std::io_error> load(path& p, implicit compile_time std::call_site where) {
+            table t = table_at(where)?;
+            mapped m = t.map(p)?;
+            mut std::darray<archive_entry> index = default;
+            {
+                std::span<u8> all = m.bytes();
+                usize n = all.length();
+                if (n < 32) { return std::error(std::io_error::invalid_data); }
+                std::raw_ptr<u8> base = all.as_ptr();
+                std::str magic = unsafe { std::raw::str_from(base, 8) };
+                if (magic != "EDAXPAK1" || read_u32(unsafe { base.offset(8) }) != 1) { return std::error(std::io_error::invalid_data); }
+                u32 count = read_u32(unsafe { base.offset(12) });
+                u64 index_at = read_u64(unsafe { base.offset(16) });
+                u64 index_size = read_u64(unsafe { base.offset(24) });
+                if (index_at > cast<u64>(n) || index_size > cast<u64>(n) - index_at) { return std::error(std::io_error::invalid_data); }
+                mut usize at = cast::saturate<usize>(index_at);
+                usize end = at + cast::saturate<usize>(index_size);
+                for (u32 k : 0..count) {
+                    if (at + 32 > end) { return std::error(std::io_error::invalid_data); }
+                    std::raw_ptr<u8> row = unsafe { base.offset(at) };
+                    archive_entry e = archive_entry{
+                        .hash = read_u64(row),
+                        .offset = read_u64(unsafe { row.offset(8) }),
+                        .size = read_u64(unsafe { row.offset(16) }),
+                        .path_len = cast<usize>(read_u32(unsafe { row.offset(24) })),
+                        .path_at = at + 32,
+                    };
+                    if (e.path_at + e.path_len > end || e.offset > cast<u64>(n) || e.size > cast<u64>(n) - e.offset) {
+                        return std::error(std::io_error::invalid_data);
+                    }
+                    at = e.path_at + ((e.path_len + 7) / 8) * 8;
+                    index.push(e);
+                }
+            }
+            return std::ok(archive{ .data = std::shared_ptr<archive_data>::make(archive_data{ .bytes = move m, .index = move index }) });
+        }
+
+        usize length() { return (*this.data).index.length(); }
+
+        std::result<std::unique_ptr<stream>, std::io_error> open(std::str at, open_mode mode) override {
+            if (mode != open_mode::read) { return std::error(std::io_error::read_only); }
+            match ((*this.data).find(at)) {
+                std::some(i) => {
+                    archive_entry e = (*this.data).index[i];
+                    std::unique_ptr<stream> s = std::unique_ptr<archive_stream>::make(archive_stream{
+                        .data = this.data.clone(), .start = e.offset, .length = e.size,
+                    });
+                    return std::ok(move s);
+                },
+                std::none => {
+                    if ((*this.data).is_dir(at)) { return std::error(std::io_error::is_directory); }
+                    return std::error(std::io_error::not_found);
+                },
+            }
+        }
+
+        std::result<file_info, std::io_error> info(std::str at) override {
+            match ((*this.data).find(at)) {
+                std::some(i) => { return std::ok(file_info{ .kind = kind::file, .size = (*this.data).index[i].size, .read_only = true }); },
+                std::none => {},
+            }
+            if ((*this.data).is_dir(at)) { return std::ok(file_info{ .kind = kind::directory, .read_only = true }); }
+            return std::error(std::io_error::not_found);
+        }
+
+        std::result<std::darray<entry>, std::io_error> list(std::str at) override {
+            if (!(*this.data).is_dir(at)) {
+                if ((*this.data).find(at).is_some()) { return std::error(std::io_error::not_directory); }
+                return std::error(std::io_error::not_found);
+            }
+            mut std::darray<entry> out = default;
+            for (archive_entry& e : (*this.data).index) { add_child(mut out, at, (*this.data).path_of(e), kind::file); }
+            sort_entries(mut out);
+            return std::ok(move out);
+        }
+
+        std::result<std::unique_ptr<region>, std::io_error> map(std::str at) override {
+            match ((*this.data).find(at)) {
+                std::some(i) => {
+                    archive_entry e = (*this.data).index[i];
+                    std::unique_ptr<region> r = std::unique_ptr<archive_region>::make(archive_region{
+                        .data = this.data.clone(), .start = cast::saturate<usize>(e.offset), .length = cast::saturate<usize>(e.size),
+                    });
+                    return std::ok(move r);
+                },
+                std::none => { return std::error(std::io_error::not_found); },
+            }
+        }
+
+    private:
+        std::shared_ptr<archive_data> data;
+    }
+
+    // --- mount tables ------------------------------------------------------------------------------
+
+    private struct mount_entry {
+        u64                     id;
+        std::string             prefix;
+        i32                     priority;
+        bool                    writable;
+        std::shared_ptr<source> src;
+    }
+
+    private struct table_state {
+        std::string              name;
+        std::darray<mount_entry> mounts = default;
+        bool                     fallback = true;
+    }
+
+    private struct registry {
+        std::mutex<std::darray<table_state>> tables;
+        std::atomic<u64>                     next_id;
+        std::shared_ptr<source>              os;
+    }
+
+    // Made on first use; never freed (tables live as long as the program).
+    private static std::atomic<std::raw_ptr<mut registry>> the_registry = default;
+
+    private std::raw_ptr<mut registry> registry_of() {
+        std::raw_ptr<mut registry> now = the_registry.load(std::memory_order::acquire);
+        if (now) { return now; }
+        mut std::darray<table_state> tables = default;
+        tables.push(table_state{ .name = std::string::from("") });
+        std::shared_ptr<source> os = std::shared_ptr<native>::make(native::os());
+        mut std::raw_ptr<mut registry> made = nullptr;
         unsafe {
-            buffer = std::raw::allocate<u8>(4096);
-            n = readlink(c"/proc/self/exe", buffer, 4096);
+            made = std::raw::allocate<registry>(1);
+            std::raw::write(made, registry{
+                .tables = std::mutex<std::darray<table_state>>::make(move tables),
+                .next_id = default,
+                .os = move os,
+            });
         }
-        run_time check (n > 0) else "cannot find the executable's directory";
-        mut std::str full = "";
-        unsafe { full = std::raw::str_from(buffer, cast::saturate<usize>(n)); }
-        mut usize end = full.len();
-        while (end > 1) {
-            end -= 1;
-            if (full.slice(end, end + 1) == "/") { break; }
+        match (the_registry.compare_exchange(nullptr, made, std::memory_order::acquire_release, std::memory_order::acquire)) {
+            std::ok(_) => { return made; },
+            std::error(first) => {   // another thread made one first: use it, drop ours
+                unsafe {
+                    _ = std::raw::read(made);   // destroys it
+                    std::raw::free(made);
+                }
+                return first;
+            },
         }
-        path dir = path::from(full.slice(0, end));
-        unsafe { std::raw::free(buffer); }
-        return dir;
+    }
+
+    // A source a path ends up at, and the path inside it.
+    private struct candidate {
+        std::shared_ptr<source> src;
+        std::string             inner;
+        u64                     mount_id;   // 0: the operating system
+        bool                    writable;
+    }
+
+    // Where a path of a table goes: its candidates in the order to ask them (empty: not mounted),
+    // and the first parts of mounts below it (for listings).
+    private struct resolution {
+        std::darray<candidate>   candidates = default;
+        std::darray<std::string> below = default;
+    }
+
+    // Whether `prefix` (normalized) covers `p`; the rest after it goes to `inner`.
+    private bool covers(std::str prefix, std::str p) {
+        if (prefix.is_empty()) { return true; }
+        if (!p.starts_with(prefix)) { return false; }
+        return p.length() == prefix.length() || p.slice(prefix.length(), prefix.length() + 1) == "/";
+    }
+
+    // The rest of `p` after `prefix` (which covers it).
+    private std::string inner_of(std::str prefix, std::str p) {
+        if (prefix.is_empty()) { return std::string::from(p); }
+        if (p.length() == prefix.length()) { return std::string{}; }
+        return std::string::from(p.slice(prefix.length() + 1, p.length()));
+    }
+
+    private resolution resolve(u32 id, path& p) {
+        path clean = p.normalized();
+        std::str text = clean.as_str();
+        std::raw_ptr<mut registry> reg = registry_of();
+        mut resolution out = default;
+        if (clean.is_absolute()) {
+            unsafe { out.candidates.push(candidate{ .src = (*reg).os.clone(), .inner = std::string::from(text), .mount_id = 0, .writable = true }); }
+            return out;
+        }
+        mut std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+        table_state& t = (*tables)[cast<usize>(id)];
+        // The longest prefix that covers the path.
+        mut std::option<usize> best = std::none;
+        for (mount_entry& m : t.mounts) {
+            if (!covers(m.prefix.as_str(), text)) { continue; }
+            match (best) {
+                std::some(len) => { if (m.prefix.length() > len) { best = std::some(m.prefix.length()); } },
+                std::none => { best = std::some(m.prefix.length()); },
+            }
+        }
+        match (best) {
+            std::some(len) => {
+                // In priority order; the newer first among equals (mounts are kept in mounting order).
+                mut std::darray<usize> chosen = default;
+                for (usize i : 0..t.mounts.length()) {
+                    if (t.mounts[i].prefix.length() == len && covers(t.mounts[i].prefix.as_str(), text)) { chosen.push(i); }
+                }
+                mut usize k = chosen.length();
+                mut std::darray<usize> ordered = default;
+                while (k > 0) {
+                    k -= 1;
+                    ordered.push(chosen[k]);
+                }
+                ordered.sort_by_key(std::sort_order::descending, [&t](usize i) { return t.mounts[i].priority; });
+                for (usize i : ordered) {
+                    mount_entry& m = t.mounts[i];
+                    out.candidates.push(candidate{
+                        .src = m.src.clone(),
+                        .inner = inner_of(m.prefix.as_str(), text),
+                        .mount_id = m.id,
+                        .writable = m.writable,
+                    });
+                }
+            },
+            std::none => {
+                if (t.fallback) {
+                    unsafe { out.candidates.push(candidate{ .src = (*reg).os.clone(), .inner = std::string::from(text), .mount_id = 0, .writable = true }); }
+                }
+            },
+        }
+        // Mounts below the path: their next part shows as a directory in listings.
+        for (mount_entry& m : t.mounts) {
+            std::str prefix = m.prefix;
+            if (prefix.length() <= text.length() || !covers(text, prefix)) { continue; }
+            std::str rest = if (text.is_empty()) { prefix } else { prefix.slice(text.length() + 1, prefix.length()) };
+            mut usize end = 0;
+            while (end < rest.length() && rest.slice(end, end + 1) != "/") { end += 1; }
+            out.below.push(std::string::from(rest.slice(0, end)));
+        }
+        return out;
+    }
+
+    // The first writable candidate.
+    private std::option<usize> writable_of(resolution& r) {
+        for (usize i : 0..r.candidates.length()) {
+            if (r.candidates[i].writable) { return std::some(i); }
+        }
+        return std::none;
+    }
+
+    // The error for a path no candidate could answer.
+    private std::io_error missing(resolution& r) {
+        return if (r.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::not_found };
+    }
+
+    class mounted {
+    public:
+        std::str prefix() { return this.at; }
+
+        void unmount() move { this.take_out(); }
+
+        ~mounted() { this.take_out(); }
+
+    private:
+        u32 table_id = 0;
+        u64 id = 0;
+        std::string at = default;
+
+        void take_out() mut {
+            if (this.id == 0) { return; }
+            std::raw_ptr<mut registry> reg = registry_of();
+            mut std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+            mut table_state& t = (*tables)[cast<usize>(this.table_id)];
+            u64 gone = this.id;
+            t.mounts.retain([gone](mount_entry& m) { return m.id != gone; });   // keeps the order, which decides among equal priorities
+            this.id = 0;
+        }
+    }
+
+    class mapped {
+    public:
+        std::span<u8> bytes() { return (*this.r).bytes(); }
+
+        usize length() { return (*this.r).bytes().length(); }
+
+    private:
+        std::shared_ptr<source> keep;   // the source stays alive while its bytes are used
+        std::unique_ptr<region> r;
+    }
+
+    struct table {
+        static table global() {
+            _ = registry_of();
+            return table{ .id = 0 };
+        }
+
+        static std::result<table, std::io_error> create(std::str table_name) {
+            std::raw_ptr<mut registry> reg = registry_of();
+            mut std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+            for (table_state& t : *tables) {
+                if (t.name.as_str() == table_name) { return std::error(std::io_error::already_exists); }
+            }
+            (*tables).push(table_state{ .name = std::string::from(table_name) });
+            return std::ok(table{ .id = cast::truncate<u32>((*tables).length() - 1) });
+        }
+
+        static std::option<table> named(std::str table_name) {
+            std::raw_ptr<mut registry> reg = registry_of();
+            std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+            for (usize i : 0..(*tables).length()) {
+                if ((*tables)[i].name.as_str() == table_name) { return std::some(table{ .id = cast::truncate<u32>(i) }); }
+            }
+            return std::none;
+        }
+
+        std::string name() {
+            std::raw_ptr<mut registry> reg = registry_of();
+            std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+            return (*tables)[cast<usize>(this.id)].name.clone();
+        }
+
+        template<type S : source>
+        mounted mount(std::str prefix, S src, mount_options o) {
+            std::shared_ptr<source> shared = std::shared_ptr<S>::make(move src);
+            return this.mount_shared(prefix, move shared, o);
+        }
+
+        mounted mount_shared(std::str prefix, std::shared_ptr<source> src, mount_options o) {
+            path clean = path::from(prefix).normalized();
+            std::raw_ptr<mut registry> reg = registry_of();
+            u64 mount_id = unsafe { (*reg).next_id.fetch_wrapping_add(1, std::memory_order::relaxed) } + 1;
+            {
+                mut std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+                (*tables)[cast<usize>(this.id)].mounts.push(mount_entry{
+                    .id = mount_id,
+                    .prefix = std::string::from(clean.as_str()),
+                    .priority = o.priority,
+                    .writable = o.writable,
+                    .src = move src,
+                });
+            }
+            return mounted{ .table_id = this.id, .id = mount_id, .at = std::string::from(clean.as_str()) };
+        }
+
+        void set_fallback(bool to_os) {
+            std::raw_ptr<mut registry> reg = registry_of();
+            mut std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+            (*tables)[cast<usize>(this.id)].fallback = to_os;
+        }
+
+        std::darray<std::string> prefixes() {
+            std::raw_ptr<mut registry> reg = registry_of();
+            mut std::darray<std::string> out = default;
+            {
+                std::mutex_guard<std::darray<table_state>> tables = unsafe { (*reg).tables.lock() };
+                for (mount_entry& m : (*tables)[cast<usize>(this.id)].mounts) {
+                    mut bool seen = false;
+                    for (std::string& s : out) { seen = seen || s.as_str() == m.prefix.as_str(); }
+                    if (!seen) { out.push(m.prefix.clone()); }
+                }
+            }
+            out.sort_by([](std::string& a, std::string& b) { return a.length() > b.length() || (a.length() == b.length() && a.as_str() < b.as_str()); });
+            return out;
+        }
+
+        bool exists(path& p) { return this.info(p).is_ok(); }
+
+        bool is_file(path& p) {
+            match (this.info(p)) {
+                std::ok(i) => { return i.kind == kind::file; },
+                std::error(_) => { return false; },
+            }
+        }
+
+        bool is_directory(path& p) {
+            match (this.info(p)) {
+                std::ok(i) => { return i.kind == kind::directory; },
+                std::error(_) => { return false; },
+            }
+        }
+
+        bool is_link(path& p) {
+            // `info` follows links on disk; the listing of the directory says what the name is.
+            std::str last = p.file_name();
+            if (last.is_empty() || last == "." || last == "..") { return false; }
+            match (this.list(p.parent())) {
+                std::ok(entries) => {
+                    for (entry& e : entries) {
+                        if (e.name.as_str() == last) { return e.kind == kind::link; }
+                    }
+                    return false;
+                },
+                std::error(_) => { return false; },
+            }
+        }
+
+        std::result<file_info, std::io_error> info(path& p) {
+            resolution r = resolve(this.id, p);
+            for (candidate& c : r.candidates) {
+                match ((*c.src).info(c.inner)) {
+                    std::ok(i) => {
+                        mut file_info out = i;
+                        if (!c.writable) { out.read_only = true; }
+                        return std::ok(out);
+                    },
+                    std::error(e) => { if (e != std::io_error::not_found) { return std::error(e); } },
+                }
+            }
+            if (!r.below.is_empty()) { return std::ok(file_info{ .kind = kind::directory, .read_only = true }); }   // a path leading to mounts
+            return std::error(missing(r));
+        }
+
+        std::result<std::darray<entry>, std::io_error> list(path& dir) {
+            resolution r = resolve(this.id, dir);
+            mut std::darray<entry> out = default;
+            mut bool found = false;
+            mut std::option<std::io_error> problem = std::none;
+            for (candidate& c : r.candidates) {
+                match ((*c.src).list(c.inner)) {
+                    std::ok(entries) => {
+                        found = true;
+                        for (entry& e : entries) {
+                            mut bool seen = false;
+                            for (entry& o : out) { seen = seen || o.name.as_str() == e.name.as_str(); }
+                            if (!seen) { out.push(entry{ .name = e.name.clone(), .kind = e.kind }); }
+                        }
+                    },
+                    std::error(e) => { if (e != std::io_error::not_found && problem.is_none()) { problem = std::some(e); } },
+                }
+            }
+            for (std::string& child : r.below) {
+                found = true;
+                mut bool seen = false;
+                for (entry& o : out) { seen = seen || o.name.as_str() == child.as_str(); }
+                if (!seen) { out.push(entry{ .name = child.clone(), .kind = kind::directory }); }
+            }
+            if (!found) {
+                match (problem) {
+                    std::some(e) => { return std::error(e); },
+                    std::none => { return std::error(missing(r)); },
+                }
+            }
+            sort_entries(mut out);
+            return std::ok(move out);
+        }
+
+        std::result<std::darray<u8>, std::io_error> read_bytes(path& p) {
+            mut std::file f = this.open(p, open_mode::read)?;
+            return f.read_bytes();
+        }
+
+        std::result<std::string, std::io_error> read_text(path& p) {
+            mut std::file f = this.open(p, open_mode::read)?;
+            return f.read_all();
+        }
+
+        std::result<void, std::io_error> write_bytes(path& p, std::span<u8> data) {
+            mut std::file f = this.open(p, open_mode::write)?;
+            _ = f.write_bytes(data)?;
+            f.flush()?;
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> write_text(path& p, std::str text) {
+            mut std::file f = this.open(p, open_mode::write)?;
+            _ = f.write(text)?;
+            f.flush()?;
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> create_directories(path& dir) {
+            path clean = dir.normalized();
+            std::str text = clean.as_str();
+            mut usize end = 0;
+            if (text.starts_with("/")) { end = 1; }
+            while (end < text.length()) {
+                // Each prefix that ends before a '/', and the whole path at the end.
+                end += 1;
+                while (end < text.length() && text.slice(end, end + 1) != "/") { end += 1; }
+                path part = path::from(text.slice(0, end));
+                match (this.info(part)) {
+                    std::ok(i) => {
+                        if (i.kind != kind::directory) { return std::error(std::io_error::already_exists); }
+                        continue;
+                    },
+                    std::error(e) => { if (e != std::io_error::not_found) { return std::error(e); } },
+                }
+                resolution r = resolve(this.id, part);
+                match (writable_of(r)) {
+                    std::some(i) => {
+                        candidate& c = r.candidates[i];
+                        match ((*c.src).create_directory(c.inner)) {
+                            std::ok(_) => {},
+                            std::error(e) => { if (e != std::io_error::already_exists) { return std::error(e); } },
+                        }
+                    },
+                    std::none => { return std::error(if (r.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::read_only }); },
+                }
+            }
+            return std::ok();
+        }
+
+        std::result<void, std::io_error> rename(path& from, path& to) {
+            resolution a = resolve(this.id, from);
+            resolution b = resolve(this.id, to);
+            std::option<usize> wa = writable_of(a);
+            std::option<usize> wb = writable_of(b);
+            if (wa.is_none() || wb.is_none()) { return std::error(if (a.candidates.is_empty() || b.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::read_only }); }
+            candidate& ca = a.candidates[wa.expect("writable")];
+            candidate& cb = b.candidates[wb.expect("writable")];
+            if (ca.mount_id != cb.mount_id) { return std::error(std::io_error::not_supported); }
+            return (*ca.src).rename(ca.inner, cb.inner);
+        }
+
+        std::result<void, std::io_error> remove(path& p) {
+            resolution r = resolve(this.id, p);
+            match (writable_of(r)) {
+                std::some(i) => {
+                    candidate& c = r.candidates[i];
+                    return (*c.src).remove(c.inner);
+                },
+                std::none => { return std::error(if (r.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::read_only }); },
+            }
+        }
+
+        std::result<std::file, std::io_error> open(path& p, open_mode mode) {
+            resolution r = resolve(this.id, p);
+            if (mode == open_mode::read) {
+                for (candidate& c : r.candidates) {
+                    match ((*c.src).open(c.inner, mode)) {
+                        std::ok(s) => { return std::ok(std::file::from_stream(move s)); },
+                        std::error(e) => { if (e != std::io_error::not_found) { return std::error(e); } },
+                    }
+                }
+                if (!r.below.is_empty()) { return std::error(std::io_error::is_directory); }
+                return std::error(missing(r));
+            }
+            match (writable_of(r)) {
+                std::some(i) => {
+                    candidate& c = r.candidates[i];
+                    std::unique_ptr<stream> s = (*c.src).open(c.inner, mode)?;
+                    return std::ok(std::file::from_stream(move s));
+                },
+                std::none => { return std::error(if (r.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::read_only }); },
+            }
+        }
+
+        std::result<mapped, std::io_error> map(path& p) {
+            resolution r = resolve(this.id, p);
+            for (candidate& c : r.candidates) {
+                match ((*c.src).map(c.inner)) {
+                    std::ok(region_of) => { return std::ok(mapped{ .keep = c.src.clone(), .r = move region_of }); },
+                    std::error(e) => { if (e != std::io_error::not_found) { return std::error(e); } },
+                }
+            }
+            return std::error(missing(r));
+        }
+
+        std::result<watcher, std::io_error> watch(path& dir) {
+            resolution r = resolve(this.id, dir);
+            for (candidate& c : r.candidates) {
+                match ((*c.src).os_path(c.inner)) {
+                    std::some(os) => { return watch_os(move os, dir.normalized()); },
+                    std::none => {},
+                }
+            }
+            return std::error(if (r.candidates.is_empty()) { std::io_error::not_mounted } else { std::io_error::not_supported });
+        }
+
+        std::option<path> os_path(path& p) {
+            resolution r = resolve(this.id, p);
+            for (candidate& c : r.candidates) {
+                std::option<path> os = (*c.src).os_path(c.inner);
+                if (os.is_none()) { continue; }
+                path found = (move os).expect("some");
+                // The first source that has it (or, for a new file, the first that could take it).
+                if ((*c.src).info(c.inner).is_ok()) { return std::some(move found); }
+            }
+            match (writable_of(r)) {
+                std::some(i) => { return (*r.candidates[i].src).os_path(r.candidates[i].inner); },
+                std::none => { return std::none; },
+            }
+        }
+
+        template<type P>
+        std::result<walker<P>, std::io_error> walk(P& dir, walk_options o) {
+            compile_time check (std::is_same<P, path>() || std::is_same<P, std::filesystem::absolute_path>() ||
+                                std::is_same<P, std::filesystem::relative_path>())
+                else f"std::filesystem::walk takes a path, absolute_path or relative_path, not {std::type_name<P>()}";
+            std::darray<entry> first = this.list(dir)?;
+            mut walker<P> w = walker<P>{ .from = this, .options = o };
+            w.open.push(walk_frame{ .dir = dir.clone(), .entries = move first });
+            return std::ok(move w);
+        }
+
+        template<type P>
+        std::result<std::darray<walk_entry<P>>, std::io_error> walk_all(P& dir, walk_options o) {
+            mut walker<P> w = this.walk(dir, o)?;
+            mut std::darray<walk_entry<P>> out = default;
+            for (walk_entry<P> e : w) { out.push(move e); }
+            return std::ok(move out);
+        }
+    }
+
+    // --- walking -------------------------------------------------------------------------------
+
+    template<type P>
+    struct walk_entry {
+        bool is_file() { return this.kind == kind::file; }
+        bool is_directory() { return this.kind == kind::directory; }
+        bool is_link() { return this.kind == kind::link; }
+        std::str name() { return this.path.file_name(); }
+    }
+
+    // A directory of a walk: its listing and how far `next()` got in it.
+    private struct walk_frame {
+        path               dir     = default;
+        std::darray<entry> entries = default;
+        usize              next    = 0;
+        // The depth of its entries.
+        u32                depth   = 0;
+        // Links followed on the way to it.
+        u32                links   = 0;
+    }
+
+    // A path of a walk in the walk's kind (`path` stays as it is; the others are checked).
+    private template<type P>
+    P walk_path(path p) {
+        if compile_time (std::is_same<P, path>()) {
+            return move p;
+        } else {
+            return cast<P>(move p);
+        }
+    }
+
+    template<type P>
+    class walker {
+    public:
+        std::option<walk_entry<P>> next() mut {
+            this.enter_pending();
+            while (true) {
+                if (this.open.is_empty()) {
+                    if (!this.next_waiting()) { return std::none; }
+                    continue;
+                }
+                usize top = this.open.length() - 1;
+                if (this.open[top].next >= this.open[top].entries.length()) {
+                    _ = this.open.pop();
+                    continue;
+                }
+                usize          at    = this.open[top].next;
+                std::string    name  = this.open[top].entries[at].name.clone();
+                mut kind       k     = this.open[top].entries[at].kind;
+                u32            depth = this.open[top].depth;
+                mut u32        links = this.open[top].links;
+                this.open[top].next += 1;
+                if (!this.options.include_hidden && name.as_str().starts_with(".")) { continue; }
+                path child = this.open[top].dir / name.as_str();
+                if (k == kind::link && this.options.follow_links && links < 8) {
+                    match (this.from.info(child)) {
+                        std::ok(i) => {
+                            if (i.kind == kind::directory && !this.points_up(child)) {
+                                k = kind::directory;
+                                links += 1;
+                            } else if (i.kind == kind::file) {
+                                k = kind::file;
+                            }
+                        },
+                        std::error(_) => {},   // a dangling link stays a link
+                    }
+                }
+                if (k == kind::directory && depth < this.options.max_depth) {
+                    this.pending = std::some(walk_frame{ .dir = child.clone(), .depth = depth + 1, .links = links });
+                    if (!this.options.include_directories) {
+                        this.enter_pending();
+                        continue;
+                    }
+                } else if (k == kind::directory && !this.options.include_directories) {
+                    continue;
+                }
+                return std::some(walk_entry<P>{ .path = walk_path<P>(move child), .kind = k, .depth = depth });
+            }
+        }
+
+        void skip_children() mut { this.pending = std::none; }
+
+        std::span<walk_problem> problems() { return this.found.as_span(); }
+
+    private:
+        table                       from;
+        walk_options                options;
+        // Depth first: the directories on the way down, the deepest last. Breadth first: the one
+        // being read.
+        std::darray<walk_frame>     open    = default;
+        // Breadth first: the directories still to read, in order, from `waiting_at` on.
+        std::darray<walk_frame>     waiting = default;
+        usize                       waiting_at = 0;
+        // The directory `next()` returned last, entered at the next call unless skipped.
+        std::option<walk_frame>     pending = std::none;
+        std::darray<walk_problem>   found   = default;
+
+        void enter_pending() mut {
+            match (std::take(mut this.pending)) {
+                std::some(f) => {
+                    if (this.options.order == walk_order::depth_first) {
+                        this.read(move f);
+                    } else {
+                        this.waiting.push(move f);
+                    }
+                },
+                std::none => {},
+            }
+        }
+
+        // Breadth first: reads the next waiting directory; false when there is none.
+        bool next_waiting() mut {
+            if (this.waiting_at >= this.waiting.length()) { return false; }
+            walk_frame f = std::take(mut this.waiting[this.waiting_at]);
+            this.waiting_at += 1;
+            if (this.waiting_at == this.waiting.length()) {   // all taken: the memory can go
+                this.waiting.clear();
+                this.waiting_at = 0;
+            }
+            this.read(move f);
+            return true;
+        }
+
+        void read(walk_frame f) mut {
+            mut walk_frame frame = move f;
+            match (this.from.list(frame.dir)) {
+                std::ok(entries) => {
+                    frame.entries = move entries;
+                    this.open.push(move frame);
+                },
+                std::error(e) => { this.found.push(walk_problem{ .path = std::take(mut frame.dir), .error = e }); },
+            }
+        }
+
+        // Whether the link at `link` points at a directory it is in (a loop).
+        bool points_up(path& link) {
+            match (this.from.os_path(link)) {
+                std::some(os) => {
+                    match (read_link(os)) {
+                        std::ok(target) => {
+                            path full = if (target.is_absolute()) { move target } else { os.parent() / target.as_str() };
+                            std::str t = full.normalized().as_str();
+                            path at = os.normalized();
+                            std::str l = at.as_str();
+                            return l == t || (l.starts_with(t) && (t == "/" || l.slice(t.length(), t.length() + 1) == "/"));
+                        },
+                        std::error(_) => { return false; },
+                    }
+                },
+                std::none => { return false; },
+            }
+        }
+    }
+
+    compile_time std::static_str table_name(std::call_site where) {
+        std::option<use_table> on_file = std::meta::file_annotation<use_table>(where);
+        if (on_file.is_some()) {
+            return on_file.expect("is_some").name;
+        }
+        std::option<std::static_str> setting = std::build::setting_at<std::static_str>(where, "std::filesystem::table");
+        if (setting.is_some()) {
+            return setting.expect("is_some");
+        }
+        return "";
+    }
+
+    std::result<table, std::io_error> table_at(implicit compile_time std::call_site where) {
+        compile_time std::static_str name = table_name(where);
+        if compile_time (name == "") {
+            return std::ok(table::global());
+        } else {
+            match (table::named(name)) {
+                std::some(t) => { return std::ok(t); },
+                std::none => { return std::error(std::io_error::not_mounted); },
+            }
+        }
+    }
+
+    // --- the calling file's table -----------------------------------------------------------------
+
+    bool exists(path& p, implicit compile_time std::call_site where) {
+        match (table_at(where)) {
+            std::ok(t) => { return t.exists(p); },
+            std::error(_) => { return false; },
+        }
+    }
+
+    std::result<file_info, std::io_error> info(path& p, implicit compile_time std::call_site where) { return table_at(where)?.info(p); }
+
+    std::result<std::darray<entry>, std::io_error> list(path& dir, implicit compile_time std::call_site where) { return table_at(where)?.list(dir); }
+
+    std::result<std::darray<u8>, std::io_error> read_bytes(path& p, implicit compile_time std::call_site where) { return table_at(where)?.read_bytes(p); }
+
+    std::result<std::string, std::io_error> read_text(path& p, implicit compile_time std::call_site where) { return table_at(where)?.read_text(p); }
+
+    std::result<void, std::io_error> write_bytes(path& p, std::span<u8> data, implicit compile_time std::call_site where) {
+        return table_at(where)?.write_bytes(p, data);
+    }
+
+    std::result<void, std::io_error> write_text(path& p, std::str text, implicit compile_time std::call_site where) {
+        return table_at(where)?.write_text(p, text);
+    }
+
+    std::result<void, std::io_error> create_directories(path& dir, implicit compile_time std::call_site where) {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
+        return table_at(where)?.create_directories(dir);
+    }
+
+    std::result<void, std::io_error> rename(path& from, path& to, implicit compile_time std::call_site where) { return table_at(where)?.rename(from, to); }
+
+    std::result<void, std::io_error> remove(path& p, implicit compile_time std::call_site where) { return table_at(where)?.remove(p); }
+
+    std::result<mapped, std::io_error> map(path& p, implicit compile_time std::call_site where) { return table_at(where)?.map(p); }
+
+    std::result<watcher, std::io_error> watch(path& directory, implicit compile_time std::call_site where) {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
+        return table_at(where)?.watch(directory);
+    }
+
+    bool is_file(path& p, implicit compile_time std::call_site where) {
+        match (table_at(where)) {
+            std::ok(t) => { return t.is_file(p); },
+            std::error(_) => { return false; },
+        }
+    }
+
+    bool is_directory(path& p, implicit compile_time std::call_site where) {
+        match (table_at(where)) {
+            std::ok(t) => { return t.is_directory(p); },
+            std::error(_) => { return false; },
+        }
+    }
+
+    bool is_link(path& p, implicit compile_time std::call_site where) {
+        match (table_at(where)) {
+            std::ok(t) => { return t.is_link(p); },
+            std::error(_) => { return false; },
+        }
+    }
+
+    template<type P>
+    std::result<walker<P>, std::io_error> walk(P& dir, implicit compile_time std::call_site where) {
+        return table_at(where)?.walk(dir, walk_options{});
+    }
+
+    template<type P>
+    std::result<walker<P>, std::io_error> walk(P& dir, walk_options o, implicit compile_time std::call_site where) {
+        return table_at(where)?.walk(dir, o);
+    }
+
+    template<type P>
+    std::result<std::darray<walk_entry<P>>, std::io_error> walk_all(P& dir, walk_options o, implicit compile_time std::call_site where) {
+        return table_at(where)?.walk_all(dir, o);
+    }
+
+    compile_time std::static_str dynamic_library_extension() {
+        if compile_time (std::build::target_platform().os == std::build::os::windows) { return "dll"; }
+        if compile_time (std::build::target_platform().os == std::build::os::macos) { return "dylib"; }
+        return "so";
+    }
+
+    std::option<path> os_path(path& p, implicit compile_time std::call_site where) {
+        match (table_at(where)) {
+            std::ok(t) => { return t.os_path(p); },
+            std::error(_) => { return std::none; },
+        }
+    }
+
+    std::result<path, std::io_error> read_link(path& link) {
+        std::string c_name = c_text(link.as_str());
+        std::str c = c_name;
+        mut std::raw::array<u8, 4096> buffer = default;
+        mut isize n = 0;
+        unsafe { n = readlink(c.as_ptr(), cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer), 4096); }
+        if (n < 0) { return std::error(last_error()); }
+        return std::ok(path::from(unsafe { std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&buffer), cast::saturate<usize>(n)) }));
+    }
+
+    // --- places ----------------------------------------------------------------------------------
+
+    std::filesystem::absolute_path executable_dir() {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
+        match (read_link(path::from("/proc/self/exe"))) {
+            std::ok(exe) => { return cast<std::filesystem::absolute_path>(exe.parent()); },
+            std::error(_) => { std::panic("cannot find the executable's directory"); },
+        }
+    }
+
+    // `$variable/app` when it is an absolute path, else `$HOME/fallback/app`.
+    private std::filesystem::absolute_path user_dir(std::str variable, std::str fallback, std::str app) {
+        match (std::env::variable(variable)) {
+            std::some(v) => { if (v.as_str().starts_with("/")) { return cast<std::filesystem::absolute_path>(path::from(v.as_str())) / app; } },
+            std::none => {},
+        }
+        mut std::string home = std::env::variable("HOME").value_or(std::string::from("/tmp"));
+        if (!home.as_str().starts_with("/")) { home = std::string::from("/tmp"); }
+        return cast<std::filesystem::absolute_path>(path::from(home.as_str())) / fallback / app;
+    }
+
+    std::filesystem::absolute_path user_data_dir(std::str app) { return user_dir("XDG_DATA_HOME", ".local/share", app); }
+
+    std::filesystem::absolute_path user_config_dir(std::str app) { return user_dir("XDG_CONFIG_HOME", ".config", app); }
+
+    std::filesystem::absolute_path temp_dir() {
+        match (std::env::variable("TMPDIR")) {
+            std::some(v) => { if (v.as_str().starts_with("/")) { return cast<std::filesystem::absolute_path>(path::from(v.as_str())); } },
+            std::none => {},
+        }
+        return std::filesystem::path::absolute("/tmp");
+    }
+
+    // --- rotating files ----------------------------------------------------------------------------
+
+    // The rotated file number `n` of `p`: `logs/app.log` → `logs/app.3.log`; `n` = 0 is `p`.
+    private path numbered(path& p, u32 n) {
+        std::str whole = p.as_str();
+        if (n == 0) { return p.clone(); }
+        std::str ext = p.extension();
+        if (ext.is_empty()) { return path::from(std::format(f"{whole}.{n}").as_str()); }
+        std::str stem = whole.slice(0, whole.length() - ext.length() - 1);
+        return path::from(std::format(f"{stem}.{n}.{ext}").as_str());
+    }
+
+    // The local date as a number: 20261126.
+    private i64 day_now() {
+        std::time::civil_time c = std::time::wall_time::now().local();
+        return cast<i64>(c.year) * 10000 + cast<i64>(c.month) * 100 + cast<i64>(c.day);
+    }
+
+    class rotating_file {
+    public:
+        static std::result<rotating_file, std::io_error> open(path p, rotating_options o, implicit compile_time std::call_site where) {
+            table t = table_at(where)?;
+            path dir = p.parent();
+            if (!dir.as_str().is_empty()) { t.create_directories(dir)?; }
+            mut u64 existing = 0;
+            if (o.append) {
+                match (t.info(p)) {
+                    std::ok(i) => { existing = i.size; },
+                    std::error(_) => {},
+                }
+            }
+            std::file out = t.open(p, if (o.append) { open_mode::append } else { open_mode::write })?;
+            return std::ok(rotating_file{
+                .t = t,
+                .at = move p,
+                .options = o,
+                .out = move out,
+                .written = existing,
+                .day = day_now(),
+            });
+        }
+
+        path& file_path() { return this.at; }
+
+        u64 size() { return this.written; }
+
+        bool rotated() { return this.just_rotated; }
+
+        std::result<usize, std::io_error> write(std::str text) mut override {
+            this.just_rotated = false;
+            u64 len = cast<u64>(text.length());
+            match (this.options.rotation) {
+                rotation::by_size(r) => {
+                    if (this.written > 0 && this.written + len > r.max_bytes) { this.rotate(r.keep)?; }
+                },
+                rotation::daily(keep) => {
+                    i64 today = day_now();
+                    if (today != this.day) {
+                        this.day = today;
+                        this.rotate(keep)?;
+                    }
+                },
+                rotation::none => {},
+            }
+            usize n = this.out.write(text)?;
+            this.written += cast<u64>(n);
+            return std::ok(n);
+        }
+
+        std::result<void, std::io_error> flush() mut override { return this.out.flush(); }
+
+    private:
+        table t;
+        path at;
+        rotating_options options;
+        std::file out;
+        u64 written = 0;
+        i64 day = 0;
+        bool just_rotated = false;
+
+        // Closes the file, shifts app.log → app.1.log → app.2.log ..., and starts a new one.
+        std::result<void, std::io_error> rotate(u32 keep) mut {
+            this.out.flush()?;
+            if (keep == 0) {
+                _ = this.t.remove(this.at);
+            } else {
+                _ = this.t.remove(numbered(this.at, keep));
+                mut u32 k = keep;
+                while (k > 0) {
+                    _ = this.t.rename(numbered(this.at, k - 1), numbered(this.at, k));
+                    k -= 1;
+                }
+            }
+            this.out = this.t.open(this.at, open_mode::write)?;
+            this.written = 0;
+            this.just_rotated = true;
+            return std::ok();
+        }
     }
 
     // --- watch: inotify -------------------------------------------------------------------------
@@ -120,12 +1948,7 @@ namespace std::filesystem {
     private extern(std::build::language::c) {
         i32 inotify_init1(i32 flags);
         i32 inotify_add_watch(i32 fd, std::raw_ptr<u8> name, u32 mask);
-        isize read(i32 fd, std::raw_ptr<mut u8> buffer, usize size);
-        i32 close(i32 fd);
         i32 poll(std::raw_ptr<mut u8> fds, u64 count, i32 timeout);
-        std::raw_ptr<mut u8> opendir(std::raw_ptr<u8> name);
-        std::raw_ptr<u8> readdir(std::raw_ptr<mut u8> dir);
-        i32 closedir(std::raw_ptr<mut u8> dir);
     }
 
     // IN_MODIFY | IN_ATTRIB | IN_CLOSE_WRITE | IN_MOVED_FROM | IN_MOVED_TO | IN_CREATE | IN_DELETE
@@ -164,6 +1987,21 @@ namespace std::filesystem {
         i32 fd = -1;
         std::darray<i32> handles = default;   // watch descriptors, in step with `dirs`
         std::darray<path> dirs = default;
+        // Changes are reported under `shown_root` (the table's path) instead of `os_root`.
+        std::string os_root = default;
+        std::string shown_root = default;
+
+        // `changed` (an operating-system path) as a path of the table that watches.
+        path shown(path changed) {
+            std::str text = changed.as_str();
+            std::str root = this.os_root;
+            if (root.is_empty() || !text.starts_with(root)) { return changed; }
+            std::str rest = text.slice(root.length(), text.length());
+            if (this.shown_root.is_empty()) {
+                return path::from(if (rest.starts_with("/")) { rest.slice(1, rest.length()) } else { rest });
+            }
+            return path::from(std::format(f"{this.shown_root}{rest}").as_str());
+        }
 
         void add(path& dir) mut {
             mut std::string name = std::string::from(dir.as_str());
@@ -225,26 +2063,27 @@ namespace std::filesystem {
                 }
                 at += 16 + cast<usize>(len);
                 mut usize i = 0;
-                while (i < this.handles.len() && this.handles[i] != handle) { i += 1; }
-                if (i == this.handles.len() || name.is_empty()) { continue; }
+                while (i < this.handles.length() && this.handles[i] != handle) { i += 1; }
+                if (i == this.handles.length() || name.is_empty()) { continue; }
                 path changed = this.dirs[i] / name;
                 if ((mask & watch_is_dir) != 0 && (mask & (0x100 | 0x80)) != 0) {   // a new directory: watch it too
                     this.add(changed);
                     continue;
                 }
+                path reported = this.shown(move changed);
                 mut bool seen = false;
-                for (path& p : out) { seen = seen || p.as_str() == changed.as_str(); }
-                if (!seen) { out.push(move changed); }
+                for (path& p : out) { seen = seen || p.as_str() == reported.as_str(); }
+                if (!seen) { out.push(move reported); }
             }
         }
     }
 
-    std::result<watcher, std::io_error> watch(path& directory) {
-        compile_time check (std::build::target_has(std::build::capability::files)) else "std::filesystem needs a target with files";
+    // Watches the operating-system directory `directory`; changes are reported under `shown`.
+    private std::result<watcher, std::io_error> watch_os(path directory, path shown) {
         mut i32 fd = -1;
         unsafe { fd = inotify_init1(0x800 | 0x80000); }   // IN_NONBLOCK | IN_CLOEXEC
         if (fd < 0) { return std::error(std::io_error::other); }
-        mut watcher w = watcher{ .fd = fd };
+        mut watcher w = watcher{ .fd = fd, .os_root = std::string::from(directory.as_str()), .shown_root = std::string::from(shown.as_str()) };
         w.add(directory);
         if (w.handles.is_empty()) { return std::error(std::io_error::not_found); }
         return std::ok(move w);

@@ -139,7 +139,7 @@ dock::layout default_layout() {
 void set_icons(mut dock::workspace& ws) {
     std::array<std::str, 11> names = ["Hierarchy", "Fleet", "Scene", "Graph", "Console", "Profiler", "History", "Inspector", "Player", "Layouts", "Shader"];
     std::array<ui::icon, 11> icons = [ui::icon::layers, ui::icon::car, ui::icon::cube, ui::icon::layers, ui::icon::terminal, ui::icon::chart, ui::icon::history, ui::icon::settings, ui::icon::cursor, ui::icon::layout, ui::icon::code];
-    for (usize i : 0..names.len()) {
+    for (usize i : 0..names.length()) {
         ws.set_icon(names[i], icons[i]);
     }
 }
@@ -408,16 +408,16 @@ void shader_panel(mut im::scope& w, graph::material& m) {
     mut usize start = 0;
     mut u32 n = 1;
     mut f32 y = r.y + 6.0;
-    while (start < source.len() && y < r.bottom()) {
+    while (start < source.length() && y < r.bottom()) {
         mut usize end = start;
-        while (end < source.len() && source.byte(end) != 10) {
+        while (end < source.length() && source.byte(end) != 10) {
             end += 1;
         }
         std::str text = source.slice(start, end);
         std::string label = std::format(f"{n}");
         f32 w_num = p.measure(label.as_str(), number).x;
         _ = p.text(ui::vec2{ .x = r.x + 30.0 - w_num, .y = y }, label.as_str(), number);
-        bool is_comment = text.len() >= 2 && text.byte(0) == 47 && text.byte(1) == 47;
+        bool is_comment = text.length() >= 2 && text.byte(0) == 47 && text.byte(1) == 47;
         bool is_declaration = text.starts_with("uniform") || text.starts_with("in ") || text.starts_with("out ") || text.starts_with("#version") || text.starts_with("float hash") || text.starts_with("void main");
         _ = p.text(ui::vec2{ .x = r.x + 42.0, .y = y }, text, if (is_comment) { note } else if (is_declaration) { keyword } else { code });
         y += line;
@@ -439,7 +439,7 @@ void gauges(mut im::scope& w, dbg::frame_stats& stats) {
 }
 
 std::exit_code main(std::span<std::str> args) {
-    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    std::option<std::str> screenshot = if (args.length() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
     mut bool drag_shot = false;
     mut bool menu_shot = false;
     mut bool graph_shot = false;
@@ -448,7 +448,7 @@ std::exit_code main(std::span<std::str> args) {
     mut bool add_shot = false;
     mut graph::node_style node_look = graph::node_style::studio;
     mut u32 accent_hex = 0x3b82f6;
-    for (usize i : 3..args.len()) {
+    for (usize i : 3..args.length()) {
         drag_shot = drag_shot || args[i] == "--drag";
         menu_shot = menu_shot || args[i] == "--menu";
         graph_shot = graph_shot || args[i] == "--graph";
@@ -516,7 +516,7 @@ std::exit_code main(std::span<std::str> args) {
     (std::unique_ptr<dbg::log_sink> sink, dbg::log_feed log_feed) = dbg::log_sink::create(500);
     mut dbg::log_feed feed = log_feed.clone();
     _ = session.add(move sink, std::log::sink_options{ .pattern = std::log::pattern::from("{time}.{millis} {level:<5} {message}") });
-    std::log::info(f"editor started with {ws.current().windows().len()} windows");
+    std::log::info(f"editor started with {ws.current().windows().length()} windows");
     mut dbg::frame_stats stats = default;
     mut garage::vehicle car = garage::vehicle{ .name = std::string::from("Ka") };
     mut f32 garage_max_ratio = 4.2;
@@ -541,7 +541,7 @@ std::exit_code main(std::span<std::str> args) {
         }
         std::log::info(f"scene 'garage' opened: 14 objects, 3 lights");
         std::log::warn(f"texture 'garage_floor.png' is 4096 px wide; mip maps were made at load time");
-        std::log::info(f"fleet loaded: {fleet.len()} cars");
+        std::log::info(f"fleet loaded: {fleet.length()} cars");
         std::log::error(f"shader 'paint_flakes.frag' failed to compile: line 42, unknown 'sparkle'");
         std::log::info(f"autosave written (3 changes)");
         history.push(std::string::from("paint: racing red"));
@@ -663,7 +663,7 @@ std::exit_code main(std::span<std::str> args) {
                     if (closed.is_empty()) {
                         _ = window_menu.menu_item(ui::icon::none, "All windows are open", "");
                     }
-                    for (usize i : 0..closed.len()) {
+                    for (usize i : 0..closed.length()) {
                         mut im::scope item = window_menu.id(i);
                         if (item.menu_item(ui::icon::layers, closed[i].as_str(), "")) {
                             ws.reopen(closed[i].as_str());
@@ -739,9 +739,9 @@ std::exit_code main(std::span<std::str> args) {
                 bar.bar_separator();
                 row_text(mut bar, std::format(f"{objects[state.selected].name} selected").as_str(), t.colors.text_muted);
                 bar.spacer();
-                row_text(mut bar, std::format(f"{fleet.len()} cars").as_str(), t.colors.text_faint);
+                row_text(mut bar, std::format(f"{fleet.length()} cars").as_str(), t.colors.text_faint);
                 bar.bar_separator();
-                row_text(mut bar, std::format(f"{undo.len()} undo steps").as_str(), t.colors.text_faint);
+                row_text(mut bar, std::format(f"{undo.length()} undo steps").as_str(), t.colors.text_faint);
                 bar.bar_separator();
                 f64 fps = if (stats.fps.is_empty()) { 0.0 } else { stats.fps.mean() };
                 row_text(mut bar, std::format(f"{ui::plot::format_number(fps, 0)} fps").as_str(), t.colors.text_faint);
@@ -753,7 +753,7 @@ std::exit_code main(std::span<std::str> args) {
                 std::darray<scene::face> model = scene::car_model(car_paint(car.paint), cast::round<f32>(car.rims));
                 model_triangles = 0;
                 for (scene::face& face : model) {
-                    model_triangles += face.corners.len() - 2;
+                    model_triangles += face.corners.length() - 2;
                 }
                 mut dock::space space = f.dockspace_in("editor", mut ws, ui::rect{ .x = gap, .y = top_height + gap, .width = size.x - 2.0 * gap, .height = size.y - top_height - status_height - 2.0 * gap });
                 {
@@ -781,13 +781,13 @@ std::exit_code main(std::span<std::str> args) {
                         }
                         // Children of a folded object are skipped.
                         mut u32 hidden_below = 1000;
-                        for (usize i : 0..objects.len()) {
+                        for (usize i : 0..objects.length()) {
                             u32 depth = objects[i].depth;
                             if (depth > hidden_below) {
                                 continue;
                             }
                             hidden_below = 1000;
-                            bool parent = i + 1 < objects.len() && objects[i + 1].depth > depth;
+                            bool parent = i + 1 < objects.length() && objects[i + 1].depth > depth;
                             if (outliner_row(mut w, i, mut objects[i], parent, state.selected == i)) {
                                 state.selected = i;
                             }
@@ -816,7 +816,7 @@ std::exit_code main(std::span<std::str> args) {
                         }
                         {
                             mut im::scope summary = w.section("Summary", true);
-                            key_value(mut summary, "Triangles", std::format(f"{model_triangles}  ·  {objects.len()} objects").as_str());
+                            key_value(mut summary, "Triangles", std::format(f"{model_triangles}  ·  {objects.length()} objects").as_str());
                             key_value(mut summary, "Materials", "3  ·  paint, glass, rubber");
                             key_value(mut summary, "Memory", "184 KB");
                             key_value(mut summary, "Debug id", std::format(f"{car.debug_id}").as_str());
@@ -869,7 +869,7 @@ std::exit_code main(std::span<std::str> args) {
                         {
                             mut im::scope bar = w.row();
                             bar.icon(ui::icon::car, t.colors.text_faint);
-                            row_text(mut bar, std::format(f"{fleet.len()} cars").as_str(), t.colors.text_muted);
+                            row_text(mut bar, std::format(f"{fleet.length()} cars").as_str(), t.colors.text_muted);
                             bar.spacer();
                             _ = bar.icon_button(ui::icon::filter, "Filter the fleet");
                             _ = bar.icon_button(ui::icon::plus, "Add a car");
@@ -888,17 +888,17 @@ std::exit_code main(std::span<std::str> args) {
                             if (bar.icon_button(ui::icon::redo, "Redo (Ctrl+Y)") && undo.redo(mut car)) {
                                 history.push(std::string::from("redo"));
                             }
-                            row_text(mut bar, std::format(f"{undo.len()} steps back").as_str(), t.colors.text_faint);
+                            row_text(mut bar, std::format(f"{undo.length()} steps back").as_str(), t.colors.text_faint);
                         }
                         if (history.is_empty()) {
                             w.muted(f"Change a value: drags count when released, text when Enter is pressed.");
                         }
-                        usize first = if (history.len() > 12) { history.len() - 12 } else { 0 };
-                        for (usize i : first..history.len()) {
+                        usize first = if (history.length() > 12) { history.length() - 12 } else { 0 };
+                        for (usize i : first..history.length()) {
                             mut im::scope line = w.id(i);
                             mut im::scope row = line.row();
                             row.icon(ui::icon::history, t.colors.text_faint);
-                            row_text(mut row, history[i].as_str(), if (i + 1 == history.len()) { t.colors.text } else { t.colors.text_muted });
+                            row_text(mut row, history[i].as_str(), if (i + 1 == history.length()) { t.colors.text } else { t.colors.text_muted });
                         }
                         if (w.undo_shortcuts(mut undo, mut car)) {
                             history.push(std::string::from("undo / redo (keys)"));
@@ -961,8 +961,8 @@ std::exit_code main(std::span<std::str> args) {
                         std::image::rgba8 shot = renderer.read_pixels(frame);
                         std::darray<u8> png = std::image::encode_png(shot);
                         mut std::file out = std::file::create(path).expect("the screenshot file");
-                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
-                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.length()) });
+                        std::println(f"{ctx.draw_data().vertices.length()} vertices, {ctx.draw_data().commands.length()} draw calls, duplicate ids {ctx.duplicate_ids()}");
                         finished = true;
                     }
                 },

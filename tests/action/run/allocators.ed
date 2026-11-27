@@ -39,7 +39,7 @@ i32 main() {
             points.push(point{ .x = i, .y = i * i });
             i += 1;
         }
-        std::println(f"{points.len()} points, last ({points[9].x}, {points[9].y}), arena used {frame.used()} of {frame.capacity()}");
+        std::println(f"{points.length()} points, last ({points[9].x}, {points[9].y}), arena used {frame.used()} of {frame.capacity()}");
 
         mut std::hash_map<u32, u32, std::arena_allocator> squares =
             std::hash_map<u32, u32, std::arena_allocator>::with_capacity_in(16, frame.allocator());
@@ -58,7 +58,7 @@ i32 main() {
             counted.push(k);
             k += 1;
         }
-        std::println(f"{counted.len()} values, sum {counted[99] + counted[0]}");
+        std::println(f"{counted.length()} values, sum {counted[99] + counted[0]}");
     }
     std::println(f"allocations > 0: {allocations.load(std::memory_order::relaxed) > 0}, every block given back: {allocations.load(std::memory_order::relaxed) == frees.load(std::memory_order::relaxed)}");
 

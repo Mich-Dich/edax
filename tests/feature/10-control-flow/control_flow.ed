@@ -12,7 +12,7 @@ std::str classify(u32 x, u32 count, std::raw_ptr<u8> ptr) {
     for (employee& e : employees) { }
     for (mut employee& e : employees) { }
     for (u32 n : numbers) { }
-    for (usize i : 0..employees.len()) { }
+    for (usize i : 0..employees.length()) { }
     for (u8 b : 0..=255) { }
     return label;
 }

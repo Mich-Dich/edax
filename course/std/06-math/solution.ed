@@ -17,7 +17,7 @@ std::darray<m::rect> row(m::rect area, usize count, f32 padding, f32 gap) {
 
 // The index of the button under `p`, if any.
 std::option<usize> hit(std::span<m::rect> buttons, m::vec2 p) {
-    for (usize i : 0..buttons.len()) {
+    for (usize i : 0..buttons.length()) {
         if (buttons[i].contains(p)) { return std::some(i); }
     }
     return std::none;

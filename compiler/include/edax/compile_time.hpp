@@ -130,12 +130,22 @@ struct BuildTarget {
 };
 
 struct BuildStep {
+    // `g.add_archive(spec)`: the folder `from` packed into the archive `name` (filesystem.md,
+    // "Archives"); the driver writes it itself, as `edaxc pack` does.
+    struct Pack {
+        std::string              name;      // the archive's file name: "game.pak"
+        std::string              from;      // the folder packed, relative to the project
+        std::string              dir;       // a g.output_dir pattern ("": the project's output folder)
+        std::vector<std::string> exclude;   // globs of files left out, relative to `from`
+    };
+
     std::string              name;
     std::string              program;
     std::vector<std::string> arguments;
     std::vector<std::string> inputs;
     std::vector<std::string> outputs;
     Span                     span;
+    std::optional<Pack>      pack;
 };
 
 struct BuildDependency {

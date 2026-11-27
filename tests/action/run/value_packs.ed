@@ -1,6 +1,6 @@
 // RUN: edaxc run %s
 // Value packs (spec 34): `usize... N` in function and struct templates, walked with
-// `for compile_time`, counted with `N.len()`, passed on as `f<N...>`.
+// `for compile_time`, counted with `N.length()`, passed on as `f<N...>`.
 import std;
 
 template<usize... N>
@@ -11,12 +11,12 @@ usize product() {
 }
 
 template<usize... N>
-usize total() { return product<N...>() + N.len(); }
+usize total() { return product<N...>() + N.length(); }
 
 template<type T, usize... N>
 struct tensor {
     std::darray<T> data = default;
-    static usize rank() { return N.len(); }
+    static usize rank() { return N.length(); }
     static usize count() { return product<N...>(); }
     usize dim(usize i) {
         mut usize k = 0;

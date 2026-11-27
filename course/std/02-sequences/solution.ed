@@ -8,18 +8,18 @@ struct reading {
 
 // The mean of each chunk of `size` values, as integers (rounded down).
 std::darray<i32> chunk_means(std::span<i32> values, usize size) {
-    mut std::darray<i32> out = std::darray<i32>::with_capacity((values.len() + size - 1) / size);
+    mut std::darray<i32> out = std::darray<i32>::with_capacity((values.length() + size - 1) / size);
     for (std::span<i32> part : values.chunks(size)) {
         mut i32 sum = 0;
         for (i32 v : part) { sum += v; }
-        out.push(sum / cast::truncate<i32>(part.len()));
+        out.push(sum / cast::truncate<i32>(part.length()));
     }
     return out;
 }
 
 // Subtracts the first half's minimum from the first half, and adds 100 to the second half.
 void adjust_halves(std::span<mut i32> values) {
-    (std::span<mut i32> first, std::span<mut i32> second) = values.split_at(values.len() / 2);
+    (std::span<mut i32> first, std::span<mut i32> second) = values.split_at(values.length() / 2);
     mut i32 low = i32::max;
     for (i32 v : first) { low = low.min(v); }
     for (mut i32& v : first) { v -= low; }
@@ -38,15 +38,15 @@ std::string join(std::span<i32> values) {
 i32 main() {
     mut std::darray<reading> log = default;
     std::array<i32, 10> raw = [12, 15, 999, 14, 11, -500, 13, 16, 18, 17];
-    for (usize i : 0..raw.len()) {
+    for (usize i : 0..raw.length()) {
         log.push(reading{ .sensor = cast::truncate<u8>(i % 3), .value = raw[i] });
     }
 
     // Outliers are readings outside -100..=100.
     log.retain([](reading& r) { return r.value >= -100 && r.value <= 100; });
-    std::println(f"{log.len()} readings kept");
+    std::println(f"{log.length()} readings kept");
 
-    mut std::darray<i32> values = std::darray<i32>::with_capacity(log.len());
+    mut std::darray<i32> values = std::darray<i32>::with_capacity(log.length());
     mut std::bitset<8> sensors = default;
     for (reading& r : log) {
         values.push(r.value);

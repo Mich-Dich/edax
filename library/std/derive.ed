@@ -17,7 +17,7 @@ namespace std::derive {
     }
 
     struct arithmetic {
-        compile_time check (std::meta::is_struct<annotated>() && std::meta::fields<annotated>().len() == 1)
+        compile_time check (std::meta::is_struct<annotated>() && std::meta::fields<annotated>().length() == 1)
             else f"@std::derive::arithmetic works on distinct types ('distinct type meters = f32;'), not on {std::type_name<annotated>()}";
     }
 }

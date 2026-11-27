@@ -116,8 +116,9 @@ TEST_CASE("resolve: modules must be imported where they are used") {
     CHECK_EQ(p.codes(), std::string("E3023"));
 }
 
-TEST_CASE("resolve: std names are accepted unchecked once std is imported") {
-    CHECK_EQ(codes_of("import std;\nvoid f() { std::println(std::anything::goes); }"), std::string());
+TEST_CASE("resolve: std names are checked once std is imported") {
+    CHECK_EQ(codes_of("import std;\nvoid f() { std::println(1); u32 n = std::size_of<u32>(); }"), std::string());   // the compiler's own
+    CHECK_EQ(codes_of("import std;\nvoid f() { std::println(std::anything::goes); }"), std::string("E3020"));    // not declared anywhere
     CHECK_EQ(codes_of("void f() { std::println(1); std::println(2); }"), std::string("E3023"));   // once per file
 }
 

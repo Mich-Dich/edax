@@ -21,7 +21,7 @@ void main() {
         fs.push([k](i32 x) { return x * k; });
     }
     mut i32 total = 0;
-    for (usize i : 0..fs.len()) { total += fs[i](10); }
+    for (usize i : 0..fs.length()) { total += fs[i](10); }
     std::println(f"total {total}");
     std::function<void(), std::sendable> job = [base]() { std::println(f"job {base}"); };
     std::thread::handle<void> h = std::thread::spawn([move job]() { job(); });

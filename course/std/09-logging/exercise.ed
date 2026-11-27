@@ -36,17 +36,17 @@ i32 main() {
         mut std::log::session logs = std::log::start(std::log::options{});
         // TODO: two sinks: the console (no colors) from `info` with console_pattern, and a memory
         // sink into `problems` from `warn` with panel_pattern.
-        std::log::info(f"importing {assets.len()} assets");
+        std::log::info(f"importing {assets.length()} assets");
         // TODO: a status line "importing [i/n] <name>" per asset, finished with
         // "imported <k> of <n> assets".
-        for (usize i : 0..assets.len()) {
+        for (usize i : 0..assets.length()) {
             if (import_asset(assets[i])) {
                 imported += 1;
             }
         }
         logs.flush();
     }
-    std::println(f"problems panel ({problems.snapshot().len()}):");
+    std::println(f"problems panel ({problems.snapshot().length()}):");
     for (std::string& line : problems.snapshot()) { std::println(f"  {line}"); }
     return 0;
 }

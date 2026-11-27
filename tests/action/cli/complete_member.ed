@@ -1,0 +1,3 @@
+// RUN: edaxc complete %S/complete_project/main.ed 17:15
+// edaxc complete (editors' suggestions): after `c.`, the fields and methods of its type, with
+// their declarations and comments.

@@ -11,7 +11,7 @@ public:
     }
 
     void publish(std::str topic, u32 value) {
-        for (usize i : 0..this.topics.len()) {
+        for (usize i : 0..this.topics.length()) {
             if (this.topics[i].as_str() == topic) { this.handlers[i](value); }
         }
     }

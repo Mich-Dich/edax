@@ -10,6 +10,7 @@
 #include "edax/cmake_reader.hpp"
 #include "edax/cpp_wrap.hpp"
 #include "edax/definition.hpp"
+#include "edax/complete.hpp"
 #include "edax/check.hpp"
 #include "edax/compile_time.hpp"
 #include "edax/llvm_backend.hpp"
@@ -34,6 +35,7 @@
 #include <format>
 #include <map>
 #include <fstream>
+#include <iostream>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -92,6 +94,12 @@ constexpr std::string_view usage_text =
     "  package convert <name> [--compare] [--to=DIR]\n"
     "                        write packages/<name>.ed from the package's CMakeLists.txt (what the\n"
     "                        CMake reader can't translate becomes TODOs), or compare the one you have\n"
+    "  complete <file> <line>:<column> [--stdin] [--root=DIR]\n"
+    "                        the names that fit at that place, one per line: name, kind, declaration,\n"
+    "                        doc, separated by tabs (editors' suggestions; --stdin: the file's text)\n"
+    "  pack <folder> <archive> [--exclude=GLOB]...\n"
+    "                        pack the files of a folder into one archive that std::filesystem::archive\n"
+    "                        reads (build.ed: g.add_archive)\n"
     "  definition <file> <line>:<column>\n"
     "                        where the name at that place is declared, as <file>:<line>:<column>\n"
     "                        (editors' go to definition)\n"
@@ -897,6 +905,170 @@ ExitCode run_definition(const Options& opts, DriverStreams& s) {
     return ExitCode::compile_error;
 }
 
+// `edaxc complete <file> <line>:<column> [--stdin] [--root=DIR]` (editors' suggestions): one line
+// per name that fits at the place, `name<TAB>kind<TAB>declaration<TAB>doc` (`\n` and `\\`
+// escaped). With --stdin the file's text is read from standard input (an unsaved buffer).
+ExitCode run_complete(std::span<const std::string_view> args, DriverStreams& s) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> positional;
+    bool                     from_stdin = false;
+    std::string              root;
+    for (std::string_view a : args) {
+        if (a == "--stdin") from_stdin = true;
+        else if (a.starts_with("--root=")) root = std::string(a.substr(7));
+        else if (a.starts_with("-")) return usage_error(s, std::format("unknown option '{}' for 'edaxc complete'", a));
+        else positional.emplace_back(a);
+    }
+    if (positional.size() != 2) return usage_error(s, "usage: edaxc complete <file> <line>:<column> [--stdin] [--root=DIR]");
+    const std::string& input = positional[0];
+    const std::string& place = positional[1];
+    std::size_t        colon = place.find(':');
+    std::uint32_t      line = 0, column = 0;
+    try {
+        line   = static_cast<std::uint32_t>(std::stoul(place.substr(0, colon)));
+        column = colon == std::string::npos ? 1 : static_cast<std::uint32_t>(std::stoul(place.substr(colon + 1)));
+    } catch (...) {
+        return usage_error(s, std::format("'{}' is not a place: write <line>:<column> (both from 1)", place));
+    }
+    std::string text;
+    if (from_stdin) {
+        text = read_rest(std::cin);
+    } else {
+        std::ifstream in(input, std::ios::binary);
+        if (!in) {
+            s.err << std::format("edaxc: error[E0001]: cannot read '{}': cannot open file\n", input);
+            return ExitCode::compile_error;
+        }
+        text = read_rest(in);
+    }
+    std::uint32_t offset = 0;
+    {
+        SourceFile f(input, text);
+        if (line == 0 || line > f.line_count()) return ExitCode::success;
+        offset = f.line_start(line);
+        for (std::uint32_t c = 1; c < column && offset < text.size() && text[offset] != '\n'; ++c) {
+            char32_t    cp  = 0;
+            std::size_t len = decode_utf8(text, offset, cp);
+            offset += static_cast<std::uint32_t>(len == 0 ? 1 : len);
+        }
+    }
+    CompletionQuery query = completion_query(text, offset);
+    if (query.kind == CompletionQuery::Kind::none) return ExitCode::success;
+
+    // The library: a program that imports every std module, for `std::` names.
+    std::error_code ec;
+    SourceManager   library_sources;
+    sema::Program   library;
+    {
+        fs::path                 std_dir = std_source_dir();
+        std::vector<std::string> modules;
+        for (auto it = fs::recursive_directory_iterator(std_dir, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (it->path().extension() != ".edh") continue;
+            std::string module = it->path().lexically_relative(std_dir).replace_extension().generic_string();
+            for (std::size_t at; (at = module.find('/')) != std::string::npos;) module.replace(at, 1, "::");
+            modules.push_back(module == "std" ? module : "std::" + module);
+        }
+        std::sort(modules.begin(), modules.end());
+        fs::path    entry = fs::temp_directory_path(ec) / std::format("edaxc-complete-{}.ed", static_cast<long>(::getpid()));
+        std::string source;
+        for (const std::string& m : modules) source += "import " + m + ";\n";
+        std::ofstream(entry) << source << "i32 main() { return 0; }\n";
+        DiagnosticEngine diags;
+        library = load_program(entry.string(), LoadOptions{}, library_sources, diags);
+        fs::remove(entry, ec);
+        if (!diags.has_errors()) resolve_program(library, diags);
+        if (!diags.has_errors()) check_types(library, library_sources, diags);
+    }
+
+    // The file's program, with what is being typed blanked out; when the rest still doesn't parse,
+    // the whole line, then also the other lines that end in `::` or `.`, then up to 8 lines with errors.
+    SourceManager                  sources;
+    std::optional<sema::Program>   program;
+    std::optional<FileId>          file;
+    std::string                    base = without_query(text, query, offset, false);
+    std::vector<std::string>       attempts = {base, without_query(text, query, offset, true)};
+    {
+        std::string more = attempts.back();
+        for (std::size_t at = 0; at < more.size();) {
+            std::size_t end  = more.find('\n', at);
+            if (end == std::string::npos) end = more.size();
+            std::string_view l(more.data() + at, end - at);
+            while (!l.empty() && (l.back() == ' ' || l.back() == '\r' || l.back() == '\t')) l.remove_suffix(1);
+            if (l.ends_with("::") || (l.ends_with(".") && !l.ends_with(".."))) {
+                for (std::size_t i = at; i < end; ++i) more[i] = ' ';
+            }
+            at = end + 1;
+        }
+        attempts.push_back(std::move(more));
+    }
+    fs::path wanted = fs::weakly_canonical(input, ec);
+    for (std::size_t a = 0; a <= attempts.size(); ++a) {
+        std::string attempt;
+        if (a < attempts.size()) {
+            attempt = attempts[a];
+        } else {   // the last try: blank the lines the previous one had errors on
+            attempt = attempts.back();
+        }
+        SourceManager    tried;
+        DiagnosticEngine diags;
+        tried.set_text(input, attempt);
+        LoadOptions o;
+        o.root = root;
+        sema::Program p = load_program(input, o, tried, diags);
+        std::optional<FileId> id;
+        for (FileId i = 0; i < tried.count(); ++i) {
+            if (!tried.file(i).path().starts_with("<") && fs::weakly_canonical(tried.file(i).path(), ec) == wanted) id = i;
+        }
+        bool parsed = id && !diags.has_errors();
+        if (!parsed && a + 1 == attempts.size() && id) {
+            // Blank up to 8 lines with errors in the file, and try once more.
+            std::string      blanked = attempts.back();
+            const SourceFile& f      = tried.file(*id);
+            int              count  = 0;
+            for (const Diagnostic& d : diags.all()) {
+                if (d.span.file != *id || count == 8) continue;
+                std::uint32_t l    = f.line_col(d.span.begin).line;
+                std::uint32_t from = f.line_start(l);
+                std::uint32_t to   = l < f.line_count() ? f.line_start(l + 1) : static_cast<std::uint32_t>(blanked.size());
+                for (std::uint32_t i = from; i < to && i < blanked.size(); ++i) {
+                    if (blanked[i] != '\n') blanked[i] = ' ';
+                }
+                ++count;
+            }
+            attempts.back() = std::move(blanked);
+            continue;
+        }
+        if (!parsed && a < attempts.size()) continue;
+        if (!id) break;
+        if (!diags.has_errors()) resolve_program(p, diags);
+        if (!diags.has_errors()) check_types(p, tried, diags);
+        sources = std::move(tried);
+        program = std::move(p);
+        file    = id;
+        break;
+    }
+    if (!file) {   // nothing loaded: the library's names only
+        sources.add(input, base);
+        file = 0;
+    }
+    std::vector<Completion> found =
+        find_completions(program ? &*program : nullptr, sources, library, library_sources, *file, offset, query);
+    auto escaped = [](std::string_view t) {
+        std::string out;
+        for (char c : t) {
+            if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\t') out += ' ';
+            else out += c;
+        }
+        return out;
+    };
+    for (const Completion& c : found) {
+        s.out << std::format("{}\t{}\t{}\t{}\n", escaped(c.name), escaped(c.kind), escaped(c.detail), escaped(c.doc));
+    }
+    return ExitCode::success;
+}
+
 ExitCode run_frontend(const Options& opts, DriverStreams& s) {
     std::string input(opts.input);
     if (!input.ends_with(".ed") && !input.ends_with(".edh")) {
@@ -1676,6 +1848,151 @@ FileSnapshot snapshot_files(const std::filesystem::path& root, const std::filesy
     return files;
 }
 
+// --- archives (filesystem.md, "Archives") ---------------------------------------------------------
+// The layout std::filesystem::archive reads (library/std/filesystem.ed): a 32-byte header
+// "EDAXPAK1", u32 version 1, u32 count, u64 index offset, u64 index size; the files' bytes, each at
+// a multiple of 16; the index, sorted by path hash then path: u64 FNV-1a hash, u64 offset, u64 size,
+// u32 path length, u32 flags (0: stored), the path padded to a multiple of 8.
+
+// FNV-1a, 64 bits: the archive's path hash.
+std::uint64_t archive_hash(std::string_view text) {
+    std::uint64_t h = 0xcbf29ce484222325ull;
+    for (char c : text) h = (h ^ static_cast<unsigned char>(c)) * 0x100000001b3ull;
+    return h;
+}
+
+// Whether `path` (relative, with `/`) matches `pattern`: `*` within a name, `**` across folders,
+// `?` one character. A pattern without `/` matches the file's name in any folder.
+bool archive_glob(std::string_view pattern, std::string_view path) {
+    if (pattern.find('/') == std::string_view::npos) {
+        std::size_t slash = path.rfind('/');
+        if (slash != std::string_view::npos && archive_glob(pattern, path.substr(slash + 1))) return true;
+    }
+    if (pattern.empty()) return path.empty();
+    if (pattern.starts_with("**")) {
+        std::string_view rest = pattern.substr(2);
+        if (rest.starts_with('/')) {
+            rest = rest.substr(1);
+            if (archive_glob(rest, path)) return true;
+        }
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            if ((path[i] == '/' || !pattern.substr(2).starts_with('/')) && archive_glob(rest, path.substr(i + 1))) return true;
+        }
+        return rest.empty();
+    }
+    if (pattern[0] == '*') {
+        for (std::size_t i = 0; i <= path.size(); ++i) {
+            if (archive_glob(pattern.substr(1), path.substr(i))) return true;
+            if (i < path.size() && path[i] == '/') break;
+        }
+        return false;
+    }
+    if (path.empty() || (pattern[0] != '?' && pattern[0] != path[0]) || (pattern[0] == '?' && path[0] == '/')) return false;
+    return archive_glob(pattern.substr(1), path.substr(1));
+}
+
+// The files `write_archive` packs: every regular file under `from` (relative, with `/`, sorted)
+// that no pattern of `exclude` matches.
+std::vector<std::string> archive_files(const std::filesystem::path& from, const std::vector<std::string>& exclude) {
+    namespace fs = std::filesystem;
+    std::error_code          ec;
+    std::vector<std::string> files;
+    for (auto it = fs::recursive_directory_iterator(from, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string rel = it->path().lexically_relative(from).generic_string();
+        if (std::any_of(exclude.begin(), exclude.end(), [&](const std::string& g) { return archive_glob(g, rel); })) continue;
+        files.push_back(rel);
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+// Packs `files` of `from` into the archive `to` (written whole, then renamed into place); "" or
+// what went wrong.
+std::string write_archive(const std::filesystem::path& from, const std::vector<std::string>& files, const std::filesystem::path& to) {
+    namespace fs = std::filesystem;
+    struct Entry {
+        std::uint64_t hash;
+        std::string   path;
+        std::uint64_t offset;
+        std::uint64_t size;
+    };
+    auto put = [](std::string& out, std::uint64_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i) out += static_cast<char>((v >> (8 * i)) & 0xff);
+    };
+    auto pad = [](std::string& out, std::size_t to_multiple) {
+        while (out.size() % to_multiple) out += '\0';
+    };
+    std::string        bytes(32, '\0');
+    std::vector<Entry> entries;
+    for (const std::string& rel : files) {
+        std::ifstream in(from / rel, std::ios::binary);
+        if (!in) return std::format("cannot read '{}'", (from / rel).string());
+        pad(bytes, 16);
+        std::uint64_t offset = bytes.size();
+        bytes.append(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (rel.size() > 0xffffffffu) return std::format("the path '{}' is too long", rel);
+        entries.push_back(Entry{archive_hash(rel), rel, offset, bytes.size() - offset});
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return std::tie(a.hash, a.path) < std::tie(b.hash, b.path); });
+    pad(bytes, 8);
+    std::uint64_t index_at = bytes.size();
+    for (const Entry& e : entries) {
+        put(bytes, e.hash, 8);
+        put(bytes, e.offset, 8);
+        put(bytes, e.size, 8);
+        put(bytes, e.path.size(), 4);
+        put(bytes, 0, 4);
+        bytes += e.path;
+        pad(bytes, 8);
+    }
+    std::string header = "EDAXPAK1";
+    put(header, 1, 4);
+    put(header, entries.size(), 4);
+    put(header, index_at, 8);
+    put(header, bytes.size() - index_at, 8);
+    bytes.replace(0, 32, header);
+    std::error_code ec;
+    if (to.has_parent_path()) fs::create_directories(to.parent_path(), ec);
+    fs::path temporary = to;
+    temporary += ".partial";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out || !out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return std::format("cannot write '{}'", temporary.string());
+    }
+    fs::rename(temporary, to, ec);
+    if (ec) return std::format("cannot write '{}': {}", to.string(), ec.message());
+    return "";
+}
+
+// `edaxc pack <folder> <archive> [--exclude=GLOB]...`
+ExitCode run_pack(std::span<const std::string_view> args, DriverStreams& s) {
+    std::vector<std::string> positional, exclude;
+    for (std::string_view a : args) {
+        if (a.starts_with("--exclude=")) exclude.emplace_back(a.substr(10));
+        else if (a.starts_with("-")) return usage_error(s, std::format("unknown option '{}' for 'edaxc pack'", a));
+        else positional.emplace_back(a);
+    }
+    if (positional.size() != 2) return usage_error(s, "usage: edaxc pack <folder> <archive> [--exclude=GLOB]...");
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path        from = positional[0], to = positional[1];
+    if (!fs::is_directory(from, ec)) {
+        s.err << std::format("edaxc: error: '{}' is not a folder\n", from.string());
+        return ExitCode::compile_error;
+    }
+    std::vector<std::string> files = archive_files(from, exclude);
+    fs::path                 inside = fs::weakly_canonical(to, ec).lexically_relative(fs::weakly_canonical(from, ec));
+    if (!inside.empty() && *inside.begin() != "..") std::erase(files, inside.generic_string());   // not the archive itself
+    std::string problem = write_archive(from, files, to);
+    if (!problem.empty()) {
+        s.err << std::format("edaxc: error: {}\n", problem);
+        return ExitCode::compile_error;
+    }
+    s.out << std::format("packed {} file{} into {}\n", files.size(), files.size() == 1 ? "" : "s", to.string());
+    return ExitCode::success;
+}
+
 // Runs a step unless its outputs exist and are newer than its inputs (spec 25).
 bool run_step(const std::filesystem::path& root, const ct::BuildStep& st, DriverStreams& s) {
     namespace fs = std::filesystem;
@@ -1696,6 +2013,15 @@ bool run_step(const std::filesystem::path& root, const ct::BuildStep& st, Driver
     }
     if (!stale) return true;
     for (const std::string& o : st.outputs) fs::create_directories(at(o).parent_path(), ec);
+    if (st.pack) {   // g.add_archive: packed here, as `edaxc pack` would
+        std::string problem = write_archive(at(st.pack->from), archive_files(at(st.pack->from), st.pack->exclude), at(st.outputs.at(0)));
+        if (!problem.empty()) {
+            s.err << std::format("edaxc: error: step '{}': {}\n", st.name, problem);
+            return false;
+        }
+        s.out << std::format("ran step '{}'\n", st.name);
+        return true;
+    }
     std::vector<std::string> cmd = {st.program};
     cmd.insert(cmd.end(), st.arguments.begin(), st.arguments.end());
     std::string output;
@@ -2417,6 +2743,24 @@ ExitCode run_project(const Options& opts, DriverStreams& s) {
         };
         if (auto cpu = t.settings.find("std::build::cpu"); cpu != t.settings.end() && cpu->second && cpu->second->symbol) values["cpu"] = cpu->second->symbol->name;
         t.output_path = folder(t.output_dir, values).string();
+    }
+    // g.add_archive: the archive goes to its own pattern's folder, else the project's output folder;
+    // the files of `from` are its inputs, so it is packed again when one changes.
+    for (ct::BuildStep& st : graph.steps) {
+        if (!st.pack) continue;
+        std::map<std::string, std::string> values = {
+            {"name", fs::path(st.pack->name).stem().string()}, {"project", fs::weakly_canonical(root, ec).filename().string()},
+            {"mode", opts.mode}, {"kind", "archive"},
+        };
+        fs::path from = fs::path(st.pack->from).is_absolute() ? fs::path(st.pack->from) : project_root / st.pack->from;
+        if (!fs::is_directory(from, ec)) {
+            s.err << std::format("edaxc: error: step '{}': its folder '{}' does not exist\n", st.name, st.pack->from);
+            return ExitCode::compile_error;
+        }
+        st.pack->from = from.string();
+        st.outputs = {(folder(st.pack->dir, values) / st.pack->name).string()};
+        st.inputs.clear();
+        for (const std::string& f : archive_files(from, st.pack->exclude)) st.inputs.push_back((from / f).string());
     }
     std::string project_name = fs::weakly_canonical(root, ec).filename().string();
 
@@ -3676,6 +4020,12 @@ ExitCode run_driver(std::span<const std::string_view> args, DriverStreams stream
     }
     if (command == "package") {
         return run_package(args.subspan(1), streams);
+    }
+    if (command == "pack") {
+        return run_pack(args.subspan(1), streams);
+    }
+    if (command == "complete") {
+        return run_complete(args.subspan(1), streams);
     }
     if (command == "registry") {
         if (args.size() < 2 || (args[1] != "opengl" && args[1] != "vulkan") || (args.size() > 2 && args[2] != "--source")) {

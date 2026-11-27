@@ -35,7 +35,7 @@ public:
 
     std::str owner() { return who; }
 
-    ~bag() { std::println(f"bag of {who} destroyed with {items.len()} items"); }
+    ~bag() { std::println(f"bag of {who} destroyed with {items.length()} items"); }
 
 private:
     std::string       who;
@@ -45,7 +45,7 @@ private:
 // The longer of two names. Both are views of the caller's text, so the result can't borrow from
 // "the" parameter: it is returned as a new string.
 std::string longer(std::str a, std::str b) {
-    if (a.len() >= b.len()) { return std::string::from(a); }
+    if (a.length() >= b.length()) { return std::string::from(a); }
     return std::string::from(b);
 }
 

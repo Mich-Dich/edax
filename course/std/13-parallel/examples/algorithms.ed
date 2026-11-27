@@ -11,7 +11,7 @@ i32 main() {
     std::println(f"first above 50000 at {at.value_or(0)}");
     std::println(f"any 7? {std::parallel::any(pool, xs.as_span(), [](u32& v) { return v == 7; })}, all below 200000? {std::parallel::all(pool, xs.as_span(), [](u32& v) { return v < 200000; })}");
     mut std::darray<u64> squares = default;
-    squares.resize(xs.len(), 0);
+    squares.resize(xs.length(), 0);
     std::parallel::transform(pool, xs.as_span(), squares.as_mut_span(), [](u32& v) { return cast<u64>(v) * cast<u64>(v); });
     std::println(f"last square {squares[99999]}");
     return 0;

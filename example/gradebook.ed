@@ -16,7 +16,7 @@ struct grade {
 // `?` returns the error early; `or_error` turns a `std::option` into a `std::result`.
 std::result<grade, load_error> parse_line(std::str line, usize number) {
     std::darray<std::str> parts = line.split(',');
-    if (parts.len() != 3) { return std::error(load_error::bad_line(number)); }
+    if (parts.length() != 3) { return std::error(load_error::bad_line(number)); }
     u32 points = parts[2].trim().parse<u32>().or_error(load_error::bad_line(number))?;
     return std::ok(grade{
         .student = std::string::from(parts[0].trim()),
@@ -69,7 +69,7 @@ i32 main() {
     write_sample(file);
     match (load(file)) {
         std::ok(grades) => {
-            std::println(f"{grades.len()} grades from {file.as_str()}");
+            std::println(f"{grades.length()} grades from {file.as_str()}");
             report(grades);
         },
         std::error(load_error::io(e)) => std::println(f"cannot read the file: {e}"),

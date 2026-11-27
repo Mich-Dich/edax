@@ -30,10 +30,10 @@ i32 main() {
     {
         std::read_guard<std::darray<u32>> r1 = table.read();
         std::read_guard<std::darray<u32>> r2 = table.read();    // two readers at once
-        std::println(f"readers see {r1->len()} and {r2->len()}");
+        std::println(f"readers see {r1->length()} and {r2->length()}");
     }
     table.write()->push(4);
-    std::println(f"after the write: {table.read()->len()}");
+    std::println(f"after the write: {table.read()->length()}");
     return 0;
 }
 //> while held, try_lock gets it: false

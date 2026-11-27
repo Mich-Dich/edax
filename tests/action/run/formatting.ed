@@ -12,6 +12,6 @@ void main() {
     std::println(f"[{m}] [{m:x}] [{m:>5}] [{m:+}]");
     std::println(f"[{pi}] [{pi:.2}] [{pi:>10.3}] [{pi:+.1}] [{1.0f64}] [{1e300f64 * 1e10}] [{0.0f64 / 0.0}]");
     std::println(f"[{c}] [{c:>3}] [{c:x}] [{true}] [{false:>6}]");
-    std::println(f"[{s}] [{s:>6}] [{s:^8}] [{s.len()}] {{literal}} }}");
+    std::println(f"[{s}] [{s:>6}] [{s:^8}] [{s.length()}] {{literal}} }}");
     std::println(f"nested {n + 1} and call {s.is_empty()}");
 }

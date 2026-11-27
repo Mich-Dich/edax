@@ -5,7 +5,7 @@ import std;
 // FNV-1a: a hash that *wants* to wrap, so it says so with `^` and `*%`.
 u32 fnv1a(std::str text) {
     mut u32 h = 2166136261;
-    for (usize i : 0..text.len()) {
+    for (usize i : 0..text.length()) {
         mut u8 byte = 0;
         unsafe { byte = std::raw::read(text.as_ptr().offset(i)); }
         h = (h ^ cast<u32>(byte)) *% 16777619;

@@ -281,14 +281,14 @@ namespace std {
 
         static darray<T, A> from(span<T> items) {
             mut darray<T, A> out = default;
-            out.reserve(items.len());
+            out.reserve(items.length());
             for (T& item : items) {
                 out.push(item.clone());
             }
             return out;
         }
 
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -795,7 +795,7 @@ namespace std {
 
         std::raw_ptr<T> as_ptr() { return this.data; }
 
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -838,7 +838,7 @@ namespace std {
     public:
         static unsafe span_mut<T> from_raw(std::raw_ptr<mut T> data, usize count) { return span_mut<T>{ .data = data, .count = count }; }
 
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -978,7 +978,7 @@ namespace std {
             return out;
         }
 
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -988,7 +988,7 @@ namespace std {
         }
 
         void push_str(std::str text) mut {
-            usize n = text.len();
+            usize n = text.length();
             if (n == 0) { return; }
             this.reserve(this.count + n);
             unsafe { std::raw::copy(this.data.offset(this.count), text.as_ptr(), n); }
@@ -1027,15 +1027,15 @@ namespace std {
         std::ordering operator<=>(string_with<A>& other) {
             std::str a = this.as_str();
             std::str b = other.as_str();
-            mut usize n = a.len();
-            if (b.len() < n) { n = b.len(); }
+            mut usize n = a.length();
+            if (b.length() < n) { n = b.length(); }
             mut i32 c = 0;
             if (n > 0) {
                 unsafe { c = memcmp(a.as_ptr(), b.as_ptr(), n); }
             }
             if (c < 0) { return std::ordering::less; }
             if (c > 0) { return std::ordering::greater; }
-            return a.len() <=> b.len();
+            return a.length() <=> b.length();
         }
 
         ~string_with() {
@@ -1074,51 +1074,51 @@ namespace std {
             return out;
         }
 
-        usize len() {
+        usize length() {
             if (this.on_heap()) { return cast::truncate<usize>(this.word(1)); }
             return cast<usize>(this.inline_len());
         }
 
-        bool is_empty() { return this.len() == 0; }
+        bool is_empty() { return this.length() == 0; }
 
         std::str as_str() {
-            unsafe { return std::raw::str_from(this.bytes(), this.len()); }
+            unsafe { return std::raw::str_from(this.bytes(), this.length()); }
         }
 
         void push_str(std::str text) mut {
-            usize n = text.len();
-            usize length = this.len();
-            if (length + n > this.capacity()) { this.reserve(length + n); }
-            unsafe { std::raw::copy(this.bytes_mut().offset(length), text.as_ptr(), n); }
-            this.set_len(length + n);
+            usize n = text.length();
+            usize used = this.length();
+            if (used + n > this.capacity()) { this.reserve(used + n); }
+            unsafe { std::raw::copy(this.bytes_mut().offset(used), text.as_ptr(), n); }
+            this.set_len(used + n);
         }
 
         void push(char c) mut {
             u32 code = cast<u32>(c);
-            usize length = this.len();
+            usize used = this.length();
             mut usize size = 4;
             if (code < 0x80) { size = 1; } else if (code < 0x800) { size = 2; } else if (code < 0x10000) { size = 3; }
-            if (length + size > this.capacity()) { this.reserve(length + size); }
+            if (used + size > this.capacity()) { this.reserve(used + size); }
             unsafe {
-                std::raw_ptr<mut u8> at = this.bytes_mut().offset(length);
+                std::raw_ptr<mut u8> at = this.bytes_mut().offset(used);
                 if (code < 0x80) {
                     std::raw::write(at, cast::truncate<u8>(code));
-                    this.set_len(length + 1);
+                    this.set_len(used + 1);
                 } else if (code < 0x800) {
                     std::raw::write(at, cast::truncate<u8>(0xC0 | (code >> 6)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(length + 2);
+                    this.set_len(used + 2);
                 } else if (code < 0x10000) {
                     std::raw::write(at, cast::truncate<u8>(0xE0 | (code >> 12)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
                     std::raw::write(at.offset(2), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(length + 3);
+                    this.set_len(used + 3);
                 } else {
                     std::raw::write(at, cast::truncate<u8>(0xF0 | (code >> 18)));
                     std::raw::write(at.offset(1), cast::truncate<u8>(0x80 | ((code >> 12) & 0x3F)));
                     std::raw::write(at.offset(2), cast::truncate<u8>(0x80 | ((code >> 6) & 0x3F)));
                     std::raw::write(at.offset(3), cast::truncate<u8>(0x80 | (code & 0x3F)));
-                    this.set_len(length + 4);
+                    this.set_len(used + 4);
                 }
             }
         }
@@ -1146,13 +1146,13 @@ namespace std {
         std::ordering operator<=>(string& other) {
             std::str a = this.as_str();
             std::str b = other.as_str();
-            mut usize n = a.len();
-            if (b.len() < n) { n = b.len(); }
+            mut usize n = a.length();
+            if (b.length() < n) { n = b.length(); }
             mut i32 c = 0;
             unsafe { c = memcmp(a.as_ptr(), b.as_ptr(), n); }
             if (c < 0) { return std::ordering::less; }
             if (c > 0) { return std::ordering::greater; }
-            return a.len() <=> b.len();
+            return a.length() <=> b.length();
         }
 
         ~string() {
@@ -1164,16 +1164,16 @@ namespace std {
     private:
         // Moves the text to a heap buffer of exactly `next` bytes (more than the capacity now).
         void grow_to(usize next) mut {
-            usize length = this.len();
+            usize used = this.length();
             unsafe {
                 if (this.on_heap()) {
                     std::raw_ptr<mut u8> data = std::raw::reallocate(this.heap_data(), next);
                     this.set_word(0, cast::reinterpret<u64>(data));
                 } else {
                     std::raw_ptr<mut u8> data = std::raw::allocate<u8>(next);
-                    std::raw::copy(data, this.bytes(), length);
+                    std::raw::copy(data, this.bytes(), used);
                     this.set_word(0, cast::reinterpret<u64>(data));
-                    this.set_word(1, cast<u64>(length));
+                    this.set_word(1, cast<u64>(used));
                 }
             }
             this.set_word(2, cast<u64>(next) | string_heap_bit);
@@ -1244,7 +1244,7 @@ namespace std {
                 std::raw_ptr<std::panic_location> where = cast::reinterpret<std::raw_ptr<std::panic_location>>(at);
                 std::static_str file = std::raw::static_str_from((*where).file, strlen((*where).file));
                 mut usize name_start = 0;
-                for (usize i : 0..file.len()) {
+                for (usize i : 0..file.length()) {
                     if (file.slice(i, i + 1) == "/") { name_start = i + 1; }
                 }
                 std::array<u8, 32> name = default;
@@ -1255,7 +1255,7 @@ namespace std {
                     .message     = std::raw::str_from(text, cast::truncate<usize>(length)),
                     .where       = std::call_site{
                         .file      = file,
-                        .file_name = std::raw::static_str_from(file.as_ptr().offset(name_start), file.len() - name_start),
+                        .file_name = std::raw::static_str_from(file.as_ptr().offset(name_start), file.length() - name_start),
                         .line      = (*where).line,
                         .column    = (*where).column,
                     },
@@ -1282,37 +1282,37 @@ namespace std {
 
     // `text.byte(i)`: byte `i` of the UTF-8 text; panics when out of bounds.
     private u8 str_byte(std::str text, usize i) {
-        if compile_time (checks_bounds()) { run_time check (i < text.len()) else f"byte {i} out of bounds (length {text.len()})"; }
+        if compile_time (checks_bounds()) { run_time check (i < text.length()) else f"byte {i} out of bounds (length {text.length()})"; }
         unsafe { return std::raw::read(text.as_ptr().offset(i)); }
     }
 
     private std::str str_slice(std::str text, usize from, usize to) {
-        if compile_time (checks_bounds()) { run_time check (from <= to && to <= text.len()) else f"slice {from}..{to} out of bounds (length {text.len()})"; }
+        if compile_time (checks_bounds()) { run_time check (from <= to && to <= text.length()) else f"slice {from}..{to} out of bounds (length {text.length()})"; }
         unsafe { return std::raw::str_from(text.as_ptr().offset(from), to - from); }
     }
 
     private bool str_starts_with(std::str text, std::str prefix) {
-        if (prefix.len() > text.len()) { return false; }
-        return str_slice(text, 0, prefix.len()) == prefix;
+        if (prefix.length() > text.length()) { return false; }
+        return str_slice(text, 0, prefix.length()) == prefix;
     }
 
     private bool str_ends_with(std::str text, std::str suffix) {
-        if (suffix.len() > text.len()) { return false; }
-        return str_slice(text, text.len() - suffix.len(), text.len()) == suffix;
+        if (suffix.length() > text.length()) { return false; }
+        return str_slice(text, text.length() - suffix.length(), text.length()) == suffix;
     }
 
     private std::option<usize> str_find(std::str text, std::str needle) {
-        if (needle.len() > text.len()) { return std::none; }
+        if (needle.length() > text.length()) { return std::none; }
         mut usize i = 0;
-        while (i + needle.len() <= text.len()) {
-            if (str_slice(text, i, i + needle.len()) == needle) { return std::some(i); }
+        while (i + needle.length() <= text.length()) {
+            if (str_slice(text, i, i + needle.length()) == needle) { return std::some(i); }
             i += 1;
         }
         return std::none;
     }
 
     private bool str_contains(std::str text, std::str needle) {
-        return str_find(text, needle).value_or(text.len() + 1) <= text.len();
+        return str_find(text, needle).value_or(text.length() + 1) <= text.length();
     }
 
     private bool is_space(u8 b) {
@@ -1321,7 +1321,7 @@ namespace std {
 
     private std::str str_trim(std::str text) {
         mut usize from = 0;
-        mut usize to = text.len();
+        mut usize to = text.length();
         while (from < to && is_space(byte_at(text, from))) { from += 1; }
         while (to > from && is_space(byte_at(text, to - 1))) { to -= 1; }
         return str_slice(text, from, to);
@@ -1334,16 +1334,16 @@ namespace std {
         std::str s = sep;
         mut usize start = 0;
         mut usize i = 0;
-        while (i + s.len() <= text.len()) {
-            if (str_slice(text, i, i + s.len()) == s) {
+        while (i + s.length() <= text.length()) {
+            if (str_slice(text, i, i + s.length()) == s) {
                 parts.push(str_slice(text, start, i));
-                i += s.len();
+                i += s.length();
                 start = i;
             } else {
                 i += 1;
             }
         }
-        parts.push(str_slice(text, start, text.len()));
+        parts.push(str_slice(text, start, text.length()));
         return parts;
     }
 
@@ -1367,9 +1367,9 @@ namespace std {
                 negative = first == 45;
                 i = 1;
             }
-            if (i == text.len()) { return std::none; }
+            if (i == text.length()) { return std::none; }
             mut u128 value = 0;
-            while (i < text.len()) {
+            while (i < text.length()) {
                 u8 b = byte_at(text, i);
                 if (b < 48 || b > 57) { return std::none; }
                 std::option<u128> next = std::checked_mul(value, 10u128);
@@ -1399,16 +1399,16 @@ namespace std {
             if (is_space(first)) { return std::none; }
             mut std::raw_ptr<mut u8> copy = nullptr;
             unsafe {
-                copy = std::raw::allocate<u8>(text.len() + 1);
-                std::raw::copy(copy, text.as_ptr(), text.len());
-                std::raw::write(copy.offset(text.len()), 0u8);
+                copy = std::raw::allocate<u8>(text.length() + 1);
+                std::raw::copy(copy, text.as_ptr(), text.length());
+                std::raw::write(copy.offset(text.length()), 0u8);
             }
             mut std::raw_ptr<u8> end = nullptr;
             mut f64 value = 0.0;
             mut bool whole = false;
             unsafe {
                 value = strtod(copy, mut &end);
-                whole = cast::reinterpret<usize>(end) == cast::reinterpret<usize>(copy) + text.len();
+                whole = cast::reinterpret<usize>(end) == cast::reinterpret<usize>(copy) + text.length();
                 std::raw::free(copy);
             }
             if (!whole) { return std::none; }
@@ -1422,15 +1422,11 @@ namespace std {
 
     // --- files ------------------------------------------------------------------------------------
 
-    // The C library functions behind std::file.
+    // The C library functions behind std::output.
     private extern(std::build::language::c) {
-        std::raw_ptr<mut u8> fopen(std::raw_ptr<u8> path, std::raw_ptr<u8> mode);
-        i32 fclose(std::raw_ptr<mut u8> stream);
         i32 fflush(std::raw_ptr<mut u8> stream);
-        usize fwrite(std::raw_ptr<u8> data, usize size, usize count, std::raw_ptr<mut u8> stream);
-        isize getline(std::raw_ptr<mut std::raw_ptr<mut u8>> line, std::raw_ptr<mut usize> capacity, std::raw_ptr<mut u8> stream);
-        usize fread(std::raw_ptr<mut u8> data, usize size, usize count, std::raw_ptr<mut u8> stream);
-        i32 ferror(std::raw_ptr<mut u8> stream);
+        isize write(i32 fd, std::raw_ptr<u8> data, usize size);
+        i32 isatty(i32 fd);
         std::raw_ptr<mut i32> __errno_location();
         void free(std::raw_ptr<mut u8> p);
         std::raw_ptr<mut u8> malloc(usize size);
@@ -1440,7 +1436,7 @@ namespace std {
     // Whether `b` is well-formed UTF-8 (no overlong forms, surrogates or values above 0x10FFFF).
     private bool valid_utf8(std::darray<u8>& b) {
         mut usize i = 0;
-        usize n = b.len();
+        usize n = b.length();
         while (i < n) {
             u8 c = b[i];
             if (c < 0x80) {
@@ -1479,54 +1475,72 @@ namespace std {
         return true;
     }
 
-    // The io_error for C's `errno`.
-    private io_error last_error() {
-        mut i32 code = 0;
-        unsafe { code = *__errno_location(); }
-        return match (code) {
-            2 => io_error::not_found,
-            13 => io_error::permission_denied,
-            17 => io_error::already_exists,
-            21 => io_error::is_directory,
-            _ => io_error::other,
-        };
+    class output {
+    public:
+        std::result<usize, io_error> write(std::str text) mut override {
+            // C's buffered stdout (std::println) first, so the order on the screen is kept.
+            unsafe { _ = fflush(nullptr); }
+            mut usize done = 0;
+            while (done < text.length()) {
+                mut isize n = 0;
+                unsafe { n = std::write(this.fd, text.as_ptr().offset(done), text.length() - done); }
+                if (n <= 0) {
+                    mut i32 code = 0;
+                    unsafe { code = *__errno_location(); }
+                    if (n < 0 && code == 4) { continue; }   // EINTR
+                    return std::error(io_error::other);
+                }
+                done += cast::saturate<usize>(n);
+            }
+            return std::ok(done);
+        }
+
+        std::result<void, io_error> flush() mut override {
+            unsafe { _ = fflush(nullptr); }
+            return std::ok();
+        }
+
+        bool is_terminal() {
+            mut i32 r = 0;
+            unsafe { r = isatty(this.fd); }
+            return r != 0;
+        }
+
+    private:
+        i32 fd = 1;
     }
 
-    // Opens `path` with the C mode `mode` (c"r", c"w").
-    private std::result<file, io_error> open_with(std::filesystem::path& path, std::raw_ptr<u8> mode) {
-        mut std::string name = std::string::from(path.as_str());
-        name.push('\0');
-        std::str c_name = name;
-        mut std::raw_ptr<mut u8> handle = nullptr;
-        unsafe { handle = fopen(c_name.as_ptr(), mode); }
-        if (!handle) { return std::error(last_error()); }
-        return std::ok(file{ .handle = handle });
-    }
+    std::output stdout() { return std::output{ .fd = 1 }; }
+
+    std::output stderr() { return std::output{ .fd = 2 }; }
 
     // A path that is relative without saying so: not `/...`, `./...` or `../...` (spec 19).
     private compile_time run_time bool is_plain_relative(std::str path) {
         return !path.starts_with("/") && !path.starts_with("./") && !path.starts_with("../");
     }
 
+    // Opens `path` through the table of `where` (std::filesystem).
+    private std::result<file, io_error> open_through(std::filesystem::path& path, std::filesystem::open_mode mode, compile_time std::call_site where) {
+        compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+        std::filesystem::table t = std::filesystem::table_at(where)?;
+        return t.open(path, mode);
+    }
+
     class file {
     public:
-        static std::result<file, io_error> open(std::filesystem::path& path) {
-            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
-            return open_with(path, c"r");
+        static std::result<file, io_error> open(std::filesystem::path& path, implicit compile_time std::call_site where) {
+            return open_through(path, std::filesystem::open_mode::read, where);
         }
 
-        static std::result<file, io_error> create(std::filesystem::path& path) {
-            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
-            return open_with(path, c"w");
+        static std::result<file, io_error> create(std::filesystem::path& path, implicit compile_time std::call_site where) {
+            return open_through(path, std::filesystem::open_mode::write, where);
         }
 
-        static std::result<file, io_error> append(std::filesystem::path& path) {
-            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
-            return open_with(path, c"a");
+        static std::result<file, io_error> append(std::filesystem::path& path, implicit compile_time std::call_site where) {
+            return open_through(path, std::filesystem::open_mode::append, where);
         }
 
-        static std::result<file, io_error> open(std::str path) {
-            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+        static std::result<file, io_error> open(std::str path, implicit compile_time std::call_site where) {
             compile_time check {
                 if (std::is_compile_time(path)) {
                     if (is_plain_relative(path)) {
@@ -1536,11 +1550,10 @@ namespace std {
                     }
                 }
             }
-            return open_with(std::filesystem::path::from(path), c"r");
+            return open_through(std::filesystem::path::from(path), std::filesystem::open_mode::read, where);
         }
 
-        static std::result<file, io_error> create(std::str path) {
-            compile_time check (std::build::target_has(std::build::capability::files)) else "std::file needs a target with files";
+        static std::result<file, io_error> create(std::str path, implicit compile_time std::call_site where) {
             compile_time check {
                 if (std::is_compile_time(path)) {
                     if (is_plain_relative(path)) {
@@ -1550,80 +1563,126 @@ namespace std {
                     }
                 }
             }
-            return open_with(std::filesystem::path::from(path), c"w");
+            return open_through(std::filesystem::path::from(path), std::filesystem::open_mode::write, where);
         }
 
-        file_lines lines() mut { return file_lines{ .handle = this.handle }; }
+        static file from_stream(std::unique_ptr<std::filesystem::stream> s) {
+            return file{ .s = move s };
+        }
+
+        file_lines lines() mut {
+            mut std::raw_ptr<mut file> me = nullptr;
+            unsafe { me = mut &this; }
+            return file_lines{ .from = me };
+        }
 
         std::result<std::string, io_error> read_all() mut {
-            mut std::darray<u8> bytes = default;
-            mut std::raw::array<u8, 8192> chunk = default;
-            unsafe {
-                std::raw_ptr<mut u8> buffer = cast::reinterpret<std::raw_ptr<mut u8>>(mut &chunk);
-                while (true) {
-                    usize n = fread(buffer, 1, 8192, this.handle);
-                    mut usize i = 0;
-                    while (i < n) {
-                        bytes.push(*buffer.offset(i));
-                        i += 1;
-                    }
-                    if (n < 8192) { break; }
-                }
-                if (ferror(this.handle) != 0) { return std::error(last_error()); }
-            }
+            std::darray<u8> bytes = this.read_bytes()?;
             if (!valid_utf8(bytes)) { return std::error(io_error::invalid_data); }
             unsafe {
                 if (bytes.is_empty()) { return std::ok(std::string{}); }
-                return std::ok(std::string::from(std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&bytes[0]), bytes.len())));
+                return std::ok(std::string::from(std::raw::str_from(cast::reinterpret<std::raw_ptr<u8>>(&bytes[0]), bytes.length())));
             }
         }
 
-        std::result<usize, io_error> write(std::str text) mut {
-            mut usize written = 0;
-            unsafe { written = fwrite(text.as_ptr(), 1, text.len(), this.handle); }
-            if (written != text.len()) { return std::error(last_error()); }
-            return std::ok(written);
+        std::result<std::darray<u8>, io_error> read_bytes() mut {
+            mut std::darray<u8> bytes = default;
+            mut std::raw::array<u8, 8192> chunk = default;
+            while (true) {
+                mut std::span_mut<u8> into = unsafe { std::span_mut<u8>::from_raw(cast::reinterpret<std::raw_ptr<mut u8>>(mut &chunk), 8192) };
+                usize n = (*this.s).read(move into)?;
+                if (n == 0) { break; }
+                mut usize i = 0;
+                while (i < n) {
+                    unsafe { bytes.push(*cast::reinterpret<std::raw_ptr<u8>>(&chunk).offset(i)); }
+                    i += 1;
+                }
+            }
+            return std::ok(move bytes);
         }
 
-        std::result<void, io_error> flush() mut {
-            mut i32 r = 0;
-            unsafe { r = fflush(this.handle); }
-            if (r != 0) { return std::error(last_error()); }
-            return std::ok();
+        std::result<usize, io_error> read(std::span_mut<u8> into) mut { return (*this.s).read(move into); }
+
+        std::result<usize, io_error> read_at(u64 offset, std::span_mut<u8> into) { return (*this.s).read_at(offset, move into); }
+
+        u64 size() { return (*this.s).size(); }
+
+        std::result<usize, io_error> write(std::str text) mut override {
+            std::span<u8> data = unsafe { std::span<u8>::from_raw(text.as_ptr(), text.length()) };
+            return (*this.s).write(data);
         }
+
+        std::result<usize, io_error> write_bytes(std::span<u8> data) mut { return (*this.s).write(data); }
+
+        std::result<void, io_error> flush() mut override { return (*this.s).flush(); }
 
         ~file() {
-            unsafe { fclose(this.handle); }
+            _ = (*this.s).flush();
         }
 
     private:
-        std::raw_ptr<mut u8> handle;
+        std::unique_ptr<std::filesystem::stream> s;
     }
 
     class file_lines {
     public:
         std::option<std::str> next() mut {
-            mut isize n = 0;
-            unsafe { n = getline(mut &this.buffer, mut &this.capacity, this.handle); }
-            if (n < 0) { return std::none; }
-            mut usize len = cast::saturate<usize>(n);
-            unsafe {
-                if (len > 0 && std::raw::read(this.buffer.offset(len - 1)) == 10u8) { len -= 1; }
-                if (len > 0 && std::raw::read(this.buffer.offset(len - 1)) == 13u8) { len -= 1; }
-                return std::some(std::raw::str_from(this.buffer, len));
+            this.start = this.next_start;   // the line handed out last is done
+            while (true) {
+                mut usize i = this.start;
+                while (i < this.buffer.length() && this.buffer[i] != 10u8) { i += 1; }
+                bool complete = i < this.buffer.length();
+                if (complete || (this.ended && i > this.start)) {
+                    this.next_start = if (complete) { i + 1 } else { i };
+                    mut usize end = i;
+                    if (end > this.start && this.buffer[end - 1] == 13u8) { end -= 1; }
+                    unsafe {
+                        std::raw_ptr<u8> first = cast::reinterpret<std::raw_ptr<u8>>(&this.buffer[0]).offset(this.start);
+                        return std::some(std::raw::str_from(first, end - this.start));
+                    }
+                }
+                if (this.ended) { return std::none; }
+                // Move the unfinished line to the front, then read more after it.
+                if (this.start > 0) {
+                    mut usize k = 0;
+                    while (this.start + k < this.buffer.length()) {
+                        this.buffer[k] = this.buffer[this.start + k];
+                        k += 1;
+                    }
+                    this.buffer.truncate(k);
+                    this.start = 0;
+                    this.next_start = 0;
+                }
+                mut std::raw::array<u8, 4096> chunk = default;
+                mut std::span_mut<u8> into = unsafe { std::span_mut<u8>::from_raw(cast::reinterpret<std::raw_ptr<mut u8>>(mut &chunk), 4096) };
+                mut usize n = 0;
+                unsafe {
+                    match ((*this.from).read(move into)) {
+                        std::ok(got) => { n = got; },
+                        std::error(_) => { n = 0; },
+                    }
+                }
+                if (n == 0) {
+                    this.ended = true;
+                    continue;
+                }
+                mut usize k = 0;
+                while (k < n) {
+                    unsafe { this.buffer.push(*cast::reinterpret<std::raw_ptr<u8>>(&chunk).offset(k)); }
+                    k += 1;
+                }
             }
+            return std::none;
         }
 
-        ~file_lines() {
-            unsafe {
-                if (this.buffer) { free(this.buffer); }   // getline's buffer comes from C's malloc
-            }
-        }
+        ~file_lines() { }
 
     private:
-        std::raw_ptr<mut u8> handle;
-        std::raw_ptr<mut u8> buffer = nullptr;
-        usize capacity = 0;
+        std::raw_ptr<mut file> from;
+        std::darray<u8> buffer = default;
+        usize start = 0;
+        usize next_start = 0;
+        bool ended = false;
     }
 
     // --- smart pointers ---------------------------------------------------------------------------
@@ -1662,10 +1721,17 @@ namespace std {
     template<type I>
     class plugin {
     public:
-        static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path) {
+        static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path, implicit compile_time std::call_site where) {
             compile_time check (std::build::target_has(std::build::capability::dynamic_libraries))
                 else "std::plugin needs a target with dynamic libraries";
-            mut std::string c_name = std::string::from(path.as_str());
+            // The operating system loads it: the path through the calling file's table must end
+            // up at a file on disk (not in an archive).
+            std::filesystem::path on_disk = match (std::filesystem::table_at(where)) {
+                std::ok(t) => t.os_path(path).value_or(std::filesystem::path::from("")),
+                std::error(_) => std::filesystem::path::from(""),
+            };
+            if (on_disk.as_str().is_empty()) { return std::error(plugin_error::not_found); }
+            mut std::string c_name = std::string::from(on_disk.as_str());
             c_name.push('\0');
             std::str text = c_name;
             unsafe {
@@ -1695,11 +1761,11 @@ namespace std {
             }
         }
 
-        std::result<void, plugin_error> reload(std::filesystem::path& path) mut {
+        std::result<void, plugin_error> reload(std::filesystem::path& path, implicit compile_time std::call_site where) mut {
             compile_time check (std::build::target_has(std::build::capability::dynamic_libraries))
                 else "std::plugin needs a target with dynamic libraries";
             if compile_time (std::build::target_has(std::build::capability::dynamic_libraries)) {
-                mut plugin<I> fresh = plugin<I>::load(path)?;
+                mut plugin<I> fresh = plugin<I>::load(path, where)?;
                 unsafe {
                     if (this.state && fresh.state) {
                         // Every field both builds have must have kept its type.
@@ -2131,7 +2197,7 @@ namespace std {
 
     template<type T, usize N>
     struct array {
-        usize len() { return N; }
+        usize length() { return N; }
 
         std::option<T&> get(usize i) {
             if (i >= N) { return std::none; }
@@ -2155,7 +2221,7 @@ namespace std {
 
     template<usize N>
     struct bitset {
-        usize len() { return N; }
+        usize length() { return N; }
 
         bool test(usize i) {
             if compile_time (checks_bounds()) { run_time check (i < N) else f"bit index {i} out of bounds (size {N})"; }
@@ -2261,11 +2327,11 @@ namespace std {
             return fold_multiply(cast<u64>(key) ^ hash_seed(), hash_k1);
         } else if compile_time (std::is_same<K, std::string>()) {
             std::str text = key.as_str();
-            unsafe { return hash_bytes(text.as_ptr(), text.len()); }
+            unsafe { return hash_bytes(text.as_ptr(), text.length()); }
         } else if compile_time (std::is_same<K, std::str>()) {
-            unsafe { return hash_bytes(key.as_ptr(), key.len()); }
+            unsafe { return hash_bytes(key.as_ptr(), key.length()); }
         } else if compile_time (std::is_same<K, std::static_str>()) {
-            unsafe { return hash_bytes(key.as_ptr(), key.len()); }
+            unsafe { return hash_bytes(key.as_ptr(), key.length()); }
         } else {
             return key.hash();
         }
@@ -2311,7 +2377,7 @@ namespace std {
         compile_time check (std::implements<K, std::equatable>())
             else f"'{std::type_name<K>()}' can't be a hash_map key: give it an '==' (bool operator==({std::type_name<K>()}& other) = default;)";
     public:
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -2788,7 +2854,7 @@ namespace std {
             return tree_map<K, V, A>{ .alloc = alloc };
         }
 
-        usize len() { return this.count; }
+        usize length() { return this.count; }
 
         bool is_empty() { return this.count == 0; }
 
@@ -4404,7 +4470,7 @@ namespace std {
                     mut std::raw::array<u8, 16> bytes = default;
                     std::raw_ptr<mut u8> out = cast::reinterpret<std::raw_ptr<mut u8>>(mut &bytes);
                     mut usize k = 0;
-                    while (k < 15 && k < name.len()) {
+                    while (k < 15 && k < name.length()) {
                         std::raw::write(out.offset(k), *name.as_str().as_ptr().offset(k));
                         k += 1;
                     }
@@ -4443,7 +4509,7 @@ namespace std {
         template<type T, type F : std::shareable>
         void for_chunks(std::span<T> data, usize chunk_size, F f) {
             unsafe {
-                chunk_context<T, F> ctx = chunk_context<T, F>{ .data = cast::reinterpret<std::raw_ptr<mut T>>(span_data(data)), .len = data.len(),
+                chunk_context<T, F> ctx = chunk_context<T, F>{ .data = cast::reinterpret<std::raw_ptr<mut T>>(span_data(data)), .len = data.length(),
                                                                .size = chunk_size, .body = &f };
                 std::fn_ptr<void(std::raw_ptr<u8>, usize)> call = [](std::raw_ptr<u8> c, usize chunk) -> void {
                     std::raw_ptr<chunk_context<T, F>> x = cast::reinterpret<std::raw_ptr<chunk_context<T, F>>>(c);
@@ -4452,14 +4518,14 @@ namespace std {
                     if (from + n > (*x).len) { n = (*x).len - from; }
                     call_with<F, std::span<T>>(*(*x).body, std::span<T>::from_raw((*x).data.offset(from), n));
                 };
-                run_loop(this.state, cast::reinterpret<std::raw_ptr<u8>>(&ctx), call, chunk_count(data.len(), chunk_size));
+                run_loop(this.state, cast::reinterpret<std::raw_ptr<u8>>(&ctx), call, chunk_count(data.length(), chunk_size));
             }
         }
 
         template<type T, type F : std::shareable>
         void for_chunks(std::span<mut T> data, usize chunk_size, F f) {
             unsafe {
-                usize len = data.len();
+                usize len = data.length();
                 chunk_context<T, F> ctx = chunk_context<T, F>{ .data = span_mut_data(move data), .len = len, .size = chunk_size, .body = &f };
                 std::fn_ptr<void(std::raw_ptr<u8>, usize)> call = [](std::raw_ptr<u8> c, usize chunk) -> void {
                     std::raw_ptr<chunk_context<T, F>> x = cast::reinterpret<std::raw_ptr<chunk_context<T, F>>>(c);
@@ -4491,10 +4557,10 @@ namespace std {
         R reduce_chunks(std::span<T> data, usize chunk_size, R identity, M map, C combine) {
             compile_time check (std::implements<R, std::sendable>())
                 else f"reduce_chunks moves results between threads, but {std::type_name<R>()} isn't std::sendable";
-            usize chunks = chunk_count(data.len(), chunk_size);
+            usize chunks = chunk_count(data.length(), chunk_size);
             if (chunks == 0) { return identity; }
             unsafe {
-                reduce_context<T, R, M, C> ctx = reduce_context<T, R, M, C>{ .data = span_data(data), .len = data.len(), .size = chunk_size,
+                reduce_context<T, R, M, C> ctx = reduce_context<T, R, M, C>{ .data = span_data(data), .len = data.length(), .size = chunk_size,
                                                                              .map = &map, .combine = &combine, .pool = this.state };
                 return reduce_range<T, R, M, C>(&ctx, 0, chunks);
             }
@@ -4542,8 +4608,8 @@ namespace std {
     // --- annotations (spec 29) -------------------------------------------------------------------
 
     struct test {
-        compile_time check (annotated.parameters.len() == 0)
-            else f"a test takes no parameters, but '{annotated.name}' has {annotated.parameters.len()}";
+        compile_time check (annotated.parameters.length() == 0)
+            else f"a test takes no parameters, but '{annotated.name}' has {annotated.parameters.length()}";
         compile_time check (annotated.result == void)
             else f"a test returns nothing, but '{annotated.name}' returns a value";
     }
@@ -4558,7 +4624,7 @@ namespace std {
 namespace std::simd {
     template<usize N>
     struct block {
-        usize len() { return this.count; }
+        usize length() { return this.count; }
         bool is_full() { return this.count == N; }
     }
 

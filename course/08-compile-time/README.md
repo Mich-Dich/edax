@@ -39,7 +39,7 @@ The rule is simple on purpose. In C++, whether `const int n = 5;` is usable in a
 
 What compile-time code can do:
 - Loops, `if`, `match`, structs, enums, `std::array`, and containers and strings built while compiling (a `compile_time` table can be an `std::darray` or a struct of them).
-- Call `compile_time` functions. Ordinary methods (like most container methods) are run-time functions; inside compile-time code, prefer template values such as `N` over `array.len()`.
+- Call `compile_time` functions. Ordinary methods (like most container methods) are run-time functions; inside compile-time code, prefer template values such as `N` over `array.length()`.
 - No I/O, no `static mut`. It runs on a step budget, so a mistake can't hang the build.
 
 A function `compile_time run_time` is checked under both sets of rules, so the same `checksum` can be called while compiling (`compile_time u8 known = checksum([1, 2, 3]);`) and at run time.

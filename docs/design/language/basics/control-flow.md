@@ -69,13 +69,19 @@ while (queue.pop() is std::some(job)) {
 for (employee& e : employees) { ... }         // immutable reference
 for (mut employee& e : employees) { ... }     // mutable reference (employees must be mut)
 for (u32 x : numbers) { ... }                 // by value: copy types only
-for (usize i : 0..employees.len()) { ... }    // half-open range
+for (usize i : 0..employees.length()) { ... } // half-open range
 for (u8 b : 0..=255) { ... }                  // inclusive range
+for (auto e : employees) { ... }              // what the loop hands out: here an immutable reference
+for (auto (name, age) : people) { ... }       // a tuple's parts by name
 ```
 - What a `for` loop can go over:
   - a range `a..b` / `a..=b`;
-  - a **container**: a type with `usize len()` and `operator[](usize)`. The loop visits the indices in order. `mut T&` elements need the `mut operator[]` and a `mut` container;
+  - a **container**: a type with `usize length()` and `operator[](usize)`. The loop visits the indices in order. `mut T&` elements need the `mut operator[]` and a `mut` container;
   - a **stream**: a type with a `next()` method that returns a `std::option<T>`. The loop runs until `none`; each element is a value that the loop variable owns. A temporary stream (`file.lines()`) lives until the loop ends.
+- **`auto`** takes what the loop hands out: a range's and a stream's values, and references to a container's elements (`mut auto`: mutable ones). A range with only untyped literals has no type for it: `0u32..n`.
+- **Names for a tuple's parts:** `for (auto (a, b) : list)` or `for ((T1 a, T2& b) : list)`; `_` skips a part and `mut` goes before a name (`mut auto (a, b)` makes every name `mut`).
+  - Over a container the names refer into the element: `auto` and `T&` names are references (`mut` ones change the element and need a `mut` container); a `T` name reads the part's value.
+  - Over a stream the element is a value, and its parts move into the names (like a destructuring declaration, see [Tuples and List Literals](tuples-and-lists.md)); a `T&` name is an error there.
 - `a..b` and `a..=b` are range expressions. They use the same syntax as range patterns in `match`. Literal bounds take their type from the loop variable.
 - There is no C-style `for (;;)`.
 - While a loop holds references into a container, the container can't be changed (see [Ownership, Copies, Moves and References](../memory/ownership-and-references.md)).

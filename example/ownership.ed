@@ -74,7 +74,7 @@ i32 main() {
     inv.items.push(std::string::from("rope"));
     std::darray<std::string> taken = std::take(mut inv.items);           // leaves an empty darray
     std::string previous = std::replace(mut inv.owner, std::string::from("bob"));
-    std::println(f"took {taken.len()} items from {previous}; {inv.owner} has {inv.items.len()}");
+    std::println(f"took {taken.length()} items from {previous}; {inv.owner} has {inv.items.length()}");
     mut std::string left = std::string::from("left");
     mut std::string right = std::string::from("right");
     std::swap(mut left, mut right);

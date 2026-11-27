@@ -119,7 +119,7 @@ namespace shop {
     public:
         static stock make();
         void add(std::str name, price p) mut;
-        usize len();
+        usize length();
         price total();
         ~stock();
     }
@@ -140,7 +140,7 @@ namespace shop {
     public:
         static stock make() { return stock{}; }
         void add(std::str name, price p) mut { ... }
-        usize len() { return names.len(); }
+        usize length() { return names.length(); }
         price total() { ... }
         ~stock() { ... }
     private:
@@ -169,7 +169,7 @@ So the `.ed`'s blocks reopen the types the header declared, and fill in what's m
 | Mistake | Error |
 |---|---|
 | repeating a struct field in the `.ed` | `error[E3016]: struct 'price' cannot add field 'cents' in its .ed block` |
-| repeating a method declaration (no body) in the `.ed` | `error[E3013]: 'stock::len' is declared again in the .ed, without a body` |
+| repeating a method declaration (no body) in the `.ed` | `error[E3013]: 'stock::length' is declared again in the .ed, without a body` |
 | leaving a header method without a body | `error[E3013]: 'vec2::cross' is declared in the header but never defined` |
 | a new public method only in the `.ed` | `error[E3015]: 'stock::extra' is not declared in the header` |
 | a helper function that isn't in the header and isn't `private` | `error[E3017]: function 'sum_of' is not declared in the header` + "mark it 'private'" |

@@ -15,7 +15,7 @@ struct particles {
 @std::no_checks_left
 void integrate(mut std::darray<f32>& x, mut std::darray<f32>& y, mut std::darray<f32>& vx, mut std::darray<f32>& vy, f32 dt) {
     // TODO: the build lists the checks the optimizer can't remove here. Tell it what it can't know.
-    for (usize i : 0..x.len()) {
+    for (usize i : 0..x.length()) {
         vy[i] -= 9.81 * dt;
         x[i] += vx[i] * dt;
         y[i] += vy[i] * dt;

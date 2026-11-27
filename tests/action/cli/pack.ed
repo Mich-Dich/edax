@@ -1,0 +1,3 @@
+// RUN: edaxc pack %S/pack_project/assets %t/game.pak --exclude=*.tmp
+// edaxc pack: a folder packed into one archive std::filesystem::archive reads, leaving out the
+// excluded files.

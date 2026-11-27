@@ -1,0 +1,19 @@
+// RUN: edaxc check %s
+// Distinct types with a check (spec 34): a known value that fails is a compile error; the value is
+// only lent read-only, and taking it out of a place needs `move`.
+import std;
+
+distinct type port = u16 check (value != 0) else "a port is never 0";
+distinct type name = std::string check (!value.is_empty()) else "a name is not empty";
+
+compile_time port none = cast<port>(0);
+
+void grow(mut std::string& s) { s.push_str("!"); }
+
+i32 main() {
+    port p = cast<port>(0);
+    mut name n = cast<name>(std::string::from("x"));
+    grow(mut n);
+    n.push_str("y");
+    return 0;
+}

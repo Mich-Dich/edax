@@ -6,7 +6,7 @@ i32 main() {
     _ = logs.add(std::log::console::make_with(std::log::colors::off), std::log::sink_options{ .pattern = std::log::pattern::from("{level:<5} {message}") });
     for (u32 i : 1..=3) { std::log::info(f"frame {i}"); }   // queued, not yet written...
     std::array<u32, 3> xs = [1, 2, 3];
-    usize at = xs.len();
+    usize at = xs.length();
     std::println(f"{xs[at]}");                               // ...but written before the process ends
     return 0;
 }

@@ -4,7 +4,7 @@
 import std;
 
 void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
-    for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
+    for (std::simd::block<8> at : std::simd::blocks<8>(result.length())) {
         result.store(at, a.load(at) + b.load(at));
     }
 }
@@ -21,7 +21,7 @@ u64x4 times(u64x4 a, u64x4 b) {
 f32 total(std::span<f32> values) {
     compile_time usize w = std::simd::native_lanes<f32>();
     mut std::simd::vec<f32, w> acc = default;
-    for (std::simd::block<w> at : std::simd::blocks<w>(values.len())) {
+    for (std::simd::block<w> at : std::simd::blocks<w>(values.length())) {
         acc = acc + values.load(at);
     }
     return acc.reduce_add();
@@ -29,7 +29,7 @@ f32 total(std::span<f32> values) {
 
 @std::simd::must_vectorize
 void scale(std::span<mut f32> values, f32 factor) {
-    for (usize i : 0..values.len()) {
+    for (usize i : 0..values.length()) {
         values[i] = values[i] * factor;
     }
 }

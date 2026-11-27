@@ -41,5 +41,5 @@ void main() {
     }
     h.drop_id(3);
     h.sort_down();
-    std::println(f"left {h.items.len()}, first {h.items[0].id}, over 2: {count_over<u8>(h.items, 2)}");
+    std::println(f"left {h.items.length()}, first {h.items[0].id}, over 2: {count_over<u8>(h.items, 2)}");
 }

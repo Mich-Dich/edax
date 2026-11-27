@@ -2,12 +2,12 @@
 // main(std::span<std::str> args) and std::env::raw_args() (spec 04).
 import std;
 std::exit_code main(std::span<std::str> args) {
-    std::println(f"{args.len()} arguments");
+    std::println(f"{args.length()} arguments");
     for (std::str a : args) {
         if (a.ends_with("args")) { continue; }
         std::println(f"[{a}]");
     }
     std::darray<std::darray<u8>> raw = std::env::raw_args();
-    std::println(f"{raw.len()} raw, first byte of the last: {raw[raw.len() - 1][0]}");
+    std::println(f"{raw.length()} raw, first byte of the last: {raw[raw.length() - 1][0]}");
     return std::exit_code::success;
 }

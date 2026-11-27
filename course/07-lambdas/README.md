@@ -19,7 +19,7 @@ Examples are in [`examples/`](examples); `python3 course/check.py 7 --examples` 
 ```edax
 auto add   = [threshold](u32 x) { return x + threshold; };          // copy (copy types only)
 auto label = [move name](u32 x) { return std::format(f"{name}: {x}"); };   // the lambda owns name
-auto peek  = [&list]() { return list.len(); };                      // immutable reference
+auto peek  = [&list]() { return list.length(); };                      // immutable reference
 auto inc   = [mut &counter]() { counter += 1; };                    // mutable reference
 auto init  = [base = 5u32](u32 x) -> u32 { return x + base; };     // a new variable
 mut auto next = [mut n = 0u32]() { n += 1; return n; };            // state the lambda changes

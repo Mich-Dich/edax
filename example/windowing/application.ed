@@ -396,7 +396,7 @@ namespace demo {
                     }
                     {
                         mut im::scope windows = w.section("Windows", true);
-                        windows.muted(f"{this.inspectors.len()} inspectors");
+                        windows.muted(f"{this.inspectors.length()} inspectors");
                         mut im::scope buttons = windows.row();
                         if (buttons.button("Inspector")) {
                             wants_inspector = true;

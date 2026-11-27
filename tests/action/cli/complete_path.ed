@@ -1,0 +1,2 @@
+// RUN: edaxc complete %S/complete_project/main.ed 15:13
+// edaxc complete: after `shapes::`, the items of the namespace.

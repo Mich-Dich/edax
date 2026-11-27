@@ -139,8 +139,10 @@ StmtPtr Cloner::stmt_inner(const Stmt& s) {
     case StmtKind::destructure: {
         const auto& d   = s.as<DestructureStmt>();
         auto        out = std::make_unique<DestructureStmt>(d.span);
-        out->is_auto    = d.is_auto;
-        out->init       = opt(d.init);
+        out->is_auto      = d.is_auto;
+        out->loop_element = d.loop_element;
+        out->by_reference = d.by_reference;
+        out->init         = opt(d.init);
         for (const DestructureBinding& b : d.bindings) {
             DestructureBinding c;
             c.is_mut   = b.is_mut;
@@ -268,9 +270,9 @@ ExprPtr Cloner::expr(const Expr& e) {
     }
     case ExprKind::call: {
         const auto& c = e.as<CallExpr>();
-        if (pack_ && c.args.empty() && c.callee->kind == ExprKind::member) {   // `values.len()`
+        if (pack_ && c.args.empty() && c.callee->kind == ExprKind::member) {   // `values.length()`
             const auto& m = c.callee->as<MemberExpr>();
-            if (is_pack_value(*m.object) && m.name.segments.size() == 1 && m.name.segments[0].name == "len") {
+            if (is_pack_value(*m.object) && m.name.segments.size() == 1 && m.name.segments[0].name == "length") {
                 auto n       = std::make_unique<LiteralExpr>(ExprKind::int_literal, c.span, TokenKind::int_literal);
                 n->int_value = pack_count_;
                 n->text      = std::to_string(pack_count_) + "usize";

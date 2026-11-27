@@ -89,7 +89,7 @@ void show_cli(std::span<std::str> line) {
         std::ok(c) => {
             std::print(f"ok: v={c.log.verbosity} ");
             match (c.cmd) {
-                std::some(command::build(b)) => std::println(f"build release={b.release} targets={b.targets.len()}"),
+                std::some(command::build(b)) => std::println(f"build release={b.release} targets={b.targets.length()}"),
                 std::some(command::clean_all) => std::println("clean-all"),
                 std::none => std::println("no command"),
             }

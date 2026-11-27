@@ -35,7 +35,7 @@ namespace std::ui::plot {
 
         void push(T value) mut;
         void clear() mut;
-        usize len();
+        usize length();
         bool is_empty();
         // The values, oldest first.
         std::span<T> as_span();

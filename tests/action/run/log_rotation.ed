@@ -1,5 +1,5 @@
 // RUN: edaxc run %s
-// Log files: rotation by size (logging output, "Rotation"), the JSON lines format, and the std
+// Log files: a writer sink over a rotating_file (by size), the JSON lines format, and the std
 // pieces they use: path parts, file.read_all and std::env::variable.
 import std;
 
@@ -19,14 +19,14 @@ u32 main() {
     std::println(f"{text_log.file_name()} {text_log.extension()} {json_log.extension()}");
     {
         mut std::log::session logs = std::log::start(std::log::options{});
-        _ = logs.add(std::log::file::create(std::log::file_options{
-            .path     = text_log.clone(),
-            .rotation = std::log::rotation::by_size(std::log::size_rotation{ .max_bytes = 600, .keep = 2 }),
-        }).expect("text log"), std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
-        _ = logs.add(std::log::file::create(std::log::file_options{
-            .path   = json_log.clone(),
-            .format = std::log::file_format::json_lines,
-        }).expect("json log"), std::log::sink_options{});
+        std::filesystem::rotating_file text_out = std::filesystem::rotating_file::open(text_log.clone(), std::filesystem::rotating_options{
+            .rotation = std::filesystem::rotation::by_size(std::filesystem::size_rotation{ .max_bytes = 400, .keep = 2 }),
+        }).expect("text log");
+        _ = logs.add(std::log::writer_sink::make(move text_out, std::log::writer_options{ .banners = false }),
+                     std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
+        std::filesystem::rotating_file json_out = std::filesystem::rotating_file::open(json_log.clone(), std::filesystem::rotating_options{}).expect("json log");
+        _ = logs.add(std::log::writer_sink::make(move json_out, std::log::writer_options{ .format = std::log::record_format::json_lines }),
+                     std::log::sink_options{});
         mut u32 i = 0;
         while (i < 40) {
             std::log::info(f"record number {i} with \"quotes\"");

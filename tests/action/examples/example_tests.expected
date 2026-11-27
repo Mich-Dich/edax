@@ -2,7 +2,7 @@ exit: 0
 --- stdout
 edaxc test: debug, 2 targets
  ✓ build.ed       25 targets <t>
- ✓ ui_spike_test  7 units, 35.98 KiB <t>  %t/debug/ui_spike_test
+ ✓ ui_spike_test  7 units, 35.99 KiB <t>  %t/debug/ui_spike_test
 PASS ui_spike_test::a_click_is_a_press_and_a_release_on_the_same_widget
 PASS ui_spike_test::equal_labels_in_a_loop_are_different_widgets
 PASS ui_spike_test::a_dragged_field_slider_changes_the_value_within_its_range

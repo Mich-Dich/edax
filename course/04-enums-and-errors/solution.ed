@@ -52,7 +52,7 @@ std::result<i64, calc_error> evaluate(std::str text) {
         }
         position += 1;
     }
-    if (stack.len() != 1) { return std::error(calc_error::leftover(stack.len())); }
+    if (stack.length() != 1) { return std::error(calc_error::leftover(stack.length())); }
     return std::ok(stack[0]);
 }
 

@@ -26,7 +26,7 @@ public:
         return value;
     }
 
-    usize len() { return count; }
+    usize length() { return count; }
 
 private:
     std::array<std::option<T>, N> slots = default;

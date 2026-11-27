@@ -289,57 +289,34 @@ namespace std::log {
         void draw_status(std::darray<std::string>& lines) mut override;
     }
 
-    // Whether a log file is emptied or continued.
-    enum file_mode : u8 {
-        truncate,
-        append,
-    }
-
-    // Start a new file when the current one would grow past `max_bytes`.
-    struct size_rotation {
-        u64 max_bytes;
-        // Older files to keep: app.1.log (newest) ... app.5.log.
-        u32 keep = 5;
-    }
-
-    // When a log file is continued in a new one. The older files are numbered: app.1.log is
-    // the newest. Rotation happens between two records, so a record is never split.
-    enum rotation : u8 {
-        // One file (the default).
-        none,
-        by_size(std::log::size_rotation),
-        // A new file at local midnight; the payload is how many old files to keep.
-        daily(u32),
-    }
-
-    // How records are written to a log file.
-    enum file_format : u8 {
+    // How records are written by a `writer_sink`.
+    enum record_format : u8 {
         // The sink's pattern, one line per record.
         text,
         // One JSON object per line: time, level, location, thread and message as keys.
         json_lines,
     }
 
-    struct file_options {
-        std::filesystem::path   path;
-        std::log::file_mode     mode = std::log::file_mode::truncate;
+    struct writer_options {
         // Records at this level and above are flushed at once.
         std::log::level         flush_at = std::log::level::warn;
-        // Bytes written before the file is flushed anyway.
-        usize                   buffer_size = 65536;
-        std::log::rotation      rotation = std::log::rotation::none;
-        std::log::file_format   format = std::log::file_format::text;
+        std::log::record_format format = std::log::record_format::text;
+        // "log started" / "log stopped" lines with the date and time (text only).
+        bool                    banners = true;
     }
 
-    // A file, kept open; missing directories above it are created. Writes "log started" / "log stopped"
-    // lines with the date and time.
-    class file : std::log::sink {
+    // Records written to any `std::writer`: a file (`std::file::create(path)`), a
+    // `std::filesystem::rotating_file`, a pipe, ... The writer is opened by the caller, so where
+    // the records go is the file system's business (mount tables, rotation), not the log's:
+    // `std::log::writer_sink::make(std::file::create(path)?, std::log::writer_options{})`.
+    class writer_sink : std::log::sink {
     public:
-        static std::result<std::unique_ptr<std::log::file>, std::io_error> create(std::log::file_options& options);
+        template<type W : std::writer>
+        static std::unique_ptr<std::log::writer_sink> make(W out, std::log::writer_options o);
         bool colored() override;
         void write(std::log::record& r, std::str line) mut override;
         void flush() mut override;
-        ~file();
+        ~writer_sink();
     }
 
     // The last lines a `memory` sink kept, readable from any thread (an in-game console).

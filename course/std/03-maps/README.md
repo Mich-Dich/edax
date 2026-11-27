@@ -20,7 +20,7 @@ Examples are in [`examples/`](examples); `python3 course/check.py s3 --examples`
 | `m.get_mut(k) mut` | `std::option<mut V&>` | change a value in place |
 | `m[k]` | `V&` | **panics** when the key is missing; never inserts |
 | `m.get_or_insert(k, v) mut` | `mut V&`: inserts `v` first if `k` is missing | a place: `+=`, `.push(...)` |
-| `m.contains(k)`, `len()`, `is_empty()`, `clear() mut` | | |
+| `m.contains(k)`, `length()`, `is_empty()`, `clear() mut` | | |
 | `m.entries()` | a stream of `std::map_entry<K, V>` views (`.key`, `.value`) | borrows the map, allocates nothing |
 | `tree_map`: `first()`, `last()` | `std::option<std::map_entry<K, V>>` | the smallest and largest key |
 | `hash_map`: `with_capacity(n)`, `reserve(n) mut` | | |
@@ -164,7 +164,7 @@ In a block: a `mut std::darray<std::map_entry<std::str, u32>>`, filled from `tot
 <details>
 <summary>Hint 3: the categories</summary>
 
-`by_category` is a `tree_map`, so `entries()` is already in name order; `e.value.len()` is the number of items.
+`by_category` is a `tree_map`, so `entries()` is already in name order; `e.value.length()` is the number of items.
 </details>
 
 ---

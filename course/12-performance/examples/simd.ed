@@ -2,9 +2,9 @@
 import std;
 
 f32 dot(std::span<f32> a, std::span<f32> b) {
-    run_time check (a.len() == b.len()) else "dot: lengths differ";
+    run_time check (a.length() == b.length()) else "dot: lengths differ";
     mut f32x8 sum = default;
-    for (std::simd::block<8> at : std::simd::blocks<8>(a.len())) {
+    for (std::simd::block<8> at : std::simd::blocks<8>(a.length())) {
         sum = a.load(at).mul_add(b.load(at), sum);              // 8 multiply-adds at once
     }
     return sum.reduce_add();

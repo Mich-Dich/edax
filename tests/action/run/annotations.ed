@@ -89,7 +89,7 @@ void main() {
     mut std::hash_map<grid_cell, u32> visits = default;
     visits.insert(c, 1);
     visits.get_or_insert(grid_cell{ .x = 3, .y = -1 }, 0) += 1;
-    std::println(f"visits: {visits.len()} {visits[c]}");
+    std::println(f"visits: {visits.length()} {visits[c]}");
     std::println(f"{c < grid_cell{ .x = 3, .y = 0 }} {grid_cell{ .x = 4, .y = -9 } < c}");
     std::println(f"{shape::dot} {shape::circle(2.5)} {shape::cell(c)} [{shape::circle(1.0):>12}]");
     std::println(f"{pair<u32>{ .first = 1, .second = 2 }} {pair<std::str>{ .first = "a", .second = "b" }}");

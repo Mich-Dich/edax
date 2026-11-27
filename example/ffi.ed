@@ -60,7 +60,7 @@ i32 main() {
     mut f64 mean = 0.0;
     unsafe {
         std::raw_ptr<f64> first = cast::reinterpret<std::raw_ptr<f64>>(&samples);
-        mean = native::stats_mean(first, samples.len());
+        mean = native::stats_mean(first, samples.length());
     }
     std::println(f"mean = {mean}");
 

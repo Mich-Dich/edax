@@ -1,0 +1,67 @@
+// RUN: edaxc run %s
+// std::filesystem on disk: a folder mounted with native::at (created on the first write),
+// reading and writing, listing, renaming, mapping, a rotating file, watching through the table
+// (changes come back as the table's paths), and a log written through a writer sink.
+import std;
+
+// Removes the files of `dir`, then `dir`.
+void clean(std::filesystem::path dir) {
+    for (std::filesystem::entry& e : std::filesystem::list(dir).expect("list")) {
+        std::filesystem::remove(dir / e.name.as_str()).expect("remove");
+    }
+    std::filesystem::remove(dir).expect("remove dir");
+}
+
+i32 main() {
+    std::filesystem::path root = std::filesystem::temp_dir() / std::format(f"edax-fs-test-{std::time::wall_time::now().unix_nanoseconds()}").as_str();
+    std::filesystem::table fs = std::filesystem::table::global();
+    std::filesystem::mounted data = fs.mount("data", std::filesystem::native::at(root.clone()), std::filesystem::mount_options{ .writable = true });
+
+    std::filesystem::create_directories(std::filesystem::path::from("data/config")).expect("dirs");
+    std::filesystem::write_text(std::filesystem::path::from("data/config/settings.ini"), "volume=7\n").expect("write");
+    mut std::file more = std::file::append(std::filesystem::path::from("data/config/settings.ini")).expect("append");
+    _ = more.write("fullscreen=1\n").expect("write");
+    more.flush().expect("flush");
+    std::println(std::filesystem::read_text(std::filesystem::path::from("data/config/settings.ini")).expect("read").as_str());
+    std::filesystem::file_info i = std::filesystem::info(std::filesystem::path::from("data/config/settings.ini")).expect("info");
+    std::println(f"size {i.size}, modified this year: {i.modified.local().year >= 2026}");
+    std::println(f"on disk under the root: {std::filesystem::os_path(std::filesystem::path::from("data/config")).expect("os").as_str().starts_with(root.as_str())}");
+
+    std::filesystem::mapped m = std::filesystem::map(std::filesystem::path::from("data/config/settings.ini")).expect("map");
+    std::println(f"mapped {m.length()} bytes");
+
+    mut std::filesystem::watcher w = std::filesystem::watch(std::filesystem::path::from("data/config")).expect("watch");
+    std::filesystem::write_text(std::filesystem::path::from("data/config/keys.ini"), "jump=space\n").expect("write");
+    for (std::filesystem::path& changed : w.wait(1000)) { std::println(f"changed: {changed.as_str()}"); }
+
+    std::filesystem::rename(std::filesystem::path::from("data/config/keys.ini"), std::filesystem::path::from("data/config/input.ini")).expect("rename");
+    for (std::filesystem::entry& e : std::filesystem::list(std::filesystem::path::from("data/config")).expect("list")) { std::println(f"entry: {e.name}"); }
+
+    {   // Rotation by size: three files of at most 40 bytes, the oldest dropped.
+        mut std::filesystem::rotating_file r = std::filesystem::rotating_file::open(std::filesystem::path::from("data/logs/run.log"),
+            std::filesystem::rotating_options{ .rotation = std::filesystem::rotation::by_size(std::filesystem::size_rotation{ .max_bytes = 40, .keep = 2 }) }).expect("open");
+        for (u32 n : 0..6) {
+            _ = r.write(std::format(f"record number {n} of six\n").as_str()).expect("write");
+        }
+        r.flush().expect("flush");
+    }
+    for (std::filesystem::entry& e : std::filesystem::list(std::filesystem::path::from("data/logs")).expect("list")) {
+        std::println(f"{e.name}: {std::filesystem::read_text(std::filesystem::path::from("data/logs") / e.name.as_str()).expect("read").as_str().trim()}");
+    }
+
+    {   // The log, through a writer sink on a file of the table.
+        mut std::log::session log = std::log::start(std::log::options{});
+        std::file out = std::file::create(std::filesystem::path::from("data/logs/app.log")).expect("create");
+        _ = log.add(std::log::writer_sink::make(move out, std::log::writer_options{ .banners = false }),
+                    std::log::sink_options{ .pattern = std::log::pattern{ .text = "{level} {message}" } });
+        std::log::info("written through the table");
+        std::log::warn("and flushed at once");
+    }
+    std::println(std::filesystem::read_text(std::filesystem::path::from("data/logs/app.log")).expect("log").as_str().trim());
+
+    clean(std::filesystem::path::from("data/logs"));
+    clean(std::filesystem::path::from("data/config"));
+    std::println(f"left over: {std::filesystem::list(std::filesystem::path::from("data")).expect("list").length()}");
+    std::filesystem::table::global().remove(root).expect("remove root");
+    return 0;
+}

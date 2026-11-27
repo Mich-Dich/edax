@@ -24,7 +24,7 @@ u32 main() {
     u32 a = 5;
     std::string text = std::string::from("text");
     maybe(false, f"never {noisy(a)}");
-    maybe(true, f"once {noisy(a)} {text} {text.len()}");
+    maybe(true, f"once {noisy(a)} {text} {text.length()}");
     counter{}.show(false);
     counter{}.show(true);
     maybe(true, "a plain literal");

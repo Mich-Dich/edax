@@ -8,7 +8,7 @@ i32 main() {
     s.push_str(", world");
     s.push('!');
     std::str view = s;                                   // borrows s: no copy
-    std::println(f"{view.len()} {view.starts_with("Hell")} {view.slice(7, 12)}");
+    std::println(f"{view.length()} {view.starts_with("Hell")} {view.slice(7, 12)}");
 
     for (std::str line : data.split('\n')) {
         std::str t = line.trim();

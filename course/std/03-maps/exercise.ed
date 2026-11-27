@@ -49,6 +49,6 @@ i32 main() {
     std::println(f"at 9/9: {shelves.get(location{ .aisle = 9, .shelf = 9 }).value_or("nothing")}");
     // TODO: remove glue from `totals`; remove gives back the value it removed.
     u32 sold = 0;
-    std::println(f"sold all {sold} glue, {totals.len()} items left");
+    std::println(f"sold all {sold} glue, {totals.length()} items left");
     return 0;
 }

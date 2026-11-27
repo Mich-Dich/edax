@@ -135,7 +135,7 @@ namespace std::thread {
             packet = cast::reinterpret<std::raw_ptr<mut thread_packet<R>>>(start);
             std::raw_ptr<mut u8> name_bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &(*start).name);
             mut usize i = 0;
-            while (i < 15 && i < settings.name.len()) {
+            while (i < 15 && i < settings.name.length()) {
                 std::raw::write(name_bytes.offset(i), *settings.name.as_ptr().offset(i));
                 i += 1;
             }
@@ -239,7 +239,7 @@ namespace std::thread {
         unsafe {
             std::raw_ptr<mut u8> bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &name_bytes);
             mut usize i = 0;
-            while (i < 15 && i < name.len()) {
+            while (i < 15 && i < name.length()) {
                 std::raw::write(bytes.offset(i), *name.as_ptr().offset(i));
                 i += 1;
             }

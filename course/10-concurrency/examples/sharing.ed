@@ -19,7 +19,7 @@ i32 main() {
     }
     mut std::mutex_guard<std::darray<u32>> entries = log.lock();
     entries->sort();
-    std::println(f"hits {hits.load(std::memory_order::acquire)}, log {entries->len()}: {(*entries)[0]} {(*entries)[1]}");
+    std::println(f"hits {hits.load(std::memory_order::acquire)}, log {entries->length()}: {(*entries)[0]} {(*entries)[1]}");
     return 0;
 }
 //> hits 200, log 2: 1 2

@@ -5,20 +5,20 @@ i32 main() {
     mut std::string s = default;
     for (u32 i : 0..40) {
         s.push('a' );
-        if (i == 21 || i == 22 || i == 23) { std::println(f"{s.len()} {s.capacity()} {s}"); }
+        if (i == 21 || i == 22 || i == 23) { std::println(f"{s.length()} {s.capacity()} {s}"); }
     }
     mut std::string u = std::string::from("héllo wörld ✓");
     u.push('€');
     std::string c = u.clone();
-    std::println(f"{u} {u.len()} {c == u} {c < s} {s < c}");
+    std::println(f"{u} {u.length()} {c == u} {c < s} {s < c}");
     mut std::string e = default;
-    std::println(f"[{e}] {e.is_empty()} {e.len()}");
+    std::println(f"[{e}] {e.is_empty()} {e.length()}");
     e.push_str("exactly twenty-three b");
     e.push('!');
-    std::println(f"{e} {e.len()} {e.capacity()}");
+    std::println(f"{e} {e.length()} {e.capacity()}");
     e.push('?');
-    std::println(f"{e} {e.len()}");
+    std::println(f"{e} {e.length()}");
     e.clear();
-    std::println(f"[{e}] {e.len()}");
+    std::println(f"[{e}] {e.length()}");
     return 0;
 }

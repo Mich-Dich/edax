@@ -1,0 +1,103 @@
+// RUN: edaxc run %s
+// std::filesystem's mount tables with sources in memory: prefixes, overlays by priority,
+// listings merged over overlays and mounts below, writable and read-only mounts, a strict table,
+// the table of a file (@std::filesystem::use_table) and unmounting.
+import std;
+
+@std::filesystem::use_table{ .name = "game" };
+
+std::static_str kind_name(std::filesystem::kind k) {
+    return match (k) {
+        std::filesystem::kind::file => "file",
+        std::filesystem::kind::directory => "dir",
+        std::filesystem::kind::link => "link",
+        std::filesystem::kind::other => "other",
+    };
+}
+
+void show(std::filesystem::table& t, std::str dir) {
+    mut std::string line = std::format(f"{dir}/:");
+    match (t.list(std::filesystem::path::from(dir))) {
+        std::ok(entries) => {
+            for (std::filesystem::entry& e : entries) { line.push_str(std::format(f" {e.name}({kind_name(e.kind)})").as_str()); }
+        },
+        std::error(e) => { line.push_str(std::format(f" {e}").as_str()); },
+    }
+    std::println(line.as_str());
+}
+
+// The error of `r`, or "ok".
+template<type T>
+std::string error_of(std::result<T, std::io_error> r) {
+    return match (r) {
+        std::ok(_) => std::string::from("ok"),
+        std::error(e) => std::format(f"{e}"),
+    };
+}
+
+std::string text_of(std::filesystem::table& t, std::str p) {
+    return match (t.read_text(std::filesystem::path::from(p))) {
+        std::ok(text) => move text,
+        std::error(e) => std::format(f"<{e}>"),
+    };
+}
+
+i32 main() {
+    std::filesystem::table game = std::filesystem::table::create("game").expect("create");
+    std::println(f"a second 'game': {std::filesystem::table::create("game").is_error()}");
+
+    mut std::filesystem::memory base = std::filesystem::memory::make();
+    base.add_text("textures/rock.txt", "base rock");
+    base.add_text("textures/tree.txt", "base tree");
+    base.add_text("readme.txt", "base readme");
+    mut std::filesystem::memory patch = std::filesystem::memory::make();
+    patch.add_text("textures/rock.txt", "patched rock");
+    patch.add_text("textures/new.txt", "new in the patch");
+    mut std::filesystem::memory saves = std::filesystem::memory::make();
+
+    std::filesystem::mounted m1 = game.mount("content", base.share(), std::filesystem::mount_options{});
+    std::filesystem::mounted m2 = game.mount("content", patch.share(), std::filesystem::mount_options{ .priority = 5 });
+    std::filesystem::mounted m3 = game.mount("user/saves", saves.share(), std::filesystem::mount_options{ .writable = true });
+    std::filesystem::mounted m4 = game.mount("user/settings", std::filesystem::memory::make(), std::filesystem::mount_options{ .writable = true });
+    game.set_fallback(false);   // like a shipped game: nothing outside the mounts
+
+    // This file's calls without a table use "game".
+    std::println(std::filesystem::read_text(std::filesystem::path::from("content/textures/rock.txt")).expect("rock").as_str());
+    std::println(text_of(game, "content/textures/tree.txt").as_str());
+    std::println(text_of(game, "content/./textures/../readme.txt").as_str());
+    std::println(text_of(game, "content/missing.txt").as_str());
+    show(game, "content");
+    show(game, "content/textures");
+    show(game, "user");
+    show(game, "");
+
+    std::println(f"write to content: {error_of(game.write_text(std::filesystem::path::from("content/x.txt"), "x"))}");
+    game.create_directories(std::filesystem::path::from("user/saves/slot1")).expect("dirs");
+    game.write_text(std::filesystem::path::from("user/saves/slot1/game.sav"), "level 3").expect("save");
+    std::println(f"saved: {text_of(game, "user/saves/slot1/game.sav")}; the memory has it: {saves.info("slot1/game.sav").is_ok()}");
+    game.rename(std::filesystem::path::from("user/saves/slot1/game.sav"), std::filesystem::path::from("user/saves/slot1/old.sav")).expect("rename");
+    show(game, "user/saves/slot1");
+    game.remove(std::filesystem::path::from("user/saves/slot1/old.sav")).expect("remove");
+    show(game, "user/saves/slot1");
+    std::println(f"rename across mounts: {error_of(game.rename(std::filesystem::path::from("user/saves/slot1"), std::filesystem::path::from("user/settings/a")))}");
+
+    std::filesystem::file_info d = game.info(std::filesystem::path::from("content/textures")).expect("info");
+    std::filesystem::file_info f = game.info(std::filesystem::path::from("content/readme.txt")).expect("info");
+    std::println(f"content/textures: {kind_name(d.kind)}; readme: {kind_name(f.kind)}, {f.size} bytes, read-only {f.read_only}");
+
+    std::filesystem::mapped bytes = game.map(std::filesystem::path::from("content/textures/new.txt")).expect("map");
+    std::println(f"mapped {bytes.length()} bytes");
+
+    mut std::file lines = std::file::open(std::filesystem::path::from("content/readme.txt")).expect("open");
+    for (std::str line : lines.lines()) { std::println(f"line: {line}"); }
+
+    std::filesystem::table strict = std::filesystem::table::create("strict").expect("strict");
+    strict.set_fallback(false);
+    std::println(f"strict, nothing mounted: {error_of(strict.read_text(std::filesystem::path::from("readme.txt")))}");
+    std::println(f"named: {std::filesystem::table::named("strict").is_some()} {std::filesystem::table::named("nope").is_some()}");
+
+    std::println(f"prefixes: {game.prefixes().length()}, outside them: {error_of(game.read_text(std::filesystem::path::from("other/file.txt")))}");
+    m2.unmount();
+    std::println(text_of(game, "content/textures/rock.txt").as_str());
+    return 0;
+}

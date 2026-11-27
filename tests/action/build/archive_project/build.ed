@@ -1,0 +1,9 @@
+import std::build;
+
+namespace build {
+    compile_time void build(mut std::build::graph& g) {
+        std::build::target game = g.add_executable(std::build::edax_target{ .name = "game", .root = "app/main.ed" });
+        std::build::step pak = g.add_archive(std::build::archive_spec{ .name = "game.pak", .from = "assets", .exclude = ["*.psd"] });
+        g.depends_on(game, pak);
+    }
+}

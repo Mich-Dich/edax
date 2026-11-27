@@ -68,7 +68,7 @@ namespace ui {
 
     // Four vertices and two triangles; `uv` and `uv_size` pick the atlas area.
     private usize quad(mut draw_list& list, rect r, vec2 uv, vec2 uv_size, color c) {
-        usize first = list.vertices.len();
+        usize first = list.vertices.length();
         u32 base = cast::truncate<u32>(first);
         list.vertices.push(vertex{ .x = r.x,       .y = r.y,       .u = uv.x,             .v = uv.y,             .color = c.packed });
         list.vertices.push(vertex{ .x = r.x + r.w, .y = r.y,       .u = uv.x + uv_size.x, .v = uv.y,             .color = c.packed });
@@ -110,7 +110,7 @@ namespace ui {
         void text(vec2 at, std::str s, color c) mut {
             vec2 cell = vec2{ .x = glyph_width / atlas_width, .y = glyph_height / atlas_height };
             mut f32 x = at.x;
-            for (usize i : 0..s.len()) {
+            for (usize i : 0..s.length()) {
                 u8 byte = unsafe { std::raw::read(s.as_ptr().offset(i)) };
                 if (byte > 32 && byte < 127) {
                     rect r = rect{ .x = x, .y = at.y, .w = glyph_width, .h = glyph_height };
@@ -122,7 +122,7 @@ namespace ui {
     }
 
     f32 text_width(std::str s) {
-        return cast::round<f32>(cast::round<f64>(s.len())) * glyph_width;
+        return cast::round<f32>(cast::round<f64>(s.length())) * glyph_width;
     }
 
     // ---- ids -----------------------------------------------------------------------------------------
@@ -197,7 +197,7 @@ namespace ui {
         }
 
         mut layout& top() mut {
-            usize n = this.layouts.len();
+            usize n = this.layouts.length();
             return this.layouts[n - 1];
         }
 

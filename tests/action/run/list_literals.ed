@@ -14,7 +14,7 @@ std::exit_code main() {
     std::array<u32, 3> sizes = [16, 32, 64];
     std::span<std::static_str> levels = ["low", "medium", "high"];
     u32 n = 5;
-    std::println(f"{sum(sizes.as_span())} {sum([1, 2, 3])} {sum([n, n * 2])} {sum([])} {levels.len()} {levels[2]}");
+    std::println(f"{sum(sizes.as_span())} {sum([1, 2, 3])} {sum([n, n * 2])} {sum([])} {levels.length()} {levels[2]}");
     std::string s = std::string::from("dyn");
     names([s, "-o", "out.txt"]);
     ((u32, u32), std::str) mixed = ((1, 2), "x");

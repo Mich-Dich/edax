@@ -765,7 +765,7 @@ private:
             if (x.kind == Crossing::Kind::scalar) cargs.push_back(pname);
             if (x.kind == Crossing::Kind::string_in) {
                 cargs.push_back(pname + ".as_ptr()");
-                cargs.push_back(pname + ".len()");
+                cargs.push_back(pname + ".length()");
             }
             if (x.kind == Crossing::Kind::object_in) cargs.push_back(pname + ".handle");
         }

@@ -28,7 +28,7 @@ public:
 private:
     std::shared_ptr<texture> load(std::str name) mut {
         loads += 1;
-        return std::shared_ptr<texture>::make(texture{ .name = std::string::from(name), .size = cast::truncate<u32>(name.len()) * 1024 });
+        return std::shared_ptr<texture>::make(texture{ .name = std::string::from(name), .size = cast::truncate<u32>(name.length()) * 1024 });
     }
 
     std::darray<std::string> names = default;

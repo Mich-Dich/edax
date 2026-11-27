@@ -15,7 +15,7 @@ void main() {
     ui::text_style body = dark.style(ui::text_role::body, dark.colors.text);
     std::println(f"line height {fonts.line_height(body)}, 'Hello' wider than 'Hi': {fonts.measure("Hello", body).x > fonts.measure("Hi", body).x}");
     std::darray<ui::text_line> lines = fonts.wrap("one two three four five six seven eight nine ten", body, 100.0);
-    std::println(f"{lines.len()} lines, all within 100: {lines[0].width <= 100.0 && lines[1].width <= 100.0}");
+    std::println(f"{lines.length()} lines, all within 100: {lines[0].width <= 100.0 && lines[1].width <= 100.0}");
 
     mut ui::draw_list list = default;
     list.begin(ui::vec2{ .x = 400.0, .y = 300.0 });
@@ -28,7 +28,7 @@ void main() {
     list.circle(ui::vec2{ .x = 25.0, .y = 25.0 }, 10.0, dark.colors.primary);
     list.pop_clip();
     list.image(ui::texture{ .id = 7, .width = 4, .height = 4 }, card, ui::rect{ .width = 1.0, .height = 1.0 }, ui::color::white(), 0.0);
-    std::println(f"{list.vertices.len()} vertices, {list.indices.len()} indices, {list.commands.len()} commands");
+    std::println(f"{list.vertices.length()} vertices, {list.indices.length()} indices, {list.commands.length()} commands");
     for (ui::draw_command c : list.commands) {
         std::println(f"  clip {c.clip.width}x{c.clip.height} texture {c.image.id} indices {c.first_index}+{c.index_count}");
     }

@@ -19,7 +19,7 @@ usize lanes_here() {
 f32 sum(std::span<f32> values) {
     compile_time usize w = std::simd::native_lanes<f32>();
     mut std::simd::vec<f32, w> acc = default;
-    for (std::simd::block<w> at : std::simd::blocks<w>(values.len())) {
+    for (std::simd::block<w> at : std::simd::blocks<w>(values.length())) {
         acc = acc + values.load(at);
     }
     return acc.reduce_add();

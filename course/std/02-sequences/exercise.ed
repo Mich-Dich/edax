@@ -17,7 +17,7 @@ std::darray<i32> chunk_means(std::span<i32> values, usize size) {
 
 // Subtracts the first half's minimum from the first half, and adds 100 to the second half.
 void adjust_halves(std::span<mut i32> values) {
-    // TODO: values.split_at(values.len() / 2) gives both halves at once.
+    // TODO: values.split_at(values.length() / 2) gives both halves at once.
 }
 
 std::string join(std::span<i32> values) {
@@ -32,12 +32,12 @@ std::string join(std::span<i32> values) {
 i32 main() {
     mut std::darray<reading> log = default;
     std::array<i32, 10> raw = [12, 15, 999, 14, 11, -500, 13, 16, 18, 17];
-    for (usize i : 0..raw.len()) {
+    for (usize i : 0..raw.length()) {
         log.push(reading{ .sensor = cast::truncate<u8>(i % 3), .value = raw[i] });
     }
 
     // TODO: remove the outliers (values outside -100..=100) in place, with one call.
-    std::println(f"{log.len()} readings kept");
+    std::println(f"{log.length()} readings kept");
 
     mut std::darray<i32> values = default;
     // TODO: copy the values into `values`, and mark each reading's sensor in a std::bitset<8>.

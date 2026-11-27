@@ -1,0 +1,58 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4010]: only a tuple's parts can be named, but the loop gives 'u32'
+  --> tests/action/check/for_loop_names.ed:11:10
+   |
+11 |     for (auto (a, b) : plain) { }
+   |          ^^^^^^^^^^^ not a tuple
+
+error[E4010]: the loop's tuples have 2 elements, but 3 names are given
+  --> tests/action/check/for_loop_names.ed:12:10
+   |
+12 |     for (auto (a, b, c) : pairs) { }
+   |          ^^^^^^^^^^^^^^ wrong number of names
+
+error[E4020]: cannot iterate mutably over 'pairs': it is not mutable
+  --> tests/action/check/for_loop_names.ed:13:28
+   |
+13 |     for (mut auto (a, b) : pairs) { }
+   |                            ^^^^^ immutable
+   |
+ 9 |     std::darray<(u32, u32)> pairs = default;
+   |                             -----
+   = note: declare it 'mut std::darray<(u32, u32)> pairs'
+
+error[E4010]: a stream's elements are values: their parts can't be referred to
+  --> tests/action/check/for_loop_names.ed:14:16
+   |
+14 |     for ((u32& a, u32 b) : counter{}) { }
+   |                ^ write 'u32'
+
+error[E4001]: this integer literal has no type ('auto' takes the type of the range; give one bound a type, like '0u32..n')
+  --> tests/action/check/for_loop_names.ed:15:19
+   |
+15 |     for (auto i : 0..3) { }
+   |                   ^^^^ type unknown
+
+error[E4010]: element 1 is 'u32', not 'u64'
+  --> tests/action/check/for_loop_names.ed:16:22
+   |
+16 |     for ((u32 a, u64 b) : pairs) { }
+   |                      ^ wrong type
+
+error[E4070]: 'std::str' has no method 'len'
+  --> tests/action/check/for_loop_names.ed:18:17
+   |
+18 |     usize n = s.len();
+   |                 ^^^ unknown method
+   = note: Edax writes names out: it is 'length'
+
+error[E4070]: 'std::static_str' has no method 'size'
+  --> tests/action/check/for_loop_names.ed:19:19
+   |
+19 |     usize m = "x".size();
+   |                   ^^^^ unknown method
+   = note: 'size' is the C++ name; in Edax it is 'length'
+
+8 errors, 0 warnings

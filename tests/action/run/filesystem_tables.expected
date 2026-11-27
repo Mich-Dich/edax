@@ -1,0 +1,24 @@
+exit: 0
+--- stdout
+a second 'game': true
+patched rock
+base tree
+base readme
+<not_found>
+content/: readme.txt(file) textures(dir)
+content/textures/: new.txt(file) rock.txt(file) tree.txt(file)
+user/: saves(dir) settings(dir)
+/: content(dir) user(dir)
+write to content: read_only
+saved: level 3; the memory has it: true
+user/saves/slot1/: old.sav(file)
+user/saves/slot1/:
+rename across mounts: not_supported
+content/textures: dir; readme: file, 11 bytes, read-only true
+mapped 16 bytes
+line: base readme
+strict, nothing mounted: not_mounted
+named: true false
+prefixes: 3, outside them: not_mounted
+base rock
+--- stderr

@@ -198,7 +198,7 @@ namespace std {
         static darray<T, A> from(span<T> items);
 
         // The number of elements.
-        usize len();
+        usize length();
 
         // Whether there are no elements.
         bool is_empty();
@@ -242,7 +242,7 @@ namespace std {
         // Removes the last elements so that `n` remain.
         void truncate(usize n) mut;
 
-        // Gives back unused room: the capacity becomes `len()` (freeing the buffer when empty).
+        // Gives back unused room: the capacity becomes `length()` (freeing the buffer when empty).
         void shrink_to_fit() mut;
 
         // Makes the length `n`: removes elements from the end, or appends clones of `value`.
@@ -259,7 +259,7 @@ namespace std {
         mut T& operator[](usize i) mut;
 
         // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
-        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // nothing when `i >= length()` (spec 34). For loops that jump between elements (through an
         // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
         void prefetch(usize i);
         // Like `prefetch`, for an element that will be written: its cache line arrives ready to change.
@@ -275,7 +275,7 @@ namespace std {
         // Element `i`, or `none` when out of bounds.
         std::option<T&> get(usize i);
 
-        // Inserts `value` before element `i` (`i == len()` appends); panics when out of bounds.
+        // Inserts `value` before element `i` (`i == length()` appends); panics when out of bounds.
         void insert(usize i, T value) mut;
 
         // Removes element `i` and returns it; panics when out of bounds.
@@ -292,7 +292,7 @@ namespace std {
         // A view of `count` elements at `data`; the caller vouches that they live long enough.
         static unsafe span<T> from_raw(std::raw_ptr<T> data, usize count);
 
-        usize len();
+        usize length();
         bool is_empty();
         T& operator[](usize i);
 
@@ -300,14 +300,14 @@ namespace std {
         std::raw_ptr<T> as_ptr();
 
         // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
-        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // nothing when `i >= length()` (spec 34). For loops that jump between elements (through an
         // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
         void prefetch(usize i);
 
         // The elements `from..to`; panics when out of bounds.
         span<T> slice(usize from, usize to);
 
-        // The elements before `i` and from `i` on, as two views; panics when `i > len()`.
+        // The elements before `i` and from `i` on, as two views; panics when `i > length()`.
         (span<T>, span<T>) split_at(usize i) move;
 
         // Consecutive, non-overlapping parts of `n` elements (the last may be shorter): a stream.
@@ -324,7 +324,7 @@ namespace std {
         // A view of `count` elements at `data`; the caller vouches that nothing else uses them.
         static unsafe span_mut<T> from_raw(std::raw_ptr<mut T> data, usize count);
 
-        usize len();
+        usize length();
         bool is_empty();
         mut T& operator[](usize i);
 
@@ -332,7 +332,7 @@ namespace std {
         span<T> as_span();
 
         // Starts loading element `i` into the cache, so that a later access doesn't wait for memory;
-        // nothing when `i >= len()` (spec 34). For loops that jump between elements (through an
+        // nothing when `i >= length()` (spec 34). For loops that jump between elements (through an
         // index list or handles): `xs.prefetch(order[k + 8])` a few iterations ahead.
         void prefetch(usize i);
         // Like `prefetch`, for an element that will be written: its cache line arrives ready to change.
@@ -342,7 +342,7 @@ namespace std {
         span_mut<T> slice(usize from, usize to) move;
 
         // The elements before `i` and from `i` on, as two views that never overlap, so both can be
-        // changed at once; panics when `i > len()`.
+        // changed at once; panics when `i > length()`.
         (span_mut<T>, span_mut<T>) split_at(usize i) move;
 
         // Sorts the elements with `<` (introsort, not stable), with a comparison, or stably by a key.
@@ -386,7 +386,7 @@ namespace std {
         static string with_capacity(usize n);
 
         // The length in bytes.
-        usize len();
+        usize length();
 
         // Whether the string is empty.
         bool is_empty();
@@ -436,7 +436,7 @@ namespace std {
         // A copy of `text` (when `A` has a default).
         static string_with<A> from(std::str text);
 
-        usize len();
+        usize length();
         bool is_empty();
         std::str as_str();
         void push_str(std::str text) mut;
@@ -460,26 +460,61 @@ namespace std {
         permission_denied,
         already_exists,
         is_directory,
+        // A part of the path is a file.
+        not_directory,
         invalid_data,
+        // The file or its source can't be written (an archive, a read-only mount).
+        read_only,
+        // The source can't do this (watching an archive, renaming across sources).
+        not_supported,
+        // The path is relative, no mount takes it, and the table doesn't fall back to the operating
+        // system; or build.ed names a table the program hasn't created (filesystem.md).
+        not_mounted,
         other,
     }
 
-    // An open file. It is closed when it is destroyed.
-    class file : unsafe std::sendable, unsafe std::shareable {
+    // Something text and bytes are written to in order: a file, a rotating log file, the standard
+    // output. Log sinks and formatters write to any writer.
+    interface writer {
+        // Writes `text`; returns the bytes written.
+        std::result<usize, io_error> write(std::str text) mut;
+        // Hands buffered writes on.
+        std::result<void, io_error> flush() mut;
+    }
+
+    // The program's standard output or standard error as a writer (`std::stdout()`,
+    // `std::stderr()`). Writes keep their order with `std::println`'s.
+    class output : std::writer {
     public:
-        // Opens an existing file for reading.
-        static std::result<file, io_error> open(std::filesystem::path& path);
+        std::result<usize, io_error> write(std::str text) mut override;
+        std::result<void, io_error> flush() mut override;
+        // Whether it goes to a terminal (escape codes and redrawn lines make sense there).
+        bool is_terminal();
+    }
+
+    std::output stdout();
+    std::output stderr();
+
+    // An open file, read and written through the source its path resolves to (std::filesystem).
+    // It is closed when it is destroyed.
+    class file : unsafe std::sendable, unsafe std::shareable, std::writer {
+    public:
+        // Opens an existing file for reading, through the calling file's table (filesystem.md).
+        static std::result<file, io_error> open(std::filesystem::path& path, implicit compile_time std::call_site where);
 
         // Opens the file named by `path`. A relative path written in the code is warned about
         // (`std::relative_path`).
-        static std::result<file, io_error> open(std::str path);
+        static std::result<file, io_error> open(std::str path, implicit compile_time std::call_site where);
 
         // Creates (or empties) a file for writing.
-        static std::result<file, io_error> create(std::filesystem::path& path);
-        static std::result<file, io_error> create(std::str path);
+        static std::result<file, io_error> create(std::filesystem::path& path, implicit compile_time std::call_site where);
+        static std::result<file, io_error> create(std::str path, implicit compile_time std::call_site where);
 
         // Opens a file for writing at its end, creating it if it doesn't exist.
-        static std::result<file, io_error> append(std::filesystem::path& path);
+        static std::result<file, io_error> append(std::filesystem::path& path, implicit compile_time std::call_site where);
+
+        // A file over a source's open stream: what a `std::filesystem::source` hands out.
+        static file from_stream(std::unique_ptr<std::filesystem::stream> s);
 
         // The lines of the file, one after the other, without their line ends.
         file_lines lines() mut;
@@ -487,11 +522,26 @@ namespace std {
         // The rest of the file as text; `invalid_data` when it is not UTF-8.
         std::result<std::string, io_error> read_all() mut;
 
-        // Writes `text`. Writes are buffered; `flush` hands them to the operating system.
-        std::result<usize, io_error> write(std::str text) mut;
+        // The rest of the file as bytes.
+        std::result<std::darray<u8>, io_error> read_bytes() mut;
 
-        // Hands every buffered write to the operating system.
-        std::result<void, io_error> flush() mut;
+        // Reads at the current position into `into`; 0 at the end.
+        std::result<usize, io_error> read(std::span_mut<u8> into) mut;
+
+        // Reads at `offset` without moving the position; safe from several threads at once.
+        std::result<usize, io_error> read_at(u64 offset, std::span_mut<u8> into);
+
+        // The size in bytes.
+        u64 size();
+
+        // Writes `text`. Writes are buffered; `flush` hands them on.
+        std::result<usize, io_error> write(std::str text) mut override;
+
+        // Writes bytes.
+        std::result<usize, io_error> write_bytes(std::span<u8> data) mut;
+
+        // Hands every buffered write on.
+        std::result<void, io_error> flush() mut override;
 
         ~file();
     }
@@ -531,15 +581,16 @@ namespace std {
     template<type I>
     class plugin : unsafe std::sendable {
     public:
-        // Loads the plugin at `path`. Needs a target with dynamic libraries.
-        static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path);
+        // Loads the plugin at `path`, resolved through the calling file's mount table
+        // (std::filesystem); it must end up at a file on disk. Needs a target with dynamic libraries.
+        static std::result<plugin<I>, plugin_error> load(std::filesystem::path& path, implicit compile_time std::call_site where);
 
         // Replaces the plugin with the build at `path` (checked like `load`). When the plugin's
         // object is of a type marked @std::hot_reload_state in both builds, its fields move into
         // the new object by name: a field in both keeps its value, a new field keeps the value the
         // new `make()` gave it, a removed field is destroyed with the old object. A field whose
         // type changed is `std::plugin_error::state_changed`, and nothing is replaced.
-        std::result<void, plugin_error> reload(std::filesystem::path& path) mut;
+        std::result<void, plugin_error> reload(std::filesystem::path& path, implicit compile_time std::call_site where) mut;
 
         // The plugin's object, through its interface: a reference into the plugin.
         I& operator*();
@@ -659,7 +710,7 @@ namespace std {
         std::raw::array<T, N> items = default;
 
         // The number of elements: N.
-        usize len();
+        usize length();
 
         // Element `i`, or `none` when out of bounds.
         std::option<T&> get(usize i);
@@ -677,7 +728,7 @@ namespace std {
         std::raw::array<u64, (N + 63) / 64> words = default;
 
         // The number of bits: N.
-        usize len();
+        usize length();
 
         // Whether bit `i` is set; panics when out of bounds.
         bool test(usize i);
@@ -715,7 +766,7 @@ namespace std {
         // An empty map with room for `n` entries from `alloc`.
         static hash_map<K, V, A> with_capacity_in(usize n, A alloc);
 
-        usize len();
+        usize length();
         bool is_empty();
 
         // Adds or replaces the value of `key`; returns the old value.
@@ -772,7 +823,7 @@ namespace std {
         // An empty map whose nodes come from `alloc`.
         static tree_map<K, V, A> with_allocator(A alloc);
 
-        usize len();
+        usize length();
         bool is_empty();
         std::option<V> insert(K key, V value) mut;
         bool contains(K& key);
@@ -959,6 +1010,8 @@ namespace std {
 
     // `T` aligned and padded to a cache line, so that values written by different threads never
     // share one ("false sharing", spec 27). Access with `*x` / `x->`.
+    // (The alignment is written as a literal: a constant such as cache_line_size in @std::layout is
+    // not evaluated yet.)
     template<type T>
     @std::layout{ .align = std::cache_line_size }
     struct cache_aligned {
@@ -1243,7 +1296,7 @@ namespace std {
     // Tells the optimizer that `condition` holds, so it can drop checks and branches that
     // depend on it. Checked in every mode that doesn't allow undefined behaviour: a false
     // assumption panics there, at the call. In a mode with `allow_undefined_behavior()` it is
-    // only a promise. Write one fact per call: `std::assume(a.len() == n); std::assume(b.len() == n);`
+    // only a promise. Write one fact per call: `std::assume(a.length() == n); std::assume(b.length() == n);`
     // gives the optimizer two facts, `std::assume(x && y)` only their combination.
     void assume(bool condition);
 
@@ -1472,7 +1525,7 @@ namespace std::simd {
         std::simd::mask<N> active = default;
 
         // `N`, or fewer in the last block.
-        usize len();
+        usize length();
         // Whether all `N` lanes are inside the range.
         bool is_full();
     }

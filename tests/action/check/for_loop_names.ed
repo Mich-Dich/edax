@@ -1,0 +1,21 @@
+// RUN: edaxc check %s
+// Mistakes with the names of a for loop, and the C++ habit `len()`.
+import std;
+struct counter {
+    u32 i = 0;
+    std::option<(u32, u32)> next() mut { return std::none; }
+}
+i32 main() {
+    std::darray<(u32, u32)> pairs = default;
+    std::darray<u32> plain = default;
+    for (auto (a, b) : plain) { }
+    for (auto (a, b, c) : pairs) { }
+    for (mut auto (a, b) : pairs) { }
+    for ((u32& a, u32 b) : counter{}) { }
+    for (auto i : 0..3) { }
+    for ((u32 a, u64 b) : pairs) { }
+    std::str s = "abc";
+    usize n = s.len();
+    usize m = "x".size();
+    return 0;
+}

@@ -207,7 +207,7 @@ annotation(std::meta::target::function) struct binding {
 
     bool operator==(binding& other) = default;
 
-    compile_time check (annotated.parameters.len() == 0)
+    compile_time check (annotated.parameters.length() == 0)
         else f"@binding: '{annotated.name}' is called on a key press, so it can't take parameters";
 }
 

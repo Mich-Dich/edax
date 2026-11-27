@@ -26,6 +26,6 @@ i32 main() {
         z ^= z << 17;
         m.remove(z);
     }
-    std::println(f"{m.len()} {found}");
+    std::println(f"{m.length()} {found}");
     return 0;
 }

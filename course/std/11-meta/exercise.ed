@@ -42,7 +42,7 @@ u32 from_text(mut T& value, std::str text) {
         std::str t = line.trim();
         if (t.is_empty()) { continue; }
         std::darray<std::str> parts = t.split('=');
-        if (parts.len() != 2) {
+        if (parts.length() != 2) {
             unused += 1;
             continue;
         }

@@ -20,11 +20,11 @@ namespace shop {
             prices.push(p);
         }
 
-        usize len() { return names.len(); }
+        usize length() { return names.length(); }
 
         price total() { return price{ .cents = sum_of(prices.as_span()) }; }
 
-        ~stock() { std::println(f"stock of {len()} items closed"); }
+        ~stock() { std::println(f"stock of {length()} items closed"); }
 
     private:
         std::darray<std::string> names = default;

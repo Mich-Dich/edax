@@ -59,14 +59,14 @@ i32 main() {
     for (u32 i : 0..4) {
         ps.push(particle{ .pos = vec2{ .x = cast::round<f32>(i) }, .vel = vec2{ .y = 2.0 }, .alive = i % 2 });
     }
-    std::println(f"{ps.tag} {ps.count} {ps.pos.len()} {ps.pos[3].x} {ps.vel[1].y} {ps.alive[1]}");
+    std::println(f"{ps.tag} {ps.count} {ps.pos.length()} {ps.pos[3].x} {ps.vel[1].y} {ps.alive[1]}");
     for compile_time (std::meta::field f : std::meta::fields<soa<particle>>()) {
         compile_time type t = f.type;
         std::println(f"{f.index}: {f.name} {std::type_name<t>()}");
     }
     mut soa<body> bs = default;
     bs.push(body{});
-    std::println(f"body: {std::meta::fields<soa<body>>().len()} fields, mass {bs.mass[0]}");
+    std::println(f"body: {std::meta::fields<soa<body>>().length()} fields, mass {bs.mass[0]}");
     mut table<moving> t = default;
     t.pos.push(vec2{ .x = 1.0, .y = 2.0 });
     t.vel.push(vec2{ .x = 3.0 });

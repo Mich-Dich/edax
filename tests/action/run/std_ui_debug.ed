@@ -24,7 +24,7 @@ void main() {
     session.flush();
     std::darray<dbg::log_line> lines = feed.snapshot();
     std::array<u64, 7> counts = feed.counts();
-    std::println(f"kept {lines.len()}, first #{lines[0].number}, last {lines[lines.len() - 1].text}, warn {counts[3]}, error {counts[4]}");
+    std::println(f"kept {lines.length()}, first #{lines[0].number}, last {lines[lines.length() - 1].text}, warn {counts[3]}, error {counts[4]}");
     mut im::context ctx = im::context::create(ui::theme::dark());
     mut dbg::frame_stats stats = default;
     for (u32 i : 0..5) {
@@ -35,5 +35,5 @@ void main() {
     feed.clear();
     std::log::info(f"after clear");
     session.flush();
-    std::println(f"after clear: {feed.snapshot().len()}");
+    std::println(f"after clear: {feed.snapshot().length()}");
 }

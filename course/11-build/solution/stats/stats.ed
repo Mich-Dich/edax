@@ -4,6 +4,6 @@ namespace stats {
     f64 mean(std::span<f64> values) {
         mut f64 sum = 0.0;
         for (f64 v : values) { sum += v; }
-        return sum / cast::round<f64>(values.len());
+        return sum / cast::round<f64>(values.length());
     }
 }

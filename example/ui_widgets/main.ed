@@ -143,7 +143,7 @@ namespace showcase {
         // Called from one place for several rows: the first name keeps their ids apart.
         mut im::scope keyed = w.id(names[0]);
         mut im::scope bar = keyed.row();
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             u32 n = cast::truncate<u32>(i);
             mut im::scope item = bar.id(n);
             if (item.button(names[i], if (n == current) { ui::variant::primary } else { ui::variant::ghost })) {
@@ -308,8 +308,8 @@ namespace showcase {
 }
 
 std::exit_code main(std::span<std::str> args) {
-    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
-    bool custom = args.len() >= 4 && args[3] == "--custom";
+    std::option<std::str> screenshot = if (args.length() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    bool custom = args.length() >= 4 && args[3] == "--custom";
 
     mut wnd::system sys = match (wnd::system::start()) {
         std::ok(s) => move s,
@@ -402,8 +402,8 @@ std::exit_code main(std::span<std::str> args) {
                         std::image::rgba8 shot = renderer.read_pixels(frame);
                         std::darray<u8> png = std::image::encode_png(shot);
                         mut std::file out = std::file::create(path).expect("the screenshot file");
-                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
-                        std::println(f"{ctx.draw_data().vertices.len()} vertices, {ctx.draw_data().commands.len()} draw calls, duplicate ids {ctx.duplicate_ids()}");
+                        _ = out.write(unsafe { std::raw::str_from(&png[0], png.length()) });
+                        std::println(f"{ctx.draw_data().vertices.length()} vertices, {ctx.draw_data().commands.length()} draw calls, duplicate ids {ctx.duplicate_ids()}");
                         finished = true;
                     }
                 },

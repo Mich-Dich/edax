@@ -14,7 +14,7 @@ void describe(F& system) {
                           else if (p.passing == std::meta::passing::by_reference) { "reads" } else { "takes" };
         std::println(f"{p.index}: {p.name} {access} {std::type_name<t>()}");
     }
-    std::println(f"{std::meta::parameters_of<F>().len()} parameters");
+    std::println(f"{std::meta::parameters_of<F>().length()} parameters");
 }
 
 i32 main() {

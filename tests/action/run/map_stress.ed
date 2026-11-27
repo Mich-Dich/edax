@@ -45,7 +45,7 @@ i32 main() {
             }
             mut usize hn = 0;
             for (std::map_entry<u32, std::string> e : h.entries()) { hn += 1; }
-            run_time check (n == t.len() && hn == h.len() && n == hn) else f"len {n} {t.len()} {hn}";
+            run_time check (n == t.length() && hn == h.length() && n == hn) else f"len {n} {t.length()} {hn}";
         }
     }
     mut usize count = 0;
@@ -55,7 +55,7 @@ i32 main() {
         run_time check (h.contains(key) == present[i]) else "hash contains";
         if (present[i]) { count += 1; }
     }
-    std::println(f"ok {count} {t.len()} first {t.first().is_some()}");
+    std::println(f"ok {count} {t.length()} first {t.first().is_some()}");
     match (t.last()) {
         std::some(e) => std::println(f"last {e.key}"),
         std::none => { },

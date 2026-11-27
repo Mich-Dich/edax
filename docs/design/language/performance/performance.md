@@ -49,7 +49,7 @@ The aliasing rule (see [Ownership](../memory/ownership-and-references.md)) is a 
 
 ### 5. Checks that can't fail are removed
 Bounds, overflow and shift checks stay in every safe mode. The compiler removes the ones it can prove never fire:
-- the index of `for (usize i : 0..xs.len())` into `xs`, when `xs` isn't resized in the loop (the borrow rules prove that it isn't);
+- the index of `for (usize i : 0..xs.length())` into `xs`, when `xs` isn't resized in the loop (the borrow rules prove that it isn't);
 - a run of indexes `xs[i]`, `xs[i + 1]`, `xs[i + 2]` becomes one check (**planned**: needs the mid-level IR; today LLVM removes such checks only when it can prove them itself);
 - overflow of `i + 1` when `i < len` and `len <= isize::max` (**planned**, as above).
 
@@ -57,7 +57,7 @@ A program can add facts:
 
 | Function | Safe? | Meaning |
 |---|---|---|
-| `std::assume(condition)` | Yes | The optimizer may rely on `condition`. Checked (a panic at the call) in every mode that doesn't allow undefined behaviour. Write one fact per call: `std::assume(a.len() == n); std::assume(b.len() == n);` gives two facts, `std::assume(x && y)` only their combination |
+| `std::assume(condition)` | Yes | The optimizer may rely on `condition`. Checked (a panic at the call) in every mode that doesn't allow undefined behaviour. Write one fact per call: `std::assume(a.length() == n); std::assume(b.length() == n);` gives two facts, `std::assume(x && y)` only their combination |
 | `std::unreachable()` | Yes | Returns `never`. Panics when reached in a safe mode; removed as a path in a mode that allows undefined behaviour |
 | `std::raw::assume(c)`, `std::raw::unreachable()` | `unsafe` | The unchecked intrinsics both are written with |
 
@@ -121,7 +121,7 @@ error[E6004]: 1 run-time check is left in a '@std::no_checks_left' function
 ### A kernel that a C++ compiler can't optimize as well
 ```edax
 void integrate(std::span<mut f32> positions, std::span<f32> velocities, f32 dt) {
-    for (usize i : 0..positions.len()) {
+    for (usize i : 0..positions.length()) {
         positions[i] += velocities[i] * dt;   // positions and velocities don't overlap: vectorized without a runtime overlap check
     }
 }

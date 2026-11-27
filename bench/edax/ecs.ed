@@ -24,8 +24,8 @@ struct table {
 
 template<type A, type B, type F>
 void each(std::span<mut A> a, std::span<B> b, F system) {
-    usize n = a.len();
-    std::assume(b.len() == n);
+    usize n = a.length();
+    std::assume(b.length() == n);
     for (usize i : 0..n) {
         system(mut a[i], b[i]);
     }
@@ -33,7 +33,7 @@ void each(std::span<mut A> a, std::span<B> b, F system) {
 
 template<type A, type F>
 void each_one(std::span<mut A> a, F system) {
-    for (usize i : 0..a.len()) {
+    for (usize i : 0..a.length()) {
         system(mut a[i]);
     }
 }

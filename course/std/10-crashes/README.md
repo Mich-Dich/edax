@@ -160,7 +160,7 @@ The process then ends with the panic, as it should. `check.py` compares only std
 
 ## Try this afterwards
 
-1. Print `info.message` whole instead of its first line, and make `tile` an entry check (`run_time check (y * width + x < tiles.len()) else ...` as its first line).
+1. Print `info.message` whole instead of its first line, and make `tile` an entry check (`run_time check (y * width + x < tiles.length()) else ...` as its first line).
 2. Start a `std::log` session after installing your hook. Does your report still appear?
 3. Run the solution under `gdb` (`edaxc build`, then `gdb ./build/debug/solution`, `run`). Where does it stop? Print `x` and `y`.
 4. Call `std::panic("inside")` in your hook.

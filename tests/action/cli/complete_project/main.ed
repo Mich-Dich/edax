@@ -1,0 +1,19 @@
+import std;
+
+namespace shapes {
+    // A circle around the origin.
+    struct circle {
+        f32 radius = 1.0;
+        // The area inside it.
+        f32 area() { return 3.14159 * this.radius * this.radius; }
+    }
+
+    enum kind : u8 { round, square }
+}
+
+void main() {
+    shapes::circle c = shapes::circle{ .radius = 2.0 };
+    u32 total = 3;
+    f32 r = c.radius;
+    std::println(f"{c.area()} {total} {r}");
+}

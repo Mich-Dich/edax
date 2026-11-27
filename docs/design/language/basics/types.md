@@ -7,7 +7,7 @@
 |---|---|
 | `i8` `i16` `i32` `i64` `i128` | Signed integers, two's complement |
 | `u8` `u16` `u32` `u64` `u128` | Unsigned integers |
-| `isize` `usize` | Pointer-sized integers. Used for sizes and indices (`len()` returns `usize`) |
+| `isize` `usize` | Pointer-sized integers. Used for sizes and indices (`length()` returns `usize`) |
 | `f16` `f32` `f64` `f128` | IEEE-754 floats. `f16` (2 bytes) is for GPU and asset data: its arithmetic is rounded to `f16` after each operation (computed in `f32` where the CPU has no half-precision instructions). `cast<f32>(h)` is lossless; `u8`/`i8` convert losslessly to `f16`; anything wider needs `cast::round<f16>`. `f128` (binary128, 16 bytes, 16-byte aligned, 113-bit significand) is for precise reference computations, not hot code: it runs in software (libgcc/compiler-rt arithmetic, glibc's `sqrtf128`, `sinf128`, ...). Every integer up to 64 bits converts to it losslessly |
 | `bool` | `true` / `false` |
 | `char` | One Unicode scalar value (4 bytes) |
@@ -110,6 +110,7 @@ This is **every** implicit conversion in the language. Anything else needs a `ca
 | `std::static_str` (string literal) | `std::str` | Anywhere | No cost |
 | `std::static_str` | `std::string` | Anywhere | **Compiler warning:** allocates. Use `std::string::from(...)` (see [Strings](../../stdlib/text/strings.md)) |
 | `derived&` / pointer to derived | `base&` / pointer to base or interface | Anywhere | Upcast is safe and lossless (see [Inheritance and Interfaces](../user-types/inheritance-and-interfaces.md)) |
+| A distinct type with a check, `D&` / `D` | its underlying type, `U&` (read-only) / `U` (moved) | Anywhere | Not `mut D&` → `mut U&`: a change could break the check (see [Templates](../compile-time/templates.md), "Distinct types with a check") |
 | Unsuffixed literal | Context type | Where context exists | See literal typing |
 | List literal `[a, b]` | `std::array<T, N>` or `std::span<T>` | Where context exists | See [Tuples and List Literals](tuples-and-lists.md) |
 

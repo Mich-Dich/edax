@@ -18,7 +18,7 @@ struct rate_limiter {
 (t::duration, u64) frame_stats(std::span<t::duration> frames) {
     mut t::duration total = t::duration{};
     for (t::duration f : frames) { total = total + f; }
-    t::duration mean = total / cast<u64>(frames.len());
+    t::duration mean = total / cast<u64>(frames.length());
     return (mean, t::duration::seconds(1).as_nanoseconds() / mean.as_nanoseconds());
 }
 

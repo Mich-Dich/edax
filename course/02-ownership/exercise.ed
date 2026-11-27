@@ -39,7 +39,7 @@ public:
 
     std::str owner() { return who; }
 
-    ~bag() { std::println(f"bag of {who} destroyed with {items.len()} items"); }
+    ~bag() { std::println(f"bag of {who} destroyed with {items.length()} items"); }
 
 private:
     std::string       who;
@@ -48,7 +48,7 @@ private:
 
 // The longer of two names (the first one when they are as long).
 std::str longer(std::str a, std::str b) {
-    if (a.len() >= b.len()) { return a; }
+    if (a.length() >= b.length()) { return a; }
     return b;
 }
 

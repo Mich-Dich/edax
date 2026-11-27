@@ -44,7 +44,7 @@ namespace std::ui::plot {
             this.count = 0;
         }
 
-        usize len() {
+        usize length() {
             return this.count;
         }
 
@@ -64,7 +64,7 @@ namespace std::ui::plot {
         f64 min() {
             mut f64 m = 0.0;
             std::span<T> all = this.as_span();
-            for (usize i : 0..all.len()) {
+            for (usize i : 0..all.length()) {
                 f64 v = number<T>(all[i]);
                 if (i == 0 || v < m) {
                     m = v;
@@ -76,7 +76,7 @@ namespace std::ui::plot {
         f64 max() {
             mut f64 m = 0.0;
             std::span<T> all = this.as_span();
-            for (usize i : 0..all.len()) {
+            for (usize i : 0..all.length()) {
                 f64 v = number<T>(all[i]);
                 if (i == 0 || v > m) {
                     m = v;
@@ -91,10 +91,10 @@ namespace std::ui::plot {
                 return 0.0;
             }
             mut f64 sum = 0.0;
-            for (usize i : 0..all.len()) {
+            for (usize i : 0..all.length()) {
                 sum += number<T>(all[i]);
             }
-            return sum / of_usize(all.len());
+            return sum / of_usize(all.length());
         }
     }
 
@@ -187,7 +187,7 @@ namespace std::ui::plot {
             return std::format(f"{sign}{whole}");
         }
         mut std::string digits = std::format(f"{part}");
-        while (digits.len() < cast<usize>(places)) {
+        while (digits.length() < cast<usize>(places)) {
             digits = std::format(f"0{digits}");
         }
         return std::format(f"{sign}{whole}.{digits}");
@@ -196,7 +196,7 @@ namespace std::ui::plot {
     // "1.50" -> "1.5", "2.00" -> "2".
     private std::string trim_zeros(std::str text) {
         mut bool has_point = false;
-        for (usize i : 0..text.len()) {
+        for (usize i : 0..text.length()) {
             if (text.byte(i) == 46) {
                 has_point = true;
             }
@@ -204,7 +204,7 @@ namespace std::ui::plot {
         if (!has_point) {
             return std::string::from(text);
         }
-        mut usize end = text.len();
+        mut usize end = text.length();
         while (end > 0 && text.byte(end - 1) == 48) {
             end -= 1;
         }
@@ -227,7 +227,7 @@ namespace std::ui::plot {
         if (n == 0) {
             return 0;
         }
-        usize before = out.len();
+        usize before = out.length();
         f64 width = if (x_high > x_low) { (x_high - x_low) / cast<f64>(columns.max(1)) } else { 1.0 };
         // Few points: all of them (in range, and the neighbours of the range).
         mut usize in_range = 0;
@@ -302,7 +302,7 @@ namespace std::ui::plot {
             emit_column(mut out, point, first, low_i, high_i, last);
         }
         _ = left_kept;
-        return (out.len() - before) / 2;
+        return (out.length() - before) / 2;
     }
 
     // The distinct indices of a column in index order.
@@ -326,13 +326,13 @@ namespace std::ui::plot {
 
     template<type X, type Y>
     usize decimate(std::span<X> xs, std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out) {
-        usize n = xs.len().min(ys.len());
+        usize n = xs.length().min(ys.length());
         return reduce(n, [&xs, &ys](usize i) -> (f64, f64) { return (number<X>(xs[i]), number<Y>(ys[i])); }, x_low, x_high, columns, mut out);
     }
 
     template<type Y>
     usize decimate_indexed(std::span<Y> ys, f64 x_low, f64 x_high, u32 columns, mut std::darray<f64>& out) {
-        usize n = ys.len();
+        usize n = ys.length();
         f64 last_index = of_usize(n.max(1) - 1);
         bool usable = n > 0 && x_high > x_low && x_high >= 0.0 && x_low <= last_index;
         usize first_in = if (!usable || x_low <= 0.0) { 0 } else { cast::saturate<usize>(x_low.ceil()) };
@@ -343,7 +343,7 @@ namespace std::ui::plot {
         }
         // x is the index, so the points of a column are a slice: no per-point division, and the
         // lowest and highest point of a slice are found in one tight loop.
-        usize before = out.len();
+        usize before = out.length();
         if (first_in > 0) {
             out.push(of_usize(first_in - 1));
             out.push(number<Y>(ys[first_in - 1]));
@@ -381,7 +381,7 @@ namespace std::ui::plot {
             out.push(of_usize(last_in + 1));
             out.push(number<Y>(ys[last_in + 1]));
         }
-        return (out.len() - before) / 2;
+        return (out.length() - before) / 2;
     }
 
     // ---- colours -----------------------------------------------------------------------------------------
@@ -419,7 +419,7 @@ namespace std::ui::plot {
     private compile_time usize slot_count = 13;
 
     private void ensure_slots(mut std::darray<f64>& numbers) {
-        if (numbers.len() < slot_count) {
+        if (numbers.length() < slot_count) {
             numbers.clear();
             numbers.resize(slot_count, 0.0);
             numbers[slot_x_max] = 1.0;
@@ -533,10 +533,10 @@ namespace std::ui::plot {
             if (!this.begin_entry(name, kind::line, mut at)) {
                 return;
             }
-            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(rows.len().max(1) - 1));
+            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(rows.length().max(1) - 1));
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
-            usize n = reduce(rows.len(), [&rows, &value](usize i) -> (f64, f64) { return (of_usize(i), number(value(rows[i]))); }, low, high, this.columns, mut out);
+            usize from = out.length() / 2;
+            usize n = reduce(rows.length(), [&rows, &value](usize i) -> (f64, f64) { return (of_usize(i), number(value(rows[i]))); }, low, high, this.columns, mut out);
             this.finish_entry(at, from, n);
         }
 
@@ -557,12 +557,12 @@ namespace std::ui::plot {
                 return;
             }
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
-            for (usize i : 0..ys.len()) {
+            usize from = out.length() / 2;
+            for (usize i : 0..ys.length()) {
                 out.push(of_usize(i));
                 out.push(number<Y>(ys[i]));
             }
-            this.finish_entry(at, from, ys.len());
+            this.finish_entry(at, from, ys.length());
         }
 
         template<type X, type Y>
@@ -571,9 +571,9 @@ namespace std::ui::plot {
             if (!this.begin_entry(name, kind::scatter, mut at)) {
                 return;
             }
-            usize n = xs.len().min(ys.len());
+            usize n = xs.length().min(ys.length());
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
+            usize from = out.length() / 2;
             for (usize i : 0..n) {
                 out.push(number<X>(xs[i]));
                 out.push(number<Y>(ys[i]));
@@ -588,16 +588,16 @@ namespace std::ui::plot {
                 return;
             }
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
-            for (usize i : 0..ys.len()) {
+            usize from = out.length() / 2;
+            for (usize i : 0..ys.length()) {
                 out.push(of_usize(i));
                 out.push(number<Y>(ys[i]));
             }
             this.entries[at].value = 0.7;
-            this.finish_entry(at, from, ys.len());
+            this.finish_entry(at, from, ys.length());
             // Bars stand on 0 and reach half a bar past the first and last x.
             this.include(-0.5, 0.0);
-            this.include(of_usize(ys.len()) - 0.5, 0.0);
+            this.include(of_usize(ys.length()) - 0.5, 0.0);
         }
 
         template<type T>
@@ -617,23 +617,23 @@ namespace std::ui::plot {
                         u64 scratch_id = std::hash_combine(points_id(this.id), 0x73637261);
                         mut std::darray<f64> scratch = std::take(mut this.parent.storage(scratch_id).numbers);
                         scratch.clear();
-                        for (usize i : 0..rows.len()) {
+                        for (usize i : 0..rows.length()) {
                             scratch.push(if (has_x) { series_x<T>(rows[i]) } else { of_usize(i) });
                         }
-                        for (usize i : 0..rows.len()) {
+                        for (usize i : 0..rows.length()) {
                             scratch.push(number(f.get(rows[i])));
                         }
                         {
                             std::span<f64> all = scratch.as_span();
-                            std::span<f64> xs = all.slice(0, rows.len());
-                            std::span<f64> ys = all.slice(rows.len(), 2 * rows.len());
+                            std::span<f64> xs = all.slice(0, rows.length());
+                            std::span<f64> ys = all.slice(rows.length(), 2 * rows.length());
                             (f64 low, f64 high) = if (has_x) {
                                 this.reduce_range(series_x_min<T>(rows), series_x_max<T>(rows))
                             } else {
-                                this.reduce_range(0.0, of_usize(rows.len().max(1) - 1))
+                                this.reduce_range(0.0, of_usize(rows.length().max(1) - 1))
                             };
                             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-                            usize from = out.len() / 2;
+                            usize from = out.length() / 2;
                             usize n = decimate<f64, f64>(xs, ys, low, high, this.columns, mut out);
                             this.finish_entry(at, from, n);
                         }
@@ -715,9 +715,9 @@ namespace std::ui::plot {
                 return false;
             }
             mut std::ui::immediate::widget_storage& names = this.parent.storage(points_id(this.id));
-            u32 from = cast::truncate<u32>(names.text.len());
+            u32 from = cast::truncate<u32>(names.text.length());
             names.text.push_str(name);
-            u32 to = cast::truncate<u32>(names.text.len());
+            u32 to = cast::truncate<u32>(names.text.length());
             at = this.entry_count;
             this.entry_count += 1;
             mut std::ui::color c = palette_color(this.parent.theme(), this.series_count);
@@ -787,9 +787,9 @@ namespace std::ui::plot {
             if (!this.begin_entry(name, what, mut at)) {
                 return;
             }
-            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(ys.len().max(1) - 1));
+            (f64 low, f64 high) = this.reduce_range(0.0, of_usize(ys.length().max(1) - 1));
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
+            usize from = out.length() / 2;
             usize n = decimate_indexed<Y>(ys, low, high, this.columns, mut out);
             this.finish_entry(at, from, n);
             if (what == kind::area) {
@@ -805,7 +805,7 @@ namespace std::ui::plot {
             }
             mut f64 low = 0.0;
             mut f64 high = 0.0;
-            for (usize i : 0..xs.len()) {
+            for (usize i : 0..xs.length()) {
                 f64 v = number<X>(xs[i]);
                 if (i == 0 || v < low) {
                     low = v;
@@ -816,7 +816,7 @@ namespace std::ui::plot {
             }
             (f64 from_x, f64 to_x) = this.reduce_range(low, high);
             mut std::darray<f64>& out = this.parent.storage(points_id(this.id)).numbers;
-            usize from = out.len() / 2;
+            usize from = out.length() / 2;
             usize n = decimate<X, Y>(xs, ys, from_x, to_x, this.columns, mut out);
             this.finish_entry(at, from, n);
             if (what == kind::area) {
@@ -840,7 +840,7 @@ namespace std::ui::plot {
     private template<type T>
     f64 series_x_min(std::span<T> rows) {
         mut f64 m = 0.0;
-        for (usize i : 0..rows.len()) {
+        for (usize i : 0..rows.length()) {
             f64 v = series_x<T>(rows[i]);
             if (i == 0 || v < m) {
                 m = v;
@@ -852,7 +852,7 @@ namespace std::ui::plot {
     private template<type T>
     f64 series_x_max(std::span<T> rows) {
         mut f64 m = 0.0;
-        for (usize i : 0..rows.len()) {
+        for (usize i : 0..rows.length()) {
             f64 v = series_x<T>(rows[i]);
             if (i == 0 || v > m) {
                 m = v;
@@ -1224,13 +1224,13 @@ namespace std::ui::plot {
         if (path.is_empty()) {
             return;
         }
-        if (path.len() == 1) {
+        if (path.length() == 1) {
             g.list.circle(path[0], width * 1.5, en.color);
             return;
         }
         if (en.what == kind::area) {
             under.clear();
-            for (usize i : 0..path.len()) {
+            for (usize i : 0..path.length()) {
                 under.push(std::ui::vec2{ .x = path[i].x, .y = ground });
             }
             g.list.fill_between_gradient(path, under.as_span(), en.color.with_alpha(0.32), en.color.with_alpha(0.02));
@@ -1709,12 +1709,12 @@ namespace std::ui::plot {
     // A line of `values` filling `r`, reduced to its width (in the storage of `widget`, reused);
     // with the area under it when `filled`.
     private void draw_spark(mut std::ui::immediate::scope& s, u64 widget, std::ui::rect r, std::span<f32> values, std::ui::color c, bool filled) {
-        if (values.len() < 2 || r.width < 2.0) {
+        if (values.length() < 2 || r.width < 2.0) {
             return;
         }
         mut f32 low = values[0];
         mut f32 high = values[0];
-        for (usize i : 0..values.len()) {
+        for (usize i : 0..values.length()) {
             low = low.min(values[i]);
             high = high.max(values[i]);
         }
@@ -1724,8 +1724,8 @@ namespace std::ui::plot {
         }
         mut std::darray<f64> reduced = std::take(mut s.storage(widget).numbers);
         reduced.clear();
-        usize n = decimate_indexed<f32>(values, 0.0, of_usize(values.len() - 1), cast::saturate<u32>(r.width), mut reduced);
-        f64 last_x = of_usize(values.len() - 1);
+        usize n = decimate_indexed<f32>(values, 0.0, of_usize(values.length() - 1), cast::saturate<u32>(r.width), mut reduced);
+        f64 last_x = of_usize(values.length() - 1);
         mut std::darray<std::ui::vec2> path = std::take(mut s.storage(widget).points);
         path.clear();
         for (usize i : 0..n) {

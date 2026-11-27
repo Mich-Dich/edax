@@ -92,6 +92,28 @@ i128 Value::as_signed() const {
     return (integer & sign) ? static_cast<i128>(integer | ~unsigned_max(bits)) : static_cast<i128>(integer);
 }
 
+std::string glob_regex(const std::string& pattern) {
+    std::string out;
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        char ch = pattern[i];
+        if (ch == '*' && i + 1 < pattern.size() && pattern[i + 1] == '*') {
+            bool slash = i + 2 < pattern.size() && pattern[i + 2] == '/';
+            out += slash ? "(.*/)?" : ".*";
+            i += slash ? 2 : 1;
+        } else if (ch == '*') {
+            out += "[^/]*";
+        } else if (ch == '?') {
+            out += "[^/]";
+        } else if (std::string_view(".+()[]{}^$|\\").find(ch) != std::string_view::npos) {
+            out += '\\';
+            out += ch;
+        } else {
+            out += ch;
+        }
+    }
+    return out;
+}
+
 const std::vector<std::string>& output_dir_placeholders() {
     static const std::vector<std::string> names = {"build", "name", "project", "mode", "kind", "platform", "os", "arch", "cpu"};
     return names;
@@ -315,7 +337,9 @@ struct Evaluator::Impl {
                 d.notes.push_back(Note{std::format("... {} more calls ...", calls.size() - shown - 1), std::nullopt});
                 i = calls.size() - 1;
             }
-            d.notes.push_back(Note{std::format("while running '{}' at compile time", calls[i]->function->name), calls[i]->call_site});
+            const Symbol* fn   = calls[i]->function;
+            std::string   name = fn->name == "$check" && fn->parent ? "the check of '" + fn->parent->name + "'" : "'" + fn->name + "'";   // a distinct type's
+            d.notes.push_back(Note{std::format("while running {} at compile time", name), calls[i]->call_site});
         }
     }
 
@@ -399,6 +423,18 @@ struct Evaluator::Impl {
     // --- expressions ---------------------------------------------------------------------
 
     Value eval(const Expr& e) {
+        if (e.conversion == Expr::Conversion::distinct_value) {   // the value inside a distinct type (spec 34)
+            Value v = eval_plain(e);
+            if (v.kind == Value::Kind::aggregate && is_distinct_type(v.type) && !v.elements.empty()) {
+                Value inner = v.elements[0];
+                return inner;
+            }
+            return v;
+        }
+        return eval_plain(e);
+    }
+
+    Value eval_plain(const Expr& e) {
         step(e.span);
         if (e.constant) return *e.constant;
         switch (e.kind) {
@@ -897,6 +933,11 @@ struct Evaluator::Impl {
         }
         default: unknown();
         }
+    }
+
+    static bool is_distinct_type(const Type* t) {
+        return t && t->is(Kind::user) && t->symbol && t->symbol->decl && t->symbol->kind == SymbolKind::struct_ &&
+               t->symbol->decl->as<ast::TypeDecl>().is_distinct;
     }
 
     Value cast(const CastExpr& c) {
@@ -1408,7 +1449,7 @@ struct Evaluator::Impl {
         }
         if ((o.kind == Value::Kind::list || o.kind == Value::Kind::string) && c.args.empty()) {
             std::size_t n = o.kind == Value::Kind::list ? o.elements.size() : o.string.size();
-            if (name == "len") return integer(n, usize());
+            if (name == "length") return integer(n, usize());
             if (name == "is_empty") return Value::of_bool(n == 0, tc.bool_());
         }
         if (o.kind == Value::Kind::string && c.args.size() == 1 &&
@@ -1896,28 +1937,7 @@ struct Evaluator::Impl {
         return !owner || owner->name == "graph" || owner->name == "path" || owner->name == "setting" || owner->name == "package";
     }
 
-    // `**/*.cpp` as a regular expression over paths with `/`.
-    static std::string glob_regex(const std::string& pattern) {
-        std::string out;
-        for (std::size_t i = 0; i < pattern.size(); ++i) {
-            char ch = pattern[i];
-            if (ch == '*' && i + 1 < pattern.size() && pattern[i + 1] == '*') {
-                bool slash = i + 2 < pattern.size() && pattern[i + 2] == '/';
-                out += slash ? "(.*/)?" : ".*";
-                i += slash ? 2 : 1;
-            } else if (ch == '*') {
-                out += "[^/]*";
-            } else if (ch == '?') {
-                out += "[^/]";
-            } else if (std::string_view(".+()[]{}^$|\\").find(ch) != std::string_view::npos) {
-                out += '\\';
-                out += ch;
-            } else {
-                out += ch;
-            }
-        }
-        return out;
-    }
+    static std::string glob_regex(const std::string& pattern) { return ct::glob_regex(pattern); }
 
     // The `path` struct value with `text`.
     Value path_value(const std::string& text, const Type* path_type) {
@@ -2701,6 +2721,27 @@ struct Evaluator::Impl {
             g->steps.push_back(std::move(st));
             return handle(g->steps.size());
         }
+        if (n == "add_archive") {   // g.add_archive(spec): a step the driver runs as `edaxc pack`
+            const Value& spec = args.at(0);
+            BuildStep::Pack pack;
+            pack.name = static_text(field(spec, "name"));
+            pack.from = static_text(field(spec, "from"));
+            pack.dir  = static_text(field(spec, "output_dir"));
+            for (const Value& e : field(spec, "exclude").elements) pack.exclude.push_back(e.kind == Value::Kind::string ? e.string : static_text(e));
+            if (pack.name.empty()) failed(c.args[0]->span, "an archive needs a '.name' (its file name: \"game.pak\")", "no name");
+            if (pack.from.empty()) failed(c.args[0]->span, "an archive needs a '.from' (the folder it packs)", "no folder");
+            if (!pack.dir.empty()) {
+                std::string problem = check_output_dir(pack.dir);
+                if (!problem.empty()) failed(c.args[0]->span, std::format("the output folder \"{}\": {}", pack.dir, problem), "not a folder pattern");
+            }
+            BuildStep st;
+            st.name    = "pack " + pack.name;
+            st.program = "edaxc";
+            st.span    = c.span;
+            st.pack    = std::move(pack);
+            g->steps.push_back(std::move(st));
+            return handle(g->steps.size());
+        }
         if (n == "add_argument") {
             step_of(0).arguments.push_back(path_text(1));
             return Value{};
@@ -2817,12 +2858,27 @@ struct Evaluator::Impl {
         if (in_build_module(s) && (s->kind == SymbolKind::function || s->kind == SymbolKind::method)) return build_intrinsic(s, self, c);
         const FunctionDecl* f = body_decl(s);
         if (!f || !f->body) not_constant(c.span, std::format("'{}' has no body to run at compile time", s->name));
-        if (!f->is_compile_time && !is_mode_class(s->parent)) {
+        if (!f->is_compile_time && !is_mode_class(s->parent) && s->name != "$check") {   // a distinct type's check runs where it can
             not_constant(c.span, std::format("'{}' is not a compile_time function", s->name),
                          std::format("mark it 'compile_time' (or 'compile_time run_time') to call it at compile time"));
         }
         std::vector<Value> args;
         for (const ExprPtr& a : c.args) args.push_back(eval(*a));
+        // A distinct type with a check is read as its underlying type (`absolute_path` as `path&`).
+        for (std::size_t i = 0; i < args.size() && i < f->params.size(); ++i) {
+            if (args[i].kind != Value::Kind::aggregate || !is_distinct_type(args[i].type) || args[i].elements.empty()) continue;
+            const TypeExpr* pt = f->params[i].type.get();
+            while (pt && pt->kind == TypeKind::reference) pt = pt->as<ReferenceType>().inner.get();
+            if (pt && pt->kind == TypeKind::named && pt->as<NamedType>().symbol != args[i].type->symbol) {
+                Value inner = args[i].elements[0];
+                args[i]     = std::move(inner);
+            }
+        }
+        if (self && self->kind == Value::Kind::aggregate && is_distinct_type(self->type) && !self->elements.empty() && s->parent &&
+            s->parent != self->type->symbol) {
+            Value inner = self->elements[0];
+            self        = std::move(inner);
+        }
         // `mut T&` parameters and `mut` methods change the caller's place: the values are
         // copied in, and copied back out when the call returns (spec 15).
         std::vector<Value>   finals;

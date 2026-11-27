@@ -18,10 +18,10 @@ void verify(std::str name, std::span<u8> file) {
 }
 
 bool same(std::image::rgba8& a, std::image::rgba8& b) {
-    if (a.width != b.width || a.height != b.height || a.pixels.len() != b.pixels.len()) {
+    if (a.width != b.width || a.height != b.height || a.pixels.length() != b.pixels.length()) {
         return false;
     }
-    for (usize i : 0..a.pixels.len()) {
+    for (usize i : 0..a.pixels.length()) {
         if (a.pixels[i] != b.pixels[i]) {
             return false;
         }

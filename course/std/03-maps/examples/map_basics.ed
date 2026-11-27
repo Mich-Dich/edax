@@ -9,7 +9,7 @@ i32 main() {
     stock.get_or_insert("pot", 0) += 2;                        // insert 0, then add 2
 
     if (stock.get_mut("cup") is std::some(n)) { n += 10; }     // a mutable reference into the map
-    std::println(f"tea {stock["tea"]}, cup {stock["cup"]}, pot {stock["pot"]}, len {stock.len()}");
+    std::println(f"tea {stock["tea"]}, cup {stock["cup"]}, pot {stock["pot"]}, len {stock.length()}");
     std::println(f"removed {stock.remove("pot").value_or(0)}, contains pot: {stock.contains("pot")}");
 
     if (stock.first() is std::some(e)) { std::println(f"first {e.key}={e.value}"); }

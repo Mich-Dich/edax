@@ -4,6 +4,6 @@ import inventory;
 
 i32 main() {
     shop::stock st = shop::stock::make();
-    usize n = st.names.len();                       //~ error[E4071]
+    usize n = st.names.length();                       //~ error[E4071]
     return 0;
 }

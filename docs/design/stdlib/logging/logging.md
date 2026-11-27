@@ -174,7 +174,7 @@ import gfx::vulkan_device;
 
 namespace gfx::vulkan {
     std::result<pipeline, vk::result> create_pipeline(device& dev, pipeline_desc& desc) {
-        std::log::debug(f"creating '{desc.name}' with {desc.stages.len()} stages");
+        std::log::debug(f"creating '{desc.name}' with {desc.stages.length()} stages");
         vk::result r = dev.create_graphics_pipeline(desc);
         if (r != vk::result::success) {
             std::log::error(f"failed to create the '{desc.name}' pipeline: {r}");

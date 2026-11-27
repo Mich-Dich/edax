@@ -1,6 +1,6 @@
 // RUN: edaxc run %s
-// The file sink creates the directories above its file (spec 31); std::filesystem::parent and
-// create_directories.
+// A log written to a file in a new directory (a writer sink over a rotating_file, which creates
+// the directories above it); std::filesystem::parent and create_directories.
 import std;
 
 u32 main() {
@@ -9,7 +9,8 @@ u32 main() {
     std::println(f"{std::filesystem::path::from("logs/app.log").parent().as_str()}|{std::filesystem::path::from("/app.log").parent().as_str()}|{std::filesystem::path::from("app.log").parent().as_str()}|");
     {
         mut std::log::session logs = std::log::start(std::log::options{});
-        _ = logs.add(std::log::file::create(std::log::file_options{ .path = log_path.clone() }).expect("can't open the log file"),
+        std::filesystem::rotating_file out = std::filesystem::rotating_file::open(log_path.clone(), std::filesystem::rotating_options{}).expect("can't open the log file");
+        _ = logs.add(std::log::writer_sink::make(move out, std::log::writer_options{}),
                      std::log::sink_options{ .pattern = std::log::pattern::from("{level} {message}") });
         std::log::info("into a new directory");
     }

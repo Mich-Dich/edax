@@ -5,7 +5,7 @@ namespace std::ui::dock {
 
     private node stack_of_names(part kind, std::span<std::str> windows) {
         mut node n = node{ .kind = kind };
-        for (usize i : 0..windows.len()) {
+        for (usize i : 0..windows.length()) {
             n.windows.push(std::string::from(windows[i]));
         }
         return n;
@@ -34,11 +34,11 @@ namespace std::ui::dock {
         mut dock::layout a = move first;
         mut dock::layout b = move second;
         mut dock::layout l = default;
-        for (usize i : 0..a.nodes.len()) {
+        for (usize i : 0..a.nodes.length()) {
             l.nodes.push(std::take(mut a.nodes[i]));
         }
-        usize offset = l.nodes.len();
-        for (usize i : 0..b.nodes.len()) {
+        usize offset = l.nodes.length();
+        for (usize i : 0..b.nodes.length()) {
             mut node n = std::take(mut b.nodes[i]);
             if (n.kind == part::split_x || n.kind == part::split_y) {
                 n.first += offset;
@@ -48,17 +48,17 @@ namespace std::ui::dock {
         }
         f32 share = ratio.clamp(0.02, 0.98);
         l.nodes.push(node{ .kind = kind, .ratio = share, .made_ratio = share, .first = a.root, .second = b.root + offset });
-        l.root = l.nodes.len() - 1;
-        for (usize i : 0..a.floating.len()) {
+        l.root = l.nodes.length() - 1;
+        for (usize i : 0..a.floating.length()) {
             l.floating.push(std::take(mut a.floating[i]));
         }
-        for (usize i : 0..b.floating.len()) {
+        for (usize i : 0..b.floating.length()) {
             l.floating.push(std::take(mut b.floating[i]));
         }
-        for (usize i : 0..a.closed.len()) {
+        for (usize i : 0..a.closed.length()) {
             l.closed.push(std::take(mut a.closed[i]));
         }
-        for (usize i : 0..b.closed.len()) {
+        for (usize i : 0..b.closed.length()) {
             l.closed.push(std::take(mut b.closed[i]));
         }
         return l;
@@ -82,7 +82,7 @@ namespace std::ui::dock {
 
     // The nodes reached from the root, parents before children, first child first.
     private void reachable(dock::layout& l, usize at, mut std::darray<usize>& out) {
-        if (at >= l.nodes.len()) {
+        if (at >= l.nodes.length()) {
             return;
         }
         out.push(at);
@@ -104,7 +104,7 @@ namespace std::ui::dock {
     }
 
     private std::option<usize> index_of(std::darray<std::string>& names, std::str name) {
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             if (names[i].as_str() == name) {
                 return std::some(i);
             }
@@ -121,7 +121,7 @@ namespace std::ui::dock {
             if (l.nodes[i].kind == part::central) {
                 out.push(std::string::from("@central"));
             }
-            for (usize k : 0..l.nodes[i].windows.len()) {
+            for (usize k : 0..l.nodes[i].windows.length()) {
                 out.push(l.nodes[i].windows[k].clone());
             }
         }
@@ -131,14 +131,14 @@ namespace std::ui::dock {
     // How many of `anchors` are in the subtree at `at`; `best` becomes the deepest node holding
     // `total` of them.
     private usize anchors_under(dock::layout& l, usize at, std::darray<std::string>& anchors, usize total, mut std::option<usize>& best) {
-        if (at >= l.nodes.len()) {
+        if (at >= l.nodes.length()) {
             return 0;
         }
         mut usize count = 0;
         if (is_split(l.nodes[at].kind)) {
             count = anchors_under(l, l.nodes[at].first, anchors, total, mut best) + anchors_under(l, l.nodes[at].second, anchors, total, mut best);
         } else {
-            for (usize i : 0..anchors.len()) {
+            for (usize i : 0..anchors.length()) {
                 std::str a = anchors[i].as_str();
                 if ((a == "@central" && l.nodes[at].kind == part::central) || index_of(l.nodes[at].windows, a).is_some()) {
                     count += 1;
@@ -173,9 +173,9 @@ namespace std::ui::dock {
 
     // A split at `s` (whose stack moves to a new node) with a new stack of `name` on `towards`.
     private void split_beside(mut dock::layout& l, usize s, std::str name, side towards, f32 share) {
-        usize moved = l.nodes.len();
+        usize moved = l.nodes.length();
         l.nodes.push(std::take(mut l.nodes[s]));
-        usize fresh = l.nodes.len();
+        usize fresh = l.nodes.length();
         mut node n = node{ .kind = part::tabs };
         n.windows.push(std::string::from(name));
         l.nodes.push(move n);
@@ -188,14 +188,14 @@ namespace std::ui::dock {
     struct layout {
         dock::layout clone() {
             mut dock::layout out = dock::layout{ .root = this.root };
-            for (usize i : 0..this.nodes.len()) {
+            for (usize i : 0..this.nodes.length()) {
                 out.nodes.push(copy_node(this.nodes[i]));
             }
-            for (usize i : 0..this.floating.len()) {
+            for (usize i : 0..this.floating.length()) {
                 floating_stack& f = this.floating[i];
                 out.floating.push(floating_stack{ .bounds = f.bounds, .windows = f.windows.clone(), .active = f.active, .order = f.order });
             }
-            for (usize i : 0..this.closed.len()) {
+            for (usize i : 0..this.closed.length()) {
                 closed_window& c = this.closed[i];
                 out.closed.push(closed_window{ .name = c.name.clone(), .anchors = c.anchors.clone(), .towards = c.towards, .ratio = c.ratio, .index = c.index, .was_floating = c.was_floating, .bounds = c.bounds });
             }
@@ -217,7 +217,7 @@ namespace std::ui::dock {
                     }
                 }
             }
-            for (usize i : 0..this.floating.len()) {
+            for (usize i : 0..this.floating.length()) {
                 match (index_of(this.floating[i].windows, name)) {
                     std::some(k) => { return std::some(place{ .floating = true, .node = i, .index = k }); },
                     std::none => {},
@@ -231,7 +231,7 @@ namespace std::ui::dock {
         }
 
         bool is_closed(std::str name) {
-            for (usize i : 0..this.closed.len()) {
+            for (usize i : 0..this.closed.length()) {
                 if (this.closed[i].name.as_str() == name) {
                     return true;
                 }
@@ -244,12 +244,12 @@ namespace std::ui::dock {
             mut std::darray<usize> all = default;
             reachable(this, this.root, mut all);
             for (usize i : all) {
-                for (usize k : 0..this.nodes[i].windows.len()) {
+                for (usize k : 0..this.nodes[i].windows.length()) {
                     out.push(this.nodes[i].windows[k].clone());
                 }
             }
-            for (usize i : 0..this.floating.len()) {
-                for (usize k : 0..this.floating[i].windows.len()) {
+            for (usize i : 0..this.floating.length()) {
+                for (usize k : 0..this.floating[i].windows.length()) {
                     out.push(this.floating[i].windows[k].clone());
                 }
             }
@@ -282,7 +282,7 @@ namespace std::ui::dock {
                         if (p.floating) {
                             // Floating stacks don't split: the window joins the stack.
                             this.floating[p.node].windows.push(std::string::from(name));
-                            this.floating[p.node].active = this.floating[p.node].windows.len() - 1;
+                            this.floating[p.node].active = this.floating[p.node].windows.length() - 1;
                             return true;
                         }
                         s = p.node;
@@ -295,7 +295,7 @@ namespace std::ui::dock {
         }
 
         void dock_at(std::str name, usize stack, side towards, f32 share) mut {
-            if (stack >= this.nodes.len()) {
+            if (stack >= this.nodes.length()) {
                 return;
             }
             if (towards == side::center || is_split(this.nodes[stack].kind)) {
@@ -304,7 +304,7 @@ namespace std::ui::dock {
                     return;
                 }
                 this.nodes[stack].windows.push(std::string::from(name));
-                this.nodes[stack].active = this.nodes[stack].windows.len() - 1;
+                this.nodes[stack].active = this.nodes[stack].windows.length() - 1;
                 return;
             }
             // An empty stack (the root of an empty layout) just takes the window.
@@ -353,7 +353,7 @@ namespace std::ui::dock {
                     if (p.floating) {
                         mut floating_stack& f = this.floating[p.node];
                         _ = f.windows.remove(p.index);
-                        fix_active(mut f.active, p.index, f.windows.len());
+                        fix_active(mut f.active, p.index, f.windows.length());
                         if (f.windows.is_empty()) {
                             _ = this.floating.remove(p.node);
                         }
@@ -362,7 +362,7 @@ namespace std::ui::dock {
                     {
                         mut node& n = this.nodes[p.node];
                         _ = n.windows.remove(p.index);
-                        fix_active(mut n.active, p.index, n.windows.len());
+                        fix_active(mut n.active, p.index, n.windows.length());
                     }
                     if (this.nodes[p.node].windows.is_empty() && this.nodes[p.node].kind == part::tabs && p.node != this.root) {
                         collapse(mut this, p.node);
@@ -379,8 +379,8 @@ namespace std::ui::dock {
                     if (p.floating) {
                         record.was_floating = true;
                         record.bounds = this.floating[p.node].bounds;
-                    } else if (this.nodes[p.node].windows.len() > 1 || this.nodes[p.node].kind == part::central) {
-                        for (usize k : 0..this.nodes[p.node].windows.len()) {
+                    } else if (this.nodes[p.node].windows.length() > 1 || this.nodes[p.node].kind == part::central) {
+                        for (usize k : 0..this.nodes[p.node].windows.length()) {
                             if (k != p.index) {
                                 record.anchors.push(this.nodes[p.node].windows[k].clone());
                             }
@@ -416,7 +416,7 @@ namespace std::ui::dock {
 
         void reopen(std::str name) mut {
             mut std::option<usize> at = std::none;
-            for (usize i : 0..this.closed.len()) {
+            for (usize i : 0..this.closed.length()) {
                 if (this.closed[i].name.as_str() == name) {
                     at = std::some(i);
                 }
@@ -449,7 +449,7 @@ namespace std::ui::dock {
             for (usize i : all) {
                 if (this.nodes[i].kind == part::tabs) {
                     this.nodes[i].windows.push(std::string::from(name));
-                    this.nodes[i].active = this.nodes[i].windows.len() - 1;
+                    this.nodes[i].active = this.nodes[i].windows.length() - 1;
                     return;
                 }
             }
@@ -464,7 +464,7 @@ namespace std::ui::dock {
             match (this.central_node()) {
                 std::some(c) => {
                     this.nodes[c].windows.push(std::string::from(name));
-                    this.nodes[c].active = this.nodes[c].windows.len() - 1;
+                    this.nodes[c].active = this.nodes[c].windows.length() - 1;
                 },
                 std::none => { this.add(name); },
             }
@@ -473,17 +473,17 @@ namespace std::ui::dock {
         std::string to_text() {
             mut std::string out = std::string::from("edax-dock 1\n");
             write_node(this, this.root, 0, mut out);
-            for (usize i : 0..this.floating.len()) {
+            for (usize i : 0..this.floating.length()) {
                 floating_stack& f = this.floating[i];
-                out.push_str(std::format(f"floating {f.bounds.x} {f.bounds.y} {f.bounds.width} {f.bounds.height} {f.active} {f.windows.len()}").as_str());
+                out.push_str(std::format(f"floating {f.bounds.x} {f.bounds.y} {f.bounds.width} {f.bounds.height} {f.active} {f.windows.length()}").as_str());
                 write_names(f.windows, mut out);
                 out.push_str("\n");
             }
-            for (usize i : 0..this.closed.len()) {
+            for (usize i : 0..this.closed.length()) {
                 closed_window& c = this.closed[i];
                 out.push_str("closed ");
                 write_quoted(c.name.as_str(), mut out);
-                out.push_str(std::format(f" {side_name(c.towards)} {c.ratio} {c.index} {c.was_floating} {c.bounds.x} {c.bounds.y} {c.bounds.width} {c.bounds.height} {c.anchors.len()}").as_str());
+                out.push_str(std::format(f" {side_name(c.towards)} {c.ratio} {c.index} {c.was_floating} {c.bounds.x} {c.bounds.y} {c.bounds.width} {c.bounds.height} {c.anchors.length()}").as_str());
                 write_names(c.anchors, mut out);
                 out.push_str("\n");
             }
@@ -500,7 +500,7 @@ namespace std::ui::dock {
     // Puts `name` back beside the smallest part holding the record's anchors that are still there.
     private bool reopen_near(mut dock::layout& l, std::str name, closed_window& record) {
         mut std::darray<std::string> present = default;
-        for (usize i : 0..record.anchors.len()) {
+        for (usize i : 0..record.anchors.length()) {
             std::str a = record.anchors[i].as_str();
             bool docked = match (l.find(a)) {
                 std::some(p) => !p.floating,
@@ -515,11 +515,11 @@ namespace std::ui::dock {
         }
         mut std::option<usize> best = std::none;
         usize top_node = l.root;
-        _ = anchors_under(l, top_node, present, present.len(), mut best);
+        _ = anchors_under(l, top_node, present, present.length(), mut best);
         match (best) {
             std::some(at) => {
                 if (record.towards == side::center && !is_split(l.nodes[at].kind)) {
-                    usize to = record.index.min(l.nodes[at].windows.len());
+                    usize to = record.index.min(l.nodes[at].windows.length());
                     l.nodes[at].windows.insert(to, std::string::from(name));
                     l.nodes[at].active = to;
                     return true;
@@ -535,7 +535,7 @@ namespace std::ui::dock {
     }
 
     private void forget_closed(mut dock::layout& l, std::str name) {
-        for (usize i : 0..l.closed.len()) {
+        for (usize i : 0..l.closed.length()) {
             if (l.closed[i].name.as_str() == name) {
                 _ = l.closed.remove(i);
                 return;
@@ -567,7 +567,7 @@ namespace std::ui::dock {
     // `"text"` with `"` and `\` escaped.
     private void write_quoted(std::str text, mut std::string& out) {
         out.push_str("\"");
-        for (usize i : 0..text.len()) {
+        for (usize i : 0..text.length()) {
             u8 b = text.byte(i);
             if (b == 34 || b == 92) {
                 out.push_str("\\");
@@ -578,7 +578,7 @@ namespace std::ui::dock {
     }
 
     private void write_names(std::darray<std::string>& names, mut std::string& out) {
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             out.push_str(" ");
             write_quoted(names[i].as_str(), mut out);
         }
@@ -588,7 +588,7 @@ namespace std::ui::dock {
         for (usize i : 0..depth) {
             out.push_str("  ");
         }
-        if (at >= l.nodes.len()) {
+        if (at >= l.nodes.length()) {
             out.push_str("tabs 0 0\n");
             return;
         }
@@ -597,13 +597,13 @@ namespace std::ui::dock {
             part::split_x => { out.push_str(std::format(f"split_x {n.ratio} {n.made_ratio}\n").as_str()); },
             part::split_y => { out.push_str(std::format(f"split_y {n.ratio} {n.made_ratio}\n").as_str()); },
             part::tabs => {
-                out.push_str(std::format(f"tabs {n.active} {n.windows.len()}").as_str());
+                out.push_str(std::format(f"tabs {n.active} {n.windows.length()}").as_str());
                 write_names(n.windows, mut out);
                 out.push_str("\n");
                 return;
             },
             part::central => {
-                out.push_str(std::format(f"central {n.active} {n.windows.len()}").as_str());
+                out.push_str(std::format(f"central {n.active} {n.windows.length()}").as_str());
                 write_names(n.windows, mut out);
                 out.push_str("\n");
                 return;
@@ -617,7 +617,7 @@ namespace std::ui::dock {
     private std::darray<std::string> tokenize(std::str text) {
         mut std::darray<std::string> out = default;
         mut usize i = 0;
-        usize n = text.len();
+        usize n = text.length();
         while (i < n) {
             u8 b = text.byte(i);
             if (b == 32 || b == 10 || b == 13 || b == 9) {
@@ -655,7 +655,7 @@ namespace std::ui::dock {
     }
 
     private std::str next_word(mut reader& r) {
-        if (r.at >= r.tokens.len()) {
+        if (r.at >= r.tokens.length()) {
             r.failed = true;
             return "";
         }
@@ -669,7 +669,7 @@ namespace std::ui::dock {
             r.failed = true;
             return default;
         }
-        return std::string::from(w.slice(1, w.len()));
+        return std::string::from(w.slice(1, w.length()));
     }
 
     private f32 next_number(mut reader& r) {
@@ -709,7 +709,7 @@ namespace std::ui::dock {
             }
             part kind = if (word.as_str() == "split_x") { part::split_x } else { part::split_y };
             l.nodes.push(node{ .kind = kind, .ratio = ratio.clamp(0.02, 0.98), .made_ratio = made.clamp(0.02, 0.98), .first = a.value_or(0), .second = b.value_or(0) });
-            return std::some(l.nodes.len() - 1);
+            return std::some(l.nodes.length() - 1);
         }
         if (word.as_str() == "tabs" || word.as_str() == "central") {
             usize active = next_count(mut r);
@@ -718,9 +718,9 @@ namespace std::ui::dock {
             for (usize i : 0..count.min(1000)) {
                 n.windows.push(next_name(mut r));
             }
-            n.active = if (n.windows.is_empty()) { 0 } else { active.min(n.windows.len() - 1) };
+            n.active = if (n.windows.is_empty()) { 0 } else { active.min(n.windows.length() - 1) };
             l.nodes.push(move n);
-            return std::some(l.nodes.len() - 1);
+            return std::some(l.nodes.length() - 1);
         }
         r.failed = true;
         return std::none;
@@ -749,7 +749,7 @@ namespace std::ui::dock {
                 for (usize i : 0..count.min(1000)) {
                     f.windows.push(next_name(mut r));
                 }
-                f.active = if (f.windows.is_empty()) { 0 } else { active.min(f.windows.len() - 1) };
+                f.active = if (f.windows.is_empty()) { 0 } else { active.min(f.windows.length() - 1) };
                 if (!f.windows.is_empty()) {
                     l.floating.push(move f);
                 }
@@ -781,22 +781,14 @@ namespace std::ui::dock {
             return workspace{ .now = move start, .active = std::string::from("Default") };
         }
 
-        static std::option<workspace> load(std::str path) {
-            mut std::file f = match (std::file::open(path)) {
-                std::ok(opened) => move opened,
-                std::error(_) => { return std::none; },
-            };
-            std::string text = match (f.read_all()) {
-                std::ok(t) => move t,
-                std::error(_) => { return std::none; },
-            };
-            mut reader r = reader{ .tokens = tokenize(text.as_str()) };
+        static std::option<workspace> from_text(std::str text) {
+            mut reader r = reader{ .tokens = tokenize(text) };
             if (next_word(mut r) != "edax-workspace") {
                 return std::none;
             }
             _ = next_word(mut r);
             mut workspace ws = default;
-            while (!r.failed && r.at < r.tokens.len()) {
+            while (!r.failed && r.at < r.tokens.length()) {
                 std::string word = std::string::from(next_word(mut r));
                 if (word.as_str() == "active") {
                     ws.active = next_name(mut r);
@@ -821,63 +813,56 @@ namespace std::ui::dock {
             return std::some(move ws);
         }
 
-        std::result<void, std::io_error> save(std::str path) mut {
+        std::string to_text() {
             mut std::string text = std::string::from("edax-workspace 1\nactive ");
             write_quoted(this.active.as_str(), mut text);
             text.push_str("\ncurrent\n");
             text.push_str(this.now.to_text().as_str());
-            for (usize i : 0..this.kept.len()) {
+            for (usize i : 0..this.kept.length()) {
                 text.push_str("kept ");
                 write_quoted(this.kept[i].name.as_str(), mut text);
                 text.push_str("\n");
                 text.push_str(this.kept[i].saved.to_text().as_str());
             }
-            mut std::file f = std::file::create(path)?;
-            _ = f.write(text.as_str())?;
-            f.flush()?;
-            this.changed = false;
-            return std::ok();
+            return text;
         }
 
-        bool save_if_changed(std::str path) mut {
-            if (!this.changed) {
-                return false;
-            }
-            return this.save(path).is_ok();
-        }
+        bool changed() { return this.dirty; }
+
+        void mark_saved() mut { this.dirty = false; }
 
         dock::layout& current() {
             return this.now;
         }
 
         mut dock::layout& edit() mut {
-            this.changed = true;
+            this.dirty = true;
             return this.now;
         }
 
         void reset(dock::layout l) mut {
             this.now = move l;
-            this.changed = true;
+            this.dirty = true;
         }
 
         void save_as(std::str name) mut {
             dock::layout copy = this.now.clone();
-            for (usize i : 0..this.kept.len()) {
+            for (usize i : 0..this.kept.length()) {
                 if (this.kept[i].name.as_str() == name) {
                     this.kept[i].saved = move copy;
                     this.active = std::string::from(name);
-                    this.changed = true;
+                    this.dirty = true;
                     return;
                 }
             }
             this.kept.push(named_layout{ .name = std::string::from(name), .saved = move copy });
             this.active = std::string::from(name);
-            this.changed = true;
+            this.dirty = true;
         }
 
         bool switch_to(std::str name) mut {
             mut std::option<usize> found = std::none;
-            for (usize i : 0..this.kept.len()) {
+            for (usize i : 0..this.kept.length()) {
                 if (this.kept[i].name.as_str() == name) {
                     found = std::some(i);
                 }
@@ -888,7 +873,7 @@ namespace std::ui::dock {
                     this.save_as(current_name.as_str());
                     this.now = this.kept[i].saved.clone();
                     this.active = std::string::from(name);
-                    this.changed = true;
+                    this.dirty = true;
                     return true;
                 },
                 std::none => { return false; },
@@ -897,7 +882,7 @@ namespace std::ui::dock {
 
         std::darray<std::string> names() {
             mut std::darray<std::string> out = default;
-            for (usize i : 0..this.kept.len()) {
+            for (usize i : 0..this.kept.length()) {
                 out.push(this.kept[i].name.clone());
             }
             return out;
@@ -909,12 +894,12 @@ namespace std::ui::dock {
 
         void close(std::str name) mut {
             this.now.close(name);
-            this.changed = true;
+            this.dirty = true;
         }
 
         void reopen(std::str name) mut {
             this.now.reopen(name);
-            this.changed = true;
+            this.dirty = true;
         }
 
         void set_icon(std::str name, std::ui::icon symbol) mut {
@@ -930,7 +915,7 @@ namespace std::ui::dock {
         }
 
         std::option<std::ui::rect> tab_of(std::str name) {
-            for (usize i : 0..this.tabs.len()) {
+            for (usize i : 0..this.tabs.length()) {
                 if (this.tabs[i].name.as_str() == name) {
                     return std::some(this.tabs[i].bounds);
                 }
@@ -940,7 +925,7 @@ namespace std::ui::dock {
 
         std::darray<std::string> closed_windows() {
             mut std::darray<std::string> out = default;
-            for (usize i : 0..this.now.closed.len()) {
+            for (usize i : 0..this.now.closed.length()) {
                 out.push(this.now.closed[i].name.clone());
             }
             return out;
@@ -969,7 +954,7 @@ namespace std::ui::dock {
 
     // Lays out the docked part: stacks into ws.areas, dividers handled and drawn.
     private void lay_out(mut std::ui::immediate::context& ctx, mut workspace& ws, u64 space_id, usize chrome, usize at, std::ui::rect r) {
-        if (at >= ws.now.nodes.len()) {
+        if (at >= ws.now.nodes.length()) {
             return;
         }
         std::ui::theme t = ctx.look;
@@ -993,7 +978,7 @@ namespace std::ui::dock {
             f32 share = (offset / span.max(1.0)).clamp(0.05, 0.95);
             if (share != ws.now.nodes[at].ratio) {
                 ws.now.nodes[at].ratio = share;
-                ws.changed = true;
+                ws.dirty = true;
             }
         }
         f32 divider_gap = t.controls.window.dock_gap;
@@ -1021,7 +1006,7 @@ namespace std::ui::dock {
             if (ws.divider_clicked == at + 1 && ctx.clock - ws.divider_click_at < 0.35) {
                 // A double-click: back to the share the layout was made with.
                 ws.now.nodes[at].ratio = ws.now.nodes[at].made_ratio;
-                ws.changed = true;
+                ws.dirty = true;
                 ws.divider = 0;
                 ws.divider_click_at = -10.0;
             } else {
@@ -1074,7 +1059,7 @@ namespace std::ui::dock {
         f32 close_size = (16.0 * t.density).round();
         mut f32 x = s.bar.x + 4.0;
         mut bool changed = false;
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             std::str name = names[i].as_str();
             std::ui::icon symbol = ws.icon_of(name);
             f32 icon_room = if (symbol == std::ui::icon::none) { 0.0 } else { (14.0 * t.density).round() + 6.0 };
@@ -1091,7 +1076,7 @@ namespace std::ui::dock {
             bool on_close = close_resp.state.hovered;
             if (close_resp.clicked && !changed) {
                 ws.now.close(name);
-                ws.changed = true;
+                ws.dirty = true;
                 changed = true;
             } else if (resp.state.hovered && ctx.in.mouse_pressed && !on_close) {
                 if (s.floating) {
@@ -1105,7 +1090,7 @@ namespace std::ui::dock {
                 ws.drag_from = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
                 ws.focus = s.node + 1;
                 ws.focus_floating = s.floating;
-                ws.changed = true;
+                ws.dirty = true;
             }
             bool is_active = i == active;
             bool dragged_away = ws.drag_started && ws.dragging.as_str() == name;
@@ -1163,7 +1148,7 @@ namespace std::ui::dock {
         // The stack under the cursor: floating ones first (the front-most), then docked ones.
         mut std::option<usize> under = std::none;
         mut u64 best = 0;
-        for (usize i : 0..ws.areas.len()) {
+        for (usize i : 0..ws.areas.length()) {
             stack_area s = ws.areas[i];
             std::ui::rect whole = std::ui::rect{ .x = s.bar.x, .y = s.bar.y, .width = s.bar.width, .height = s.bar.height + s.content.height };
             if (whole.contains(cursor) && (under.is_none() || s.order > best)) {
@@ -1236,7 +1221,7 @@ namespace std::ui::dock {
     // The window any other than `name` in the stack, or the stack's marker when it has none.
     private std::string anchor_of(workspace& ws, stack_area& s, std::str name) {
         std::darray<std::string> names = stack_windows(ws, s);
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             if (names[i].as_str() != name) {
                 return names[i].clone();
             }
@@ -1272,9 +1257,9 @@ namespace std::ui::dock {
             f32 h = ws.drag_from.height.clamp(200.0, 480.0);
             match (ws.now.find(n)) {
                 std::some(p) => {
-                    if (p.floating && ws.now.floating[p.node].windows.len() == 1) {
+                    if (p.floating && ws.now.floating[p.node].windows.length() == 1) {
                         ws.now.floating[p.node].bounds = std::ui::rect{ .x = at.x, .y = at.y, .width = ws.now.floating[p.node].bounds.width, .height = ws.now.floating[p.node].bounds.height };
-                        ws.changed = true;
+                        ws.dirty = true;
                         return;
                     }
                 },
@@ -1283,33 +1268,33 @@ namespace std::ui::dock {
             ws.now.remove(n);
             ws.now.float_window(n, std::ui::rect{ .x = at.x, .y = at.y, .width = w, .height = h });
             ctx.next_order += 2;
-            usize last = ws.now.floating.len() - 1;
+            usize last = ws.now.floating.length() - 1;
             ws.now.floating[last].order = ctx.next_order - 1;
         }
-        ws.changed = true;
+        ws.dirty = true;
     }
 
     // Floating stacks: their bars (move, tabs) and frames; their content goes into panels later.
     private bool floating_stacks(mut std::ui::immediate::context& ctx, mut workspace& ws, u64 space_id) {
         std::ui::theme t = ctx.look;
         f32 bar = bar_height(t);
-        for (usize i : 0..ws.now.floating.len()) {
+        for (usize i : 0..ws.now.floating.length()) {
             if (ws.now.floating[i].order < 16) {
                 ctx.next_order += 2;
                 ws.now.floating[i].order = ctx.next_order - 1;
             }
         }
         // Moving a floating stack by its bar.
-        if (ws.moving > 0 && ws.moving <= ws.now.floating.len() && ctx.in.mouse_down) {
+        if (ws.moving > 0 && ws.moving <= ws.now.floating.length() && ctx.in.mouse_down) {
             mut floating_stack& f = ws.now.floating[ws.moving - 1];
             std::ui::vec2 at = ctx.in.cursor - ws.move_offset;
             f.bounds = std::ui::rect{ .x = at.x.round(), .y = at.y.round(), .width = f.bounds.width, .height = f.bounds.height };
-            ws.changed = true;
+            ws.dirty = true;
         }
         if (!ctx.in.mouse_down) {
             ws.moving = 0;
         }
-        for (usize i : 0..ws.now.floating.len()) {
+        for (usize i : 0..ws.now.floating.length()) {
             floating_stack f = floating_stack{ .bounds = ws.now.floating[i].bounds, .order = ws.now.floating[i].order };
             u64 chrome_id = std::hash_combine(std::hash_combine(space_id, 0x666c6f), cast<u64>(i));
             std::ui::rect b = f.bounds;
@@ -1320,7 +1305,7 @@ namespace std::ui::dock {
                 ws.now.floating[i].order = ctx.next_order - 1;
             }
             u64 order = ws.now.floating[i].order;
-            usize index = ctx.layers.len();
+            usize index = ctx.layers.length();
             ctx.layers.push(std::ui::immediate::layer{ .window = chrome_id, .order = order, .bounds = bar_rect });
             ctx.layers[index].list.begin(ctx.frame_size);
             {
@@ -1332,7 +1317,7 @@ namespace std::ui::dock {
                     .focused = focused, .floating = true,
                 });
             }
-            usize area_index = ws.areas.len();
+            usize area_index = ws.areas.length();
             ws.areas.push(stack_area{
                 .floating = true, .node = i, .bar = bar_rect,
                 .content = std::ui::rect{ .x = b.x + 1.0, .y = b.y + bar, .width = b.width - 2.0, .height = (b.height - bar - 1.0).max(0.0) },
@@ -1360,7 +1345,7 @@ namespace std::ui::dock {
         space dockspace_in(std::str name, mut workspace& ws, std::ui::rect area) mut override {
         u64 id = std::hash_combine(std::hash(name), 0x646f636b);
         this.ctx.touch(id);
-        usize chrome = this.ctx.layers.len();
+        usize chrome = this.ctx.layers.length();
         this.ctx.layers.push(std::ui::immediate::layer{ .window = id, .order = chrome_order, .bounds = area });
         this.ctx.layers[chrome].list.begin(this.ctx.frame_size);
         std::ui::theme t = this.ctx.look;
@@ -1375,7 +1360,7 @@ namespace std::ui::dock {
             usize root = ws.now.root;
             lay_out(mut this.ctx, mut ws, id, chrome, root, area);
             mut bool changed = false;
-            usize docked = ws.areas.len();
+            usize docked = ws.areas.length();
             for (usize i : 0..docked) {
                 if (!changed && tab_bar(mut this.ctx, mut ws, id, chrome, id, i)) {
                     changed = true;
@@ -1420,7 +1405,7 @@ namespace std::ui::dock {
         std::ui::immediate::scope window(std::str name) mut {
             if (!this.ws.now.contains(name) && !this.ws.now.is_closed(name)) {
                 this.ws.now.add(name);
-                this.ws.changed = true;
+                this.ws.dirty = true;
             }
             return this.content_of(name);
         }
@@ -1428,7 +1413,7 @@ namespace std::ui::dock {
         std::ui::immediate::scope document(std::str name) mut {
             if (!this.ws.now.contains(name) && !this.ws.now.is_closed(name)) {
                 this.ws.now.add_document(name);
-                this.ws.changed = true;
+                this.ws.dirty = true;
             }
             return this.content_of(name);
         }
@@ -1449,7 +1434,7 @@ namespace std::ui::dock {
         std::ui::immediate::scope content_of(std::str name) mut {
             match (this.ws.now.find(name)) {
                 std::some(p) => {
-                    for (usize i : 0..this.ws.areas.len()) {
+                    for (usize i : 0..this.ws.areas.length()) {
                         stack_area s = this.ws.areas[i];
                         if (s.floating != p.floating || s.node != p.node) {
                             continue;
@@ -1485,7 +1470,7 @@ namespace std::ui::dock {
         mut f32 share = ratio;
         {
             mut std::ui::immediate::widget_storage& st = s.storage(id);
-            if (st.numbers.len() < 2) {
+            if (st.numbers.length() < 2) {
                 st.numbers.resize(2, cast<f64>(ratio));
             }
             share = cast::round<f32>(st.numbers[0]);
@@ -1501,7 +1486,7 @@ namespace std::ui::dock {
         std::ui::immediate::response resp = s.interact(std::hash_combine(id, 0x646976), handle);
         bool double_click = {
             mut std::ui::immediate::widget_storage& st = s.storage(id);
-            if (st.numbers.len() < 3) {
+            if (st.numbers.length() < 3) {
                 st.numbers.resize(3, -10.0);
             }
             bool twice = resp.state.hovered && s.ctx.in.mouse_pressed && s.ctx.clock - st.numbers[2] < 0.35;
@@ -1581,7 +1566,7 @@ namespace std::ui::dock {
             if (closed.is_empty()) {
                 this.muted(f"No closed windows");
             }
-            for (usize i : 0..closed.len()) {
+            for (usize i : 0..closed.length()) {
                 mut std::ui::immediate::scope item = this.id(i);
                 if (item.button(std::format(f"Reopen {closed[i]}").as_str())) {
                     ws.reopen(closed[i].as_str());

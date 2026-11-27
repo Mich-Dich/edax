@@ -10,5 +10,5 @@ exit: 0
 --- stderr
 edaxc run: debug, 1 target
  ✓ build.ed       25 targets <t>
- ✓ calculator     5 units, 5.51 KiB <t>  %t/debug/calculator
+ ✓ calculator     5 units, 5.53 KiB <t>  %t/debug/calculator
 built 1 target in <t> (0 up to date): 0 errors, 0 warnings   details: %t/debug/.edax/logs/build.log

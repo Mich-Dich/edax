@@ -26,10 +26,10 @@ namespace std::windowing::x11 {
     unsafe std::raw_ptr<mut u8> symbol(library lib, std::str name) {
         // C wants a NUL-terminated name: copied to the stack (symbol names are short).
         mut std::raw::array<u8, 128> buffer = default;
-        run_time check (name.len() < 128) else f"std::windowing: symbol name too long: {name}";
+        run_time check (name.length() < 128) else f"std::windowing: symbol name too long: {name}";
         std::raw_ptr<mut u8> bytes = cast::reinterpret<std::raw_ptr<mut u8>>(mut &buffer);
-        std::raw::copy(bytes, name.as_ptr(), name.len());
-        std::raw::write(bytes.offset(name.len()), 0u8);
+        std::raw::copy(bytes, name.as_ptr(), name.length());
+        std::raw::write(bytes.offset(name.length()), 0u8);
         return dlsym(lib.handle, bytes);
     }
 

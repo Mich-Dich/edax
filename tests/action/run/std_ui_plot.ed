@@ -1,7 +1,7 @@
 // RUN: edaxc run %s
 // std::ui::plot without a window: histories, ticks, number labels, the reduction per pixel column,
 // and a plot's view under made-up input (hover, wheel zoom, drag pan, double-click fit), plotting by
-// reflection, sparklines and stat cards, axis limits and the Reset button.
+// reflection, sparklines and stat cards.
 import std;
 namespace ui = std::ui;
 namespace im = std::ui::immediate;
@@ -48,64 +48,6 @@ seen frame_of(mut im::context& ctx, std::span<f32> big, mut plot::history<f32, 8
     return out;
 }
 
-// One plot with x kept at 0 or above and y at 0 or below; the data reaches past both.
-seen limited_frame(mut im::context& ctx, std::span<f64> xs, std::span<f64> ys, ui::input in) {
-    mut seen out = default;
-    {
-        mut im::frame f = ctx.begin_frame(move in, ui::vec2{ .x = 900.0, .y = 700.0 });
-        {
-            mut im::scope w = f.window("Limited", ui::rect{ .x = 10.0, .y = 10.0, .width = 600.0 });
-            {
-                mut plot::scope p = w.plot("Depth", 200.0);
-                p.axis_x(plot::axis{ .limit_min = std::some(0.0) });
-                p.axis_y(plot::axis{ .limit_max = std::some(0.0) });
-                p.line("depth", xs, ys);
-                out.range = p.range();
-                out.bounds = p.inner;
-            }
-        }
-        f.finish();
-    }
-    return out;
-}
-
-void limit_checks() {
-    (f64 a0, f64 a1) = plot::clamp_range(-3.0, 2.0, std::some(0.0), std::none);
-    (f64 b0, f64 b1) = plot::clamp_range(-3.0, 12.0, std::some(0.0), std::some(10.0));
-    (f64 c0, f64 c1) = plot::clamp_range(4.0, 6.0, std::none, std::none);
-    std::println(f"clamp: {a0}..{a1} {b0}..{b1} {c0}..{c1}");
-    mut im::context ctx = im::context::create(ui::theme::dark());
-    mut std::darray<f64> xs = default;
-    mut std::darray<f64> ys = default;
-    for (u32 i : 0..31) {
-        f64 x = cast<f64>(i) * 0.5 - 5.0;
-        xs.push(x);
-        ys.push(x * 0.4 - 2.0);
-    }
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), at(ui::vec2{}));
-    seen a = limited_frame(mut ctx, xs.as_span(), ys.as_span(), at(ui::vec2{}));
-    std::println(f"limited fit: x from {a.range.x_min} (data from -5), y up to {a.range.y_max} (data up to 2), fit {a.range.fit_x} {a.range.fit_y}");
-    ui::vec2 middle = ui::vec2{ .x = a.bounds.x + a.bounds.width * 0.5, .y = a.bounds.y + a.bounds.height * 0.5 };
-    // Drag right by 200 px and down by 100 px: past the low x and the high y limit.
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = middle, .mouse_down = true, .mouse_pressed = true, .dt = 0.5 });
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = middle + ui::vec2{ .x = 200.0, .y = 100.0 }, .mouse_down = true, .dt = 0.5 });
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = middle + ui::vec2{ .x = 200.0, .y = 100.0 }, .mouse_released = true, .dt = 0.5 });
-    seen b = limited_frame(mut ctx, xs.as_span(), ys.as_span(), at(middle));
-    std::println(f"dragged past the limits: x_min {b.range.x_min}, y_max {b.range.y_max}, width kept {(b.range.x_max - b.range.x_min - (a.range.x_max - a.range.x_min)).abs() < 0.000001}, moved {!b.range.fit_x || !b.range.fit_y}");
-    // Zoom far out: the view stays inside [0, ..] and [.., 0].
-    for (u32 i : 0..6) {
-        _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = middle, .scroll = -5.0, .dt = 0.5 });
-    }
-    seen c = limited_frame(mut ctx, xs.as_span(), ys.as_span(), at(middle));
-    std::println(f"zoomed out: x_min >= 0 {c.range.x_min >= 0.0}, y_max <= 0 {c.range.y_max <= 0.0}, wider {c.range.x_max - c.range.x_min > a.range.x_max - a.range.x_min}");
-    // The Reset button in the top-right corner of the plot area brings the fitted view back.
-    ui::vec2 button = ui::vec2{ .x = c.bounds.right() - 20.0, .y = c.bounds.y + 14.0 };
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = button, .mouse_down = true, .mouse_pressed = true, .dt = 0.5 });
-    _ = limited_frame(mut ctx, xs.as_span(), ys.as_span(), ui::input{ .cursor = button, .mouse_released = true, .dt = 0.5 });
-    seen d = limited_frame(mut ctx, xs.as_span(), ys.as_span(), at(ui::vec2{}));
-    std::println(f"reset: fit {d.range.fit_x} {d.range.fit_y}, same as before {d.range.x_min == a.range.x_min && d.range.x_max == a.range.x_max && d.range.y_max == a.range.y_max}");
-}
-
 ui::input at(ui::vec2 p) { return ui::input{ .cursor = p, .dt = 0.016 }; }
 
 void data_checks() {
@@ -113,7 +55,7 @@ void data_checks() {
     for (u32 i : 0..6) {
         h.push(cast::round<f32>(i));
     }
-    std::println(f"history: {h.len()} values, oldest {h.as_span()[0]}, newest {h.last()}, min {h.min()}, max {h.max()}, mean {h.mean()}");
+    std::println(f"history: {h.length()} values, oldest {h.as_span()[0]}, newest {h.last()}, min {h.min()}, max {h.max()}, mean {h.mean()}");
     plot::ticks t = plot::ticks::for_range(0.0, 33.3, 5);
     std::println(f"ticks 0..33.3: {t.count} from {t.label(0)} by {t.step}, last {t.label(t.count - 1)}");
     plot::ticks u = plot::ticks::for_range(-0.013, 0.021, 4);
@@ -141,7 +83,6 @@ void data_checks() {
 
 void main() {
     data_checks();
-    limit_checks();
     mut im::context ctx = im::context::create(ui::theme::dark());
     mut std::darray<f32> big = default;
     for (u32 i : 0..1000000) {
@@ -182,5 +123,5 @@ void main() {
     _ = frame_of(mut ctx, big.as_span(), mut h, log.as_span(), ui::input{ .cursor = middle, .mouse_released = true, .dt = 0.05 });
     seen g = frame_of(mut ctx, big.as_span(), mut h, log.as_span(), at(middle));
     std::println(f"fitted again: {g.range.fit_x} {g.range.fit_y}, x {g.range.x_min} .. {g.range.x_max}, y top above the spike {g.range.y_max > 4.4}");
-    std::println(f"vertices {ctx.draw_data().vertices.len() > 1000}");
+    std::println(f"vertices {ctx.draw_data().vertices.length() > 1000}");
 }

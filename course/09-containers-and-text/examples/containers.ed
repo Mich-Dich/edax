@@ -6,7 +6,7 @@ i32 main() {
     std::array<u32, 3> start = [5, 3, 8];               // a list literal needs a type to be iterated
     for (u32 v : start) { xs.push(v); }
     xs.sort();
-    std::println(f"{xs.len()} {xs[0]} {xs.contains(8)} {xs.get(10).is_some()}");
+    std::println(f"{xs.length()} {xs[0]} {xs.contains(8)} {xs.get(10).is_some()}");
 
     mut std::tree_map<std::str, u32> stock = default;     // ordered by key, like std::map
     stock.insert("tea", 3);

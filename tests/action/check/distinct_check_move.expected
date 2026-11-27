@@ -1,0 +1,18 @@
+exit: 1
+--- stdout
+--- stderr
+error[E5001]: 'n' has type 'name', which is not a copy type
+ --> tests/action/check/distinct_check_move.ed:9:24
+  |
+9 |     std::string copy = n;
+  |                        ^ would be copied
+  = note: write 'move n' to transfer ownership, or 'n.clone()' for a visible copy
+
+error[E5001]: 'n' has type 'name', which is not a copy type
+  --> tests/action/check/distinct_check_move.ed:10:42
+   |
+10 |     std::string text = cast<std::string>(n);
+   |                                          ^ would be copied
+   = note: write 'move n' to transfer ownership, or 'n.clone()' for a visible copy
+
+2 errors, 0 warnings

@@ -205,7 +205,7 @@ namespace gallery {
 }
 
 std::exit_code main(std::span<std::str> args) {
-    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    std::option<std::str> screenshot = if (args.length() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
 
     mut wnd::system sys = match (wnd::system::start()) {
         std::ok(s) => move s,
@@ -275,8 +275,8 @@ std::exit_code main(std::span<std::str> args) {
                     std::image::rgba8 shot = renderer.read_pixels(frame);
                     std::darray<u8> png = std::image::encode_png(shot);
                     mut std::file out = std::file::create(path).expect("the screenshot file");
-                    _ = out.write(unsafe { std::raw::str_from(&png[0], png.len()) });
-                    std::println(f"{list.vertices.len()} vertices, {list.indices.len() / 3} triangles, {list.commands.len()} draw calls, atlas {fonts.atlas_width()}x{fonts.atlas_height()}");
+                    _ = out.write(unsafe { std::raw::str_from(&png[0], png.length()) });
+                    std::println(f"{list.vertices.length()} vertices, {list.indices.length() / 3} triangles, {list.commands.length()} draw calls, atlas {fonts.atlas_width()}x{fonts.atlas_height()}");
                     finished = true;
                 },
                 std::none => {},

@@ -6,7 +6,7 @@ struct holder {
 }
 
 std::str longer(std::str a, std::str b) {            //~ error[E5012]
-    if (a.len() >= b.len()) { return a; }
+    if (a.length() >= b.length()) { return a; }
     return b;
 }
 

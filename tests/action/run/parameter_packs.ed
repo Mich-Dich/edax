@@ -1,6 +1,6 @@
 // RUN: edaxc run %s
 // Parameter packs (templates, "Parameter packs"): walked with for compile_time, passed on whole
-// with values..., counted with values.len(), after ordinary template parameters.
+// with values..., counted with values.length(), after ordinary template parameters.
 import std;
 
 template<type... A>
@@ -8,7 +8,7 @@ void print_all(A&... values) {
     for compile_time (A& v : values) {
         std::print(f"{v} ");
     }
-    std::println(f"({values.len()} values)");
+    std::println(f"({values.length()} values)");
 }
 
 template<type... A>

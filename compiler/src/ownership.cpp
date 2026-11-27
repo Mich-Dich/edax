@@ -960,7 +960,7 @@ private:
         case StmtKind::destructure: {   // consumes the tuple: its elements move into the new variables
             auto& d = s.as<DestructureStmt>();
             walk(*d.init);
-            consume(*d.init, d.init->type);
+            if (!d.by_reference) consume(*d.init, d.init->type);   // a loop's names for a container's element refer into it
             for (DestructureBinding& b : d.bindings) {
                 if (!b.symbol) continue;
                 frame_.state.moved.erase(b.symbol);
@@ -1003,6 +1003,12 @@ private:
             Expr& operand = *e.as<TryExpr>().operand;
             walk(operand);
             consume(operand, nullptr);   // `r?` takes the value out of `r` (spec 11)
+            return;
+        }
+        case ExprKind::cast: {
+            auto& c = e.as<CastExpr>();
+            walk(*c.operand);
+            if (c.variant.empty()) consume(*c.operand, nullptr);   // `cast<meters>(x)`, `cast<path>(move p)` take the value (spec 34)
             return;
         }
         case ExprKind::struct_literal: {
@@ -1100,10 +1106,11 @@ private:
                 hold(f.symbol, *f.iterable, f.iterable->span);
             }
             const Symbol* borrowed = nullptr;
-            bool          by_ref   = f.type->kind == TypeKind::reference;
+            bool          by_ref   = f.symbol && f.symbol->type ? f.symbol->type->is(Kind::reference)   // `auto` too
+                                                                  : f.type->kind == TypeKind::reference;
             if (by_ref) borrowed = root_of(*f.iterable);
             if (borrowed == &this_root_) borrowed = nullptr;
-            bool is_mut = by_ref && f.type->as<ReferenceType>().is_mut;
+            bool is_mut = by_ref && f.symbol && f.symbol->type ? f.symbol->type->is_mut : by_ref && f.type->as<ReferenceType>().is_mut;
             loop_path_.clear();
             if (borrowed) {   // `for (f32& v : w.b)` borrows w.b, not w.a (spec 34)
                 bool ended = false;

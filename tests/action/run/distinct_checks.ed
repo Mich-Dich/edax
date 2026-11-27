@@ -1,0 +1,33 @@
+// RUN: edaxc run %s
+// Distinct types with a check (spec 34): `cast` runs the check (at compile time when the value is
+// known there), the value is lent as its underlying type (read-only references, read-only methods
+// and operators) and moves into it; a failed check at run time is a panic.
+import std;
+
+distinct type port = u16 check (value != 0) else "a port is never 0";
+distinct type name = std::string check (!value.is_empty()) else "a name is not empty";
+
+compile_time port http = cast<port>(80);
+compile_time u16 http_raw = http;
+compile_time check (http_raw == 80) else "a checked cast is known at compile time";
+
+void show(std::string& text) { std::println(f"show: {text}"); }
+u16 number(port p) { return p; }
+name make(std::str text) { return cast<name>(std::string::from(text)); }
+
+std::exit_code main(std::span<std::str> args) {
+    name n = make("a name long enough to live on the heap");
+    show(n);                                         // lent as std::string&
+    std::println(f"{n.length()} {n.as_str()}");         // read-only methods of std::string
+    name same = make("a name long enough to live on the heap");
+    std::println(f"equal: {n == same}");             // its operator==
+    std::string taken = move n;                      // moves into the underlying type
+    std::println(taken);
+    port p = cast<port>(8080);
+    u16 raw = p;                                     // a copy type: copied out
+    std::println(f"{raw} {number(p)} {http_raw}");
+    u16 zero = cast::truncate<u16>(args.length() - 1);
+    port bad = cast<port>(zero);
+    std::println("not reached");
+    return std::exit_code::success;
+}

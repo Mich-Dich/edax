@@ -16,7 +16,7 @@ compile_time std::array<i16, 8> readings = [-35, -12, 4, 31, 87, 122, 96, 18];
 
 // The mean in degrees. The sum of i16 values doesn't fit in an i16: add them up as i64.
 f64 mean_degrees(std::span<i16> values) {
-    // TODO: the sum, then divide as f64 (not as integers). values.len() is a usize.
+    // TODO: the sum, then divide as f64 (not as integers). values.length() is a usize.
     // Which casts are lossless (plain `cast<...>`), and which have to say how they may lose data?
     return 0.0;
 }

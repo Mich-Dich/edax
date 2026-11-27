@@ -37,7 +37,7 @@ namespace shop {
     // `text` followed by spaces up to `width` characters.
     void put_padded(mut std::string& out, std::str text, u32 width) {
         out.push_str(text);
-        for (usize i : text.len()..cast<usize>(width)) {
+        for (usize i : text.length()..cast<usize>(width)) {
             out.push(' ');
         }
     }

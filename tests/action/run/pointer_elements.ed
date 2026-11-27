@@ -25,7 +25,7 @@ std::exit_code main() {
         }
         std::println(f"reference return: {(*first(items)).handle}");
         items.retain([a](std::raw_ptr<mut item>& other) { return other != a; });
-        std::println(f"retain kept {items.len()}, the other one: {items[0] == b}");
+        std::println(f"retain kept {items.length()}, the other one: {items[0] == b}");
         std::raw::free(a);
         std::raw::free(b);
     }

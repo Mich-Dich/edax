@@ -39,8 +39,8 @@ std::exit_code main() {
 
     std::string other = std::string::from("x");
     std::string taken = move other;
-    std::println(f"{shapes.len()} {grow.len()} {loop.len()} {s} {taken}");
-    std::println(f"count {shapes.len()} ok {true}");
+    std::println(f"{shapes.length()} {grow.length()} {loop.length()} {s} {taken}");
+    std::println(f"count {shapes.length()} ok {true}");
     u32 k = 7;
     u32 r = k % 4;
     return std::exit_code::success;

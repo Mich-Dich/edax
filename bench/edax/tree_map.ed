@@ -26,6 +26,6 @@ i32 main() {
         previous = e.key;
         walk +%= cast<u64>(e.value);
     }
-    std::println(f"{m.len()} {found} {walk} {sorted}");
+    std::println(f"{m.length()} {found} {walk} {sorted}");
     return 0;
 }

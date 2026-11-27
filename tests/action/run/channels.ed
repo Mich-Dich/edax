@@ -5,7 +5,7 @@ struct job {
     u32         id;
     std::string path;
 }
-u64 work(std::str path) { return cast<u64>(path.len()); }
+u64 work(std::str path) { return cast<u64>(path.length()); }
 std::exit_code main() {
     std::channel<job> jobs    = std::channel<job>::bounded(4);
     std::channel<u64> results = std::channel<u64>::unbounded();

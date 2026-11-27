@@ -4,8 +4,8 @@ SIMD (single instruction, multiple data) runs one operation on several values at
 
 ```edax
 void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
-    run_time check (a.len() == result.len() && b.len() == result.len()) else "add_arrays: lengths differ";
-    for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
+    run_time check (a.length() == result.length() && b.length() == result.length()) else "add_arrays: lengths differ";
+    for (std::simd::block<8> at : std::simd::blocks<8>(result.length())) {
         result.store(at, a.load(at) + b.load(at));        // 8 floats per step; the last block may be partial
     }
 }
@@ -106,7 +106,7 @@ All loads and stores accept any alignment. `std::darray` and `std::array` of num
 for (std::simd::block<8> at : std::simd::blocks<8>(n)) { ... }
 ```
 - `std::simd::blocks<N>(n)` is a stream (see [Control Flow](../basics/control-flow.md)) of `std::simd::block<N>` values covering `0..n`. Every block is full (`N` elements) except possibly the last one.
-- A block has `.start`, `.len()` (`N`, or fewer in the last block), `.active` (a `std::simd::mask<N>` of the lanes inside `0..n`) and `.is_full()`.
+- A block has `.start`, `.length()` (`N`, or fewer in the last block), `.active` (a `std::simd::mask<N>` of the lanes inside `0..n`) and `.is_full()`.
 - `s.load(at)` on a `std::span<T>` gives a `vec<T, N>`; lanes past the end are `0` (they are never read from memory). `s.store(at, v)` on a `std::span<mut T>` writes only the active lanes. Both check the block against the span's length once per block.
 - **Inactive lanes can't panic:** integer overflow and division checks only look at active lanes, so the zeros in a partial block are harmless.
 - **What it compiles to:** a loop over the full blocks with plain vector loads and stores, followed by **one** step with masked loads and stores (native on AVX-512 and SVE; a short sequence elsewhere). There is no per-block branch in the full-block loop.
@@ -118,7 +118,7 @@ for (std::simd::block<8> at : std::simd::blocks<8>(n)) { ... }
   @std::simd::multiversion{ .levels = [std::build::cpu::x86_64_v2, std::build::cpu::x86_64_v3, std::build::cpu::x86_64_v4] }
   void blur_row(std::span<f32> input, std::span<mut f32> output) {
       compile_time usize w = std::simd::native_lanes<f32>();      // 4, 8 or 16, per version
-      for (std::simd::block<w> at : std::simd::blocks<w>(output.len())) { ... }
+      for (std::simd::block<w> at : std::simd::blocks<w>(output.length())) { ... }
   }
   ```
   The choice is made once per process (one indirect call per call afterwards). Functions it calls are compiled for the same level.
@@ -150,8 +150,8 @@ unsafe {
 ### 1. The C++ example, side by side
 ```edax
 void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
-    run_time check (a.len() == result.len() && b.len() == result.len()) else "add_arrays: lengths differ";
-    for (std::simd::block<8> at : std::simd::blocks<8>(result.len())) {
+    run_time check (a.length() == result.length() && b.length() == result.length()) else "add_arrays: lengths differ";
+    for (std::simd::block<8> at : std::simd::blocks<8>(result.length())) {
         result.store(at, a.load(at) + b.load(at));
     }
 }
@@ -167,7 +167,7 @@ void add_arrays(std::span<f32> a, std::span<f32> b, std::span<mut f32> result) {
 The same loop for whatever the target's widest register is:
 ```edax
 compile_time usize w = std::simd::native_lanes<f32>();
-for (std::simd::block<w> at : std::simd::blocks<w>(result.len())) {
+for (std::simd::block<w> at : std::simd::blocks<w>(result.length())) {
     result.store(at, a.load(at) + b.load(at));
 }
 ```
@@ -176,11 +176,11 @@ for (std::simd::block<w> at : std::simd::blocks<w>(result.len())) {
 Blocks are a convenience, not magic. The same loop with single loads and stores:
 ```edax
 mut usize i = 0;
-while (i + 8 <= result.len()) {
+while (i + 8 <= result.length()) {
     (f32x8::load(a, i) + f32x8::load(b, i)).store(mut result, i);
     i += 8;
 }
-for (usize k : i..result.len()) {
+for (usize k : i..result.length()) {
     result[k] = a[k] + b[k];
 }
 ```
@@ -189,7 +189,7 @@ for (usize k : i..result.len()) {
 ```edax
 void limit(std::span<mut f32> samples, f32 ceiling) {
     f32x8 top = f32x8::splat(ceiling);
-    for (std::simd::block<8> at : std::simd::blocks<8>(samples.len())) {
+    for (std::simd::block<8> at : std::simd::blocks<8>(samples.length())) {
         f32x8 v = samples.load(at);
         samples.store(at, (v > top).select(top, v));       // or simply v.min(top)
     }
@@ -199,9 +199,9 @@ void limit(std::span<mut f32> samples, f32 ceiling) {
 ### 4. A dot product
 ```edax
 f32 dot(std::span<f32> a, std::span<f32> b) {
-    run_time check (a.len() == b.len()) else "dot: lengths differ";
+    run_time check (a.length() == b.length()) else "dot: lengths differ";
     mut f32x8 sum = default;
-    for (std::simd::block<8> at : std::simd::blocks<8>(a.len())) {
+    for (std::simd::block<8> at : std::simd::blocks<8>(a.length())) {
         sum = a.load(at).mul_add(b.load(at), sum);         // inactive lanes load as 0, so they add nothing
     }
     return sum.reduce_add();
@@ -213,7 +213,7 @@ f32 dot(std::span<f32> a, std::span<f32> b) {
 void scale_all(std::thread_pool& pool, mut std::darray<f32>& samples, f32 factor) {
     pool.for_chunks(samples.as_mut_span(), 16 * 1024, [factor](std::span<mut f32> part) {
         f32x8 f = f32x8::splat(factor);
-        for (std::simd::block<8> at : std::simd::blocks<8>(part.len())) {
+        for (std::simd::block<8> at : std::simd::blocks<8>(part.length())) {
             part.store(at, part.load(at) * f);
         }
     });
@@ -225,7 +225,7 @@ Threads split the data into chunks (see [Thread Pool](../../stdlib/concurrency/t
 ```edax
 std::option<usize> find_byte(std::span<u8> text, u8 wanted) {
     u8x32 w = u8x32::splat(wanted);
-    for (std::simd::block<32> at : std::simd::blocks<32>(text.len())) {
+    for (std::simd::block<32> at : std::simd::blocks<32>(text.length())) {
         std::simd::mask<32> hits = (text.load(at) == w) & at.active;
         match (hits.first()) {
             std::some(k) => { return std::some(at.start + k); },

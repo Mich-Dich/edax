@@ -25,7 +25,7 @@ std::string describe(T& value) {
 }
 
 // Reflection runs at compile time; its results become constants.
-compile_time usize field_count = std::meta::fields<player>().len();
+compile_time usize field_count = std::meta::fields<player>().length();
 compile_time usize health_offset = std::meta::fields<player>()[2].offset;
 
 i32 main() {

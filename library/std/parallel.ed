@@ -26,7 +26,7 @@ namespace std::parallel {
     // long sorted runs (and for sort_by_key it is the stable merge sort).
     template<type T>
     void sort(std::thread_pool& pool, std::span<mut T> items) {
-        usize n = items.len();
+        usize n = items.length();
         if (n >= small) {
             shared_elements<T> e = elements_of(items);
             pool.for_index_chunks(n, chunk_for(pool, n), [e](usize from, usize to) {
@@ -38,7 +38,7 @@ namespace std::parallel {
 
     template<type T, type F : std::shareable>
     void sort_by(std::thread_pool& pool, std::span<mut T> items, F less) {
-        usize n = items.len();
+        usize n = items.length();
         if (n >= small) {
             shared_elements<T> e = elements_of(items);
             pool.for_index_chunks(n, chunk_for(pool, n), [e, &less](usize from, usize to) {
@@ -50,7 +50,7 @@ namespace std::parallel {
 
     template<type T, type F : std::shareable>
     void sort_by_key(std::thread_pool& pool, std::span<mut T> items, std::sort_order order, F key) {
-        usize n = items.len();
+        usize n = items.length();
         if (n >= small) {
             shared_elements<T> e = elements_of(items);
             pool.for_index_chunks(n, chunk_for(pool, n), [e, &key, order](usize from, usize to) {
@@ -62,14 +62,14 @@ namespace std::parallel {
 
     template<type T, type F : std::shareable>
     std::option<usize> find(std::thread_pool& pool, std::span<T> items, F predicate) {
-        if (items.len() < small) {
-            for (usize i : 0..items.len()) {
+        if (items.length() < small) {
+            for (usize i : 0..items.length()) {
                 if (predicate(items[i])) { return std::some(i); }
             }
             return std::none;
         }
         std::atomic<u64> best = std::atomic<u64>::make(u64::max);
-        pool.for_index_chunks(items.len(), chunk_for(pool, items.len()), [&items, &predicate, &best](usize from, usize to) {
+        pool.for_index_chunks(items.length(), chunk_for(pool, items.length()), [&items, &predicate, &best](usize from, usize to) {
             for (usize i : from..to) {
                 if (cast<u64>(i) >= best.load(std::memory_order::relaxed)) { return; }
                 if (predicate(items[i])) {
@@ -101,8 +101,8 @@ namespace std::parallel {
 
     template<type T, type U, type F : std::shareable>
     void transform(std::thread_pool& pool, std::span<T> input, std::span<mut U> output, F f) {
-        run_time check (input.len() == output.len()) else "std::parallel::transform: the spans' lengths differ";
-        usize n = input.len();
+        run_time check (input.length() == output.length()) else "std::parallel::transform: the spans' lengths differ";
+        usize n = input.length();
         if (n == 0) { return; }
         shared_elements<U> out = elements_of(output);
         usize chunk = if (n < small) { n } else { chunk_for(pool, n) };

@@ -165,7 +165,7 @@ problems panel (2):
 <details>
 <summary>Hint 3: the status line</summary>
 
-`mut std::log::status progress = logs.status();` before the loop, `progress.set(f"...")` in it, `progress.finish(f"imported {imported} of {assets.len()} assets");` after it. On the checker's pipe only the `finish` line shows.
+`mut std::log::status progress = logs.status();` before the loop, `progress.set(f"...")` in it, `progress.finish(f"imported {imported} of {assets.length()} assets");` after it. On the checker's pipe only the `finish` line shows.
 </details>
 
 ---

@@ -11,9 +11,9 @@ void main() {
     std::println(f"{sans.metrics()}");
     std::println(f"advance A {sans.advance(a)}, kerning AV {sans.kerning(a, v)} < 0: {sans.kerning(a, v) < 0.0}");
     std::text::outline o = sans.outline_of(sans.glyph_index('o'), 32.0);
-    std::println(f"o: {o.contour_ends.len()} contours");
+    std::println(f"o: {o.contour_ends.length()} contours");
     std::text::outline accented = sans.outline_of(sans.glyph_index('é'), 32.0);
-    std::println(f"é: {accented.contour_ends.len()} contours (composite)");
+    std::println(f"é: {accented.contour_ends.length()} contours (composite)");
     std::text::distance_field f = sans.render_distance_field(sans.glyph_index('l'), 40.0, 5.0);
     u8 middle = f.pixels[cast<usize>(f.height / 2) * cast<usize>(f.width) + cast<usize>(f.width / 2)];
     std::println(f"l: {f.width}x{f.height}, inside {middle > 128}, corner outside {f.pixels[0] < 128}");

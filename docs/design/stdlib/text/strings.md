@@ -38,7 +38,7 @@ std::static_str d = "config.toml";                 // OK: can be stored in a str
 ### Methods
 | On `std::str` (and through it on `std::string` and literals) | Result |
 |---|---|
-| `len()`, `is_empty()` | Length in bytes (`usize`), `bool` |
+| `length()`, `is_empty()` | Length in bytes (`usize`), `bool` |
 | `starts_with(s)`, `ends_with(s)`, `contains(s)` | `bool` |
 | `find(s)` | `std::option<usize>`: byte offset of the first match |
 | `slice(from, to)` | `std::str` of the bytes `from..to`; panics if out of range or not on a character boundary |
@@ -49,7 +49,7 @@ std::static_str d = "config.toml";                 // OK: can be stored in a str
 | `byte(i)` | `u8`: byte `i` of the UTF-8 text; panics when out of bounds |
 | `==`, `<=>` | Byte-wise comparison |
 
-`len`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice` and `find` also work at compile time (see [Compile-Time Evaluation](../../language/compile-time/compile-time.md)).
+`length`, `is_empty`, `starts_with`, `ends_with`, `contains`, `slice` and `find` also work at compile time (see [Compile-Time Evaluation](../../language/compile-time/compile-time.md)).
 
 | On `std::string` | Result |
 |---|---|

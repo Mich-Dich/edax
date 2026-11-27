@@ -9,7 +9,7 @@ i32 main() {
         by_letter.get_or_insert(first, default).push(w);   // a mut darray& in the map
     }
     for (std::map_entry<std::str, std::darray<std::static_str>> e : by_letter.entries()) {
-        std::println(f"{e.key}: {e.value.len()} words, first {e.value[0]}");
+        std::println(f"{e.key}: {e.value.length()} words, first {e.value[0]}");
     }
     return 0;
 }

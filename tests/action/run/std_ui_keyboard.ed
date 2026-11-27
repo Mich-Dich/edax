@@ -149,11 +149,11 @@ void main() {
     // The tooltip shows after hovering a moment.
     ui::vec2 on_save = ui::vec2{ .x = p.save.x + 10.0, .y = p.save.y + 10.0 };
     _ = frame_of(mut ctx, mut m, at(on_save));
-    usize quiet = ctx.draw_data().vertices.len();
+    usize quiet = ctx.draw_data().vertices.length();
     for (u32 i : 0..40) {
         _ = frame_of(mut ctx, mut m, at(on_save));
     }
-    std::println(f"tooltip drawn: {ctx.draw_data().vertices.len() > quiet}, escape drops focus: {ctx.wants_keyboard()}");
+    std::println(f"tooltip drawn: {ctx.draw_data().vertices.length() > quiet}, escape drops focus: {ctx.wants_keyboard()}");
     _ = frame_of(mut ctx, mut m, key(ui::key::escape, false, false));
     std::println(f"after Escape: {ctx.wants_keyboard()}, duplicates {ctx.duplicate_ids()}");
 }

@@ -2,7 +2,7 @@
 // STOP-AFTER: parse   (syntax test: names are not declared)
 std::result<employee, parse_error> parse_line(std::str line) {
     std::darray<std::str> parts = line.split(',');
-    if (parts.len() != 3) {
+    if (parts.length() != 3) {
         return std::error(parse_error::bad_line);
     }
     u32 age    = parts[1].parse<u32>().or_error(parse_error::bad_number)?;

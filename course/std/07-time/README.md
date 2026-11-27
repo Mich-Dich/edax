@@ -119,7 +119,7 @@ launch 2026-09-21 23:13 in Asia/Tokyo
 <details>
 <summary>Hint 2: <code>frame_stats</code></summary>
 
-Start from `t::duration{}` (zero) and add; `total / cast<u64>(frames.len())` is the mean. fps: `t::duration::seconds(1).as_nanoseconds() / mean.as_nanoseconds()`.
+Start from `t::duration{}` (zero) and add; `total / cast<u64>(frames.length())` is the mean. fps: `t::duration::seconds(1).as_nanoseconds() / mean.as_nanoseconds()`.
 </details>
 
 <details>

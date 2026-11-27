@@ -1,0 +1,18 @@
+exit: 0
+--- stdout
+volume=7
+fullscreen=1
+
+size 22, modified this year: true
+on disk under the root: true
+mapped 22 bytes
+changed: data/config/keys.ini
+entry: input.ini
+entry: settings.ini
+run.1.log: record number 4 of six
+run.2.log: record number 3 of six
+run.log: record number 5 of six
+INFO written through the table
+WARN and flushed at once
+left over: 0
+--- stderr

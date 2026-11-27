@@ -4,12 +4,12 @@ import std;
 i32 main() {
     std::array<f32, 4> weights = default;              // four 0.0 inline: no heap
     std::array<f32, 4> copy = weights;                 // a copy type when the element is
-    std::println(f"{copy.len()} {copy[3]}");
+    std::println(f"{copy.length()} {copy[3]}");
 
     mut std::bitset<100> seen = default;
     std::array<usize, 4> ids = [3, 64, 99, 3];
     for (usize id : ids) { seen.set(id, true); }
-    std::println(f"{seen.count()} of {seen.len()}, 64? {seen.test(64)}, 65? {seen.test(65)}");
+    std::println(f"{seen.count()} of {seen.length()}, 64? {seen.test(64)}, 65? {seen.test(65)}");
     return 0;
 }
 //> 4 0.0

@@ -21,7 +21,7 @@ view struct line {
 // Reads "12.30" as 1230 cents.
 std::option<money> parse_money(std::str text) {
     std::darray<std::str> parts = text.split('.');
-    if (parts.len() != 2 || parts[1].len() != 2) { return std::none; }
+    if (parts.length() != 2 || parts[1].length() != 2) { return std::none; }
     i64 whole = parts[0].parse<i64>()?;
     i64 cents = parts[1].parse<i64>()?;
     return std::some(money{ .cents = whole * 100 + cents });
@@ -33,7 +33,7 @@ std::option<line> parse_line(std::str text) {
     usize at = t.find(" @ ")?;
     u32 quantity = t.slice(0, x).trim().parse<u32>()?;
     std::str name = t.slice(x + 3, at).trim();
-    money price = parse_money(t.slice(at + 3, t.len()).trim())?;
+    money price = parse_money(t.slice(at + 3, t.length()).trim())?;
     return std::some(line{ .name = name, .quantity = quantity, .price = price });
 }
 
@@ -64,7 +64,7 @@ i32 main() {
     std::println(f"{"sum":<22} {sum:>8}");
 
     mut std::string summary = std::string::with_capacity(64);
-    summary.push_str(std::format(f"{lines.len()} lines"));
+    summary.push_str(std::format(f"{lines.length()} lines"));
     if (rejected > 0) { summary.push_str(std::format(f", {rejected} rejected")); }
     summary.push('.');
     std::println(summary);

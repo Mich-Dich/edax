@@ -20,7 +20,9 @@
 //             }
 //         }
 //         f.finish();
-//         _ = ws.save_if_changed("editor.layout");
+//         if (ws.changed() && std::filesystem::write_text(layout_file, ws.to_text().as_str()).is_ok()) {
+//             ws.mark_saved();
+//         }
 //     }
 //
 // Windows are named, not placed: the layout says where each one is (a tab stack, a split, floating
@@ -164,12 +166,15 @@ namespace std::ui::dock {
     class workspace {
     public:
         static workspace make(dock::layout start);
-        // A workspace saved by save(); none when the file is missing or not a workspace.
-        static std::option<workspace> load(std::str path);
-        // Writes the layout in use and the named ones.
-        std::result<void, std::io_error> save(std::str path) mut;
-        // save() when something changed since the last save or load; true when it wrote.
-        bool save_if_changed(std::str path) mut;
+        // A workspace written by to_text(); none when the text is not a workspace.
+        static std::option<workspace> from_text(std::str text);
+        // The layout in use and the named ones, as text (std::filesystem writes it where the
+        // program wants: `std::filesystem::write_text(path, ws.to_text())`).
+        std::string to_text();
+        // Whether something changed since make(), from_text() or the last mark_saved().
+        bool changed();
+        // The program saved it: changed() is false until the next change.
+        void mark_saved() mut;
 
         // The layout in use; edit() changes it (and marks the workspace changed).
         dock::layout& current();
@@ -200,7 +205,7 @@ namespace std::ui::dock {
         dock::layout now = default;
         std::darray<named_layout> kept = default;
         std::string active = default;
-        bool changed = false;
+        bool dirty = false;
         // A tab pressed and maybe dragged: its window, where the press was, whether it moved far
         // enough to be a drag, and the size of the stack it came from.
         std::string dragging = default;

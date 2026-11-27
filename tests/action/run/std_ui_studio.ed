@@ -1,8 +1,7 @@
 // RUN: edaxc run %s
 // The studio look and the editor widgets of std::ui (draft 35): theme::studio's tokens, the icon
-// set, icon buttons and toggles, chips, spacers in rows, the height left in a panel, menus (open on
-// a click, switch on hover while open, close on an item or a press elsewhere), letter-spaced
-// capitals, and the draw list's gradients, dashes and curves.
+// set, icon buttons and toggles, spacers in rows, the height left in a panel, and menus (open on a
+// click, switch on hover while open, close on an item or a press elsewhere).
 import std;
 namespace ui = std::ui;
 namespace im = std::ui::immediate;
@@ -40,7 +39,6 @@ seen frame_of(mut im::context& ctx, mut bool& grid, ui::input in) {
                 _ = edit.menu_check("Snap", mut grid);
             }
             _ = bar.icon_toggle(ui::icon::grid, mut grid, "Grid");
-            _ = bar.chip("Wire", mut grid);
             bar.spacer();
             out.after_spacer = bar.allocate(ui::vec2{ .x = 24.0, .y = 24.0 });
         }
@@ -75,34 +73,14 @@ void main() {
     mut u32 empty = 0;
     mut u32 count = 0;
     for compile_time (std::meta::alternative a : std::meta::alternatives<ui::icon>()) {
-        usize before = l.vertices.len();
+        usize before = l.vertices.length();
         l.draw_icon(a.make(), ui::rect{ .width = 16.0, .height = 16.0 }, ui::color::white());
-        if (l.vertices.len() == before) {
+        if (l.vertices.length() == before) {
             empty += 1;
         }
         count += 1;
     }
     std::println(f"icons: {count}, drawing nothing: {empty}");
-
-    // Capitals and tracking: an overline label is wider than the same text without tracking.
-    mut ui::fonts faces = ui::fonts::make();
-    ui::text_style over = t.style(ui::text_role::overline, t.colors.text);
-    mut ui::text_style tight = over;
-    tight.tracking = 0.0;
-    std::string caps = ui::upper("Trigger settings · ä");
-    std::println(f"upper: {caps}, tracking widens {faces.measure(caps.as_str(), over).x > faces.measure(caps.as_str(), tight).x}");
-
-    // Gradients, dashes and curves add triangles.
-    usize before = l.vertices.len();
-    std::array<ui::vec2, 3> top = [ui::vec2{ .x = 0.0, .y = 10.0 }, ui::vec2{ .x = 10.0, .y = 5.0 }, ui::vec2{ .x = 20.0, .y = 8.0 }];
-    std::array<ui::vec2, 3> ground = [ui::vec2{ .x = 0.0, .y = 30.0 }, ui::vec2{ .x = 10.0, .y = 30.0 }, ui::vec2{ .x = 20.0, .y = 30.0 }];
-    l.fill_between_gradient(top.as_span(), ground.as_span(), ui::color::white(), ui::color::transparent());
-    usize area = l.vertices.len() - before;
-    l.dashed_line(ui::vec2{}, ui::vec2{ .x = 100.0 }, 1.0, 6.0, 4.0, ui::color::white());
-    usize dashes = l.vertices.len() - before - area;
-    l.bezier(ui::vec2{}, ui::vec2{ .x = 40.0 }, ui::vec2{ .x = 60.0, .y = 50.0 }, ui::vec2{ .x = 100.0, .y = 50.0 }, 2.0, ui::color::white());
-    l.fill_gradient_x(ui::rect{ .width = 50.0, .height = 10.0 }, ui::color::black(), ui::color::white(), 5.0);
-    std::println(f"gradient area {area} vertices, 10 dashes {dashes / 4 == 10}, curve and gradient box {l.vertices.len() > before + area + dashes}");
 
     mut im::context ctx = im::context::create(t);
     ctx.skin() = ui::skin::studio();

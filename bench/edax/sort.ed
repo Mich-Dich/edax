@@ -10,10 +10,10 @@ i32 main() {
         v.push(x);
     }
     v.sort();
-    for (usize i : 1..v.len()) {
+    for (usize i : 1..v.length()) {
         if (v[i - 1] > v[i]) { std::println("not sorted"); return 1; }
     }
-    u64 total = cast<u64>(v[0]) + cast<u64>(v[v.len() / 2]) + cast<u64>(v[v.len() - 1]);
+    u64 total = cast<u64>(v[0]) + cast<u64>(v[v.length() / 2]) + cast<u64>(v[v.length() - 1]);
     std::println(f"{total}");
     return 0;
 }

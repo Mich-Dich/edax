@@ -14,7 +14,7 @@ C++-style labels: `public:`, `protected:`, `private:`. Public and protected memb
   class polygon {
   public:
       void add(vec2 p) mut { points.push(p); }
-      usize corners() { return points.len(); }
+      usize corners() { return points.length(); }
       std::str name() { return label; }
   private:
       std::string       label;

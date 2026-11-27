@@ -77,10 +77,10 @@ end
   - `ws.save_as("Animation")` keeps the layout in use under a name.
   - `ws.switch_to("Layout")` keeps the current one under its name first, then switches.
   - `ws.reset(layout)` replaces the layout in use, for example from a "Reset layout" button.
-- **Saving and loading:**
-  - `ws.save(path)` writes the layout in use and the named layouts.
-  - `dock::workspace::load(path)` reads them; none means the file is missing or not a workspace.
-  - `ws.save_if_changed(path)` writes only after a change.
+- **Saving and loading:** the workspace is text, and std::filesystem puts it where the program wants (a file, a user folder, a mount of the editor's own table):
+  - `ws.to_text()` gives the layout in use and the named layouts.
+  - `dock::workspace::from_text(text)` reads them; none means the text is not a workspace.
+  - `ws.changed()` says whether anything changed since it was made, read or last marked saved; `ws.mark_saved()` resets it after the program wrote it.
 - **Hot reload:** a workspace kept in a plugin's state marked `@std::hot_reload_state` keeps its layout over a reload.
 
 ### Splits inside a window
@@ -116,7 +116,17 @@ dock::layout default_layout() {
                                dock::tabs(["Designer", "Player", "Windows"])));
 }
 
-mut dock::workspace ws = dock::workspace::load("editor.layout").value_or(dock::workspace::make(default_layout()));
+std::filesystem::path layout_file = std::filesystem::path::from("editor.layout");
+mut dock::workspace ws = dock::workspace::make(default_layout());
+match (std::filesystem::read_text(layout_file)) {
+    std::ok(text) => {
+        match (dock::workspace::from_text(text.as_str())) {
+            std::some(saved) => { ws = move saved; },
+            std::none => {},
+        }
+    },
+    std::error(_) => {},
+}
 dock::layout start = default_layout();
 while (running) {
     {
@@ -144,7 +154,9 @@ while (running) {
         }
         f.finish();
     }
-    _ = ws.save_if_changed("editor.layout");
+    if (ws.changed() && std::filesystem::write_text(layout_file, ws.to_text().as_str()).is_ok()) {
+        ws.mark_saved();
+    }
 }
 ```
 `example/editor` is the docked editor of the mockup. `--screenshot out.png` writes one frame, and `--screenshot out.png --drag` writes one while a tab is dragged over the scene's left target.

@@ -116,6 +116,6 @@ i32 main() {
     s.calibrated = true;
     std::println(f"same as before calibration: {same(s, copy)}");
     std::println(f"levels: {name_of(level::low)} {name_of(level::critical)}");
-    std::println(f"sensor has {std::meta::fields<sensor>().len()} fields and takes {std::size_of<sensor>()} bytes");
+    std::println(f"sensor has {std::meta::fields<sensor>().length()} fields and takes {std::size_of<sensor>()} bytes");
     return 0;
 }

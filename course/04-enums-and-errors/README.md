@@ -234,7 +234,7 @@ One `match (o)` with four arms, each giving a result. The `div` arm's value is a
 <details>
 <summary>Hint 3: <code>evaluate</code></summary>
 
-`text.split(' ')` gives the words. Keep `mut std::darray<i64> stack`. `stack.pop()` is an `std::option<i64>`: `stack.pop().or_error(calc_error::missing_operand)?`. Pop `b` first, then `a` (the right operand is on top). Count the word position yourself. At the end, one value must be left: that's the one explicit `return std::error(calc_error::leftover(stack.len()))`.
+`text.split(' ')` gives the words. Keep `mut std::darray<i64> stack`. `stack.pop()` is an `std::option<i64>`: `stack.pop().or_error(calc_error::missing_operand)?`. Pop `b` first, then `a` (the right operand is on top). Count the word position yourself. At the end, one value must be left: that's the one explicit `return std::error(calc_error::leftover(stack.length()))`.
 </details>
 
 ---

@@ -60,7 +60,7 @@ struct body {
         }
         f.finish();
     }
-    return (ctx.focus_order.len(), b.heat.shown);
+    return (ctx.focus_order.length(), b.heat.shown);
 }
 
 ui::input idle() {

@@ -1,0 +1,39 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: a port is never 0
+ --> tests/action/check/distinct_check_errors.ed:9:37
+  |
+9 | compile_time port none = cast<port>(0);
+  |                                     ^ check failed
+  |
+6 | distinct type port = u16 check (value != 0) else "a port is never 0";
+  |                                 ----------
+  = note: the check is here
+  = note: while running the check of 'port' at compile time
+
+error[E4210]: a port is never 0
+  --> tests/action/check/distinct_check_errors.ed:14:25
+   |
+14 |     port p = cast<port>(0);
+   |                         ^ this call fails the check
+   |
+ 6 | distinct type port = u16 check (value != 0) else "a port is never 0";
+   |                                 ----------
+   = note: the check of 'port' is here
+
+error[E4010]: expected 'mut std::string&', found 'name'
+  --> tests/action/check/distinct_check_errors.ed:16:14
+   |
+16 |     grow(mut n);
+   |              ^ this is 'name'
+   = note: a 'name' is lent as a read-only 'std::string&' only: a change could break its check
+
+error[E4020]: 'push_str' would change the 'std::string' inside a 'name'
+  --> tests/action/check/distinct_check_errors.ed:17:7
+   |
+17 |     n.push_str("y");
+   |       ^^^^^^^^ changes the value
+   = note: its check could stop holding; take the value out with 'cast<std::string>(move ...)', change it, and cast it back
+
+4 errors, 0 warnings

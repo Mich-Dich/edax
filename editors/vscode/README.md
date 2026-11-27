@@ -14,6 +14,10 @@ Or in VS Code: Extensions view -> `…` menu -> **Install from VSIX…**. Debugg
 
 Ctrl+click a name (or F12, or right-click -> **Go to Definition**) to jump to where it is declared: types, functions, methods, fields, locals, enum alternatives, struct literal fields, and modules (an `import` line opens the module's header). It works in the standard library too (`std::darray` opens `library/std/std.edh`), and from there onwards. The extension runs `edaxc definition <file> <line>:<column>` with the nearest folder above the file that has a `build.ed` as the project root. edaxc reads the saved file, so save before jumping from code you just changed.
 
+## Suggestions
+
+While you type, the editor suggests the names that fit: after `std::filesystem::` the items of that namespace (and a type's static functions and enum alternatives after `T::`), after `value.` the fields and methods of its type (also in chains like `a.b().c.`), and otherwise the locals, members, namespaces and keywords in scope. Each suggestion shows its declaration and its comment. Ctrl+Space asks for them anywhere. The extension runs `edaxc complete <file> <line>:<column> --stdin` with the editor's text, so unsaved changes count. The `std::` names are those of the library compiled into edaxc: rebuild it after changing `library/std`.
+
 ## Debugging
 
 Open a `.ed` file and press **F5** (or use the ▷ / 🐞 buttons in the editor title). The extension builds the file with `edaxc build --mode=debug`, shows compile errors in **Problems**, and starts the debugger. It works like C++ in VS Code:

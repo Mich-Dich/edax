@@ -22,7 +22,7 @@ i32 main() {
 
     (mut std::darray<f32> values, u32 rejected) = parse_all(raw);
     std::parallel::sort(pool, values.as_mut_span());     // arrival order varies: sort first
-    std::println(f"{values.len()} values, {rejected} rejected, smallest {values[0]}, largest {values[values.len() - 1]}");
+    std::println(f"{values.length()} values, {rejected} rejected, smallest {values[0]}, largest {values[values.length() - 1]}");
 
     // Stage 3: min and max in one deterministic reduction.
     // TODO: min and max with pool.reduce_chunks (chunks of 2); the result is a (f32, f32) tuple.
@@ -33,7 +33,7 @@ i32 main() {
     // TODO: the sum with reduce_chunks, then subtract the mean from every value in place with
     // pool.for_chunks (chunks of 2).
     f32 mean = 0.0;
-    std::println(f"mean {mean:.2}, deviations from {values[0]:.2} to {values[values.len() - 1]:.2}");
+    std::println(f"mean {mean:.2}, deviations from {values[0]:.2} to {values[values.length() - 1]:.2}");
     // TODO: the index of the first value above the mean (above 0 after the subtraction), with std::parallel.
     std::option<usize> first_above = std::none;
     std::println(f"first value above the mean is number {first_above.value_or(0) + 1}");

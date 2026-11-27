@@ -11,9 +11,9 @@ i32 structs() {
     v.push(emp{ .age = 31, .salary = 30.5 });
     v.retain([](emp& e) { return e.age >= 30; });
     v.sort_by_key(std::sort_order::descending, [](emp& e) { return e.salary; });
-    std::println(f"{v.len()} {v[0].salary} {v[1].salary} {v[2].salary}");
+    std::println(f"{v.length()} {v[0].salary} {v[1].salary} {v[2].salary}");
     std::darray<emp> w = v.clone();
-    std::println(f"{w.len()} {w[2].age}");
+    std::println(f"{w.length()} {w[2].age}");
     return 0;
 }
 i32 nested() {
@@ -25,17 +25,17 @@ i32 nested() {
     }
     std::darray<std::darray<u32>> copy = grid.clone();
     std::option<std::darray<u32>> last = grid.pop();
-    grid.retain([](std::darray<u32>& row) { return row.len() % 2 == 0; });
-    std::println(f"{grid.len()} {copy.len()} {copy[4][3]}");
+    grid.retain([](std::darray<u32>& row) { return row.length() % 2 == 0; });
+    std::println(f"{grid.length()} {copy.length()} {copy[4][3]}");
     return 0;
 }
 i32 numbers() {
     mut std::darray<u32> v = default;
     for (u32 i : 0..20) { v.push(i * i); }
     v[0] = 99;
-    std::println(f"{v.len()} {v[19]} {v[0]} {v.is_empty()}");
+    std::println(f"{v.length()} {v[19]} {v[0]} {v.is_empty()}");
     u32 last = v.pop().value_or(0);
-    std::println(f"{last} {v.len()}");
+    std::println(f"{last} {v.length()}");
     return 0;
 }
 

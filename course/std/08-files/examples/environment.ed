@@ -2,7 +2,7 @@
 import std;
 
 std::exit_code main(std::span<std::str> args) {
-    std::println(f"{args.len() - 1} arguments");                     // args[0] is the program itself
+    std::println(f"{args.length() - 1} arguments");                     // args[0] is the program itself
     std::option<std::string> home = std::env::variable("HOME");
     std::option<std::string> nothing = std::env::variable("EDAX_COURSE_SURELY_NOT_SET");
     std::println(f"HOME set: {home.is_some()}, other: {nothing.is_some()}");

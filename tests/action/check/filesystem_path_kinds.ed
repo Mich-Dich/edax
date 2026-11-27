@@ -1,0 +1,20 @@
+// RUN: edaxc check %s
+// std::filesystem::absolute_path and relative_path: text known at compile time is checked there,
+// a plain path doesn't become either by itself, `/` keeps the kind, and they are lent read-only.
+import std;
+
+void install(std::filesystem::absolute_path& log_dir) { }
+void grow(mut std::filesystem::path& p) { }
+
+i32 main() {
+    std::filesystem::relative_path a = std::filesystem::path::relative("/etc");
+    std::filesystem::absolute_path b = std::filesystem::path::absolute("logs");
+    install(std::filesystem::path::from("log"));
+    std::filesystem::relative_path c = std::filesystem::path::relative("x");
+    std::filesystem::absolute_path d = c / std::filesystem::executable_dir();
+    mut std::filesystem::absolute_path e = std::filesystem::executable_dir();
+    grow(mut e);
+    install(std::filesystem::executable_dir() / "log");   // fine
+    std::filesystem::path f = std::filesystem::executable_dir();   // fine: moves into a path
+    return 0;
+}

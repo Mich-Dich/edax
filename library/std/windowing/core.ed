@@ -130,7 +130,7 @@ namespace std::windowing {
         }
         // In place, in order: kept events slide forward over consumed ones. No allocation.
         mut usize kept = 0;
-        for (usize i : 0..events.len()) {
+        for (usize i : 0..events.length()) {
             event e = events[i];
             match (layer.on_event(e, input)) {
                 routing::pass => {

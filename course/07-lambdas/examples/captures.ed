@@ -12,7 +12,7 @@ i32 main() {
 
     auto add = [threshold](u32 x) { return x + threshold; };          // a copy (copy types only)
     auto label = [move name](u32 x) { return std::format(f"{name}: {x}"); };   // owns name now
-    auto peek = [&list]() { return list.len(); };                      // an immutable reference
+    auto peek = [&list]() { return list.length(); };                      // an immutable reference
     auto init = [base = 5u32](u32 x) -> u32 { return x + base; };      // a new variable
     {
         auto inc = [mut &counter]() { counter += 1; };                 // a mutable reference

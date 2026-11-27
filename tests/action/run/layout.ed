@@ -23,7 +23,7 @@ void main() {
     mut usize at = 0;
     unsafe { at = cast::reinterpret<usize>(&local); }
     std::println(f"size {std::size_of<block>()}, align {std::align_of<block>()}");
-    std::println(f"stack aligned: {at % 32 == 0}, boxed b = {boxed->b}, {many.len()} in a darray");
+    std::println(f"stack aligned: {at % 32 == 0}, boxed b = {boxed->b}, {many.length()} in a darray");
     light l = light{ .intensity = 2.0, .range = 10.0 };
     std::println(f"light: {std::size_of<light>()} bytes, range {l.range}");
 }

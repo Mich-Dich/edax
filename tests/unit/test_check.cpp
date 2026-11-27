@@ -204,5 +204,5 @@ TEST_CASE("check: indexing the std containers") {
              std::string("E4010"));
     CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::darray<u16> v) { u32 x = v[0]; }"}}).codes(),
              std::string("E4010"));
-    CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::thing v) { u32 x = v[0]; }"}}).codes(), std::string());
+    CHECK_EQ(Project({{"main.ed", "import std;\nvoid f(std::thing v) { u32 x = v[0]; }"}}).codes(), std::string("E3020"));   // no such std type
 }

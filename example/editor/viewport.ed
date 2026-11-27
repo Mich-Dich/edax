@@ -19,11 +19,11 @@ namespace scene {
         for (vec3 c : corners) {
             middle = middle + c;
         }
-        middle = middle / cast::round<f32>(corners.len());
+        middle = middle / cast::round<f32>(corners.length());
         bool flip = n.dot(middle - inside) < 0.0;
-        mut std::darray<vec3> ordered = std::darray<vec3>::with_capacity(corners.len());
-        for (usize i : 0..corners.len()) {
-            ordered.push(corners[if (flip) { corners.len() - 1 - i } else { i }]);
+        mut std::darray<vec3> ordered = std::darray<vec3>::with_capacity(corners.length());
+        for (usize i : 0..corners.length()) {
+            ordered.push(corners[if (flip) { corners.length() - 1 - i } else { i }]);
         }
         return face{ .corners = move ordered, .tint = tint, .glass = glass };
     }
@@ -307,8 +307,8 @@ namespace scene {
         }
         // The faces that look at the camera, far ones first, lit from above and the front.
         vec3 light = v3(0.45, 0.85, 0.35).normalized();
-        mut std::darray<lit_face> shown = std::darray<lit_face>::with_capacity(model.len());
-        for (usize i : 0..model.len()) {
+        mut std::darray<lit_face> shown = std::darray<lit_face>::with_capacity(model.length());
+        for (usize i : 0..model.length()) {
             face& f = model[i];
             vec3 n = (f.corners[1] - f.corners[0]).cross(f.corners[2] - f.corners[0]).normalized();
             mut vec3 c = default;
@@ -317,12 +317,12 @@ namespace scene {
                 c = c + q;
                 behind = behind || view.depth(q) < near_plane;
             }
-            c = c / cast::round<f32>(f.corners.len());
+            c = c / cast::round<f32>(f.corners.length());
             if (behind || n.dot(view.eye - c) <= 0.0) {
                 continue;
             }
             shown.push(lit_face{ .index = i, .depth = view.depth(c), .shade = n.dot(light).max(0.0) });
-            triangles += f.corners.len() - 2;
+            triangles += f.corners.length() - 2;
         }
         shown.sort_by([](lit_face& a, lit_face& b) { return a.depth > b.depth; });
         mut std::darray<ui::vec2> points = default;

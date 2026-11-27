@@ -46,7 +46,7 @@ void main() {
     _ = dispatch(mut sh, "status");
     std::println(f"unknown: {dispatch(mut sh, "nope")}");
     for compile_time (std::meta::function m : std::meta::methods<shell>()) {
-        std::print(f"{m.name}/{m.parameters.len()}{if (m.is_mut) { "mut" } else { "" }} ");
+        std::print(f"{m.name}/{m.parameters.length()}{if (m.is_mut) { "mut" } else { "" }} ");
     }
     std::println("");
     for compile_time (std::meta::function m : std::meta::methods<shell>()) {
@@ -61,7 +61,7 @@ void main() {
     }
     std::println("");
     compile_time type first_arg = std::meta::template_args<entry<u32, std::str>>()[0];
-    std::println(f"interfaces: {std::meta::interfaces<shell>().len()}, args: {std::meta::template_args<entry<u32, std::str>>().len()}, first: {std::type_name<first_arg>()}");
+    std::println(f"interfaces: {std::meta::interfaces<shell>().length()}, args: {std::meta::template_args<entry<u32, std::str>>().length()}, first: {std::type_name<first_arg>()}");
     std::println(f"{std::meta::has_annotation<component, shell>()} {std::meta::annotation<component, shell>().expect("has").kind}");
     std::println(f"{std::meta::name_of(color::green)} {std::meta::from_name<color>("blue").is_some()} {std::meta::from_name<color>("pink").is_some()}");
     color c = std::meta::from_name<color>("red").value_or(color::blue);

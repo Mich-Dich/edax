@@ -7,7 +7,7 @@ void main() {
     std::filesystem::path dir = std::filesystem::path::from("/tmp/edax_watch_test");
     _ = std::filesystem::create_directories(dir);
     mut std::filesystem::watcher w = std::filesystem::watch(dir).expect("watch");
-    std::println(f"nothing yet: {w.changes().len()}");
+    std::println(f"nothing yet: {w.changes().length()}");
     {
         mut std::file f = std::file::create(dir / "a.txt").expect("create");
         _ = f.write("one");

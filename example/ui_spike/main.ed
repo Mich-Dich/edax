@@ -71,7 +71,7 @@ namespace demo {
     void build_ui(mut ui::frame& f, mut game& g, u32 fps) {
         {
             mut ui::scope w = f.window("Stats", ui::vec2{ .x = 24.0, .y = 24.0 });
-            w.text(f"{fps} fps, {g.enemies.len()} enemies");
+            w.text(f"{fps} fps, {g.enemies.length()} enemies");
             _ = w.slider("box speed", mut g.box_speed, 0.0, 10.0);
             _ = w.checkbox("paused", mut g.paused);
             if (w.button("Reset game")) {
@@ -107,18 +107,18 @@ namespace demo {
             },
         };
         _ = out.write(std::format(f"P6\n{width} {height}\n255\n").as_str());
-        mut std::darray<u8> rgb = std::darray<u8>::with_capacity(pixels.len() / 4 * 3);
-        for (usize i : 0..pixels.len() / 4) {
+        mut std::darray<u8> rgb = std::darray<u8>::with_capacity(pixels.length() / 4 * 3);
+        for (usize i : 0..pixels.length() / 4) {
             rgb.push(pixels[i * 4]);
             rgb.push(pixels[i * 4 + 1]);
             rgb.push(pixels[i * 4 + 2]);
         }
-        _ = out.write(unsafe { std::raw::str_from(&rgb[0], rgb.len()) });
+        _ = out.write(unsafe { std::raw::str_from(&rgb[0], rgb.length()) });
     }
 }
 
 std::exit_code main(std::span<std::str> args) {
-    std::option<std::str> screenshot = if (args.len() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
+    std::option<std::str> screenshot = if (args.length() >= 3 && args[1] == "--screenshot") { std::some(args[2]) } else { std::none };
 
     mut wnd::system sys = match (wnd::system::start()) {
         std::ok(s) => move s,

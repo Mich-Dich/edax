@@ -8,7 +8,7 @@ template<type T : std::comparable & std::cloneable>
 std::option<T> largest(std::darray<T>& items) {
     if (items.is_empty()) { return std::none; }
     mut usize best = 0;
-    for (usize i : 1..items.len()) {
+    for (usize i : 1..items.length()) {
         if (items[best] < items[i]) { best = i; }
     }
     return std::some(items[best].clone());
@@ -18,12 +18,12 @@ std::option<T> largest(std::darray<T>& items) {
 template<type T, usize N>
 class bounded_stack {
 public:
-    usize len() { return this.items.len(); }
+    usize length() { return this.items.length(); }
     usize capacity() { return N; }
 
     // `false` when full: the item is dropped.
     bool push(T item) mut {
-        if (this.items.len() == N) { return false; }
+        if (this.items.length() == N) { return false; }
         this.items.push(move item);
         return true;
     }
@@ -91,7 +91,7 @@ i32 main() {
         bool pushed = stack.push(i * 10);
         std::println(f"push {i * 10}: {pushed}");
     }
-    std::println(f"{stack.len()} of {stack.capacity()}, above 15: {stack.count_if([](i32& x) { return x > 15; })}");
+    std::println(f"{stack.length()} of {stack.capacity()}, above 15: {stack.count_if([](i32& x) { return x > 15; })}");
     while (true) {
         match (stack.pop()) {
             std::some(v) => std::println(f"pop {v}"),

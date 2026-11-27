@@ -37,7 +37,7 @@ namespace std::image {
         std::darray<u16> symbols = default;
     }
 
-    // The code for symbols 0..lengths.len() with these code lengths (0: unused).
+    // The code for symbols 0..lengths.length() with these code lengths (0: unused).
     private huffman make_huffman(std::span<u8> lengths) {
         mut huffman h = default;
         for (u8 l : lengths) {
@@ -48,8 +48,8 @@ namespace std::image {
         for (usize len : 1..15) {
             offsets[len + 1] = offsets[len] + h.counts[len];
         }
-        h.symbols.resize(lengths.len(), 0);
-        for (usize symbol : 0..lengths.len()) {
+        h.symbols.resize(lengths.length(), 0);
+        for (usize symbol : 0..lengths.length()) {
             usize l = cast<usize>(lengths[symbol]);
             if (l != 0) {
                 h.symbols[cast<usize>(offsets[l])] = cast::truncate<u16>(symbol);
@@ -66,7 +66,7 @@ namespace std::image {
         u32 bits(u32 count) mut {
             mut u32 value = 0;
             for (u32 i : 0..count) {
-                if (this.at >= this.input.len()) {
+                if (this.at >= this.input.length()) {
                     this.failed = true;
                     return 0;
                 }
@@ -142,10 +142,10 @@ namespace std::image {
                     return false;
                 }
                 usize distance = cast<usize>(distance_base[di]) + cast<usize>(r.bits(cast<u32>(distance_extra[di])));
-                if (distance > out.len()) {
+                if (distance > out.length()) {
                     return false;
                 }
-                usize from = out.len() - distance;
+                usize from = out.length() - distance;
                 for (usize i : 0..length) {
                     u8 b = out[from + i];
                     out.push(b);
@@ -156,28 +156,28 @@ namespace std::image {
     }
 
     std::option<std::darray<u8>> inflate_zlib(std::span<u8> data) {
-        if (data.len() < 2 || (data[0] & 0x0f) != 8 || (data[1] & 0x20) != 0) {
+        if (data.length() < 2 || (data[0] & 0x0f) != 8 || (data[1] & 0x20) != 0) {
             return std::none;
         }
         mut bit_reader r = bit_reader{};
-        r.input = std::darray<u8>::with_capacity(data.len());
+        r.input = std::darray<u8>::with_capacity(data.length());
         for (u8 b : data) {
             r.input.push(b);
         }
         r.at = 2;
-        mut std::darray<u8> out = std::darray<u8>::with_capacity(data.len() * 4);
+        mut std::darray<u8> out = std::darray<u8>::with_capacity(data.length() * 4);
         mut bool last = false;
         while (!last) {
             last = r.bits(1) == 1;
             u32 kind = r.bits(2);
             if (kind == 0) {
                 r.align();
-                if (r.at + 4 > r.input.len()) {
+                if (r.at + 4 > r.input.length()) {
                     return std::none;
                 }
                 usize length = cast<usize>(r.input[r.at]) | (cast<usize>(r.input[r.at + 1]) << 8);
                 r.at += 4;
-                if (r.at + length > r.input.len()) {
+                if (r.at + length > r.input.length()) {
                     return std::none;
                 }
                 for (usize i : 0..length) {
@@ -204,7 +204,7 @@ namespace std::image {
                 }
                 huffman length_code = make_huffman(lengths_of_lengths.as_span());
                 mut std::darray<u8> lengths = std::darray<u8>::with_capacity(literals + distance_codes);
-                while (lengths.len() < literals + distance_codes) {
+                while (lengths.length() < literals + distance_codes) {
                     u16 symbol = r.decode(length_code);
                     if (r.failed) {
                         return std::none;
@@ -218,7 +218,7 @@ namespace std::image {
                             if (lengths.is_empty()) {
                                 return std::none;
                             }
-                            value = lengths[lengths.len() - 1];
+                            value = lengths[lengths.length() - 1];
                             repeat = 3 + r.bits(2);
                         } else if (symbol == 17) {
                             repeat = 3 + r.bits(3);
@@ -230,7 +230,7 @@ namespace std::image {
                         }
                     }
                 }
-                if (lengths.len() != literals + distance_codes) {
+                if (lengths.length() != literals + distance_codes) {
                     return std::none;
                 }
                 std::span<u8> all = lengths.as_span();
@@ -332,7 +332,7 @@ namespace std::image {
 
     std::result<rgba8, decode_error> decode_png(std::span<u8> file) {
         std::array<u8, 8> signature = [137, 80, 78, 71, 13, 10, 26, 10];
-        if (file.len() < 8) {
+        if (file.length() < 8) {
             return std::error(decode_error::wrong_format);
         }
         for (usize i : 0..8) {
@@ -350,11 +350,11 @@ namespace std::image {
         mut std::option<(u16, u16, u16)> key = std::none;
         mut std::darray<u8> compressed = default;
         mut usize at = 8;
-        while (at + 12 <= file.len()) {
+        while (at + 12 <= file.length()) {
             usize length = cast<usize>(read_be32(file, at));
             u32 kind = read_be32(file, at + 4);
             usize data = at + 8;
-            if (data + length + 4 > file.len()) {
+            if (data + length + 4 > file.length()) {
                 return std::error(decode_error::damaged);
             }
             if (kind == 0x49484452) {          // IHDR
@@ -414,7 +414,7 @@ namespace std::image {
         usize bits_per_pixel = cast<usize>(channels) * cast<usize>(depth);
         usize stride = (cast<usize>(width) * bits_per_pixel + 7) / 8;
         usize step = if (bits_per_pixel >= 8) { bits_per_pixel / 8 } else { 1 };
-        if (raw.len() < (stride + 1) * cast<usize>(height)) {
+        if (raw.length() < (stride + 1) * cast<usize>(height)) {
             return std::error(decode_error::damaged);
         }
         // Undo the filters in place: row y's bytes are at y * (stride + 1) + 1.
@@ -441,13 +441,13 @@ namespace std::image {
             for (usize x : 0..cast<usize>(width)) {
                 if (color_type == 3) {
                     usize p = cast<usize>(palette_index(rows, row, x, depth));
-                    if (p * 3 + 2 >= palette.len()) {
+                    if (p * 3 + 2 >= palette.length()) {
                         return std::error(decode_error::damaged);
                     }
                     out.push(palette[p * 3]);
                     out.push(palette[p * 3 + 1]);
                     out.push(palette[p * 3 + 2]);
-                    out.push(if (p < palette_alpha.len()) { palette_alpha[p] } else { 255 });
+                    out.push(if (p < palette_alpha.length()) { palette_alpha[p] } else { 255 });
                     continue;
                 }
                 usize c = cast<usize>(channels);
@@ -490,13 +490,13 @@ namespace std::image {
 
     // Appends a chunk with its length and CRC.
     private void push_chunk(mut std::darray<u8>& out, u32 kind, std::span<u8> data) {
-        push_be32(mut out, cast::truncate<u32>(data.len()));
-        usize start = out.len();
+        push_be32(mut out, cast::truncate<u32>(data.length()));
+        usize start = out.length();
         push_be32(mut out, kind);
         for (u8 b : data) {
             out.push(b);
         }
-        u32 crc = crc32_of(out.as_span().slice(start, out.len()), 0);
+        u32 crc = crc32_of(out.as_span().slice(start, out.length()), 0);
         push_be32(mut out, crc);
     }
 
@@ -521,13 +521,13 @@ namespace std::image {
                 raw.push(image.pixels[y * stride + i]);
             }
         }
-        mut std::darray<u8> z = std::darray<u8>::with_capacity(raw.len() + raw.len() / 65535 * 5 + 16);
+        mut std::darray<u8> z = std::darray<u8>::with_capacity(raw.length() + raw.length() / 65535 * 5 + 16);
         z.push(0x78);
         z.push(0x01);
         mut usize at = 0;
         while (true) {
-            usize n = (raw.len() - at).min(65535);
-            bool last = at + n == raw.len();
+            usize n = (raw.length() - at).min(65535);
+            bool last = at + n == raw.length();
             z.push(if (last) { 1 } else { 0 });
             z.push(cast::truncate<u8>(n));
             z.push(cast::truncate<u8>(n >> 8));
@@ -555,7 +555,7 @@ namespace std::image {
     }
 
     std::result<rgba8, decode_error> decode_qoi(std::span<u8> file) {
-        if (file.len() < 22 || file[0] != 0x71 || file[1] != 0x6f || file[2] != 0x69 || file[3] != 0x66) {
+        if (file.length() < 22 || file[0] != 0x71 || file[1] != 0x6f || file[2] != 0x69 || file[3] != 0x66) {
             return std::error(decode_error::wrong_format);
         }
         u32 width = read_be32(file, 4);
@@ -572,7 +572,7 @@ namespace std::image {
         mut u8 a = 255;
         mut usize at = 14;
         mut usize run = 0;
-        usize end = file.len() - 8;
+        usize end = file.length() - 8;
         for (usize i : 0..count) {
             if (run > 0) {
                 run -= 1;

@@ -37,7 +37,7 @@ i32 main() {
     fs::path file = dir / "settings.txt";
 
     mut std::darray<setting> settings = load_or_create(file).expect("can't read the settings");
-    std::println(f"{settings.len()} settings");
+    std::println(f"{settings.length()} settings");
     for (mut setting& s : settings) {
         if (s.key.as_str() == "volume") { s.value = std::string::from("55"); }
     }
@@ -48,7 +48,7 @@ i32 main() {
 
     mut std::file raw = std::file::open(file).expect("can't open");
     std::string text = raw.read_all().expect("can't read");
-    std::println(f"{file.file_name()}: {text.len()} bytes, {text.as_str().split('\n').len() - 1} lines");
+    std::println(f"{file.file_name()}: {text.length()} bytes, {text.as_str().split('\n').length() - 1} lines");
 
     match (load(dir / "missing.txt")) {
         std::ok(_) => std::println("unexpected"),

@@ -5,7 +5,7 @@ import std;
 
 u64 sum(std::darray<u64>& xs) {
     mut u64 total = 0;
-    for (usize i : 0..xs.len()) {
+    for (usize i : 0..xs.length()) {
         total +%= xs[i];
     }
     return total;

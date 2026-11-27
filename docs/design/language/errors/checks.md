@@ -54,7 +54,7 @@ compile_time run_time(std::build::mode::debug) check (...) else ...;     // comp
 
 ```edax
 f32 sample(std::span<f32> data, usize i) {
-    run_time check (i < data.len()) else f"sample index {i} out of range (len {data.len()})";
+    run_time check (i < data.length()) else f"sample index {i} out of range (length {data.length()})";
     run_time(std::build::mode::debug) check (data.is_sorted()) else "sample() expects sorted data";     // O(n): debug only
     ...
 }

@@ -8,7 +8,7 @@ i32 main() {
     a[3] = 7;
     mut u32 sum = 0;
     for (u32 x : a) { sum += x; }
-    std::println(f"{a.len()} {sum} {a.get(9).value_or(a[0])}");
+    std::println(f"{a.length()} {sum} {a.get(9).value_or(a[0])}");
     match (a.get(3)) {
         std::some(v) => std::println(f"got {v}"),
         std::none => std::println("none"),

@@ -51,7 +51,7 @@ Example: [`variables.ed`](examples/variables.ed). The errors: [`err_immutable.ed
 |---|---|
 | signed integers | `i8` `i16` `i32` `i64` `i128` |
 | unsigned integers | `u8` `u16` `u32` `u64` `u128` |
-| sizes and indices | `usize` (what `len()` returns), `isize` |
+| sizes and indices | `usize` (what `length()` returns), `isize` |
 | floats | `f16` (storage, GPU data), `f32`, `f64`, `f128` (exact reference math, slow) |
 | 8-bit floats | library types `std::f8e4m3`, `std::f8e5m2` (machine-learning storage) |
 
@@ -133,7 +133,7 @@ i32 main() {
 - There are no default arguments and no named arguments. Write an overload, or take a struct of options (lesson 3 shows designated construction, which reads like named arguments).
 - Overloading exists, but a call that fits two overloads is an error instead of a ranking puzzle: `twice(5)` with `twice(u32)` and `twice(u64)` is ambiguous. Write `twice(5u32)`.
 - **`std::array` is not a `std::span`.** A function that takes a `std::span<u32>` gets `values.as_span()`. Only a list literal like `[1, 2, 3]` converts by itself.
-- Lengths come from `.len()` (there is no `.size()`), and they are `usize`.
+- Lengths come from `.length()` (there is no `.size()`), and they are `usize`.
 
 ### Returning text
 
@@ -202,7 +202,7 @@ Example: [`control_flow.ed`](examples/control_flow.ed).
 | `int x = 5; x++;` | `mut i32 x = 5; x += 1;` |
 | `constexpr int n = 8;` (global) | `compile_time i32 n = 8;` |
 | `(uint8_t)x` | `cast::truncate<u8>(x)` (or `saturate`, `checked`) |
-| `v.size()` | `v.len()` |
+| `v.size()` | `v.length()` |
 | `void f(int& x); f(x);` | `void f(mut i32& x); f(mut x);` |
 | `void f(const T& x);` | `void f(T& x);` |
 | `std::string_view` | `std::str` |
@@ -242,7 +242,7 @@ To find the smallest value, start from the *largest* possible one, so that any r
 <details>
 <summary>Hint 2: the mean comes out as 3 or doesn't compile</summary>
 
-Add the readings up in an `i64` (`sum += cast<i64>(v);`, lossless). Then divide **as floats**: both `sum` (an `i64`) and `values.len()` (a `usize`) need `cast::round<f64>`, because both are 64 bits wide. Dividing first and converting afterwards gives an integer result. Finally divide by `10.0` to go from tenths to degrees.
+Add the readings up in an `i64` (`sum += cast<i64>(v);`, lossless). Then divide **as floats**: both `sum` (an `i64`) and `values.length()` (a `usize`) need `cast::round<f64>`, because both are 64 bits wide. Dividing first and converting afterwards gives an integer result. Finally divide by `10.0` to go from tenths to degrees.
 </details>
 
 <details>
@@ -278,7 +278,7 @@ Add each line to `main` of your finished exercise, one at a time, and read what 
 3. `error[E3028]: 'warm' is already declared in this function`. No shadowing.
 4. It builds, then stops: `panic in main: integer overflow in 'high * 300' (i16): 122 * 300`. The compiler can't know the value of `high`, so the check runs when the program does.
 5. `error[E4010]: expected 'bool', found 'usize'`, with the note `write 'x != 0'`.
-6. `error[E4070]: 'std::array<i16, 8>' has no method 'size'`, with the note `'size' is the C++ name; in Edax it is 'len'`. And `len()` returns a `usize`, so `u32 n` would need a cast too.
+6. `error[E4070]: 'std::array<i16, 8>' has no method 'size'`, with the note `'size' is the C++ name; in Edax it is 'length'`. And `length()` returns a `usize`, so `u32 n` would need a cast too.
 </details>
 
 ## Recap

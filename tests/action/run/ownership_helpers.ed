@@ -17,7 +17,7 @@ i32 main() {
     std::swap(mut x, mut y);
     std::println(f"{a} {b} {x} {y}");
     std::darray<u32> l = std::take(mut h.list);
-    std::println(f"{l.len()} {h.list.len()}");
+    std::println(f"{l.length()} {h.list.length()}");
     spans();
     return 0;
 }

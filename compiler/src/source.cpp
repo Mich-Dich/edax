@@ -1,6 +1,7 @@
 #include "edax/source.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -50,7 +51,16 @@ FileId SourceManager::add(std::string path, std::string text) {
     return to_u32(files_.size() - 1);
 }
 
+void SourceManager::set_text(const std::string& path, std::string text) {
+    std::error_code ec;
+    unsaved_[std::filesystem::weakly_canonical(path, ec).string()] = std::move(text);
+}
+
 std::optional<FileId> SourceManager::load(const std::string& path, std::string& error) {
+    if (!unsaved_.empty()) {
+        std::error_code ec;
+        if (auto it = unsaved_.find(std::filesystem::weakly_canonical(path, ec).string()); it != unsaved_.end()) return add(path, it->second);
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         error = "cannot open file";

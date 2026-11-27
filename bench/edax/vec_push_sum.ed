@@ -4,7 +4,7 @@ i32 main() {
     mut std::darray<u64> v = default;
     for (u64 i : 0..20000000) { v.push(i * 3); }
     mut u64 sum = 0;
-    for (usize i : 0..v.len()) { sum +%= v[i]; }
+    for (usize i : 0..v.length()) { sum +%= v[i]; }
     for (u64 x : v) { sum +%= x; }
     std::println(f"{sum}");
     return 0;

@@ -12,5 +12,5 @@ public:
 }
 void main() {
     holder h = holder{}.add(3).add(4);
-    std::println(f"b {h.fs.len()}");
+    std::println(f"b {h.fs.length()}");
 }

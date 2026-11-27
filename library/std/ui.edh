@@ -565,7 +565,7 @@ namespace std::ui {
         // Appends `other`'s triangles and commands after this list's.
         void append(draw_list& other) mut;
         // Puts `other`'s triangles before the ones from index `at` on (a mark taken earlier as
-        // `indices.len()`), so they are drawn under what was drawn since (links under nodes).
+        // `indices.length()`), so they are drawn under what was drawn since (links under nodes).
         void insert(u32 at, draw_list& other) mut;
 
         // One line of text with its top-left corner at `at`; returns the width.
@@ -1358,7 +1358,7 @@ namespace std::ui {
         bool can_undo();
         bool can_redo();
         // Steps back available.
-        usize len();
+        usize length();
 
         usize limit = 100;
         std::option<T> current = std::none;

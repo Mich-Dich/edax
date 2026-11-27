@@ -38,7 +38,7 @@ i32 main() {
     list.insert(0, std::string::from("a"));
     list.insert(2, std::string::from("c"));
     std::string gone = list.remove(3);
-    std::println(f"len {list.len()}, removed {gone}, [1] = {list[1]}");
+    std::println(f"len {list.length()}, removed {gone}, [1] = {list[1]}");
     match (list.get(10)) {   // checked access returns std::option<T&>
         std::some(s) => std::println(f"got {s}"),
         std::none => std::println("index 10: none"),
@@ -48,10 +48,10 @@ i32 main() {
     mut std::array<u32, 5> fib = default;
     fib[0] = 1;
     fib[1] = 1;
-    for (usize i : 2..fib.len()) { fib[i] = fib[i - 1] + fib[i - 2]; }
+    for (usize i : 2..fib.length()) { fib[i] = fib[i - 1] + fib[i - 2]; }
     std::println(f"fib: {fib[0]} {fib[1]} {fib[2]} {fib[3]} {fib[4]}, size {std::size_of<std::array<u32, 5>>()} bytes");
     std::darray<u32> primes = primes_below<60>();
-    std::println(f"{primes.len()} primes below 60, the last is {primes[primes.len() - 1]}");
+    std::println(f"{primes.length()} primes below 60, the last is {primes[primes.length() - 1]}");
     std::println(f"sum of all: {sum(primes.as_span())}, bitset<60> takes {std::size_of<std::bitset<60>>()} bytes");
 
     std::println("-- hash_map: word counts");
@@ -66,7 +66,7 @@ i32 main() {
     }
     std::string the = std::string::from("the");
     std::string cat = std::string::from("cat");
-    std::println(f"{counts.len()} distinct words; 'the' x{counts[the]}; 'cat' x{counts.get(cat).value_or(0u32)}");
+    std::println(f"{counts.length()} distinct words; 'the' x{counts[the]}; 'cat' x{counts.get(cat).value_or(0u32)}");
 
     std::println("-- tree_map: the same counts, sorted by word");
     mut std::tree_map<std::string, u32> sorted = default;
@@ -96,6 +96,6 @@ i32 main() {
     mut std::string built = std::string::from("Edax");
     built.push(' ');
     built.push_str("✓");
-    std::println(f"'{built}' is {built.len()} bytes");
+    std::println(f"'{built}' is {built.length()} bytes");
     return 0;
 }

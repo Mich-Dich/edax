@@ -16,6 +16,6 @@ i32 main() {
         }
     }
     std::string first = std::string::from("word0");
-    std::println(f"{counts.len()} {counts[first]}");
+    std::println(f"{counts.length()} {counts[first]}");
     return 0;
 }

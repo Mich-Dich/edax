@@ -23,13 +23,13 @@ The optimizer removes a check when it can prove it can't fail. In a loop that's 
 
 ```edax
 for (f32 v : xs) { ... }                         // no index at all: nothing to check
-for (usize i : 0..xs.len()) { xs[i] += 1.0; }    // i < xs.len() is known: the check goes
+for (usize i : 0..xs.length()) { xs[i] += 1.0; }    // i < xs.length() is known: the check goes
 ```
 
 It can't remove a check it can't prove. Here nothing says `a` and `b` are as long as `out`:
 
 ```edax
-for (usize i : 0..out.len()) { out[i] = a[i] + b[i]; }   // a[i] and b[i] keep their checks
+for (usize i : 0..out.length()) { out[i] = a[i] + b[i]; }   // a[i] and b[i] keep their checks
 ```
 
 So you tell it, once:
@@ -37,9 +37,9 @@ So you tell it, once:
 ```edax
 @std::no_checks_left                  // a build error if any check survives, naming each one
 void add_into(mut std::darray<f32>& out, std::darray<f32>& a, std::darray<f32>& b) {
-    usize n = out.len();
-    std::assume(a.len() == n);        // a fact: checked once per call, then known to the optimizer
-    std::assume(b.len() == n);
+    usize n = out.length();
+    std::assume(a.length() == n);        // a fact: checked once per call, then known to the optimizer
+    std::assume(b.length() == n);
     for (usize i : 0..n) { out[i] = a[i] + b[i]; }
 }
 ```
@@ -84,9 +84,9 @@ Examples: [`no_checks.ed`](examples/no_checks.ed), [`err_no_checks.ed`](examples
 
 ```edax
 f32 dot(std::span<f32> a, std::span<f32> b) {
-    run_time check (a.len() == b.len()) else "dot: lengths differ";
+    run_time check (a.length() == b.length()) else "dot: lengths differ";
     mut f32x8 sum = default;
-    for (std::simd::block<8> at : std::simd::blocks<8>(a.len())) {   // full blocks, then one masked tail
+    for (std::simd::block<8> at : std::simd::blocks<8>(a.length())) {   // full blocks, then one masked tail
         sum = a.load(at).mul_add(b.load(at), sum);
     }
     return sum.reduce_add();
@@ -152,13 +152,13 @@ Then run it with `--mode=release` as well. The output must be the same.
 <details>
 <summary>Hint 1: which checks survive, and why</summary>
 
-Run `build/compiler/edaxc explain-checks course/12-performance/exercise.ed`. The loop runs `i` over `0..x.len()`, so `x[i]` is proven. `y`, `vx` and `vy` could be shorter than `x` as far as the optimizer knows.
+Run `build/compiler/edaxc explain-checks course/12-performance/exercise.ed`. The loop runs `i` over `0..x.length()`, so `x[i]` is proven. `y`, `vx` and `vy` could be shorter than `x` as far as the optimizer knows.
 </details>
 
 <details>
 <summary>Hint 2: the fix</summary>
 
-`usize n = x.len();`, then `std::assume(y.len() == n);` and the same for `vx` and `vy`, and loop over `0..n`.
+`usize n = x.length();`, then `std::assume(y.length() == n);` and the same for `vx` and `vy`, and loop over `0..n`.
 </details>
 
 <details>

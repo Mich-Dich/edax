@@ -14,7 +14,7 @@ class cache {
 public:
     // The texture called `name`: the cached one while someone still uses it, else a newly loaded one.
     std::shared_ptr<texture> get(std::str name) mut {
-        for (usize i : 0..names.len()) {
+        for (usize i : 0..names.length()) {
             if (names[i].as_str() == name) {
                 if (entries[i].lock() is std::some(alive)) {
                     hits += 1;
@@ -37,7 +37,7 @@ public:
 private:
     std::shared_ptr<texture> load(std::str name) mut {
         loads += 1;
-        return std::shared_ptr<texture>::make(texture{ .name = std::string::from(name), .size = cast::truncate<u32>(name.len()) * 1024 });
+        return std::shared_ptr<texture>::make(texture{ .name = std::string::from(name), .size = cast::truncate<u32>(name.length()) * 1024 });
     }
 
     std::darray<std::string> names = default;

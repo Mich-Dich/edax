@@ -1022,10 +1022,55 @@ private:
         field->name  = "$value";
         field->name_span = decl->name_span;
         field->type  = parse_type({});
+        if (is_word(cur(), "check")) {   // `... = path check (value.is_absolute()) else "...";`
+            Span word = advance().span;
+            Span open = expect(TokenKind::l_paren, "after 'check'").span;
+            Check c;
+            c.is_compile_time = true;
+            c.is_run_time     = true;
+            c.condition       = parse_expr();
+            expect_close(TokenKind::r_paren, open);
+            expect(TokenKind::kw_else, "after the check's condition (write 'else \"message\"')");
+            c.message = parse_expr();
+            decl->members.push_back(distinct_check(*field->type, std::move(c), from(word)));
+        }
         expect(TokenKind::semicolon, "after a distinct type");
-        decl->members.push_back(std::move(field));
+        decl->members.insert(decl->members.begin(), std::move(field));
         decl->span = from(m.start);
         return decl;
+    }
+
+    // The check of a distinct type, as the static function `cast` calls:
+    // `static U $check(U value) { compile_time run_time check (c) else msg; return value; }`.
+    // Being an entry check, it fails at compile time when the value is known there.
+    DeclPtr distinct_check(const TypeExpr& underlying, Check c, Span span) {
+        ast::Cloner copy([](const sema::Symbol&) -> sema::Symbol* { return nullptr; });
+        auto f       = std::make_unique<FunctionDecl>(span);
+        f->name      = "$check";
+        f->name_span = span;
+        f->is_static = true;
+        f->access    = Access::public_;
+        f->result    = copy.type(underlying);
+        Param p;
+        p.type = copy.type(underlying);
+        p.name = "value";
+        p.span = span;
+        f->params.push_back(std::move(p));
+        auto body  = std::make_unique<BlockExpr>(span);
+        auto check = std::make_unique<CheckStmt>(span);
+        check->check = std::move(c);
+        body->statements.push_back(std::move(check));
+        Path value;
+        value.span = span;
+        PathSegment seg;
+        seg.name = "value";
+        seg.span = span;
+        value.segments.push_back(std::move(seg));
+        auto ret = std::make_unique<ReturnExpr>(span, std::make_unique<PathExpr>(span, std::move(value)));
+        body->statements.push_back(std::make_unique<ExprStmt>(span, std::move(ret)));
+        f->body = std::move(body);
+        f->span = span;
+        return f;
     }
 
     // `implement geometry::point for math::vec3 { ... }` (spec 34): methods that make an existing
@@ -2414,10 +2459,30 @@ private:
         loop->is_compile_time = accept(TokenKind::kw_compile_time);
         Span open  = expect(TokenKind::l_paren, "after 'for'").span;
         bool mut   = accept(TokenKind::kw_mut);
-        loop->type   = parse_type({});
-        loop->is_mut = apply_mut(*loop->type, mut);
-        loop->name_span = cur().span;
-        loop->name      = expect_identifier("a loop variable name");
+        // `for (auto (a, b) : list)`, `for ((T1 a, T2& b) : list)`: names for a tuple's elements.
+        bool auto_names  = at(TokenKind::kw_auto) && peek(1).kind == TokenKind::l_paren;
+        bool typed_names = !auto_names && at(TokenKind::l_paren) && looks_like_loop_names();
+        std::unique_ptr<DestructureStmt> names;
+        if (auto_names || typed_names) {
+            Span names_start = cur().span;
+            names = parse_loop_names(auto_names);
+            names->span = from(names_start);
+            if (mut) {
+                for (DestructureBinding& b : names->bindings) b.is_mut = !b.wildcard;   // `mut auto (a, b)`: every name
+            }
+            loop->type      = std::make_unique<PlaceholderType>(TypeKind::auto_, names_start);
+            loop->is_mut    = false;
+            for (const DestructureBinding& b : names->bindings) loop->is_mut = loop->is_mut || b.is_mut;
+            loop->name_span = names->span;
+            loop->name      = std::format("$element{}", names_start.begin);
+        } else {
+            TypeOptions opts;
+            opts.allow_auto = true;
+            loop->type   = parse_type(opts);
+            loop->is_mut = apply_mut(*loop->type, mut);
+            loop->name_span = cur().span;
+            loop->name      = expect_identifier("a loop variable name");
+        }
         if (at(TokenKind::eq) || at(TokenKind::semicolon)) {
             report(DiagCode::E2015, from(start), "C-style 'for' loops do not exist",
                    "use a range-based loop")
@@ -2430,8 +2495,60 @@ private:
             expect_close(TokenKind::r_paren, open);
         }
         loop->body = parse_body("for");
+        if (names) {   // the body starts by naming the element's parts
+            Path element;
+            element.span = names->span;
+            PathSegment seg;
+            seg.name = loop->name;
+            seg.span = names->span;
+            element.segments.push_back(std::move(seg));
+            names->init = std::make_unique<UnaryExpr>(names->span, UnaryOp::move, std::make_unique<PathExpr>(names->span, std::move(element)));
+            names->loop_element = true;
+            loop->body->statements.insert(loop->body->statements.begin(), std::move(names));
+        }
         loop->span = from(start);
         return loop;
+    }
+
+    // Whether `(` starts the typed names of a loop's element: `((u32 a, std::str b) : ...)`.
+    bool looks_like_loop_names() {
+        return lookahead([&] {
+            advance();   // (
+            if (accept(TokenKind::underscore)) return at(TokenKind::comma);
+            accept(TokenKind::kw_mut);
+            parse_type({});
+            return at(TokenKind::identifier);
+        });
+    }
+
+    // `auto (a, mut b, _)` or `(T1 a, mut T2 b, _)` in a `for` loop.
+    std::unique_ptr<DestructureStmt> parse_loop_names(bool is_auto) {
+        auto d     = std::make_unique<DestructureStmt>(cur().span);
+        d->is_auto = is_auto;
+        if (is_auto) advance();   // auto
+        Span open = expect(TokenKind::l_paren, "to start the names").span;
+        do {
+            DestructureBinding b;
+            b.span = cur().span;
+            if (accept(TokenKind::underscore)) {
+                b.wildcard = true;
+                d->bindings.push_back(std::move(b));
+                continue;
+            }
+            b.is_mut = accept(TokenKind::kw_mut);
+            if (!is_auto) {
+                b.type   = parse_type({});
+                b.is_mut = apply_mut(*b.type, b.is_mut);
+            }
+            b.span = cur().span;
+            b.name = expect_identifier("a name for the element");
+            d->bindings.push_back(std::move(b));
+        } while (accept(TokenKind::comma));
+        expect_close(TokenKind::r_paren, open);
+        if (d->bindings.size() < 2) {
+            report(DiagCode::E2001, from(open), "a loop names two or more parts of its element", "one name");
+        }
+        return d;
     }
 
     // --- expressions ----------------------------------------------------------------------

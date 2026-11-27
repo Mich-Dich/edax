@@ -1,0 +1,36 @@
+exit: 1
+--- stdout
+--- stderr
+error[E4210]: "/etc" starts with '/': it is an absolute path; use 'path::absolute'
+  --> tests/action/check/filesystem_path_kinds.ed:10:72
+   |
+10 |     std::filesystem::relative_path a = std::filesystem::path::relative("/etc");
+   |                                                                        ^^^^^^ check failed
+
+error[E4210]: "logs" doesn't start with '/': it is a relative path; use 'path::relative'
+  --> tests/action/check/filesystem_path_kinds.ed:11:72
+   |
+11 |     std::filesystem::absolute_path b = std::filesystem::path::absolute("logs");
+   |                                                                        ^^^^^^ check failed
+
+error[E4010]: expected 'std::filesystem::absolute_path&', found 'std::filesystem::path'
+  --> tests/action/check/filesystem_path_kinds.ed:12:13
+   |
+12 |     install(std::filesystem::path::from("log"));
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is 'std::filesystem::path'
+   = note: 'cast<std::filesystem::absolute_path>(...)' makes one and runs its check
+
+error[E4011]: operands have different types: 'std::filesystem::relative_path' and 'std::filesystem::absolute_path'
+  --> tests/action/check/filesystem_path_kinds.ed:14:40
+   |
+14 |     std::filesystem::absolute_path d = c / std::filesystem::executable_dir();
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ mismatched types
+
+error[E4010]: expected 'mut std::filesystem::path&', found 'std::filesystem::absolute_path'
+  --> tests/action/check/filesystem_path_kinds.ed:16:14
+   |
+16 |     grow(mut e);
+   |              ^ this is 'std::filesystem::absolute_path'
+   = note: a 'std::filesystem::absolute_path' is lent as a read-only 'std::filesystem::path&' only: a change could break its check
+
+5 errors, 0 warnings

@@ -24,7 +24,7 @@ i32 main() {
     mut fixed_stack<u32, 4> s = default;    // type arguments are always written out
     s.push(7);
     s.push(8);
-    std::println(f"{s.count} of {s.items.len()}");
+    std::println(f"{s.count} of {s.items.length()}");
     return 0;
 }
 //> 9 2.5 b

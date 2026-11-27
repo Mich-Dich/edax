@@ -98,23 +98,23 @@ The binary is `build/compiler/edaxc`:
 ```bash
 $ ./build/compiler/edaxc --version
 edaxc 0.8.0
-$ ./build/compiler/edaxc run example/hello.ed           # build in a temp dir and run
-$ ./build/compiler/edaxc build example/hello.ed         # -> example/build/debug/hello
-$ ./build/compiler/edaxc build --mode=release example/hello.ed   # -> example/build/release/hello
-$ ./build/compiler/edaxc emit-llvm example/hello.ed      # the generated LLVM IR
-$ ./build/compiler/edaxc check example/zoo.ed     # silent + exit 0 when clean
-$ ./build/compiler/edaxc lex example/hello.ed   # token dump
-$ ./build/compiler/edaxc parse example/zoo.ed     # syntax tree (S-expressions)
-$ ./build/compiler/edaxc symbols example/zoo.ed   # merged module symbol table
-$ ./build/compiler/edaxc typed example/zoo.ed     # syntax tree with every expression's type
-$ ./build/compiler/edaxc check --root=proj proj/main.ed  # project root for imports
-$ ./build/compiler/edaxc explain E1003                      # what a diagnostic code means
+$ ./build/compiler/edaxc run example/hello.ed                   # build in a temp dir and run
+$ ./build/compiler/edaxc build example/hello.ed                 # -> example/build/debug/hello
+$ ./build/compiler/edaxc build --mode=release example/hello.ed  # -> example/build/release/hello
+$ ./build/compiler/edaxc emit-llvm example/hello.ed             # the generated LLVM IR
+$ ./build/compiler/edaxc check example/zoo.ed                   # silent + exit 0 when clean
+$ ./build/compiler/edaxc lex example/hello.ed                   # token dump
+$ ./build/compiler/edaxc parse example/zoo.ed                   # syntax tree (S-expressions)
+$ ./build/compiler/edaxc symbols example/zoo.ed                 # merged module symbol table
+$ ./build/compiler/edaxc typed example/zoo.ed                   # syntax tree with every expression's type
+$ ./build/compiler/edaxc check --root=proj proj/main.ed         # project root for imports
+$ ./build/compiler/edaxc explain E1003                          # what a diagnostic code means
 ```
 
 ### Installing
 
 ```bash
-cmake --build build && cmake --install build --prefix ~/.local   # or: sudo cmake --install build (/usr/local)
+cmake -S . -B build -G Ninja && cmake --build build -j10 && cmake --install build --prefix ~/.local   # or: sudo cmake --install build (/usr/local)
 ```
 
 This puts `edaxc` in `<prefix>/bin`, and in `<prefix>/share/edax` the standard library's source (the
@@ -170,6 +170,4 @@ Details, file formats and the `XFAIL` workflow for not-yet-implemented features:
 
 
 # NOTES:
-- std::darray::len is a wired way to get the number of elements, I dont want to use auch wired abriviations in the standart lib, it should be length or size. And the API should be uniform with other containers as well!
 - Why can class members be declared without mut?
-- 

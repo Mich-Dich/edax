@@ -9,7 +9,7 @@
 - Both have `insert(key, value) mut → std::option<V>` (the replaced value), `contains(key&)`,
   `get(key&) → std::option<V&>`, `get_mut(key&) mut → std::option<mut V&>`,
   `get_or_insert(key, value) mut → mut V&` (`m.get_or_insert(k, 0) += 1` counts),
-  `remove(key&) mut → std::option<V>`, `m[key]` (panics when the key is missing), `len()`,
+  `remove(key&) mut → std::option<V>`, `m[key]` (panics when the key is missing), `length()`,
   `is_empty()`, `clear() mut`, and `entries()`: a stream (see [Control Flow](../../language/basics/control-flow.md), `for`) of
   `std::map_entry<K, V>` views with `.key` and `.value`. It allocates nothing and borrows the map.
 - `hash_map` also has `with_capacity(n)` (static) and `reserve(n) mut`; `std::string` has `with_capacity(n)`, `reserve(n)` and `capacity()`; `tree_map` has `first()` / `last() → std::option<std::map_entry<K, V>>`.

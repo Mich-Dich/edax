@@ -25,7 +25,7 @@ view struct cursor {
     usize    pos = 0;
 
     bool done() {
-        return this.pos >= this.text.len();
+        return this.pos >= this.text.length();
     }
 
     void advance(usize by) mut {
@@ -104,7 +104,7 @@ u32 classify(u32 code) {
         x if x >= 500 => "server",
         _         => "other",
     };
-    return if (label.len() > 2) { 1 } else { 0 };
+    return if (label.length() > 2) { 1 } else { 0 };
 }
 
 void bits(mut u32 flags, u32 n) {

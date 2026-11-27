@@ -11,7 +11,7 @@ i32 main() {
     for (u32 v : 0..10) { xs.push(v); }
     xs.retain([](u32& v) { return v % 3 == 0; });            // keep 0 3 6 9
     xs.sort_by([](u32& a, u32& b) { return a > b; });       // less(a, b) gives a bool
-    std::println(f"{xs.len()} {xs[0]} {xs[3]}");
+    std::println(f"{xs.length()} {xs[0]} {xs[3]}");
 
     mut std::darray<score> s = default;
     s.push(score{ .player = std::string::from("kim"), .points = 40 });

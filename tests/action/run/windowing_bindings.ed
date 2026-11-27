@@ -23,7 +23,7 @@ std::exit_code main() {
     std::string saved = keys.to_text();
     std::println(saved.as_str());
     match (wnd::bindings<action>::from_text(saved.as_str())) {
-        std::ok(b) => std::println(f"reloaded {b.len()} bindings: {b.to_text()}"),
+        std::ok(b) => std::println(f"reloaded {b.length()} bindings: {b.to_text()}"),
         std::error(e) => std::println(f"error {e}"),
     }
     wnd::event e = wnd::event::key(wnd::key_event{ .key = wnd::key::s, .modifiers = wnd::modifiers{ .control = true } });

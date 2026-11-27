@@ -64,6 +64,6 @@ u32 main() {
     for (std::string& line : problems.snapshot()) {
         std::println(f"problems: {line}");
     }
-    std::println(f"history keeps {all.snapshot().len()} lines");
+    std::println(f"history keeps {all.snapshot().length()} lines");
     return 0;
 }

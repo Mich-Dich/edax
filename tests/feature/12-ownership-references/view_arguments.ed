@@ -3,7 +3,7 @@
 import std;
 
 void copy_into(std::span<mut u32> to, std::span<u32> from) {
-    for (usize i : 0..to.len()) { to[i] = from[i]; }
+    for (usize i : 0..to.length()) { to[i] = from[i]; }
 }
 
 void fill(std::span<mut u32> to, usize v) {
@@ -21,7 +21,7 @@ void main() {
     mut std::darray<u32> ys = std::darray<u32>::from([5, 6, 7, 8]);
     copy_into(xs.as_mut_span(), xs.as_span());          //~ error[E5020]
     copy_into(xs.as_mut_span(), ys.as_span());          // two containers: fine
-    fill(xs.as_mut_span(), xs.len());                   // a value argument is read first: fine
+    fill(xs.as_mut_span(), xs.length());                   // a value argument is read first: fine
     (std::span<mut u32> left, std::span<mut u32> right) = xs.as_mut_span().split_at(2);
     swap_first(left, right);                            // two halves: fine
 }

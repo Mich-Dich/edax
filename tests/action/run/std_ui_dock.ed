@@ -65,13 +65,13 @@ void click(mut im::context& ctx, mut dock::workspace& ws, ui::vec2 p) {
 // Every window once, and the text reads back as the same layout.
 bool consistent(dock::layout& l) {
     std::darray<std::string> names = l.windows();
-    if (names.len() != 6) {
+    if (names.length() != 6) {
         return false;
     }
     std::array<std::static_str, 6> expected = all_windows();
     for (usize i : 0..6) {
         mut u32 seen = 0;
-        for (usize k : 0..names.len()) {
+        for (usize k : 0..names.length()) {
             if (names[k].as_str() == expected[i]) {
                 seen += 1;
             }
@@ -118,7 +118,7 @@ void data_checks() {
     m.close("Console");
     m.close("Outliner");
     m.close("Inspector");
-    std::println(f"closed three: {m.windows().len()} windows left, closed list {m.closed.len()}");
+    std::println(f"closed three: {m.windows().length()} windows left, closed list {m.closed.length()}");
     m.reopen("Inspector");
     m.reopen("Outliner");
     m.reopen("Console");
@@ -128,11 +128,12 @@ void data_checks() {
     ws.edit().close("Theme");
     ws.save_as("Animation");
     _ = ws.switch_to("Layout");
-    std::println(f"workspaces {ws.names().len()}, active {ws.active_name()}, Theme back {ws.current().contains("Theme")}");
-    std::str path = "/tmp/edax_dock_test.layout";
-    _ = ws.save(path);
-    match (dock::workspace::load(path)) {
-        std::some(back) => std::println(f"loaded: same layout {back.current().same(ws.current())}, workspaces {back.names().len()}, active {back.active_name()}"),
+    std::println(f"workspaces {ws.names().length()}, active {ws.active_name()}, Theme back {ws.current().contains("Theme")}");
+    std::filesystem::path path = std::filesystem::path::from("/tmp/edax_dock_test.layout");
+    _ = std::filesystem::write_text(path, ws.to_text().as_str());
+    std::string saved = std::filesystem::read_text(path).expect("the layout file");
+    match (dock::workspace::from_text(saved.as_str())) {
+        std::some(back) => std::println(f"loaded: same layout {back.current().same(ws.current())}, workspaces {back.names().length()}, active {back.active_name()}"),
         std::none => std::println("did not load"),
     }
     std::println(f"not a layout: {dock::layout::from_text("tabs 0 1 \"x\"").is_none()}");
@@ -144,7 +145,7 @@ void main() {
     mut dock::workspace ws = dock::workspace::make(start());
     _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
     u32 shown = frame_of(mut ctx, mut ws, at(ui::vec2{}));
-    std::println(f"stacks {ws.areas.len()}, windows shown {shown}, duplicates {ctx.duplicate_ids()}");
+    std::println(f"stacks {ws.areas.length()}, windows shown {shown}, duplicates {ctx.duplicate_ids()}");
 
     // Every window onto every target.
     std::array<std::static_str, 6> names = all_windows();
@@ -155,7 +156,7 @@ void main() {
         // The stacks of the start layout, and the edges, as targets.
         ws.reset(start());
         _ = frame_of(mut ctx, mut ws, at(ui::vec2{}));
-        usize stacks = ws.areas.len();
+        usize stacks = ws.areas.length();
         for (usize s : 0..stacks + 2) {
             for (usize k : 0..5) {
                 ws.reset(start());
@@ -204,13 +205,13 @@ void main() {
     ui::rect floated = ws.current().floating[0].bounds;
     ui::vec2 bar = ui::vec2{ .x = floated.right() - 20.0, .y = floated.y + 10.0 };
     drag(mut ctx, mut ws, bar, bar + ui::vec2{ .x = 100.0, .y = 50.0 });
-    std::println(f"floating: {ws.current().floating.len()}, moved by (100, 50) after the drag's start: {ws.current().floating[0].bounds.x > floated.x}");
+    std::println(f"floating: {ws.current().floating.length()}, moved by (100, 50) after the drag's start: {ws.current().floating[0].bounds.x > floated.x}");
     // Close it with its tab's button; reopen it where it was.
     ui::rect theme_tab = ws.tab_of("Theme").value_or(ui::rect{});
     click(mut ctx, mut ws, ui::vec2{ .x = theme_tab.right() - 14.0, .y = theme_tab.center().y });
-    std::println(f"closed by its button: {ws.current().is_closed("Theme")}, floating stacks {ws.current().floating.len()}");
+    std::println(f"closed by its button: {ws.current().is_closed("Theme")}, floating stacks {ws.current().floating.length()}");
     ws.reopen("Theme");
-    std::println(f"reopened floating: {ws.current().floating.len()}");
+    std::println(f"reopened floating: {ws.current().floating.length()}");
 
     // Drag the outliner's divider right, then double-click it back.
     ws.reset(start());
@@ -224,7 +225,7 @@ void main() {
     _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = now, .mouse_down = true, .mouse_pressed = true, .dt = 0.016 });
     _ = frame_of(mut ctx, mut ws, ui::input{ .cursor = now, .mouse_released = true, .dt = 0.016 });
     std::println(f"divider: dragged to {moved_ratio > 0.25}, double-click back to {ws.current().nodes[ws.current().root].ratio}");
-    std::println(f"duplicates {ctx.duplicate_ids()}, changed {ws.changed}");
+    std::println(f"duplicates {ctx.duplicate_ids()}, changed {ws.changed()}");
 
     mut im::context panes = im::context::create(ui::theme::dark());
     mut ui::rect handle = default;

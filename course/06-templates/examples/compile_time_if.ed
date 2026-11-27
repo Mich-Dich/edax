@@ -16,7 +16,7 @@ std::string kind(T value) {
 template<type... A>
 void print_all(A&... values) {
     for compile_time (A& v : values) { std::println(kind(v)); }
-    std::println(f"{values.len()} values");     // a compile-time usize
+    std::println(f"{values.length()} values");     // a compile-time usize
 }
 
 i32 main() {

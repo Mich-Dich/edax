@@ -136,7 +136,7 @@ namespace std::windowing {
 
     // `text` with a NUL at the end, for C.
     private std::string c_text(std::str text) {
-        mut std::string out = std::string::with_capacity(text.len() + 1);
+        mut std::string out = std::string::with_capacity(text.length() + 1);
         out.push_str(text);
         out.push('\0');
         return out;
@@ -221,7 +221,7 @@ namespace std::windowing {
         std::str text = std::raw::str_from(resources, length);
         for (std::str line : text.split('\n')) {
             if (line.starts_with("Xft.dpi:")) {
-                match (line.slice(8, line.len()).trim().parse<f32>()) {
+                match (line.slice(8, line.length()).trim().parse<f32>()) {
                     std::some(dpi) => {
                         if (dpi > 0.0) {
                             return scale{ .x = dpi / 96.0, .y = dpi / 96.0 };
@@ -624,19 +624,19 @@ namespace std::windowing {
                 std::string name = c_text(title);
                 _ = (*p).x.XStoreName((*p).display, (*s).handle, name.as_str().as_ptr());
                 _ = (*p).x.XChangeProperty((*p).display, (*s).handle, (*p).atom.net_wm_name, (*p).atom.utf8_string, 8, 0,
-                                           title.as_ptr(), cast::truncate<i32>(title.len()));
+                                           title.as_ptr(), cast::truncate<i32>(title.length()));
                 _ = (*p).x.XFlush((*p).display);
             }
         }
 
         void set_icon(image& icon) mut {
-            run_time check (icon.pixels.len() == cast<usize>(icon.width) * cast<usize>(icon.height) * 4)
-                else f"std::windowing: an icon of {icon.width}x{icon.height} needs {icon.width * icon.height * 4} bytes, not {icon.pixels.len()}";
+            run_time check (icon.pixels.length() == cast<usize>(icon.width) * cast<usize>(icon.height) * 4)
+                else f"std::windowing: an icon of {icon.width}x{icon.height} needs {icon.width * icon.height * 4} bytes, not {icon.pixels.length()}";
             // _NET_WM_ICON: width, height, then one ARGB pixel per C `long` (64 bits here).
-            mut std::darray<u64> data = std::darray<u64>::with_capacity(2 + icon.pixels.len() / 4);
+            mut std::darray<u64> data = std::darray<u64>::with_capacity(2 + icon.pixels.length() / 4);
             data.push(cast<u64>(icon.width));
             data.push(cast<u64>(icon.height));
-            for (usize i : 0..icon.pixels.len() / 4) {
+            for (usize i : 0..icon.pixels.length() / 4) {
                 u64 r = cast<u64>(icon.pixels[i * 4]);
                 u64 g = cast<u64>(icon.pixels[i * 4 + 1]);
                 u64 b = cast<u64>(icon.pixels[i * 4 + 2]);
@@ -648,7 +648,7 @@ namespace std::windowing {
                 std::raw_ptr<mut platform_state> p = (*s).platform;
                 _ = (*p).x.XChangeProperty((*p).display, (*s).handle, (*p).atom.net_wm_icon, x11::xa_cardinal, 32, 0,
                                            cast::reinterpret<std::raw_ptr<u8>>(&data[0]),
-                                           cast::truncate<i32>(data.len()));
+                                           cast::truncate<i32>(data.length()));
                 _ = (*p).x.XFlush((*p).display);
             }
         }
@@ -1095,7 +1095,7 @@ namespace std::windowing {
         std::string title = c_text(config.title);
         _ = (*p).x.XStoreName(display, handle, title.as_str().as_ptr());
         _ = (*p).x.XChangeProperty(display, handle, (*p).atom.net_wm_name, (*p).atom.utf8_string, 8, 0,
-                                   config.title.as_ptr(), cast::truncate<i32>(config.title.len()));
+                                   config.title.as_ptr(), cast::truncate<i32>(config.title.length()));
         // WM_NORMAL_HINTS: 18 values; flags: USPosition 1, PMinSize 16, PMaxSize 32.
         mut std::array<i64, 18> hints = default;
         if (config.position.is_some()) {

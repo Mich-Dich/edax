@@ -12,7 +12,7 @@ i32 main() {
     mut u32 lo = 1;
     mut u32 hi = 2;
     (lo, hi) = (hi, lo);               // destructuring assignment: a swap
-    std::println(f"{a} {b} {list.len()} {n} {limit} {lo} {hi}");
+    std::println(f"{a} {b} {list.length()} {n} {limit} {lo} {hi}");
     return 0;
 }
 //> 5 6 0 7 100 2 1

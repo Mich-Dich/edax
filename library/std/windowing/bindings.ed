@@ -88,7 +88,7 @@ namespace std::windowing {
         }
 
         std::option<A> unbind_chord(chord c) mut {
-            for (usize i : 0..this.entries.len()) {
+            for (usize i : 0..this.entries.length()) {
                 if (this.entries[i].chord == c) {
                     return std::some(this.entries.remove(i).action);
                 }
@@ -174,7 +174,7 @@ namespace std::windowing {
             return out;
         }
 
-        usize len() { return this.entries.len(); }
+        usize length() { return this.entries.length(); }
 
         std::string to_text() {
             mut std::string out = default;
@@ -206,7 +206,7 @@ namespace std::windowing {
                 usize equals = line.find("=").or_error(binding_error::bad_syntax)?;
                 std::str name = line.slice(0, equals).trim();
                 A action = std::meta::from_name<A>(name).or_error(binding_error::unknown_action)?;
-                std::str rest = line.slice(equals + 1, line.len()).trim();
+                std::str rest = line.slice(equals + 1, line.length()).trim();
                 if (rest.is_empty()) {
                     continue;                                   // an action with no keys
                 }
@@ -243,22 +243,22 @@ namespace std::windowing {
         while (true) {
             if (rest.starts_with("control+")) {
                 mods.control = true;
-                rest = rest.slice(8, rest.len());
+                rest = rest.slice(8, rest.length());
             } else if (rest.starts_with("shift+")) {
                 mods.shift = true;
-                rest = rest.slice(6, rest.len());
+                rest = rest.slice(6, rest.length());
             } else if (rest.starts_with("alt+")) {
                 mods.alt = true;
-                rest = rest.slice(4, rest.len());
+                rest = rest.slice(4, rest.length());
             } else if (rest.starts_with("super+")) {
                 mods.super = true;
-                rest = rest.slice(6, rest.len());
+                rest = rest.slice(6, rest.length());
             } else {
                 break;
             }
         }
         if (rest.starts_with("mouse_")) {
-            std::windowing::mouse_button b = std::meta::from_name<std::windowing::mouse_button>(rest.slice(6, rest.len()))?;
+            std::windowing::mouse_button b = std::meta::from_name<std::windowing::mouse_button>(rest.slice(6, rest.length()))?;
             return std::some(chord{ .trigger = trigger::button(b), .modifiers = mods });
         }
         std::windowing::key k = std::meta::from_name<std::windowing::key>(rest)?;

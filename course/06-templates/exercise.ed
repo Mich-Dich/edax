@@ -19,7 +19,7 @@ public:
         return std::none;
     }
 
-    usize len() { return 0; }
+    usize length() { return 0; }
 
 private:
     // TODO: the slots (an std::array of N options) and where the oldest value is.

@@ -24,6 +24,6 @@ std::exit_code main(std::span<std::str> args) {
         std::ok(o) => move o,
         std::error(e) => return e.report(),
     };
-    std::println(f"{opts.project.as_str()} files={opts.files.len()} verbose={opts.verbose} threads={opts.threads} renderer={std::meta::name_of(opts.renderer)}");
+    std::println(f"{opts.project.as_str()} files={opts.files.length()} verbose={opts.verbose} threads={opts.threads} renderer={std::meta::name_of(opts.renderer)}");
     return std::exit_code::success;
 }

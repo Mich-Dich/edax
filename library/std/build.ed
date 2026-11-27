@@ -53,6 +53,7 @@ namespace std::build {
         compile_time std::build::program find_program(std::static_str name) { return std::build::program{}; }
         compile_time std::build::path output_path(std::build::path file) { return file; }
         compile_time std::build::step add_step(std::build::step_spec spec) mut { return std::build::step{}; }
+        compile_time std::build::step add_archive(std::build::archive_spec spec) mut { return std::build::step{}; }
         compile_time void add_argument(std::build::step s, std::static_str argument) mut { }
         compile_time void add_argument(std::build::step s, std::build::path argument) mut { }
         compile_time void add_input(std::build::step s, std::build::path file) mut { }

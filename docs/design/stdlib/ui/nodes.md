@@ -129,7 +129,7 @@ view.look.draw.node = [](mut ui::painter& p, nodes::node_part& n) {
 | `nodes`, `links`, `frames`, `index_of(id)` | The data: `graph_node<K>` (`id`, `value`, `at`), `graph_link` (`from`, `to` pins, `via` reroute points), `graph_frame` |
 | `source_of(node, "input")` | The node and output linked into an input, and that output's type id (to know when to convert) |
 | `topological_order()` | Node ids with every node after its inputs' nodes; the error names a node on a cycle |
-| `to_text()`, `from_text(text)`, `save(path)`, `load(path)` | Readable text, below |
+| `to_text()`, `from_text(text)` | Readable text, below; std::filesystem writes and reads it (`write_text(path, g.to_text().as_str())`) |
 | `undo()`, `redo()` | The editor's history |
 | `view` | The editor's `view_state`: view, selection, collapsed nodes, style |
 
@@ -193,7 +193,7 @@ A graph the program keeps itself, shortened (`tests/action/run/std_ui_nodes.ed` 
 nodes::edits e = {
     mut nodes::editor ed = s.node_editor("material", mut m.view, 0.0);
     ed.frame(9000, mut m.frame, "Base color", ui::color::hex(0xe5484d));
-    for (usize i : 0..m.nodes.len()) {
+    for (usize i : 0..m.nodes.length()) {
         node shown = m.nodes[i];
         mut nodes::node_view n = ed.node(shown.id, mut m.nodes[i].at, title_of(shown.kind),
                                          nodes::node_look{ .color = tint_of(shown.kind), .symbol = icon_of(shown.kind) });
@@ -204,7 +204,7 @@ nodes::edits e = {
             changed = field.slider("", mut m.nodes[i].amount, 0.0, 1.0) || changed;   // while t is unlinked
         }
     }
-    for (usize k : 0..m.links.len()) {
+    for (usize k : 0..m.links.length()) {
         ed.link_via(m.links[k].id, m.links[k].from, m.links[k].to, mut m.links[k].via);
     }
     ed.finish()

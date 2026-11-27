@@ -22,6 +22,6 @@ i32 main() {
     mut std::string text = default;
     for (u32 i : 0..5) { text.push_str(std::format(f"{i},")); }
     std::unique_ptr<shape> s = std::unique_ptr<square>::make(square{ .side = 1.5 });
-    std::println(f"{sum} {m.len()} {text} {s->area()}");
+    std::println(f"{sum} {m.length()} {text} {s->area()}");
     return 0;
 }

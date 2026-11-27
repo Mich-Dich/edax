@@ -87,9 +87,9 @@ struct Expr : Node<ExprKind> {
     std::shared_ptr<const ct::Value> constant;
     // An implicit conversion the checker found where the value is used (spec 19): a
     // `std::string` read as a `std::str`, or a literal that becomes a `std::string`.
-    enum class Conversion : unsigned char { none, string_to_str, literal_to_string, pointer_upcast, to_callable };
+    enum class Conversion : unsigned char { none, string_to_str, literal_to_string, pointer_upcast, to_callable, distinct_value };
     Conversion conversion = Conversion::none;
-    const types::Type* converted_to = nullptr;   // pointer_upcast: `std::unique_ptr<shape>` from `<circle>`
+    const types::Type* converted_to = nullptr;   // pointer_upcast: `std::unique_ptr<shape>` from `<circle>`; distinct_value: the underlying type
 };
 
 enum class PatternKind { wildcard, literal, range, binding, enum_alternative, struct_, error, tuple };
@@ -493,6 +493,11 @@ struct DestructureBinding {
 // `(T1 a, T2 b) = expr;` or `auto (a, b) = expr;`: consumes a tuple into new variables.
 struct DestructureStmt : Stmt {
     bool                            is_auto = false;
+    // `for (auto (a, b) : list)`: the names of a loop's element (the parser's first statement of
+    // the body, from the hidden loop variable). Over a container the names refer into the element
+    // (`by_reference`, set by the checker); over a stream they take the element's parts.
+    bool                            loop_element = false;
+    bool                            by_reference = false;
     std::vector<DestructureBinding> bindings;
     ExprPtr                         init;
     DestructureStmt(Span s) : Stmt(StmtKind::destructure, s) {}
@@ -552,7 +557,9 @@ struct WhileExpr : Expr {
     WhileExpr(Span s) : Expr(ExprKind::while_, s) {}
 };
 
-// `for ([mut] T name : iterable) { }`
+// `for ([mut] T name : iterable) { }`, `for ([mut] auto name : iterable) { }`; with names for a
+// tuple's elements (`for (auto (a, b) : list)`) the loop variable is hidden and the body starts
+// with a DestructureStmt (`loop_element`).
 struct ForExpr : Expr {
     bool        is_compile_time = false;   // `for compile_time`: the body is copied per element (spec 26)
     std::vector<BlockPtr>  copies;          // the checked copies of the body, in order (set by the checker)
@@ -565,7 +572,7 @@ struct ForExpr : Expr {
     ExprPtr     iterable;
     BlockPtr    body;
     SymbolRef   symbol = nullptr;   // the loop variable
-    // Set by the checker for loops over a user type (spec 10): a container (`len()` and
+    // Set by the checker for loops over a user type (spec 10): a container (`length()` and
     // `operator[]`) or a stream (`next()`, which returns a `std::option`).
     SymbolRef   len_symbol   = nullptr;
     SymbolRef   index_symbol = nullptr;

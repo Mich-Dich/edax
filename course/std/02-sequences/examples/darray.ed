@@ -12,7 +12,7 @@ void show(std::str label, std::darray<u32>& xs) {
 
 i32 main() {
     mut std::darray<u32> xs = std::darray<u32>::with_capacity(8);   // one allocation, room for 8
-    std::println(f"len {xs.len()}, capacity {xs.capacity()}");
+    std::println(f"len {xs.length()}, capacity {xs.capacity()}");
     mut std::darray<u32> ys = std::darray<u32>::from([5, 1, 4, 2, 3]);
     show("from", ys);
     ys.insert(1, 9);                       // O(n): shifts the tail

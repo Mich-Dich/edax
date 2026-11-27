@@ -1,0 +1,24 @@
+exit: 0
+--- stdout
+one, long enough to be on the heap = 1
+two, long enough to be on the heap = 2
+34 1
+34 2
+after mut: 11
+after mut: 12
+11
+12
+1: item 1 with enough text to live on the heap
+2: item 2 with enough text to live on the heap
+3: item 3 with enough text to live on the heap
+1: 43
+2: 43
+3: 43
+0
+1
+2
+1111
+1112
+1211
+1212
+--- stderr

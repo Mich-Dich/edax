@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <istream>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -56,14 +57,19 @@ public:
     // Registers in-memory text (used by unit tests and by `load`).
     FileId add(std::string path, std::string text);
 
-    // Reads a file from disk. On failure returns nullopt and puts a reason into `error`.
+    // Reads a file from disk (or the text given with set_text). On failure returns nullopt and
+    // puts a reason into `error`.
     std::optional<FileId> load(const std::string& path, std::string& error);
+
+    // `load(path)` gives `text` instead of what is on disk: an editor's unsaved buffer.
+    void set_text(const std::string& path, std::string text);
 
     [[nodiscard]] const SourceFile& file(FileId id) const { return files_.at(id); }
     [[nodiscard]] std::size_t       count() const { return files_.size(); }
 
 private:
-    std::vector<SourceFile> files_;
+    std::vector<SourceFile>            files_;
+    std::map<std::string, std::string> unsaved_;   // by the file's canonical path
 };
 
 // Number of code points in `text` (invalid bytes count as one each).

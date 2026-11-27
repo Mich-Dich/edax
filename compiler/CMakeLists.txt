@@ -22,6 +22,7 @@ add_library(edax STATIC
     src/cpp_wrap.cpp
     src/cmake_reader.cpp
     src/definition.cpp
+    src/complete.cpp
     src/graphics_registry.cpp
     src/build_report.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/std_library.cpp
